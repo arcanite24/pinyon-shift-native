@@ -210,6 +210,19 @@ struct CarMeta {
   int64_t base_cost = 0;
 };
 
+// Unified retail 1000 Club achievement thresholds (SPA 216..225), shared between
+// freeroam::club::compute_medal_stats() and carview::AchievementsSystem.
+inline constexpr int kClubThresholdFirstMedal = 1;
+inline constexpr int kClubThresholdFerrari = 14;
+inline constexpr int kClubThresholdMillionCr = 14;
+inline constexpr int kClubThresholdShelby = 3;
+inline constexpr int kClubThresholdLamborghini = 8;
+inline constexpr int kClubThresholdNissan = 7;
+inline constexpr int kClubThresholdBmw = 10;
+inline constexpr int kClubThresholdBritish = 20;
+inline constexpr int kClubThresholdFord = 13;
+inline constexpr int kClubThresholdMultiCars = 146;
+
 struct ClubMedalStats {
   int total_medals = 0;
   int cars_with_medal = 0;
@@ -222,16 +235,16 @@ struct ClubMedalStats {
   int british_cars = 0;
   int million_cr_cars = 0;
   // Individual achievement booleans (SPA 216..225).
-  bool ach_first_medal = false;
-  bool ach_multi_cars = false;      // >= 5 different cars
-  bool ach_ford = false;            // >= 5 Fords
-  bool ach_ferrari = false;         // >= 3 Ferraris
-  bool ach_shelby = false;          // >= 2 Shelbys
-  bool ach_lamborghini = false;     // >= 3 Lamborghinis
-  bool ach_nissan = false;          // >= 3 Nissans
-  bool ach_bmw = false;             // >= 3 BMWs
-  bool ach_british = false;         // >= 5 British cars
-  bool ach_million_cr = false;      // >= 1 car worth >= 1,000,000 CR
+  bool ach_first_medal = false;     // >= 1 medal
+  bool ach_multi_cars = false;      // >= 146 different cars
+  bool ach_ford = false;            // >= 13 Fords
+  bool ach_ferrari = false;         // >= 14 Ferraris
+  bool ach_shelby = false;          // >= 3 Shelbys
+  bool ach_lamborghini = false;     // >= 8 Lamborghinis
+  bool ach_nissan = false;          // >= 7 Nissans
+  bool ach_bmw = false;             // >= 10 BMWs
+  bool ach_british = false;         // >= 20 British cars
+  bool ach_million_cr = false;      // >= 14 cars worth >= 1,000,000 CR
   int achievements_unlocked = 0;    // 0..10
 };
 

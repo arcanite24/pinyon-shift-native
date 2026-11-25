@@ -8,6 +8,7 @@
 #include "drive/save.h"
 #include "fmv_player.h"
 #include "race/campaign_flow.h"
+#include "race/showcase.h"
 #include "ui.h"
 
 namespace {
@@ -104,7 +105,8 @@ void test_minute0_to_endgame_state_machine() {
     check(flow.unlocked_bosses().count("ramona") == 1, "Ramona Cravache unlocks at 220 pts");
     flow.on_popularity_rank_changed(250, 175);
     check(flow.unlocked_showcases().count("PLANE_RACE_001") == 1, "P-51 Mustang Showcase unlocks");
-    check(flow.unlocked_showcases().count("PLANE_RACE_002") == 1, "Hot-Air Balloon Showcase unlocks at rank 175");
+    check(flow.unlocked_showcases().count("PLANE_RACE_004") == 1, "Hot-Air Balloon Showcase unlocks at rank 225");
+    check(flow.unlocked_showcases().count("PLANE_RACE_002") == 1, "Helicopter Showcase unlocks at rank 175");
 
     // Collect Green Wristband -> Wristband Ceremony.
     flow.on_wristband_collected(1, "2012 Ford Mustang Boss 302", 10);
@@ -559,6 +561,152 @@ void test_pt_e_campaign_and_post_race_parity() {
   }
 }
 
+void test_r3_e1_campaign_parity() {
+  // 1. R3-CAM-02: All 7 Airborne Showcases match showcase.cpp 1:1 with zero invented "STUNT JET".
+  {
+    int airborne_count = 0;
+    for (const auto& sc : race::showcase_milestones()) {
+      auto contains_jet = [](const char* s) {
+        if (!s) return false;
+        std::string u(s);
+        for (char& c : u) c = char(std::toupper(static_cast<unsigned char>(c)));
+        return u.find("STUNT JET") != std::string::npos || u.find("JET FIGHTER") != std::string::npos;
+      };
+      check(!contains_jet(sc.display_name) && !contains_jet(sc.opponent_label) && !contains_jet(sc.intro_line) &&
+                !contains_jet(sc.victory_line),
+            "Showcase catalog contains zero invented Stunt Jet copy");
+      if (!sc.airborne) continue;
+      ++airborne_count;
+      const race::ShowcaseSpec spec = race::showcase_spec_for(sc.horizon_id);
+      check(spec.event_id == sc.event_id, "Airborne Showcase event_id matches showcase.cpp 1:1");
+      check(std::string(sc.opponent_label) == spec.display_name,
+            "Airborne Showcase opponent_label matches showcase.cpp aircraft display_name 1:1");
+    }
+    check(airborne_count == 7, "all 7 Airborne Showcases verified against showcase.cpp");
+    const auto* sc4 = race::find_showcase_by_event("PLANE_RACE_004");
+    const auto* sc2 = race::find_showcase_by_event("PLANE_RACE_002");
+    const auto* sc3 = race::find_showcase_by_event("PLANE_RACE_003");
+    const auto* sc6 = race::find_showcase_by_event("PLANE_RACE_006");
+    const auto* sc5 = race::find_showcase_by_event("PLANE_RACE_005");
+    check(sc4 && std::string(sc4->opponent_label) == "HOT-AIR BALLOON", "PLANE_RACE_004 is Hot-Air Balloon");
+    check(sc2 && std::string(sc2->opponent_label) == "HELICOPTER", "PLANE_RACE_002 is Helicopter");
+    check(sc3 && std::string(sc3->opponent_label) == "BIPLANE", "PLANE_RACE_003 is Biplane");
+    check(sc6 && std::string(sc6->opponent_label) == "P-51 MUSTANG", "PLANE_RACE_006 is P-51 Mustang");
+    check(sc5 && std::string(sc5->opponent_label) == "HELICOPTER", "PLANE_RACE_005 is Helicopter");
+  }
+
+  // 2. R3-CAM-03: Real RaceFinishStanding entries preserved verbatim without fabricating bosses or +0.92s gaps.
+  {
+    race::CampaignFlow flow;
+    flow.skip_onboarding_all();
+    race::CareerEvent ev;
+    ev.horizon_id = "FR02";
+    ev.style = 1;
+    race::RaceAward aw;
+    aw.base_credits = 8000;
+    aw.credits = 9200;
+    aw.wristband_points = 100;
+
+    std::vector<race::RaceFinishStanding> standings = {
+        {1, "Elena Vance", "2002 Nissan Skyline GT-R", "A", 612, 118.42, 0.0, 58.91, false, false},
+        {2, "PlayerOne", "1995 Volkswagen Corrado VR6", "D", 321, 120.05, 1.63, 59.40, true, false},
+        {3, "Marcus Cole", "2008 Subaru Impreza WRX STI", "B", 498, 122.77, 4.35, 60.88, false, false},
+    };
+    flow.on_race_finished(&ev, aw, 2, 3, 250, 244, 15000, 24200, 100, 0, "", nullptr, standings);
+    const auto& rows = flow.reward_tally().results_rows;
+    check(rows.size() == 3, "preserves exact 3 real standings rows");
+    check(rows[0].driver == "Elena Vance" && rows[0].car == "2002 Nissan Skyline GT-R" && rows[0].car_class == "A" &&
+              rows[0].pi == 612 && std::fabs(rows[0].time_s - 118.42) < 1e-4 &&
+              std::fabs(rows[0].best_lap_s - 58.91) < 1e-4,
+          "1st place real driver/car/class/PI/time/best_lap preserved");
+    check(rows[1].player && rows[1].driver == "PlayerOne" && std::fabs(rows[1].gap_s - 1.63) < 1e-4,
+          "player row preserves real driver name and exact gap (not fabricated +0.92s)");
+    check(rows[2].driver == "Marcus Cole" && std::fabs(rows[2].gap_s - 4.35) < 1e-4,
+          "3rd place real driver and gap preserved");
+    for (const auto& r : rows) {
+      check(r.driver.find("RAMONA") == std::string::npos, "non-boss race never fabricates Ramona Cravache");
+    }
+  }
+
+  // 3. R3-CAM-08: Corrado Qualification Race (FESTIVAL_SECOND) enforces top-3 podium cutoff with retry on fail.
+  {
+    race::CampaignFlow flow;
+    flow.start_new_career(true);
+    flow.advance_or_skip();  // Viper -> QualifyRace
+    check(flow.stage() == race::CampaignStage::kQualifyRace, "starts in QualifyRace");
+
+    race::CareerEvent qev;
+    qev.horizon_id = "FESTIVAL_SECOND";
+    qev.style = 1;
+    race::RaceAward aw;
+    aw.credits = 500;
+
+    // 8th place finish -> MUST NOT advance past kQualifyRace, sets retry_required!
+    flow.on_race_finished(&qev, aw, 8, 8, 250, 250, 0, 500, 0, -1, "");
+    check(flow.stage() == race::CampaignStage::kQualifyRace,
+          "8th place in FESTIVAL_SECOND does NOT advance past kQualifyRace");
+    check(flow.qualify_retry_pending(), "8th place arms qualify_retry_pending");
+    check(!flow.reward_tally().qualified && flow.reward_tally().retry_required,
+          "8th place marks tally qualified=false, retry_required=true");
+    check(flow.is_blocking_gameplay() && flow.is_cinematic_active(),
+          "qualification failure retry screen blocks gameplay cleanly");
+
+    // Stepping update with race_finished=true MUST NOT advance to kFestivalRegistration while retry is pending!
+    flow.update(0.5, {-1360.0, -210.0}, false, true);
+    check(flow.stage() == race::CampaignStage::kQualifyRace,
+          "update(race_finished=true) does NOT bypass failed qualification");
+
+    // Pressing Continue (advance_or_skip) relaunches FESTIVAL_SECOND!
+    const auto retry_act = flow.advance_or_skip();
+    check(flow.stage() == race::CampaignStage::kQualifyRace && !flow.qualify_retry_pending(),
+          "advance_or_skip clears retry pending and stays in kQualifyRace");
+    check(retry_act.launch_event && retry_act.event_id == "FESTIVAL_SECOND" && retry_act.route_id == 16,
+          "retry action relaunches FESTIVAL_SECOND / route 16");
+
+    // 4th place still fails cutoff (top 3 required).
+    flow.on_race_finished(&qev, aw, 4, 8, 250, 250, 0, 500, 0, -1, "");
+    check(flow.stage() == race::CampaignStage::kQualifyRace && flow.qualify_retry_pending(),
+          "4th place fails top-3 qualification cutoff");
+    flow.advance_or_skip();  // retry again
+
+    // 3rd place (podium) passes cutoff -> advances to kFestivalRegistration!
+    const auto pass_act = flow.on_race_finished(&qev, aw, 3, 8, 250, 249, 0, 3000, 30, -1, "");
+    check(flow.stage() == race::CampaignStage::kFestivalRegistration,
+          "3rd place qualifies and advances to kFestivalRegistration");
+    check(!flow.qualify_retry_pending() && flow.reward_tally().qualified && !flow.reward_tally().retry_required,
+          "qualifying finish clears retry state");
+    check(pass_act.grant_starter && pass_act.collect_yellow_wristband,
+          "qualifying finish triggers starter car & Yellow Wristband registration");
+  }
+
+  // 4. R3-CAM-15: Viper opening drive Festival-bound AI convoy pass tracking & countdown.
+  {
+    race::CampaignFlow flow;
+    flow.start_new_career(true);
+    check(flow.stage() == race::CampaignStage::kViperIntroDrive, "Viper drive stage active");
+    check(flow.viper_convoy_passed() == 0 && flow.viper_convoy_remaining() == race::CampaignFlow::kViperConvoyTarget,
+          "convoy counter starts at 0 / target");
+    const auto obj0 = flow.next_objective(0, -1, 250);
+    check(obj0.title.find("0 / 5") != std::string::npos, "objective displays live convoy pass progress");
+
+    check(flow.on_viper_convoy_pass(1), "first convoy pass recorded");
+    check(flow.viper_convoy_passed() == 1 && flow.viper_convoy_remaining() == 4, "convoy counter advances to 1/5");
+    check(flow.heard_dialogs().count("m0_viper_convoy_first") == 1, "first convoy pass queues VO cue");
+
+    check(flow.on_viper_convoy_pass(3), "passing 3 more reaches 4/5");
+    check(flow.viper_convoy_remaining() == 1, "1 driver remaining");
+    check(flow.heard_dialogs().count("m0_viper_convoy_last") == 1, "last driver remaining queues VO cue");
+
+    check(flow.on_viper_convoy_pass(1), "final convoy pass clears target");
+    check(flow.viper_convoy_passed() == 5 && flow.viper_convoy_remaining() == 0, "convoy counter caps at 5/5");
+    check(flow.heard_dialogs().count("m0_viper_convoy_clear") == 1, "convoy clear queues VO cue");
+    check(!flow.on_viper_convoy_pass(1), "extra passes beyond target ignored");
+    const auto obj_done = flow.next_objective(0, -1, 250);
+    check(obj_done.detail.find("CONVOY PASSED") != std::string::npos,
+          "objective updates cleanly once entire convoy is passed");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -569,6 +717,7 @@ int main() {
   test_director_cameras_cli_stages_and_ui_raster();
   test_r2_5_campaign_parity();
   test_pt_e_campaign_and_post_race_parity();
+  test_r3_e1_campaign_parity();
   if (g_failures > 0) {
     std::fprintf(stderr, "campaign_flow_tests: %d failure(s)\n", g_failures);
     return 1;

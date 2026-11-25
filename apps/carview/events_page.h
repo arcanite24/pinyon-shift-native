@@ -1,13 +1,16 @@
 // Race Central, Festival Events, and Street Race Hub browser.
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "garage/garage.h"
 #include "race/career.h"
 #include "race/rewards.h"
+#include "race/rivals.h"
 
 namespace freeroam {
 struct Outpost;
@@ -17,7 +20,7 @@ namespace carview {
 
 class EventsPage {
  public:
-  enum Tab { kAll = 0, kFestival = 1, kStreet = 2, kShowcase = 3, kShowdown = 4, kTabCount = 5 };
+  enum Tab { kAll = 0, kFestival = 1, kStreet = 2, kShowcase = 3, kShowdown = 4, kRivals = 5, kTabCount = 6 };
 
   struct Entry {
     bool is_collect_wristband = false;
@@ -29,13 +32,26 @@ class EventsPage {
     int best_place = 0;
     std::string display_name;
     std::string reason;
+    // Rivals / Time Trials metadata (populated when `is_rivals == true`).
+    bool is_rivals = false;
+    double pb_time_s = 0.0;
+    bool pb_clean = false;
+    int rival_tier_index = 1;  // 0 = Personal Best, 1 = Bronze, 2 = Silver, 3 = Gold
+    std::string rival_tier_label;
+    std::string rival_name;
+    double target_time_s = 0.0;
+    int64_t bounty_cr = 0;
+    std::array<race::RivalTarget, 3> rival_tiers{};
   };
 
   // Opens the career events browser (hub_filter == 0: all events / Race Central;
   // hub_filter > 0: only Street Races belonging to that Street Hub).
   void open(const race::CareerCatalog& catalog, const race::CareerRecord& career, int collected_wristband,
             int popularity_rank, int64_t current_car_id, int current_class_id,
-            const std::vector<garage::ClassBand>& bands, int hub_filter = 0);
+            const std::vector<garage::ClassBand>& bands, int hub_filter = 0,
+            const std::filesystem::path& ghosts_dir = {});
+  void set_ghosts_dir(const std::filesystem::path& ghosts_dir) { ghosts_dir_ = ghosts_dir; }
+  void cycle_rival_tier(int by);
   void close() { open_ = false; }
   bool is_open() const { return open_; }
 
@@ -70,6 +86,7 @@ class EventsPage {
   int car_class_id_ = 0;
   std::vector<std::string> class_names_;
   int hub_filter_ = 0;
+  std::filesystem::path ghosts_dir_;
   Tab tab_ = kAll;
   std::vector<Entry> entries_;
   size_t selected_ = 0;

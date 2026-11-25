@@ -42,6 +42,7 @@ struct SpeedZoneDef {
   SpeedGate gate1;
   SpeedGate gate2;
   std::array<double, 3> midpoint{};
+  double corridor_distance_m = 0.0;  // authored corridor length (or gate-to-gate span)
 };
 
 struct SpeedActivitiesData {
@@ -67,6 +68,7 @@ struct SpeedActivityEvent {
   double prev_best_mph = 0.0;
   bool is_new_pb = false;
   bool flash = false;
+  bool failed_off_road = false;
 };
 
 struct SpeedActivityHud {
@@ -86,10 +88,15 @@ struct SpeedActivityHud {
   double banner_at = -1e9;
   // White camera flash intensity [0..1]
   float flash_alpha = 0.0f;
+  // Off-road grace warning while active in a Speed Zone
+  bool off_road_warning = false;
+  double off_road_timer_s = 0.0;
 };
 
 class SpeedActivityTracker {
  public:
+  static constexpr double kOffRoadFailGraceS = 1.5;
+
   explicit SpeedActivityTracker(const SpeedActivitiesData& data);
 
   void load_records(const std::vector<std::pair<std::string, double>>& traps,
@@ -104,6 +111,12 @@ class SpeedActivityTracker {
 
   std::vector<SpeedActivityEvent> step(double dt, double time, double x0, double z0, double x1, double z1,
                                        double speed_mps);
+  // Cancels any active Speed Zone run cleanly (e.g. on Rewind).
+  void cancel_active();
+  // Records whether the car is currently off-road so step() fails the active Speed Zone
+  // after continuous off-road time exceeds kOffRoadFailGraceS (~1.5 s).
+  void set_off_road(bool off_road);
+  bool zone_active() const { return active_zone_idx_ >= 0; }
   SpeedActivityHud hud(double time) const;
   void reset_session_clock();
 
@@ -119,7 +132,10 @@ class SpeedActivityTracker {
   int entry_gate_ = 0;  // 1 or 2
   double zone_elapsed_ = 0.0;
   double zone_dist_ = 0.0;
+  double zone_corridor_progress_ = 0.0;
   double zone_slow_t_ = 0.0;
+  bool off_road_ = false;
+  double zone_off_road_t_ = 0.0;
 
   // Banner & flash state
   bool banner_is_zone_ = false;

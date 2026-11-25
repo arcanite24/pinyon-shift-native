@@ -689,6 +689,28 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 SDL_GetWindowSizeInPixels(app.window, &cw, &ch);
                 if (cw > 0 && ch > 0) {
                   app.audio_host.trigger_ui(audio::UiCue::kPhotoShutter);
+                  // R3-CAM-16: Fire Horizon Promo spotting immediately on shutter capture across
+                  // all visible cars in frame (player, Race AI, Traffic, and roaming Festival AI).
+                  const ShowroomFrame pframe = camera_view_frame(
+                      photo_mode.camera().view(), info, vehicle, float(cw) / float(ch), host.renderer.reverse_z());
+                  float cfw[16];
+                  compute_clip_from_world(pframe, info, vehicle, cfw);
+                  const auto promo =
+                      promo_tracker.evaluate(cfw, photo_mode.camera().eye(), gather_promo_candidates(), true);
+                  if (!promo.newly_spotted_ids.empty()) {
+                    if (promo.credits_awarded > 0) {
+                      const int64_t pcr = slice12.trainer.pacing.scale_credits(promo.credits_awarded);
+                      app.career.credits += pcr;
+                      app.career.total_winnings += pcr;
+                    }
+                    photo_mode.update_live_promo_preview(promo);
+                    popup = {"HORIZON PROMO!",
+                             std::to_string(promo.newly_spotted_ids.size()) + " NEW CAR(S) SPOTTED  (" +
+                                 std::to_string(promo.total_spotted) + "/" + std::to_string(promo.total_cars) + ")",
+                             vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+                    save_now("horizon promo");
+                    eval_achievements(true);
+                  }
                   photo_mode.begin_capture(uint32_t(cw), uint32_t(ch), 4);
                   pending_shot = PendingShot::kPhotoMode;
                   host.renderer.request_capture(false);

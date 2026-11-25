@@ -135,9 +135,26 @@ struct PrStuntUpdate {
   double prev_x = 0.0;
   double prev_z = 0.0;
   double speed_mph = 0.0;
-  int64_t total_skill_points = 0;  // banked + live unbanked combo
+  int64_t total_skill_points = 0;  // banked skill points (or banked + unbanked if unbanked_skill_points is set)
   bool photo_pressed = false;
   double dt = 0.0;
+
+  // R3-CAM-12: Explicit banked skill points (when >= 0, Skill Stunt counts ONLY
+  // banked points earned inside the stunt zone; when < 0, falls back to
+  // total_skill_points - unbanked_skill_points).
+  int64_t banked_skill_points = -1;
+  int64_t unbanked_skill_points = 0;
+
+  // R3-CAM-12: Optional camera pose for Photo Op frustum validation (both player car
+  // and target landmark must project inside the camera view frustum in front of camera).
+  double car_y = 0.0;
+  bool has_camera = false;
+  std::array<double, 3> camera_pos{};
+  std::array<double, 3> camera_forward{0.0, 0.0, 1.0};
+  std::array<double, 3> camera_right{1.0, 0.0, 0.0};
+  std::array<double, 3> camera_up{0.0, 1.0, 0.0};
+  double camera_vfov_deg = 55.0;
+  double camera_aspect = 16.0 / 9.0;
 };
 
 // Live runtime tracker for an active Outpost PR Stunt.
@@ -146,6 +163,11 @@ class PrStuntSession {
   void start(const PrStunt& stunt, int64_t baseline_skill_points = 0, int difficulty_index = 0);
   void cancel();
   PrStuntState update(const PrStuntUpdate& u);
+
+  static bool point_in_camera_frustum(const std::array<double, 3>& point, const std::array<double, 3>& cam_pos,
+                                      const std::array<double, 3>& cam_fwd, const std::array<double, 3>& cam_right,
+                                      const std::array<double, 3>& cam_up, double vfov_deg, double aspect,
+                                      double radius_m = 0.0, double max_range_m = 250.0);
 
   bool active() const { return state_ == PrStuntState::kActive; }
   PrStuntState state() const { return state_; }
@@ -156,6 +178,7 @@ class PrStuntSession {
   int64_t earned_skill_points() const { return earned_skill_points_; }
   double distance_to_target() const { return distance_to_target_; }
   bool in_target_zone() const { return in_target_zone_; }
+  bool photo_framed() const { return photo_framed_; }
   double progress_fraction() const;
   std::string status_line() const;
 
@@ -163,6 +186,7 @@ class PrStuntSession {
   PrStunt stunt_;
   PrStuntState state_ = PrStuntState::kInactive;
   int64_t baseline_skill_points_ = 0;
+  int64_t last_banked_skill_points_ = 0;
   int64_t earned_skill_points_ = 0;
   double time_remaining_s_ = 0.0;
   double elapsed_s_ = 0.0;
@@ -170,6 +194,7 @@ class PrStuntSession {
   double distance_to_target_ = 0.0;
   double photo_hold_s_ = 0.0;
   bool in_target_zone_ = false;
+  bool photo_framed_ = false;
 };
 
 const char* pr_stunt_kind_name(PrStuntKind kind);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
 
 #include "audio/xml.h"
 #include "fh1data/archive.h"
@@ -318,6 +319,7 @@ void SkillTracker::clear_active_chain() {
   skill_count_ = 0;
   over9000_paid_ = false;
   pending_tags_.clear();
+  pending_sponsor_feats_.clear();
   burnout_t_ = donut_yaw_ = donut_dist_ = air_t_ = two_wheels_t_ = 0.0;
   turn180_active_ = jturn_active_ = false;
   turn180_t_ = turn180_yaw_ = jturn_t_ = jturn_yaw_ = 0.0;
@@ -329,6 +331,8 @@ void SkillTracker::clear_active_chain() {
 
 void SkillTracker::reset_session_clock() {
   clear_active_chain();
+  pending_pop_events_.clear();
+  last_step_time_ = -1e9;
   last_award_at_ = last_tag_at_ = lockout_until_ = -1e9;
   banked_at_ = lost_at_ = rank_up_at_ = -1e9;
   burnout_cd_ = donut_cd_ = turn180_cd_ = jturn_cd_ = air_cd_ = two_wheels_cd_ = -1e9;
@@ -339,6 +343,54 @@ void SkillTracker::reset_session_clock() {
   last_skill_.clear();
   last_points_ = 0;
   banked_total_ = 0;
+}
+
+float SkillTracker::chain_multiplier() const {
+  if (skill_count_ <= 1) return 1.0f;
+  // Retail FH1 Skill Chain multiplier: 1.0x to 5.0x in 0.5x steps.
+  const int steps = std::min(8, skill_count_ - 1);
+  return 1.0f + 0.5f * float(steps);
+}
+
+void SkillTracker::evaluate_popularity_transitions(int rank_before, double time, std::vector<SkillEvent>& out) {
+  const int rank_after = popularity_rank();
+  if (rank_after < rank_before) {
+    if (time > -1e8) {
+      rank_up_at_ = time;
+    } else if (last_step_time_ > -1e8) {
+      rank_up_at_ = last_step_time_;
+    }
+    SkillEvent rank_ev{SkillEvent::kRankUp, "POPULARITY RANK UP", "Fame", 0, 1, rank_after, 0, 1};
+    for (const auto& lv : data_.fame_levels) {
+      if (lv.rank < rank_before && lv.rank >= rank_after) {
+        if (!lv.dialogue_event.empty()) rank_ev.dialogue_event = lv.dialogue_event;
+        if (!lv.radio_festival_update.empty()) rank_ev.radio_festival_update = lv.radio_festival_update;
+      }
+    }
+    out.push_back(std::move(rank_ev));
+    for (size_t i = size_t(std::max(0, fame_claimed_)); i < data_.fame_tiers.size(); ++i) {
+      if (rank_after <= data_.fame_tiers[i].rank_required) {
+        fame_claimed_ = int(i + 1);
+        out.push_back({SkillEvent::kFameSponsor, "FAME SPONSOR BONUS", "Fame", 0, 1,
+                       data_.fame_tiers[i].rank_required, data_.fame_tiers[i].credits});
+      }
+    }
+  }
+}
+
+std::vector<SkillEvent> SkillTracker::add_popularity(double pts, double time) {
+  std::vector<SkillEvent> out;
+  if (pts <= 0.0) return out;
+  const int rank_before = popularity_rank();
+  popularity_ += pts;
+  evaluate_popularity_transitions(rank_before, time, out);
+  // Queue events when invoked via the 1-arg overload (default time = -1e9) so
+  // callers that poll step() (Outposts, PR Stunts, Speed Traps, H2H) receive
+  // rank-up notifications, Fame Sponsor CR payouts, and Showcase unlocks.
+  if (time < -1e8 && !out.empty()) {
+    pending_pop_events_.insert(pending_pop_events_.end(), out.begin(), out.end());
+  }
+  return out;
 }
 
 void SkillTracker::record_sponsor_skill(const std::string& canonical_id, int grade, bool is_combo,
@@ -380,10 +432,15 @@ void SkillTracker::emit_tag(const PendingTag& tag, double time, std::vector<Skil
   last_tag_at_ = time;
   last_skill_ = tag.label;
   last_points_ = tag.points;
-  const int mult = skill_count_ >= 6 ? 3 : skill_count_ >= 3 ? 2 : 1;
-  out.push_back(
-      {SkillEvent::kSkillAwarded, tag.label, tag.canonical_id, tag.points, mult, popularity_rank(), 0, tag.grade});
-  record_sponsor_skill(tag.canonical_id, tag.grade, tag.is_combo, out);
+  const float mult_f = chain_multiplier();
+  const int mult_i = int(std::floor(mult_f));
+  SkillEvent ev{SkillEvent::kSkillAwarded, tag.label, tag.canonical_id, tag.points, mult_i, popularity_rank(), 0,
+                tag.grade};
+  ev.multiplier_f = mult_f;
+  out.push_back(std::move(ev));
+  // Defer sponsor challenge increments until the Skill Chain is actually banked
+  // (wiped cleanly if the chain is cancelled by a hard collision).
+  pending_sponsor_feats_.push_back({tag.canonical_id, tag.grade, tag.is_combo});
   if (tag.id != kCombo) {
     recent_.push_back({tag.id, tag.canonical_id, tag.grade, time});
     recent_.erase(std::remove_if(recent_.begin(), recent_.end(), [&](const RecentSkill& r) { return time - r.time > 36.0; }),
@@ -508,8 +565,9 @@ void SkillTracker::bank_chain(double time, std::vector<SkillEvent>& out) {
     emit_tag(next, time, out);
   }
   if (chain_points_ <= 0) return;
-  const int mult = skill_count_ >= 6 ? 3 : skill_count_ >= 3 ? 2 : 1;
-  const int total = chain_points_ * mult;
+  const float mult_f = chain_multiplier();
+  const int mult_i = int(std::floor(mult_f));
+  const int total = int(std::llround(double(chain_points_) * double(mult_f)));
   const int rank_before = popularity_rank();
   popularity_ += double(total);
   race_banked_ += total;
@@ -520,25 +578,16 @@ void SkillTracker::bank_chain(double time, std::vector<SkillEvent>& out) {
   }
   banked_total_ = total;
   banked_at_ = time;
-  out.push_back({SkillEvent::kChainBanked, "SKILL CHAIN BANKED", "Bank", total, mult, rank_after, 0});
-  if (rank_after < rank_before) {
-    rank_up_at_ = time;
-    SkillEvent rank_ev{SkillEvent::kRankUp, "POPULARITY RANK UP", "Fame", 0, 1, rank_after, 0, 1};
-    for (const auto& lv : data_.fame_levels) {
-      if (lv.rank < rank_before && lv.rank >= rank_after) {
-        if (!lv.dialogue_event.empty()) rank_ev.dialogue_event = lv.dialogue_event;
-        if (!lv.radio_festival_update.empty()) rank_ev.radio_festival_update = lv.radio_festival_update;
-      }
-    }
-    out.push_back(std::move(rank_ev));
-    for (size_t i = size_t(std::max(0, fame_claimed_)); i < data_.fame_tiers.size(); ++i) {
-      if (rank_after <= data_.fame_tiers[i].rank_required) {
-        fame_claimed_ = int(i + 1);
-        out.push_back({SkillEvent::kFameSponsor, "FAME SPONSOR BONUS", "Fame", 0, 1,
-                       data_.fame_tiers[i].rank_required, data_.fame_tiers[i].credits});
-      }
-    }
+  SkillEvent bank_ev{SkillEvent::kChainBanked, "SKILL CHAIN BANKED", "Bank", total, mult_i, rank_after, 0};
+  bank_ev.multiplier_f = mult_f;
+  out.push_back(std::move(bank_ev));
+  // Commit deferred Skill Sponsor increments only now that the chain has banked!
+  auto pending = std::move(pending_sponsor_feats_);
+  pending_sponsor_feats_.clear();
+  for (const auto& f : pending) {
+    record_sponsor_skill(f.canonical_id, f.grade, f.is_combo, out);
   }
+  evaluate_popularity_transitions(rank_before, time, out);
   clear_active_chain();
 }
 
@@ -554,6 +603,14 @@ void SkillTracker::cancel_chain(double time, std::vector<SkillEvent>& out) {
 std::vector<SkillEvent> SkillTracker::step(const SkillInput& in) {
   std::vector<SkillEvent> out;
   if (in.dt <= 0) return out;
+  last_step_time_ = in.time;
+  if (!pending_pop_events_.empty()) {
+    for (auto& pev : pending_pop_events_) {
+      if (pev.kind == SkillEvent::kRankUp) rank_up_at_ = in.time;
+      out.push_back(std::move(pev));
+    }
+    pending_pop_events_.clear();
+  }
   if (in.car_id > 0) current_car_ = in.car_id;
   const double mph = std::fabs(in.speed_ms) * kMsToMph;
   const double fwd_mph = in.forward_speed_ms * kMsToMph;
@@ -569,15 +626,24 @@ std::vector<SkillEvent> SkillTracker::step(const SkillInput& in) {
   }
   if (in.car_impact_ms > 0.3 || in.world_impact_ms > 0.5) last_collision_t_ = in.time;
 
-  // MinSpeedToCancelFeats (10 mph): cancel active chain when slowing below threshold
-  // (unless actively performing a Burnout or Donut), vs bank on normal timeout at speed.
+  // MinSpeedToCancelFeats (10 mph): slowing/braking to a stop cancels in-progress
+  // moving feats (drift, speed, draft, two-wheels, 180/J-turn) without destroying
+  // the accumulated Skill Chain — the chain lets bank_timeout expire and banks cleanly.
+  const bool stationary_feat = burnout_t_ > 0.1 || donut_yaw_ > 0.5;
+  if (mph < data_.min_speed_to_cancel && !stationary_feat && in.time - last_award_at_ > 1.0) {
+    drift_dist_ = 0.0;
+    drift_hb_t_ = 0.0;
+    drift_is_e_ = false;
+    draft_t_ = 0.0;
+    speed_dist_ = 0.0;
+    speed_peak_mph_ = 0.0;
+    two_wheels_t_ = 0.0;
+    turn180_active_ = false;
+    jturn_active_ = false;
+  }
   if (chain_points_ > 0) {
-    const bool stationary_feat = burnout_t_ > 0.1 || donut_yaw_ > 0.5;
-    if (mph < data_.min_speed_to_cancel && !stationary_feat && in.time - last_award_at_ > 1.0) {
-      cancel_chain(in.time, out);
-      return out;
-    } else if (in.time - last_award_at_ >= data_.bank_timeout && pending_tags_.empty() && drift_dist_ <= 1.0 &&
-               air_t_ <= 0.05 && burnout_t_ <= 0.1 && draft_t_ <= 0.1 && two_wheels_t_ <= 0.05) {
+    if (in.time - last_award_at_ >= data_.bank_timeout && pending_tags_.empty() && drift_dist_ <= 1.0 &&
+        air_t_ <= 0.05 && burnout_t_ <= 0.1 && draft_t_ <= 0.1 && two_wheels_t_ <= 0.05) {
       bank_chain(in.time, out);
     }
   }
@@ -597,10 +663,17 @@ std::vector<SkillEvent> SkillTracker::step(const SkillInput& in) {
       donut_dist_ += std::fabs(in.speed_ms) * in.dt;
     } else if (donut_yaw_ > 0.0) {
       if (donut_yaw_ >= 5.2 && in.time >= donut_cd_) {  // ~300+ deg spin
-        const int g = donut_yaw_ >= 18.0 ? 4 : donut_yaw_ >= 12.0 ? 3 : donut_yaw_ >= 8.0 ? 2 : 1;
-        const int pts = g == 4 ? 500 : g == 3 ? 250 : g == 2 ? 150 : 100;
-        queue_award(kDonut, "Donut", std::string(grade_prefix(g)) + "DONUT", pts, g, false, in.time, out);
-        donut_cd_ = in.time + std::max(1.0, data_.donut.retrigger_delay);
+        int g = 0, pts = 0;
+        if (!data_.donut.grades.empty()) {
+          std::tie(g, pts) = best_grade(data_.donut, donut_dist_);
+        } else {
+          g = donut_yaw_ >= 18.0 ? 4 : donut_yaw_ >= 12.0 ? 3 : donut_yaw_ >= 8.0 ? 2 : 1;
+          pts = g == 4 ? 500 : g == 3 ? 250 : g == 2 ? 150 : 100;
+        }
+        if (g > 0 && pts > 0) {
+          queue_award(kDonut, "Donut", std::string(grade_prefix(g)) + "DONUT", pts, g, false, in.time, out);
+          donut_cd_ = in.time + std::max(1.0, data_.donut.retrigger_delay);
+        }
       }
       donut_yaw_ = donut_dist_ = 0.0;
     }
@@ -835,7 +908,8 @@ SkillHudState SkillTracker::hud() const {
   SkillHudState h;
   h.active = chain_points_ > 0;
   h.chain_points = chain_points_;
-  h.multiplier = skill_count_ >= 6 ? 3 : skill_count_ >= 3 ? 2 : 1;
+  h.multiplier_f = chain_multiplier();
+  h.multiplier = int(std::floor(h.multiplier_f));
   h.skill_count = skill_count_;
   h.last_skill = last_skill_;
   h.last_points = last_points_;

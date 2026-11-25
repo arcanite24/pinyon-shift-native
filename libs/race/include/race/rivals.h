@@ -1,6 +1,7 @@
-// Clean-room Rivals & Time-Attack ghost recording, interpolation, `.ghost`
-// persistence, clean-lap personal-best tracking, and Rally Rivals loaner car
-// IDs (SPEC-V4-CONTENT: event-only loaner twins 1626..1635).
+// Clean-room Rivals & Time-Attack ghost recording, interpolation, `.shgh`
+// persistence, clean-lap personal-best tracking, offline Bronze/Silver/Gold
+// target rivals & bounties, and Rally Rivals loaner car IDs (SPEC-V4-CONTENT:
+// event-only loaner twins 1626..1635).
 #pragma once
 
 #include <array>
@@ -17,6 +18,19 @@ constexpr std::array<int64_t, 10> rally_rivals_loaner_ids() {
   return {1626, 1627, 1628, 1629, 1630, 1631, 1632, 1633, 1634, 1635};
 }
 constexpr bool is_rally_rivals_loaner(int64_t car_id) { return car_id >= 1626 && car_id <= 1635; }
+
+struct RivalTarget {
+  int tier_index = 1;        // 1 = Bronze, 2 = Silver, 3 = Gold
+  std::string tier_label;    // "BRONZE", "SILVER", "GOLD"
+  std::string rival_name;    // offline target rival display name
+  double target_time_s = 0.0;
+  int64_t bounty_cr = 0;
+};
+
+struct GhostWaypoint {
+  double progress = 0.0;
+  double x = 0.0, y = 0.0, z = 0.0;
+};
 
 struct GhostSample {
   double time = 0.0;        // elapsed race/lap time (s)
@@ -61,13 +75,38 @@ struct GhostRun {
   static bool load(const std::filesystem::path& path, GhostRun& out, std::string* error = nullptr);
 };
 
-// Returns `<ghost_dir>/<sanitized_event_id>.ghost`.
+// Returns `<ghost_dir>/<sanitized_event_id>.shgh`.
 std::filesystem::path ghost_file_path(const std::filesystem::path& ghost_dir, std::string_view event_id);
 
-// Compares `candidate` against any existing personal-best `.ghost` in `ghost_dir`
+// Loads an existing personal-best ghost for `event_id` (checks `.shgh` first,
+// falling back to legacy `.ghost` if present).
+bool load_personal_best_ghost(const std::filesystem::path& ghost_dir, std::string_view event_id, GhostRun& out,
+                              std::string* error = nullptr);
+
+// Compares `candidate` against any existing personal-best `.shgh` in `ghost_dir`
 // (preferring clean laps over dirty laps) and saves it when `candidate` is better.
 // Returns true on success (whether or not the previous PB was beaten); sets `*saved_new_best` if updated.
 bool update_personal_best_ghost(const std::filesystem::path& ghost_dir, const GhostRun& candidate,
                                 bool* saved_new_best = nullptr, std::string* error = nullptr);
+
+// Generates 3 offline Bronze / Silver / Gold Rivals targets for an event or Rally stage.
+std::array<RivalTarget, 3> generate_rivals_targets(std::string_view event_id, double base_time_s,
+                                                   int64_t base_prize_cr, bool is_rally_stage = false);
+
+// Synthesizes a smooth `.shgh`-compatible target ghost along ordered 3D route waypoints
+// finishing in `target_time_s`.
+GhostRun synthesize_target_ghost(const std::vector<GhostWaypoint>& waypoints, double target_time_s,
+                                 std::string_view event_id, std::string_view rival_name,
+                                 std::string_view car_media, int64_t car_id = 0, int shown_pi = 500,
+                                 double sample_interval = 0.1);
+
+// Evaluates a completed Rivals run against `target_time_s`. Sets `beat_rival` when
+// `player_time_s` is strictly faster than `target_time_s` and returns the CR bounty
+// (100% of `base_bounty_cr` for clean runs, 75% for dirty runs, 0 on loss).
+int64_t evaluate_rivals_bounty(double player_time_s, bool clean, double target_time_s, int64_t base_bounty_cr,
+                               bool& beat_rival);
+
+// Formats a Rivals/Time-Trial duration as MM:SS.mmm (or "--:--.---" if <= 0).
+std::string format_rivals_time(double seconds);
 
 }  // namespace race

@@ -131,7 +131,7 @@ std::vector<std::string> DriveApp::class_name_list() const {
     return out;
 }
 
-std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it) {
+std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize) {
     const auto* spec = have_career_catalog ? career_catalog.find_car(car_id) : nullptr;
     std::string media = spec ? spec->media_name : std::string();
     if (media.empty()) {
@@ -161,6 +161,7 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
     gc.class_id = spec ? spec->stock_class : (class_bands.empty() ? 2 : garage::class_of(gc.performance_index, class_bands));
     gc.parts_value = 0;
     gc.colour = colour_seq;
+    gc.is_prize = is_prize;
     gc.slots = std::move(stock);
     career_garage.cars.push_back(std::move(gc));
     if (select_it || career_garage.selected <= 0) career_garage.selected = career_garage.cars.back().id;
@@ -683,7 +684,8 @@ bool DriveApp::init(int& exit_code) {
       }
       if (cname.empty()) cname = "Barn Find #" + std::to_string(br.barn_id);
       const double rem = std::max(0.0, double(br.remaining_sec));
-      pending_barn_restorations.push_back({bbuf, cname, int64_t(br.car_id), rem, 0.0});
+      const bool ready = (rem <= 0.0);
+      pending_barn_restorations.push_back({bbuf, cname, int64_t(br.car_id), rem, 0.0, ready, ready});
     }
   }
   // Sync dynamic_ai_skill to the player's chosen difficulty band so Stock mode never reverts Hard/Pro/Easy back to Med.

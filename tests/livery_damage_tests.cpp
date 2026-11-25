@@ -935,6 +935,101 @@ void test_phase3_livery_and_paint_parity() {
   }
 }
 
+void test_r3_vinyl_groups_and_vg_stamps() {
+  // 1. Core VinylGroup extract, transform (translate/scale/rotate), mirror, instantiate & `.vg` round-trip.
+  cars::VinylLayer a;
+  a.shape_path = "@stripe";
+  a.plane = cars::LiveryPlaneKind::kLeft;
+  a.x = 0.30f;
+  a.y = 0.45f;
+  a.scale_x = 0.20f;
+  a.scale_y = 0.10f;
+  a.rot_deg = 15.0f;
+  a.skew = 0.25f;
+  a.rgb = 0xFF2244u;
+  a.group_id = 3;
+
+  cars::VinylLayer b;
+  b.shape_path = "@star";
+  b.plane = cars::LiveryPlaneKind::kLeft;
+  b.x = 0.50f;
+  b.y = 0.45f;
+  b.scale_x = 0.12f;
+  b.scale_y = 0.12f;
+  b.rot_deg = 0.0f;
+  b.rgb = 0xFFEE00u;
+  b.group_id = 3;
+
+  cars::VinylGroup vg = cars::extract_vinyl_group({a, b}, 3, "Horizon Racing Stripe");
+  CHECK(vg.layers.size() == 2 && vg.name == "Horizon Racing Stripe");
+  // Centroid normalized to (0.5, 0.5): a at 0.40, b at 0.60.
+  CHECK(std::fabs(vg.layers[0].x - 0.40f) < 1e-4f && std::fabs(vg.layers[1].x - 0.60f) < 1e-4f);
+
+  cars::transform_vinyl_group(vg, 0.05f, -0.05f, 1.5f, 1.5f, 90.0f);
+  CHECK(std::fabs(vg.layers[0].scale_x - 0.30f) < 1e-4f);
+  CHECK(std::fabs(vg.layers[0].rot_deg - 105.0f) < 1e-3f);
+  CHECK(std::fabs(vg.layers[1].rot_deg - 90.0f) < 1e-3f);
+
+  const cars::VinylGroup mirrored = cars::mirror_vinyl_group(vg, true);
+  CHECK(mirrored.layers.size() == 2);
+  CHECK(mirrored.layers[0].plane == cars::LiveryPlaneKind::kRight);
+  CHECK(mirrored.layers[0].flip_x == !vg.layers[0].flip_x);
+  CHECK(std::fabs(mirrored.layers[0].skew + vg.layers[0].skew) < 1e-4f);
+
+  const fs::path vg_dir = fs::temp_directory_path() / "shift_vg_stamp_tests";
+  std::error_code ec;
+  fs::remove_all(vg_dir, ec);
+  const fs::path vg_file = vg_dir / "racing_stripe.vg";
+  std::string err;
+  CHECK(cars::save_vinyl_group_file(vg_file, vg, &err));
+  cars::VinylGroup loaded;
+  CHECK(cars::load_vinyl_group_file(vg_file, loaded, &err));
+  CHECK(loaded.name == "Horizon Racing Stripe" && loaded.layers.size() == 2);
+  CHECK(loaded.layers[0].shape_path == "@stripe" && loaded.layers[1].shape_path == "@star");
+  CHECK(loaded.layers[0].rgb == 0xFF2244u && loaded.layers[1].rgb == 0xFFEE00u);
+
+  // 2. LiveryEditor group, mirror group across sides, save `.vg` stamp, and stamp onto another car/plane.
+  carview::LiveryEditor ed;
+  std::string msg;
+  CHECK(ed.open(nullptr, {}, 1219, vg_dir / "car_a.liv", msg));
+  ed.add_vinyl_layer("@stripe", 0xFF0044u);
+  ed.add_vinyl_layer("@star", 0xFFFFFFu);
+  ed.document().layers[0].plane = cars::LiveryPlaneKind::kLeft;
+  ed.document().layers[1].plane = cars::LiveryPlaneKind::kLeft;
+  ed.document().layers[0].x = 0.35f;
+  ed.document().layers[1].x = 0.55f;
+  CHECK(ed.group_layers({0, 1}));
+  CHECK(ed.document().layers[0].group_id > 0 &&
+        ed.document().layers[0].group_id == ed.document().layers[1].group_id);
+
+  // Mirroring a grouped layer mirrors the entire group onto the Right side with a fresh group_id.
+  CHECK(ed.mirror_selected_layer());
+  CHECK(ed.document().layers.size() == 4);
+  CHECK(ed.document().layers[2].plane == cars::LiveryPlaneKind::kRight &&
+        ed.document().layers[3].plane == cars::LiveryPlaneKind::kRight);
+  CHECK(ed.document().layers[2].group_id == ed.document().layers[3].group_id &&
+        ed.document().layers[2].group_id != ed.document().layers[0].group_id);
+
+  // Save group stamp as `.vg`, open a second car, and stamp it onto Top/Hood.
+  const fs::path stamps_dir = vg_dir / "vinyl_groups";
+  CHECK(ed.save_selected_group_stamp(stamps_dir, "Side Stripe Kit", &err));
+  CHECK(ed.vinyl_group_catalog().size() == 1);
+
+  carview::LiveryEditor ed2;
+  CHECK(ed2.open(nullptr, {}, 1031, vg_dir / "car_b.liv", msg));
+  CHECK(ed2.vinyl_group_catalog().size() == 1);
+  CHECK(ed2.stamp_vinyl_group_file(ed2.vinyl_group_catalog()[0].path, cars::LiveryPlaneKind::kTop, 0.5f, 0.5f, &err));
+  CHECK(ed2.document().layers.size() == 2);
+  CHECK(ed2.document().layers[0].plane == cars::LiveryPlaneKind::kTop &&
+        ed2.document().layers[1].plane == cars::LiveryPlaneKind::kTop);
+  CHECK(ed2.document().layers[0].group_id > 0 &&
+        ed2.document().layers[0].group_id == ed2.document().layers[1].group_id);
+  CHECK(ed2.ungroup_selected_group());
+  CHECK(ed2.document().layers[0].group_id == 0 && ed2.document().layers[1].group_id == 0);
+
+  fs::remove_all(vg_dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -943,6 +1038,7 @@ int main() {
   test_polish_tint_and_livery_regions();
   test_phase3_livery_and_paint_parity();
   test_disc_livery_and_paint();
+  test_r3_vinyl_groups_and_vg_stamps();
   maybe_capture_headless_screenshots();
   maybe_capture_gfx_parity_screenshots();
   if (g_failed) {

@@ -139,12 +139,14 @@ struct SkillEvent {
   int grade = 1;                     // 1=Standard, 2=Great, 3=Awesome, 4=Ultimate
   std::string dialogue_event;        // populated on kRankUp from crossed Fame.xml Level
   std::string radio_festival_update; // populated on kRankUp from crossed Fame.xml Level
+  float multiplier_f = 1.0f;         // exact 1.0x..5.0x in 0.5x steps
 };
 
 struct SkillHudState {
   bool active = false;
   int chain_points = 0;
   int multiplier = 1;
+  float multiplier_f = 1.0f;  // exact 1.0x..5.0x in 0.5x steps
   int skill_count = 0;
   std::string last_skill;
   int last_points = 0;
@@ -177,8 +179,11 @@ class SkillTracker {
   void reset_session_clock();
 
   SkillHudState hud() const;
+  float chain_multiplier() const;
   double popularity_points() const { return popularity_; }
-  void add_popularity(double pts) { if (pts > 0.0) popularity_ += pts; }
+  // Updates popularity and evaluates Popularity Rank transitions, Fame Sponsor
+  // CR payouts, and Showcase unlock triggers identically to bank_chain().
+  std::vector<SkillEvent> add_popularity(double pts, double time = -1e9);
   int popularity_rank() const { return data_.rank_for_points(popularity_); }
   int fame_rewards_claimed() const { return fame_claimed_; }
   int64_t max_skills_score() const { return max_score_; }
@@ -257,12 +262,18 @@ class SkillTracker {
     int grade = 1;
     bool is_combo = false;
   };
+  struct PendingSponsorFeat {
+    std::string canonical_id;
+    int grade = 1;
+    bool is_combo = false;
+  };
   void queue_award(SkillId id, std::string canonical_id, std::string label, int points, int grade, bool is_combo,
                    double time, std::vector<SkillEvent>& out);
   void emit_tag(const PendingTag& tag, double time, std::vector<SkillEvent>& out);
   void flush_tags(double time, std::vector<SkillEvent>& out);
   void check_combos(double time, std::vector<SkillEvent>& out);
   void record_sponsor_skill(const std::string& canonical_id, int grade, bool is_combo, std::vector<SkillEvent>& out);
+  void evaluate_popularity_transitions(int rank_before, double time, std::vector<SkillEvent>& out);
   void bank_chain(double time, std::vector<SkillEvent>& out);
   void cancel_chain(double time, std::vector<SkillEvent>& out);
 
@@ -274,6 +285,9 @@ class SkillTracker {
   int64_t current_car_ = 0;
   int64_t race_banked_ = 0;
   std::map<std::string, SponsorProgress> sponsors_;
+  std::vector<PendingSponsorFeat> pending_sponsor_feats_;
+  std::vector<SkillEvent> pending_pop_events_;
+  double last_step_time_ = -1e9;
 
   // Chain state.
   int chain_points_ = 0;

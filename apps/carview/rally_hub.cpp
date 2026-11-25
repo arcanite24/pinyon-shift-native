@@ -378,7 +378,17 @@ void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, flo
         ui4::fit_text(it.stage_names.front(), ss, card_w - 20.0f * u, 8.5f * u);
         out.text(cx0 + 10.0f * u, ty1 + 76.0f * u, it.stage_names.front(), ss);
       }
-      if (!it.lock_reason.empty()) {
+      if (it.kind == RallyHubItem::kRivals) {
+        const std::string pb_txt =
+            it.pb_time_s > 0.0 ? ("PB: " + race::format_rivals_time(it.pb_time_s)) : "PB: --:--.---";
+        const std::string tgt_txt = it.rival_name + "  " + race::format_rivals_time(it.target_time_s);
+        ui::TextStyle pbs = ui4::style(ui::Font::kB, 10.5f * u, kRallyCyan);
+        ui4::fit_text(pb_txt, pbs, card_w - 20.0f * u, 8.0f * u);
+        out.text(cx0 + 10.0f * u, ty1 + 94.0f * u, pb_txt, pbs);
+        ui::TextStyle tgs = ui4::style(ui::Font::kB, 10.5f * u, kRallyGold);
+        ui4::fit_text(tgt_txt, tgs, card_w - 20.0f * u, 8.0f * u);
+        out.text(cx0 + 10.0f * u, cy1 - 24.0f * u, tgt_txt, tgs);
+      } else if (!it.lock_reason.empty()) {
         ui::TextStyle ws = ui4::style(ui::Font::kB, 10.5f * u, kRallyRed);
         ui4::fit_text(it.lock_reason, ws, card_w - 20.0f * u, 8.0f * u);
         out.text(cx0 + 10.0f * u, cy1 - 24.0f * u, it.lock_reason, ws);
@@ -671,7 +681,7 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
                                    const garage::Garage* g, const cars::PartsDb* db,
                                    const std::vector<garage::ClassBand>& bands, const std::string& car_media,
                                    int car_class_id, int car_pi, int discount_pct, int selected,
-                                   const std::string& notice) {
+                                   const std::string& notice, const std::filesystem::path& ghosts_dir) {
   RallyHubState st;
   st.active = true;
   st.rally_level = save.rally_level;
@@ -754,6 +764,65 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
     } else {
       it.status_badge = bp > 0 ? (std::to_string(bp) + place_suffix(bp)) : "READY";
     }
+    st.items.push_back(std::move(it));
+  }
+
+  // 2b. Rally Rivals / Time Trials (offline Bronze/Silver/Gold .shgh target ghosts & PB tracking).
+  {
+    int rival_route = catalog.heats.route_id > 0 ? catalog.heats.route_id : 24;
+    std::string stage_title = catalog.heats.name.empty() ? "Horizon Rally Stage" : catalog.heats.name;
+    double base_stage_time = 0.0;
+    for (double seg : catalog.heats.track.best) base_stage_time += seg;
+    if (!catalog.championships.empty() && !catalog.championships.front().stages.empty()) {
+      const auto& stg = catalog.championships.front().stages.front();
+      if (stg.route_id > 0) {
+        rival_route = stg.route_id;
+        stage_title = stg.name;
+        double sum = 0.0;
+        for (double seg : stg.track.best) sum += seg;
+        if (sum > 10.0) base_stage_time = sum;
+      }
+    }
+    if (base_stage_time < 15.0) base_stage_time = 95.0;
+    const std::string stage_eid = "stage:" + std::to_string(rival_route);
+    RallyHubItem it;
+    it.kind = RallyHubItem::kRivals;
+    it.event_id = catalog.heats.event_id;
+    it.route_id = rival_route;
+    it.title = "RALLY RIVALS / TIME TRIAL";
+    it.class_badge = "RIVAL";
+    it.unlocked = true;
+    it.eligible = true;
+    it.stages = 1;
+    it.stage_names = {stage_title};
+    it.rival_tiers = race::generate_rivals_targets(stage_eid, base_stage_time, 15000, true);
+    if (!ghosts_dir.empty()) {
+      race::GhostRun pb;
+      if (race::load_personal_best_ghost(ghosts_dir, stage_eid, pb, nullptr) && pb.total_time > 0.0) {
+        it.pb_time_s = pb.total_time;
+        it.pb_clean = pb.clean;
+      }
+    }
+    int tier_idx = 1;
+    if (it.pb_time_s > 0.0) {
+      if (it.pb_time_s < it.rival_tiers[2].target_time_s) tier_idx = 0;
+      else if (it.pb_time_s < it.rival_tiers[1].target_time_s) tier_idx = 3;
+      else if (it.pb_time_s < it.rival_tiers[0].target_time_s) tier_idx = 2;
+    }
+    it.rival_tier_index = tier_idx;
+    if (tier_idx == 0 && it.pb_time_s > 0.0) {
+      it.rival_name = "PERSONAL BEST";
+      it.target_time_s = it.pb_time_s;
+      it.bounty_cr = it.rival_tiers[2].bounty_cr;
+      it.status_badge = "GOLD+";
+    } else {
+      const auto& rt = it.rival_tiers[size_t(std::clamp(tier_idx - 1, 0, 2))];
+      it.rival_name = rt.rival_name;
+      it.target_time_s = rt.target_time_s;
+      it.bounty_cr = rt.bounty_cr;
+      it.status_badge = rt.tier_label;
+    }
+    it.cash_prize = it.bounty_cr;
     st.items.push_back(std::move(it));
   }
 

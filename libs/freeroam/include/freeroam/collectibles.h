@@ -80,8 +80,26 @@ struct Progress {
   std::vector<int> garage;          // Data_Car ids given by barn finds
 };
 
-// The interim rumour spacing (m of total distance).
+// Fallback rumour spacing (m of total distance) when no campaign progression
+// context is supplied (backwards-compatible with standalone free-roam tests).
 constexpr double kRumourSpacing = 50000;
+
+// Campaign progression context for gating Barn Find rumours naturally across
+// wristbands, completed events, and cruising distance.
+struct BarnProgressionContext {
+  int wristband_level = 0;   // 0=Yellow .. 6=Gold
+  int events_completed = 0;  // total career events completed/won
+  bool active = false;       // true -> use progression-gated rumour rules
+};
+
+// Per-barn progression gate thresholds for Colorado's 9 Barn Finds.
+struct BarnRumourGate {
+  int min_wristband = 0;
+  int min_events = 0;
+  double min_distance_since_last_m = 8000.0;
+};
+
+BarnRumourGate barn_rumour_gate(size_t barn_index);
 // The interim break speed (m/s).
 constexpr double kSignBreakSpeed = 1.0;
 // How far the sign's own collision reaches past its placement point (m),
@@ -110,8 +128,12 @@ struct Event {
 class FreeRoam {
  public:
   FreeRoam(const Collectibles& data, Progress& progress);
+  // Supplies current campaign progression so step(car) gates Barn Find rumours
+  // by wristband level, completed events, and cruising distance.
+  void set_progression(int wristband_level, int events_completed);
   // One simulation step while collectibles are live (free roam).
   std::vector<Event> step(const CarState& car);
+  std::vector<Event> step(const CarState& car, const BarnProgressionContext& progression);
   // The props not to draw (lower case GameplayIDs): found signs, the open
   // doors of a barn not yet found, the closed doors and the car of one
   // found. Rebuilt when progress changes.
@@ -127,6 +149,7 @@ class FreeRoam {
   Progress& progress_;
   std::vector<char> sign_found_;
   std::shared_ptr<const std::set<std::string>> hidden_;
+  BarnProgressionContext progression_;
 };
 
 // Main/UpgradeDiscount from the found count: one percent a sign.

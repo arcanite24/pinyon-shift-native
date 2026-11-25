@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "race/rivals.h"
 #include "world/road_follow.h"
 
 namespace carview {
@@ -80,6 +81,8 @@ void restore_pending_barns_from_save(DriveApp& app, const drive::DriveSave& s) {
     br.car_id = p.car_id;
     br.ready_after_s = std::max(0.0, double(p.remaining_sec));
     br.elapsed_s = 0.0;
+    br.ready_to_claim = (p.remaining_sec <= 0.0f);
+    br.notified_ready = br.ready_to_claim;
     for (const auto& b : app.collectibles.barns) {
       if ((p.car_id > 0 && b.car_id == p.car_id) ||
           (p.barn_id > 0 && parse_barn_numeric_id(b.name) == p.barn_id)) {
@@ -535,24 +538,25 @@ void DriveSession::run_window_loop() {
               app.pending_autoshow_open = false;
               open_shop_or_autoshow(true);
             }
-            // Barn find restoration completion timer -> triggers Dak Stewart's on_barn_restored cinematic!
+            // R3-CAM-09: Barn find restoration timer -> marks ready_to_claim for Dak's Garage pickup
+            // (never auto-erases or auto-awards garage car before the player claims it at Dak's Garage).
             if (!app.pending_barn_restorations.empty() && !app.race && !app.campaign.is_blocking_gameplay() && !menu.open &&
                 !map_open && !autoshow.is_open() && !shop.is_open() && !garage_open && !events_page.is_open()) {
-              app.pending_barn_restorations.front().elapsed_s += frame_dt;
-              if (app.pending_barn_restorations.front().elapsed_s >= app.pending_barn_restorations.front().ready_after_s) {
-                const auto br = app.pending_barn_restorations.front();
-                app.pending_barn_restorations.erase(app.pending_barn_restorations.begin());
-                sync_pending_barns_to_save(app);
-                save_due = true;
-                if (br.car_id > 0) {
-                  app.award_garage_car(br.car_id, 0, false);
-                  app.garage_picker();
-                  save_now("barn restored");
+              for (auto& br : app.pending_barn_restorations) {
+                if (br.ready_to_claim) continue;
+                br.elapsed_s += frame_dt;
+                if (br.elapsed_s >= br.ready_after_s) {
+                  br.elapsed_s = br.ready_after_s;
+                  br.ready_to_claim = true;
+                  br.notified_ready = true;
+                  sync_pending_barns_to_save(app);
+                  save_due = true;
+                  popup = {"BARN FIND RESTORED!", br.car_name + " READY TO CLAIM AT DAK'S GARAGE", vehicle.time(), -1,
+                           carview::ui::rgba(74, 238, 97)};
+                  app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
+                  apply_campaign_action(app.campaign.on_barn_restored(br.barn_id, br.car_name, &app.audio_host));
                 }
-                popup = {"BARN FIND RESTORED!", br.car_name + " DELIVERED TO YOUR GARAGE", vehicle.time(), -1,
-                         carview::ui::rgba(74, 238, 97)};
-                app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-                apply_campaign_action(app.campaign.on_barn_restored(br.barn_id, br.car_name, &app.audio_host));
+                break;
               }
             }
           }
@@ -643,7 +647,46 @@ void DriveSession::run_window_loop() {
             open_replay_viewer(false);
           }
           if (replay_viewer.active() && !photo_mode.active()) {
+            const double prev_rt = replay_viewer.time();
             replay_viewer.update(frame_dt);
+            const double cur_rt = replay_viewer.time();
+            // R3-CAM-22: Trigger recorded audio/VFX event markers (backfire, gear shift, impact, skid) during playback.
+            if (!replay_viewer.paused() && cur_rt > prev_rt && (cur_rt - prev_rt) < 0.5) {
+              thread_local std::vector<drive::ReplayCarSample> s_rep_events;
+              replay_viewer.recording().collect_events(prev_rt, cur_rt, s_rep_events);
+              for (const auto& ev : s_rep_events) {
+                const drive::Quat eq{double(ev.quat[1]), double(ev.quat[2]), double(ev.quat[3]), double(ev.quat[0])};
+                const drive::Vec3 fwd = drive::rotate(eq, {0.0, 0.0, 1.0});
+                const std::array<float, 3> cvel{ev.vel[0], ev.vel[1], ev.vel[2]};
+                if ((ev.event_bits & drive::kReplayEventBackfire) != 0u) {
+                  const std::array<float, 3> tip{ev.pos[0] - float(fwd.x) * 2.1f, ev.pos[1] + 0.35f,
+                                                 ev.pos[2] - float(fwd.z) * 2.1f};
+                  const std::array<float, 3> bdir{-float(fwd.x), 0.08f, -float(fwd.z)};
+                  host.particle_sys.spawn_burst("backfire", tip, bdir, cvel, 2, 1.35f);
+                  host.particle_sys.spawn_burst("smoke", tip, bdir, cvel, 1, 0.30f);
+                }
+                if ((ev.event_bits & drive::kReplayEventImpact) != 0u) {
+                  const float rel_mps = std::max(2.0f, (float(ev.impact_intensity_u8) / 255.0f) * 25.0f);
+                  const std::array<float, 3> ipos{ev.pos[0], ev.pos[1] + 0.5f, ev.pos[2]};
+                  host.particle_sys.spawn_collision_impact(ipos, {0.0f, 1.0f, 0.0f}, cvel, rel_mps, true);
+                  audio::CollisionHit hit{};
+                  hit.rel_speed_mps = rel_mps;
+                  hit.pos = {ipos[0], ipos[1], ipos[2]};
+                  hit.is_car_on_car = (ev.slot != 0u);
+                  hit.surface_hint = 1;
+                  app.audio_host.trigger_collision(hit);
+                }
+                if ((ev.event_bits & drive::kReplayEventSkid) != 0u && ev.skid_intensity_u8 >= 40u) {
+                  const float sk = float(ev.skid_intensity_u8) / 255.0f;
+                  const std::array<float, 3> rpos{ev.pos[0] - float(fwd.x) * 1.2f, ev.pos[1] + 0.12f,
+                                                  ev.pos[2] - float(fwd.z) * 1.2f};
+                  host.particle_sys.emit_continuous("smoke", rpos, {0.0f, 1.0f, 0.0f}, cvel,
+                                                    float(std::min(0.05, frame_dt)), sk,
+                                                    0x52455000ull + uint64_t(ev.slot));
+                }
+              }
+              host.particle_sys.step(float(std::min(0.05, frame_dt)));
+            }
           }
           if (photo_mode.active()) {
             carview::PhotoCameraInput pcin{};
@@ -765,10 +808,13 @@ void DriveSession::run_window_loop() {
               }
               drive::DriveSave disk_save;
               std::string rerr;
-              const bool loaded_save = !app.save_path.empty() && drive::read_save(app.save_path, disk_save, &rerr);
+              std::filesystem::path rec_from;
+              const bool loaded_save =
+                  !app.save_path.empty() && drive::load_save_file(app.save_path, disk_save, &rerr, {}, &rec_from);
               if (loaded_save) {
                 app.saved = disk_save;
                 app.have_saved = true;
+                slice12.trainer.config.fast_travel_anywhere = disk_save.fast_travel_anywhere;
                 app.career = race::CareerRecord{};
                 app.career.credits = disk_save.credits;
                 app.career.total_winnings = disk_save.total_winnings;
@@ -1075,48 +1121,196 @@ void DriveSession::run_window_loop() {
                 // ReplayRecorder samples at 60 Hz: skip assembling opponent/traffic sample vectors
                 // on intermediate 120 Hz steps that maybe_record() would immediately discard.
                 thread_local double s_last_replay_sample_t = -1e9;
-                thread_local std::vector<carview::RaceView::OpponentTag> s_replay_otags;
+                thread_local int s_replay_prev_gear = 1;
+                thread_local uint32_t s_replay_prev_bf = 0;
                 const double vtime = vehicle.time();
                 if (replay_rec.frame_count() == 0 || vtime < s_last_replay_sample_t ||
                     vtime - s_last_replay_sample_t >= (1.0 / 60.0) - 1e-4) {
-                  std::vector<drive::ReplayCarSample> rcars;
-                  rcars.reserve(24);
-                  rcars.push_back(drive::ReplayCarSample::from_vehicle(
-                      0u, vehicle, player_lamps, in.throttle, in.brake, in.handbrake ? 1.0 : 0.0, in.steer, pl_place));
-                  if (app.race) {
-                    app.race->opponent_tags(s_replay_otags);
-                    uint32_t slot = 1;
-                    for (const auto& ot : s_replay_otags) {
-                      drive::ReplayCarSample os{};
-                      os.slot = slot++;
-                      os.pos[0] = float(ot.x), os.pos[1] = float(ot.y), os.pos[2] = float(ot.z);
-                      os.vel[0] = float(ot.vx), os.vel[1] = float(ot.vy), os.vel[2] = float(ot.vz);
-                      os.speed_mps = float(ot.speed);
-                      os.rpm = float(ot.rpm);
-                      const double hdg = std::atan2(ot.vx, ot.vz);
-                      os.quat[0] = float(std::cos(0.5 * hdg));
-                      os.quat[2] = float(std::sin(0.5 * hdg));
-                      rcars.push_back(os);
-                    }
+                  if (replay_rec.frame_count() == 0) {
+                    s_replay_prev_gear = vehicle.gear();
+                    s_replay_prev_bf = app.audio_host.telemetry().backfire_count;
                   }
+                  auto lane_quat_f = [](double heading, double pitch, float out_q[4]) {
+                    const double cy = std::cos(heading * 0.5), sy = std::sin(heading * 0.5);
+                    const double cp = std::cos(-pitch * 0.5), sp = std::sin(-pitch * 0.5);
+                    // ReplayCarSample::quat is (w, x, y, z)
+                    out_q[0] = float(cy * cp);
+                    out_q[1] = float(cy * sp);
+                    out_q[2] = float(sy * cp);
+                    out_q[3] = float(-sy * sp);
+                  };
+                  const bool tod_night = drive::CarLampState::tod_requests_headlamps(app.tod_clock.tod_sec);
+                  std::vector<drive::ReplayCarSample> rcars;
+                  rcars.reserve(32);
+                  // Slot 0: Player car with full quaternion, wheel/suspension telemetry, damage, lamps & audio/VFX events.
+                  drive::ReplayCarSample ps = drive::ReplayCarSample::from_vehicle(
+                      0u, vehicle, player_lamps, in.throttle, in.brake, in.handbrake ? 1.0 : 0.0, in.steer, pl_place,
+                      &car_damage);
+                  const uint32_t cur_bf = app.audio_host.telemetry().backfire_count;
+                  if (cur_bf > s_replay_prev_bf) ps.event_bits |= drive::kReplayEventBackfire;
+                  s_replay_prev_bf = cur_bf;
+                  if (vehicle.gear() != s_replay_prev_gear) ps.event_bits |= drive::kReplayEventGearShift;
+                  s_replay_prev_gear = vehicle.gear();
+                  const double step_world_f = vehicle.body_contact_force();
+                  const double step_car_i =
+                      std::max({traffic ? traffic->player_impulse() : 0.0,
+                                app.race ? app.race->player_impulse() : 0.0, step_car_impact_accum});
+                  const double max_imp_dv = std::max(
+                      {step_car_i / std::max(500.0, vehicle.params().mass),
+                       (step_world_f * drive::Vehicle::kStep) / std::max(500.0, vehicle.params().mass),
+                       step_object_impact_accum * 4.0});
+                  if (max_imp_dv > 1.2) {
+                    ps.event_bits |= drive::kReplayEventImpact;
+                    ps.impact_intensity_u8 =
+                        uint8_t(std::clamp(std::lround((max_imp_dv / 25.0) * 255.0), 16l, 255l));
+                  }
+                  rcars.push_back(ps);
+                  // Slots 1..N: Full Race AI opponent poses, wheels, lamps & audio/VFX events.
+                  if (app.race) {
+                    app.race->collect_replay_samples(rcars);
+                  }
+                  // Slots 1000+: Traffic cars keyed by persistent stable `tc.id` (never swapped when entering/leaving range).
                   if (traffic && traffic->cars()) {
                     const drive::Vec3 pat = vehicle.position();
-                    uint32_t tslot = 100;
+                    int traffic_added = 0;
                     for (const auto& tc : *traffic->cars()) {
                       const double dx = tc.position.x - pat.x, dz = tc.position.z - pat.z;
-                      if (dx * dx + dz * dz > 160.0 * 160.0) continue;
+                      if (dx * dx + dz * dz > 180.0 * 180.0) continue;
+                      const uint32_t tslot = 1000u + (tc.id % 100000u);
+                      drive::ReplayCarInfo tri;
+                      tri.slot = tslot;
+                      tri.car_id = int32_t(tc.model);
+                      if (auto bit = app.baked_ids.find(tc.model); bit != app.baked_ids.end()) {
+                        tri.car_media = bit->second;
+                      } else if (app.have_career_catalog) {
+                        if (const auto* sp = app.career_catalog.find_car(tc.model)) tri.car_media = sp->media_name;
+                      }
+                      tri.driver_name = tri.car_media.empty() ? "TRAFFIC" : carview::car_name(tri.car_media);
+                      tri.is_player = false;
+                      tri.is_traffic = true;
+                      replay_rec.upsert_roster(tri);
+
                       drive::ReplayCarSample ts{};
-                      ts.slot = tslot++;
+                      ts.slot = tslot;
                       ts.pos[0] = float(tc.position.x), ts.pos[1] = float(tc.position.y), ts.pos[2] = float(tc.position.z);
+                      lane_quat_f(tc.heading, tc.pitch, ts.quat);
+                      ts.vel[0] = float(std::sin(tc.heading) * tc.speed);
+                      ts.vel[1] = float(std::sin(tc.pitch) * tc.speed);
+                      ts.vel[2] = float(std::cos(tc.heading) * tc.speed);
                       ts.speed_mps = float(tc.speed);
-                      ts.quat[0] = float(std::cos(0.5 * tc.heading));
-                      ts.quat[2] = float(std::sin(0.5 * tc.heading));
+                      ts.rpm = float(tc.rpm);
+                      ts.gear = int8_t(std::clamp(tc.gear, -1, 8));
+                      ts.brake_u8 = (tc.accel < -1.2) ? 200u : 0u;
+                      drive::CarLampState tls;
+                      tls.headlamps_on = tod_night || tc.flash_headlamps;
+                      tls.fullbeam_on = tc.flash_headlamps;
+                      tls.brake_on = (tc.accel < -1.2);
+                      tls.left_ind_active = tc.turn_left || tc.hazard_on;
+                      tls.right_ind_active = tc.turn_right || tc.hazard_on;
+                      ts.lamp_bits = drive::pack_replay_lamps(tls);
+                      const float omega = float(tc.speed / 0.34);
+                      const float spin = std::fmod(float(vtime) * omega, 6.2831853f);
+                      for (int wi = 0; wi < 4; ++wi) {
+                        ts.wheel_steer[wi] = (wi < 2) ? float(tc.steer_angle) : 0.0f;
+                        ts.wheel_omega[wi] = omega;
+                        ts.wheel_spin[wi] = spin;
+                      }
                       rcars.push_back(ts);
-                      if (tslot >= 116) break;
+                      if (++traffic_added >= 20) break;
+                    }
+                  }
+                  // Slots 200000+: Roaming Festival AI cars keyed by persistent stable `fc.id`.
+                  if (festival_mgr) {
+                    const drive::Vec3 pat = vehicle.position();
+                    int fest_added = 0;
+                    for (const auto& fc : festival_mgr->cars()) {
+                      const double dx = fc.position.x - pat.x, dz = fc.position.z - pat.z;
+                      if (dx * dx + dz * dz > 220.0 * 220.0) continue;
+                      const uint32_t fslot = 200000u + (fc.id % 100000u);
+                      drive::ReplayCarInfo fri;
+                      fri.slot = fslot;
+                      fri.car_id = int32_t(fc.spec.car_id);
+                      fri.car_media = fc.spec.car_media;
+                      fri.driver_name = fc.spec.driver_name;
+                      fri.is_player = false;
+                      fri.is_traffic = false;
+                      replay_rec.upsert_roster(fri);
+
+                      drive::ReplayCarSample fs{};
+                      fs.slot = fslot;
+                      fs.pos[0] = float(fc.position.x), fs.pos[1] = float(fc.position.y), fs.pos[2] = float(fc.position.z);
+                      lane_quat_f(fc.heading, fc.pitch, fs.quat);
+                      fs.vel[0] = float(fc.vx), fs.vel[1] = float(fc.vy), fs.vel[2] = float(fc.vz);
+                      fs.speed_mps = float(fc.speed);
+                      fs.rpm = float(fc.rpm);
+                      fs.gear = fc.reversing ? -1 : int8_t(std::clamp(1 + int(fc.speed / 12.0), 1, 6));
+                      fs.brake_u8 = fc.braking ? 220u : 0u;
+                      drive::CarLampState fls;
+                      fls.headlamps_on = tod_night;
+                      fls.brake_on = fc.braking;
+                      fls.reverse_on = fc.reversing;
+                      fls.left_ind_active = fc.turn_left;
+                      fls.right_ind_active = fc.turn_right;
+                      fs.lamp_bits = drive::pack_replay_lamps(fls);
+                      const float omega = float(fc.speed / 0.34);
+                      const float spin = std::fmod(float(vtime) * omega, 6.2831853f);
+                      for (int wi = 0; wi < 4; ++wi) {
+                        fs.wheel_steer[wi] = (wi < 2) ? float(fc.steer_angle) : 0.0f;
+                        fs.wheel_omega[wi] = omega;
+                        fs.wheel_spin[wi] = spin;
+                      }
+                      rcars.push_back(fs);
+                      if (++fest_added >= 10) break;
                     }
                   }
                   if (replay_rec.maybe_record(vtime, std::move(rcars))) {
                     s_last_replay_sample_t = vtime;
+                  }
+                }
+              }
+              // R3-CAM-07: Rivals / Time Trials finish handler -> save `.shgh` PB ghost, pay CR bounty,
+              // and increment rivals_beaten / rally_rivals_beaten for Achievements 165 & 212.
+              if (app.race && app.race->player_finished()) {
+                const auto ghosts_dir = !app.save_path.empty() && app.save_path.has_parent_path()
+                                            ? (app.save_path.parent_path() / "ghosts")
+                                            : (replays_dir.parent_path() / "ghosts");
+                if (app.active_rivals.active && !app.active_rivals.completed) {
+                  app.active_rivals.completed = true;
+                  const auto& pc = app.race->session().car(app.race->player_index());
+                  const double finish_t = pc.finish;
+                  const bool clean_run = !pc.race_dirty;
+                  bool saved_pb = false;
+                  if (!app.race->recorded_ghost().empty()) {
+                    race::update_personal_best_ghost(ghosts_dir, app.race->recorded_ghost(), &saved_pb, nullptr);
+                  }
+                  bool beat_rival = false;
+                  const int64_t bounty = race::evaluate_rivals_bounty(
+                      finish_t, clean_run, app.active_rivals.target_time_s, app.active_rivals.bounty_cr, beat_rival);
+                  if (beat_rival) {
+                    const int64_t scaled = slice12.trainer.pacing.scale_credits(bounty);
+                    app.career.credits += scaled;
+                    app.career.total_winnings += scaled;
+                    app.saved.rivals_beaten += 1;
+                    if (app.active_rivals.is_rally_stage || app.race->is_stage()) {
+                      app.saved.rally_rivals_beaten += 1;
+                    }
+                    popup = {"RIVAL BEATEN!",
+                             app.active_rivals.rival_name + "  +" + carview::thousands(scaled) + " CR",
+                             vehicle.time(), -1, carview::ui::rgba(74, 238, 97)};
+                    app.audio_host.trigger_ui(audio::UiCue::kAchievementReward);
+                    save_due = true;
+                    eval_achievements(true);
+                  } else if (saved_pb) {
+                    popup = {"NEW PERSONAL BEST!", race::format_rivals_time(finish_t), vehicle.time(), -1,
+                             carview::ui::rgba(247, 255, 38)};
+                    save_due = true;
+                  }
+                } else if (app.race->is_stage() && !app.race->recorded_ghost().empty()) {
+                  thread_local const RaceView* s_stage_pb_saved_for = nullptr;
+                  if (s_stage_pb_saved_for != app.race.get()) {
+                    s_stage_pb_saved_for = app.race.get();
+                    bool saved_pb = false;
+                    race::update_personal_best_ghost(ghosts_dir, app.race->recorded_ghost(), &saved_pb, nullptr);
                   }
                 }
               }

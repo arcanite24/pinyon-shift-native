@@ -208,8 +208,9 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                       }
                     }
                     if (ready) {
-                      notice =
-                          "WELCOME TO HORIZON AUTOSHOW! YOUR 1995 VW CORRADO VR6 IS IN YOUR GARAGE — PICK AN AFFORDABLE STARTER RIDE OR PRESS [B] TO DRIVE FREE ROAM";
+                      notice = autoshow.tutorial_mode()
+                                   ? "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS READY IN MY GARAGE. BROWSE STARTER RIDES WITH YOUR 15,000 CR BONUS OR EXIT TO COLORADO FREE ROAM."
+                                   : "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS IN MY GARAGE (+15,000 CR). PICK AN AFFORDABLE RIDE OR EXIT TO START YOUR YELLOW WRISTBAND EVENTS.";
                       notice_until = vehicle.time() + 14.0;
                     }
                   }
@@ -242,7 +243,7 @@ bool DriveSession::collect_next_wristband() {
           ceremony.band_colour = cname;
           ceremony.subtitle = std::to_string(newly_unlocked) + " NEW FESTIVAL EVENTS UNLOCKED!";
           if (wb.reward_car_id > 0) {
-            ceremony.bonus_car = app.award_garage_car(wb.reward_car_id, 0, false);
+            ceremony.bonus_car = app.award_garage_car(wb.reward_car_id, 0, false, /*is_prize=*/true);
             app.garage_picker();
           }
           const auto wb_action =
@@ -267,6 +268,27 @@ void DriveSession::open_events_browser(int hub_filter) {
 }
 
 bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
+          // R3-CAM-13: Enforce progressive 3-hub tier unlocking for Street Races.
+          if (ev.style == 2) {
+            if (const race::StreetHub* hub = app.career_catalog.find_hub(ev.hub_id)) {
+              if (!app.career_catalog.is_hub_unlocked(*hub, app.career, app.collected_wristband)) {
+                const int req_prev = app.career_catalog.hub_unlock_requirement(hub->id);
+                const int done_prev =
+                    hub->id > 1 ? app.career_catalog.hub_events_completed(hub->id - 1, app.career) : 0;
+                if (hub->id > 1 && done_prev < req_prev) {
+                  notice = "STREET RACE HUB " + std::to_string(hub->id) + " LOCKED — COMPLETE " +
+                           std::to_string(req_prev - done_prev) + " MORE HUB " + std::to_string(hub->id - 1) +
+                           " STREET RACE(S)";
+                } else {
+                  notice = "STREET RACE HUB " + std::to_string(hub->id) + " LOCKED — NEEDS " +
+                           carview::thousands(hub->unlock_points_req) + " WRISTBAND PTS";
+                }
+                notice_until = vehicle.time() + 4.5;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                return false;
+              }
+            }
+          }
           int64_t cid = 0;
           int clid = 2;
           current_car_info(cid, clid);
@@ -289,6 +311,20 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev) {
             notice = elig.reason + hint;
             notice_until = vehicle.time() + 4.5;
             return false;
+          }
+          // R3-CAM-13: Enforce authentic Street Race CR entry buy-in fee (deducted on entry).
+          int64_t buy_in_fee = 0;
+          std::string buy_in_reason;
+          if (!race::CareerCatalog::charge_street_race_buy_in(ev, app.career, &buy_in_fee, &buy_in_reason)) {
+            notice = buy_in_reason;
+            notice_until = vehicle.time() + 4.5;
+            app.audio_host.trigger_ui(audio::UiCue::kCancel);
+            return false;
+          }
+          if (buy_in_fee > 0) {
+            notice = "STREET RACE BUY-IN PAID: -" + carview::thousands(buy_in_fee) + " CR";
+            notice_until = vehicle.time() + 3.0;
+            save_due = true;
           }
           std::string event_loaner_media;
           if (elig.uses_loaner && elig.loaner_car_id > 0) {
@@ -851,6 +887,23 @@ bool DriveSession::activate_world_trigger() {
               case race::FestivalSite::kPaintShop: open_paint(); return true;
             }
           } else if (active_trigger.kind == carview::WorldTrigger::kStreetHub && active_trigger.hub) {
+            if (!app.career_catalog.is_hub_unlocked(*active_trigger.hub, app.career, app.collected_wristband)) {
+              const int hid = active_trigger.hub->id;
+              const int req_prev = app.career_catalog.hub_unlock_requirement(hid);
+              const int done_prev =
+                  hid > 1 ? app.career_catalog.hub_events_completed(hid - 1, app.career) : 0;
+              if (hid > 1 && done_prev < req_prev) {
+                notice = "STREET RACE HUB " + std::to_string(hid) + " LOCKED — COMPLETE " +
+                         std::to_string(req_prev - done_prev) + " MORE HUB " + std::to_string(hid - 1) +
+                         " STREET RACE(S)";
+              } else {
+                notice = "STREET RACE HUB " + std::to_string(hid) + " LOCKED — NEEDS " +
+                         carview::thousands(active_trigger.hub->unlock_points_req) + " WRISTBAND PTS";
+              }
+              notice_until = vehicle.time() + 4.5;
+              app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              return true;
+            }
             open_events_browser(active_trigger.hub->id);
             return true;
           } else if (active_trigger.kind == carview::WorldTrigger::kEvent && active_trigger.event) {

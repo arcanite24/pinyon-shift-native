@@ -608,8 +608,32 @@ int main() {
     const auto stats = compute_medal_stats({{1, 2}, {2, 1}, {3, 1}, {4, 1}, {5, 1}, {6, 3}}, meta);
     CHECK(stats.total_medals == 9 && stats.cars_with_medal == 6 && stats.ford_cars == 5 &&
           stats.british_cars == 1 && stats.million_cr_cars == 1);
-    CHECK(stats.ach_first_medal && stats.ach_multi_cars && stats.ach_ford && stats.ach_million_cr);
-    CHECK(stats.achievements_unlocked == 4);
+    // R3-CAM-17: Unified retail 1000 Club thresholds (matching achievements.cpp: Ford>=13, Multi>=146, Million>=14).
+    CHECK(stats.ach_first_medal && !stats.ach_multi_cars && !stats.ach_ford && !stats.ach_million_cr);
+    CHECK(stats.achievements_unlocked == 1);
+
+    // Verify exact unified thresholds unlock cleanly at their retail counts (e.g. Shelby>=3, Ferrari>=14, Ford>=13).
+    std::map<int64_t, CarMeta> meta_full;
+    std::vector<std::pair<int64_t, int>> medals_full;
+    int64_t next_cid = 100;
+    for (int i = 0; i < kClubThresholdShelby; ++i) {
+      meta_full[next_cid] = {next_cid, "Shelby", "USA", 150000};
+      medals_full.emplace_back(next_cid++, 1);
+    }
+    for (int i = 0; i < kClubThresholdFerrari; ++i) {
+      meta_full[next_cid] = {next_cid, "Ferrari", "Italy", 1200000};
+      medals_full.emplace_back(next_cid++, 1);
+    }
+    for (int i = 0; i < kClubThresholdFord; ++i) {
+      meta_full[next_cid] = {next_cid, "Ford", "USA", 40000};
+      medals_full.emplace_back(next_cid++, 1);
+    }
+    const auto stats_full = compute_medal_stats(medals_full, meta_full);
+    CHECK(stats_full.ach_first_medal && stats_full.ach_shelby && stats_full.ach_ferrari &&
+          stats_full.ach_million_cr && stats_full.ach_ford);
+    CHECK(!stats_full.ach_bmw && !stats_full.ach_nissan && !stats_full.ach_lamborghini &&
+          !stats_full.ach_british && !stats_full.ach_multi_cars);
+    CHECK(stats_full.achievements_unlocked == 5);
   }
 
   // --- P0-K6: Cumulative banked skill_points + unique speed_camera history + parent <group type="or"> save_progress ---

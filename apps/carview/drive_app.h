@@ -75,6 +75,19 @@ struct DriveApp : DriveConfig {
     int64_t car_id = 0;
     double ready_after_s = 45.0;
     double elapsed_s = 0.0;
+    bool ready_to_claim = false;
+    bool notified_ready = false;
+  };
+
+  struct RivalsAttempt {
+    bool active = false;
+    bool is_rally_stage = false;
+    std::string event_id;
+    std::string rival_name;
+    double target_time_s = 0.0;
+    int64_t bounty_cr = 0;
+    int tier_index = 0;  // 0 = Personal Best, 1..3 = Bronze/Silver/Gold target ghost
+    bool completed = false;
   };
 
   struct Logo {
@@ -152,6 +165,8 @@ struct DriveApp : DriveConfig {
   }
   race::ProgressionTables prog_tables;
   bool have_prog_tables = false;
+  bool legacy_fm4_progression = false;  // R3-CAM-14: OFF by default for 1:1 FH1 economy
+  RivalsAttempt active_rivals;          // R3-CAM-07: active Rivals / Time Trials ghost challenge
   int h2h_races = 0;
   int h2h_wins = 0;
   freeroam::SpeedActivitiesData speed_data;
@@ -263,7 +278,7 @@ struct DriveApp : DriveConfig {
   void restore_pre_race_tod();
   int current_pop_rank() const;
   std::vector<std::string> class_name_list() const;
-  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it);
+  std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false);
   CareerSummary career_summary(std::vector<cars::PackInfo>& packs);
   CareerBoard career_board(const CareerPage& page);
   size_t garage_picker();

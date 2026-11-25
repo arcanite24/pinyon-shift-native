@@ -839,4 +839,177 @@ bool load_livery_file(const std::filesystem::path& path, LiveryDocument& out, st
   return true;
 }
 
+VinylGroup extract_vinyl_group(const std::vector<VinylLayer>& layers, int group_id, const std::string& name) {
+  VinylGroup out;
+  out.name = name.empty() ? "Vinyl Group" : name;
+  if (group_id <= 0) return out;
+  float cx = 0.0f, cy = 0.0f;
+  for (const auto& ly : layers) {
+    if (ly.group_id != group_id) continue;
+    out.layers.push_back(ly);
+    cx += ly.x;
+    cy += ly.y;
+  }
+  if (out.layers.empty()) return out;
+  cx /= float(out.layers.size());
+  cy /= float(out.layers.size());
+  for (auto& ly : out.layers) {
+    ly.x = std::clamp(0.5f + (ly.x - cx), 0.0f, 1.0f);
+    ly.y = std::clamp(0.5f + (ly.y - cy), 0.0f, 1.0f);
+    ly.group_id = 0;
+  }
+  return out;
+}
+
+void transform_vinyl_group(VinylGroup& group, float dx, float dy, float scale_x_factor, float scale_y_factor,
+                           float drot_deg) {
+  if (group.layers.empty()) return;
+  float cx = 0.0f, cy = 0.0f;
+  for (const auto& ly : group.layers) {
+    cx += ly.x;
+    cy += ly.y;
+  }
+  cx /= float(group.layers.size());
+  cy /= float(group.layers.size());
+
+  const float sx = std::clamp(scale_x_factor, 0.05f, 10.0f);
+  const float sy = std::clamp(scale_y_factor, 0.05f, 10.0f);
+  const float rad = drot_deg * (kPi / 180.0f);
+  const float cs = std::cos(rad);
+  const float sn = std::sin(rad);
+
+  for (auto& ly : group.layers) {
+    float ox = (ly.x - cx) * sx;
+    float oy = (ly.y - cy) * sy;
+    if (std::fabs(drot_deg) > 1e-5f) {
+      const float nx = ox * cs - oy * sn;
+      const float ny = ox * sn + oy * cs;
+      ox = nx;
+      oy = ny;
+    }
+    ly.x = std::clamp(cx + ox + dx, 0.0f, 1.0f);
+    ly.y = std::clamp(cy + oy + dy, 0.0f, 1.0f);
+    ly.scale_x = std::clamp(ly.scale_x * sx, 0.02f, 2.0f);
+    ly.scale_y = std::clamp(ly.scale_y * sy, 0.02f, 2.0f);
+    ly.rot_deg = std::fmod(std::fmod(ly.rot_deg + drot_deg, 360.0f) + 360.0f, 360.0f);
+  }
+}
+
+VinylGroup mirror_vinyl_group(const VinylGroup& group, bool flip_plane) {
+  VinylGroup out = group;
+  for (auto& mir : out.layers) {
+    const float norm_rot = std::fmod(std::fmod(mir.rot_deg, 360.0f) + 360.0f, 360.0f);
+    if (mir.plane == LiveryPlaneKind::kLeft || mir.plane == LiveryPlaneKind::kRight) {
+      if (flip_plane) {
+        mir.plane = (mir.plane == LiveryPlaneKind::kLeft) ? LiveryPlaneKind::kRight : LiveryPlaneKind::kLeft;
+      }
+      mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
+      mir.flip_x = !mir.flip_x;
+      mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+      mir.skew = -mir.skew;
+    } else if (mir.plane == LiveryPlaneKind::kTop) {
+      mir.y = std::clamp(1.0f - mir.y, 0.0f, 1.0f);
+      mir.flip_y = !mir.flip_y;
+      mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+      mir.skew = -mir.skew;
+    } else {
+      mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
+      mir.flip_x = !mir.flip_x;
+      mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
+      mir.skew = -mir.skew;
+    }
+  }
+  return out;
+}
+
+std::vector<VinylLayer> instantiate_vinyl_group(const VinylGroup& group, LiveryPlaneKind plane, float cx, float cy,
+                                                float scale_x, float scale_y, float rot_deg, int assign_group_id) {
+  if (group.layers.empty()) return {};
+  VinylGroup copy = group;
+  float src_cx = 0.0f, src_cy = 0.0f;
+  for (const auto& ly : copy.layers) {
+    src_cx += ly.x;
+    src_cy += ly.y;
+  }
+  src_cx /= float(copy.layers.size());
+  src_cy /= float(copy.layers.size());
+  transform_vinyl_group(copy, cx - src_cx, cy - src_cy, scale_x, scale_y, rot_deg);
+  for (auto& ly : copy.layers) {
+    ly.plane = plane;
+    ly.group_id = assign_group_id;
+  }
+  return std::move(copy.layers);
+}
+
+bool save_vinyl_group_file(const std::filesystem::path& path, const VinylGroup& group, std::string* error) {
+  if (group.layers.empty()) {
+    if (error) *error = "cannot save empty vinyl group";
+    return false;
+  }
+  std::error_code ec;
+  if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "cannot write " + path.string();
+    return false;
+  }
+  out << "shift-vinyl-group 1\n";
+  out << "name " << (group.name.empty() ? "Vinyl Group" : group.name) << "\n";
+  for (const auto& l : group.layers) {
+    out << "layer " << (l.shape_path.empty() ? "@rect" : l.shape_path) << " " << int(l.plane) << " " << l.x << " "
+        << l.y << " " << l.scale_x << " " << l.scale_y << " " << l.rot_deg << " " << l.skew << " " << std::hex << l.rgb
+        << std::dec << " " << l.alpha << " " << (l.flip_x ? 1 : 0) << " " << (l.flip_y ? 1 : 0) << " "
+        << (l.visible ? 1 : 0) << " " << (l.is_mask ? 1 : 0) << "\n";
+  }
+  return out.good();
+}
+
+bool load_vinyl_group_file(const std::filesystem::path& path, VinylGroup& out, std::string* error) {
+  out = VinylGroup{};
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    if (error) *error = "cannot read " + path.string();
+    return false;
+  }
+  std::string line;
+  if (!std::getline(in, line)) {
+    if (error) *error = "empty vinyl group file";
+    return false;
+  }
+  if (!line.empty() && line.back() == '\r') line.pop_back();
+  if (line != "shift-vinyl-group 1") {
+    if (error) *error = "invalid vinyl group header: " + line;
+    return false;
+  }
+  out.name = path.stem().string();
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    std::istringstream ss(line);
+    std::string tok;
+    if (!(ss >> tok)) continue;
+    if (tok == "name") {
+      std::getline(ss >> std::ws, out.name);
+    } else if (tok == "layer") {
+      VinylLayer l;
+      int pl = 0, fx = 0, fy = 0, vis = 1;
+      if (ss >> l.shape_path >> pl >> l.x >> l.y >> l.scale_x >> l.scale_y >> l.rot_deg >> l.skew >> std::hex >>
+          l.rgb >> std::dec >> l.alpha >> fx >> fy >> vis) {
+        int mask = 0;
+        if (ss >> mask) l.is_mask = mask != 0;
+        l.plane = LiveryPlaneKind(std::clamp(pl, 0, int(LiveryPlaneKind::kCount) - 1));
+        l.flip_x = fx != 0;
+        l.flip_y = fy != 0;
+        l.visible = vis != 0;
+        l.group_id = 0;
+        out.layers.push_back(std::move(l));
+      }
+    }
+  }
+  if (out.layers.empty()) {
+    if (error) *error = "vinyl group has no layers";
+    return false;
+  }
+  return true;
+}
+
 }  // namespace cars

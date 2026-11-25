@@ -27,6 +27,13 @@ enum ReplayLampBit : uint16_t {
   kReplayLampFog = 1u << 7,
 };
 
+enum ReplayEventBit : uint16_t {
+  kReplayEventBackfire = 1u << 0,
+  kReplayEventGearShift = 1u << 1,
+  kReplayEventImpact = 1u << 2,
+  kReplayEventSkid = 1u << 3,
+};
+
 uint16_t pack_replay_lamps(const CarLampState& lamps);
 CarLampState unpack_replay_lamps(uint16_t bits);
 
@@ -74,6 +81,11 @@ struct ReplayCarSample {
   float boost_psi = 0.0f;                                  // forced induction boost pressure (PSI; 0 for NA)
   float boost_max_psi = 0.0f;                              // forced induction peak boost (PSI; 0 for NA)
 
+  // Compact audio/VFX event markers (Replay v4; defaults remain valid for v1/v2/v3 files).
+  uint16_t event_bits = 0;            // ReplayEventBit mask (backfire, gear_shift, impact, skid)
+  uint8_t skid_intensity_u8 = 0;      // 0..255 normalised tyre smoke/skid intensity
+  uint8_t impact_intensity_u8 = 0;    // 0..255 normalised collision impact intensity (1.0 == 25 m/s)
+
   static ReplayCarSample from_vehicle(uint32_t slot, const Vehicle& v, const CarLampState& lamps,
                                       double throttle = 0.0, double brake = 0.0, double handbrake = 0.0,
                                       double steer = 0.0, uint8_t place = 0, const CarDamageState* dmg = nullptr);
@@ -120,6 +132,9 @@ class ReplayRecording {
   bool sample(double t_rel, std::vector<ReplayCarSample>& out_cars) const;
   bool sample_car(double t_rel, uint32_t slot, ReplayCarSample& out_car) const;
 
+  // Collects one-shot & continuous audio/VFX event markers across normalized window (t_from_rel, t_to_rel].
+  void collect_events(double t_from_rel, double t_to_rel, std::vector<ReplayCarSample>& out_events) const;
+
   const ReplayCarInfo* find_car_info(uint32_t slot) const;
 };
 
@@ -132,6 +147,8 @@ class ReplayRecorder {
   void clear();
   bool active() const { return active_; }
   void set_roster(std::vector<ReplayCarInfo> roster) { meta_.roster = std::move(roster); }
+  // Registers or updates a car's persistent roster metadata by stable `info.slot`.
+  void upsert_roster(const ReplayCarInfo& info);
   void update_summary(int place, int field_size, double best_lap_s, double tod_sec);
   void add_marker(double sim_time, const std::string& label);
 

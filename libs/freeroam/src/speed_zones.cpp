@@ -186,6 +186,13 @@ bool parse_speed_activities(std::string_view speed_camera_xml, std::string_view 
     z.gate2 = make_gate(il2->second, ir2->second);
     z.midpoint = {0.5 * (z.gate1.center[0] + z.gate2.center[0]), 0.5 * (z.gate1.center[1] + z.gate2.center[1]),
                   0.5 * (z.gate1.center[2] + z.gate2.center[2])};
+    const double gate_span =
+        std::hypot(z.gate2.center[0] - z.gate1.center[0], z.gate2.center[2] - z.gate1.center[2]);
+    double authored_len = 0.0;
+    if (act.has("length")) authored_len = act.number("length", 0.0);
+    else if (act.has("distance")) authored_len = act.number("distance", 0.0);
+    else if (const auto* r = act.child("Route")) authored_len = r->number("length", r->number("distance", 0.0));
+    z.corridor_distance_m = (authored_len > 1.0) ? authored_len : gate_span;
     out.zones.push_back(std::move(z));
   }
 
@@ -248,12 +255,26 @@ double SpeedActivityTracker::best_zone_mph(const std::string& id) const {
   return it == best_zones_.end() ? 0.0 : it->second;
 }
 
+void SpeedActivityTracker::cancel_active() {
+  active_zone_idx_ = -1;
+  entry_gate_ = 0;
+  zone_elapsed_ = 0.0;
+  zone_dist_ = 0.0;
+  zone_corridor_progress_ = 0.0;
+  zone_slow_t_ = 0.0;
+  zone_off_road_t_ = 0.0;
+}
+
+void SpeedActivityTracker::set_off_road(bool off_road) {
+  off_road_ = off_road;
+  if (!off_road_) zone_off_road_t_ = 0.0;
+}
+
 void SpeedActivityTracker::reset_session_clock() {
   trap_cd_.clear();
   zone_cd_.clear();
-  active_zone_idx_ = -1;
-  entry_gate_ = 0;
-  zone_elapsed_ = zone_dist_ = zone_slow_t_ = 0.0;
+  cancel_active();
+  off_road_ = false;
   banner_at_ = flash_at_ = -1e9;
 }
 
@@ -293,13 +314,38 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
     zone_dist_ += moved;
     if (mph < 10.0) zone_slow_t_ += dt;
     else zone_slow_t_ = 0.0;
+    if (off_road_) zone_off_road_t_ += dt;
+    else zone_off_road_t_ = 0.0;
 
+    const SpeedGate& entry_gate = entry_gate_ == 1 ? z.gate1 : z.gate2;
     const SpeedGate& exit_gate = entry_gate_ == 1 ? z.gate2 : z.gate1;
     const double d_mid = std::hypot(x1 - z.midpoint[0], z1 - z.midpoint[2]);
     const double span = std::hypot(z.gate2.center[0] - z.gate1.center[0], z.gate2.center[2] - z.gate1.center[2]);
+    const double corridor_len = z.corridor_distance_m > 1.0 ? z.corridor_distance_m : span;
 
-    if (zone_elapsed_ > 0.5 && crossed_gate(x0, z0, x1, z1, exit_gate)) {
-      const double avg_mph = (zone_dist_ / std::max(0.1, zone_elapsed_)) * kMsToMph;
+    // Project progress along the entry->exit corridor axis so live distance cannot
+    // be inflated by zig-zagging across the road.
+    if (span > 1.0) {
+      const double ax = (exit_gate.center[0] - entry_gate.center[0]) / span;
+      const double az = (exit_gate.center[2] - entry_gate.center[2]) / span;
+      const double proj = (x1 - entry_gate.center[0]) * ax + (z1 - entry_gate.center[2]) * az;
+      const double frac = std::clamp(proj / span, 0.0, 1.0);
+      zone_corridor_progress_ = std::min(zone_dist_, std::max(zone_corridor_progress_, frac * corridor_len));
+    } else {
+      zone_corridor_progress_ = std::min(zone_dist_, corridor_len);
+    }
+
+    if (zone_off_road_t_ > kOffRoadFailGraceS) {
+      SpeedActivityEvent fail_ev{SpeedActivityEvent::kZoneCancelled, z.id, display_label_for(z), 0.0, 0.0, false, false};
+      fail_ev.failed_off_road = true;
+      out.push_back(std::move(fail_ev));
+      zone_cd_[z.id] = time + 3.0;
+      cancel_active();
+    } else if (zone_elapsed_ > 0.5 && crossed_gate(x0, z0, x1, z1, exit_gate)) {
+      // Score strictly against authored corridor length (clamped from gate geometry),
+      // never raw zig-zag odometer distance.
+      const double scored_dist = corridor_len > 1.0 ? corridor_len : zone_dist_;
+      const double avg_mph = (scored_dist / std::max(0.1, zone_elapsed_)) * kMsToMph;
       const double prev = best_zone_mph(z.id);
       const bool pb = avg_mph >= z.min_speed_mph && avg_mph > prev + 0.05;
       if (pb) best_zones_[z.id] = avg_mph;
@@ -312,12 +358,10 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
       flash_at_ = time;
       zone_cd_[z.id] = time + 8.0;
       out.push_back({SpeedActivityEvent::kZoneCompleted, z.id, banner_title_, avg_mph, prev, pb, true});
-      active_zone_idx_ = -1;
-      entry_gate_ = 0;
+      cancel_active();
     } else if (zone_slow_t_ > 4.0 || zone_elapsed_ > 90.0 || d_mid > std::max(800.0, span * 1.5)) {
       out.push_back({SpeedActivityEvent::kZoneCancelled, z.id, display_label_for(z), 0.0, 0.0, false, false});
-      active_zone_idx_ = -1;
-      entry_gate_ = 0;
+      cancel_active();
     }
   } else {
     // Check Speed Zone entry (either gate 1 or gate 2).
@@ -336,7 +380,9 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
         entry_gate_ = hit_gate;
         zone_elapsed_ = 0.0;
         zone_dist_ = 0.0;
+        zone_corridor_progress_ = 0.0;
         zone_slow_t_ = 0.0;
+        zone_off_road_t_ = 0.0;
         flash_at_ = time;
         out.push_back({SpeedActivityEvent::kZoneEntered, z.id, display_label_for(z), mph,
                        best_zone_mph(z.id), false, true});
@@ -354,8 +400,10 @@ SpeedActivityHud SpeedActivityTracker::hud(double time) const {
     h.zone_active = true;
     h.active_zone_id = display_label_for(data_.zones[size_t(active_zone_idx_)]);
     h.zone_elapsed_s = zone_elapsed_;
-    h.zone_distance_m = zone_dist_;
-    h.live_avg_mph = zone_elapsed_ > 0.05 ? (zone_dist_ / zone_elapsed_) * kMsToMph : 0.0;
+    h.zone_distance_m = zone_corridor_progress_;
+    h.live_avg_mph = zone_elapsed_ > 0.05 ? (zone_corridor_progress_ / zone_elapsed_) * kMsToMph : 0.0;
+    h.off_road_warning = off_road_ && zone_off_road_t_ > 0.0;
+    h.off_road_timer_s = zone_off_road_t_;
   }
   const double since_banner = time - banner_at_;
   if (since_banner >= 0.0 && since_banner < 5.0 && !banner_title_.empty()) {

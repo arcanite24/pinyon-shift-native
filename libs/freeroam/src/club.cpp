@@ -884,16 +884,16 @@ ClubMedalStats compute_medal_stats(const std::vector<std::pair<int64_t, int>>& m
     if (british_make || british_country) ++st.british_cars;
     if (it->second.base_cost >= 1000000) ++st.million_cr_cars;
   }
-  st.ach_first_medal = st.total_medals >= 1;
-  st.ach_multi_cars = st.cars_with_medal >= 5;
-  st.ach_ford = st.ford_cars >= 5;
-  st.ach_ferrari = st.ferrari_cars >= 3;
-  st.ach_shelby = st.shelby_cars >= 2;
-  st.ach_lamborghini = st.lamborghini_cars >= 3;
-  st.ach_nissan = st.nissan_cars >= 3;
-  st.ach_bmw = st.bmw_cars >= 3;
-  st.ach_british = st.british_cars >= 5;
-  st.ach_million_cr = st.million_cr_cars >= 1;
+  st.ach_first_medal = st.total_medals >= kClubThresholdFirstMedal;
+  st.ach_multi_cars = st.cars_with_medal >= kClubThresholdMultiCars;
+  st.ach_ford = st.ford_cars >= kClubThresholdFord;
+  st.ach_ferrari = st.ferrari_cars >= kClubThresholdFerrari;
+  st.ach_shelby = st.shelby_cars >= kClubThresholdShelby;
+  st.ach_lamborghini = st.lamborghini_cars >= kClubThresholdLamborghini;
+  st.ach_nissan = st.nissan_cars >= kClubThresholdNissan;
+  st.ach_bmw = st.bmw_cars >= kClubThresholdBmw;
+  st.ach_british = st.british_cars >= kClubThresholdBritish;
+  st.ach_million_cr = st.million_cr_cars >= kClubThresholdMillionCr;
   st.achievements_unlocked = int(st.ach_first_medal) + int(st.ach_multi_cars) + int(st.ach_ford) +
                              int(st.ach_ferrari) + int(st.ach_shelby) + int(st.ach_lamborghini) +
                              int(st.ach_nissan) + int(st.ach_bmw) + int(st.ach_british) + int(st.ach_million_cr);

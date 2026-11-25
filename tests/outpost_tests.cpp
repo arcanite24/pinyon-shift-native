@@ -364,6 +364,80 @@ void test_r2_5_outpost_tiers_fast_travel_and_speed_camera_names() {
         "Speed Zone entry event uses localized retail label");
   check(tracker.hud(2.1).active_zone_id == "Red Rock Canyon Speed Zone",
         "Speed Zone active HUD uses localized retail name");
+  // R3-CAM-12: Skill Stunt requires car inside stunt zone + BANKED points only;
+  // Photo Op requires BOTH player car and landmark inside camera view frustum.
+  {
+    freeroam::PrStunt skill_stunt;
+    skill_stunt.id = "prstunt_r3";
+    skill_stunt.kind = freeroam::PrStuntKind::kSkill;
+    skill_stunt.target_pos = {500.0, 0.0, -200.0};
+    skill_stunt.target_points = 10000;
+    skill_stunt.time_limit_s = 120.0;
+
+    freeroam::PrStuntSession s;
+    s.start(skill_stunt, 1000);
+    // 1. Banking 15,000 pts OUTSIDE stunt zone (1500 m away) must NOT count!
+    freeroam::PrStuntUpdate u_out{};
+    u_out.car_x = 2000.0;
+    u_out.car_z = -200.0;
+    u_out.banked_skill_points = 16000;
+    u_out.dt = 1.0;
+    check(s.update(u_out) == freeroam::PrStuntState::kActive && s.earned_skill_points() == 0,
+          "R3-CAM-12: Skill Stunt ignores banked points earned outside target zone");
+    // 2. Unbanked combo of 12,000 pts INSIDE stunt zone must NOT complete stunt!
+    freeroam::PrStuntUpdate u_unbanked{};
+    u_unbanked.car_x = 500.0;
+    u_unbanked.car_z = -200.0;
+    u_unbanked.total_skill_points = 28000;
+    u_unbanked.banked_skill_points = 16000;
+    u_unbanked.unbanked_skill_points = 12000;
+    u_unbanked.dt = 1.0;
+    check(s.update(u_unbanked) == freeroam::PrStuntState::kActive && s.earned_skill_points() == 0,
+          "R3-CAM-12: Skill Stunt ignores unbanked combo points");
+    // 3. Banking 10,500 pts INSIDE stunt zone succeeds!
+    freeroam::PrStuntUpdate u_banked{};
+    u_banked.car_x = 500.0;
+    u_banked.car_z = -200.0;
+    u_banked.banked_skill_points = 26500;
+    u_banked.dt = 1.0;
+    check(s.update(u_banked) == freeroam::PrStuntState::kSucceeded && s.earned_skill_points() == 10500,
+          "R3-CAM-12: Skill Stunt succeeds when banking target points inside stunt zone");
+
+    // Photo Op frustum validation:
+    freeroam::PrStunt photo_stunt;
+    photo_stunt.id = "photoshoot_r3";
+    photo_stunt.kind = freeroam::PrStuntKind::kPhoto;
+    photo_stunt.target_pos = {800.0, 0.0, -400.0};
+    photo_stunt.photo_radius = 50.0;
+    photo_stunt.time_limit_s = 120.0;
+    s.start(photo_stunt);
+    // Camera inside zone looking AWAY (-Z) -> car & landmark behind camera -> MUST reject!
+    freeroam::PrStuntUpdate p_away{};
+    p_away.car_x = 800.0;
+    p_away.car_y = 0.0;
+    p_away.car_z = -410.0;
+    p_away.photo_pressed = true;
+    p_away.dt = 0.1;
+    p_away.has_camera = true;
+    p_away.camera_pos = {800.0, 2.0, -420.0};
+    p_away.camera_forward = {0.0, 0.0, -1.0};  // facing away from both car (-410) and landmark (-400)
+    p_away.camera_right = {-1.0, 0.0, 0.0};
+    p_away.camera_up = {0.0, 1.0, 0.0};
+    check(s.update(p_away) == freeroam::PrStuntState::kActive && !s.photo_framed(),
+          "R3-CAM-12: Photo Op rejects shot when car & landmark are behind camera");
+    // Camera positioned between car and landmark looking toward landmark -> car is behind camera -> MUST reject!
+    freeroam::PrStuntUpdate p_no_car = p_away;
+    p_no_car.camera_pos = {800.0, 2.0, -405.0};
+    p_no_car.camera_forward = {0.0, 0.0, 1.0};
+    p_no_car.camera_right = {1.0, 0.0, 0.0};
+    check(s.update(p_no_car) == freeroam::PrStuntState::kActive && !s.photo_framed(),
+          "R3-CAM-12: Photo Op rejects shot when player car is not in camera frustum");
+    // Camera at z=-420 looking +Z -> both car (-410) and landmark (-400) inside frustum -> SUCCEEDS!
+    freeroam::PrStuntUpdate p_good = p_no_car;
+    p_good.camera_pos = {800.0, 2.0, -420.0};
+    check(s.update(p_good) == freeroam::PrStuntState::kSucceeded && s.photo_framed(),
+          "R3-CAM-12: Photo Op succeeds when both car and landmark project inside camera frustum");
+  }
 }
 
 }  // namespace

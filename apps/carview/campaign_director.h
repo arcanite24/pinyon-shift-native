@@ -54,7 +54,9 @@ class CampaignDirector {
                                         int total_cars, int old_pop_rank, int new_pop_rank, int64_t balance_before,
                                         int64_t balance_after, int wb_points_after, int collected_wristband,
                                         const std::string& prize_car_name, const race::CareerCatalog* catalog,
-                                        FmvPlayer& fmv, AudioHost* audio);
+                                        FmvPlayer& fmv, AudioHost* audio,
+                                        const std::vector<race::RaceFinishStanding>& standings = {});
+  bool on_viper_convoy_pass(int passed_delta, AudioHost* audio);
   race::CampaignAction on_wristband_collected(int wristband_level, const std::string& bonus_car_name,
                                               int newly_unlocked_events, FmvPlayer& fmv, AudioHost* audio);
   race::CampaignAction on_barn_find(bool discovered, const std::string& barn_id, const std::string& car_name,

@@ -219,11 +219,19 @@ race::CampaignAction CampaignDirector::on_enter_event(const race::CareerEvent& e
 race::CampaignAction CampaignDirector::on_race_finished(
     const race::CareerEvent* ev, const race::RaceAward& award, int place, int total_cars, int old_pop_rank,
     int new_pop_rank, int64_t balance_before, int64_t balance_after, int wb_points_after, int collected_wristband,
-    const std::string& prize_car_name, const race::CareerCatalog* catalog, FmvPlayer& fmv, AudioHost* audio) {
+    const std::string& prize_car_name, const race::CareerCatalog* catalog, FmvPlayer& fmv, AudioHost* audio,
+    const std::vector<race::RaceFinishStanding>& standings) {
   auto act = flow_.on_race_finished(ev, award, place, total_cars, old_pop_rank, new_pop_rank, balance_before,
-                                    balance_after, wb_points_after, collected_wristband, prize_car_name, catalog);
+                                    balance_after, wb_points_after, collected_wristband, prize_car_name, catalog,
+                                    standings);
   dispatch_action_media(act, fmv, audio);
   return act;
+}
+
+bool CampaignDirector::on_viper_convoy_pass(int passed_delta, AudioHost* audio) {
+  const bool changed = flow_.on_viper_convoy_pass(passed_delta);
+  if (changed) pump_audio(audio);
+  return changed;
 }
 
 race::CampaignAction CampaignDirector::on_wristband_collected(int wristband_level, const std::string& bonus_car_name,
@@ -256,6 +264,7 @@ void CampaignDirector::on_popularity_rank_changed(int old_rank, int new_rank, Au
 
 bool CampaignDirector::is_cinematic_camera_active() const {
   const auto st = flow_.stage();
+  if (st == race::CampaignStage::kQualifyRace && flow_.qualify_retry_pending()) return true;
   // Exclude kPreRaceGrid so the campaign flyby never bleeds into the live
   // race grid orbit or pre-race countdown camera swoop.
   return st == race::CampaignStage::kFestivalRegistration || st == race::CampaignStage::kWristbandCeremony ||

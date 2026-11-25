@@ -19,12 +19,56 @@
 #include "fh1data/stringtables.h"
 #include "garage/garage.h"
 #include "profile/drive_save.h"
+#include "race/rivals.h"
 #include "settings.h"
 #include "slice12_runtime.h"
 
 namespace carview {
 
 namespace {
+
+struct CarHistoryTracker {
+  const DriveSession* session = nullptr;
+  double last_time_s = 0.0;
+  double last_total_dist_m = 0.0;
+  int last_races = 0;
+  int last_victories = 0;
+  int last_podiums = 0;
+  int64_t last_winnings = 0;
+};
+
+CarHistoryTracker& car_history_tracker() {
+  static CarHistoryTracker tracker;
+  return tracker;
+}
+
+std::filesystem::path resolve_ghosts_dir(const DriveApp& app, const std::filesystem::path& replays_dir) {
+  if (!app.save_path.empty() && app.save_path.has_parent_path()) {
+    return app.save_path.parent_path() / "ghosts";
+  }
+  if (!replays_dir.empty() && replays_dir.has_parent_path()) {
+    return replays_dir.parent_path() / "ghosts";
+  }
+  return std::filesystem::path("ghosts");
+}
+
+int64_t resolve_active_car_id(const DriveApp& app, const cars::bake::CarInfo& info, int64_t* out_garage_id = nullptr) {
+  if (out_garage_id) *out_garage_id = 0;
+  if (app.have_garage) {
+    if (const garage::Car* gc = app.career_garage.selected_car()) {
+      auto it = app.baked_ids.find(gc->car_id);
+      if (it != app.baked_ids.end() && lower_ascii(it->second) == lower_ascii(app.car)) {
+        if (out_garage_id) *out_garage_id = gc->id;
+        return gc->car_id;
+      }
+    }
+  }
+  if (info.car_id > 0) return info.car_id;
+  if (app.have_career_catalog) {
+    if (const auto* spec = app.career_catalog.find_car_by_media(app.car)) return spec->car_id;
+  }
+  return 0;
+}
 
 std::string resolve_engine_swap_audio_car(DriveApp& app, int64_t* out_swapped_engine_id = nullptr) {
   if (out_swapped_engine_id) *out_swapped_engine_id = -1;
@@ -142,6 +186,63 @@ DriveSession::DriveSession(DriveApp& a, DriveWorldHost& h)
       prev_rumble_gear(vehicle.gear()) {}
 
 void DriveSession::init_session() {
+      // R3-CAM-18: Boot-time save recovery fallback via drive::load_save_with_recovery()
+      // if the primary save.txt was corrupt/missing when DriveApp::init() ran.
+      if (!app.have_saved && !app.save_path.empty()) {
+        const auto backups_dir = app.save_path.parent_path().has_parent_path()
+                                     ? (app.save_path.parent_path().parent_path() / "backups" / "saves")
+                                     : std::filesystem::path{};
+        drive::DriveSave recovered;
+        std::filesystem::path recovered_from;
+        std::string rec_err;
+        if (drive::load_save_with_recovery(app.save_path, backups_dir, recovered, &recovered_from, &rec_err)) {
+          app.saved = recovered;
+          app.have_saved = true;
+          app.career.credits = recovered.credits;
+          app.career.total_winnings = recovered.total_winnings;
+          app.career.wristband_points = recovered.wristband_points;
+          app.career.num_races = recovered.num_races;
+          app.career.num_victories = recovered.num_victories;
+          app.career.num_podiums = recovered.num_podiums;
+          app.career.time_in_festival = recovered.time_festival;
+          app.career.time_in_street = recovered.time_street;
+          app.career.time_in_exhibition = recovered.time_exhibition;
+          app.career.top_speed = recovered.top_speed;
+          for (const auto& [id, place] : recovered.race_results) app.career.race_places[id] = place;
+          for (const auto& [id, place] : recovered.event_results) app.career.event_places[id] = place;
+          app.career.prize_cars = recovered.prize_cars;
+          app.h2h_races = recovered.h2h_races;
+          app.h2h_wins = recovered.h2h_wins;
+          app.treasure_map_setting = recovered.treasure_map;
+          app.campaign.load_from_save(recovered);
+          if (recovered.collected_wristband >= 0) app.collected_wristband = recovered.collected_wristband;
+          std::printf("save: recovered save from backup %s\n", recovered_from.string().c_str());
+        }
+      }
+      // R3-CAM-23: Reconcile intro_completed & campaign_stage vehicle selection on Continue Career reload.
+      if (app.have_saved && !app.race) {
+        std::string selected_garage_media;
+        if (app.have_garage) {
+          if (const garage::Car* gc = app.career_garage.selected_car()) {
+            if (auto it = app.baked_ids.find(gc->car_id); it != app.baked_ids.end()) selected_garage_media = it->second;
+          }
+        }
+        const std::string viper_media = find_baked_car(race::CampaignFlow::kViperMedia, race::CampaignFlow::kViperCarId);
+        const std::string starter_media = find_baked_car("VW_CorradoVR6_95", race::kStarterCarId);
+        const std::string canonical_car = drive::resolve_campaign_reload_car(
+            app.saved, selected_garage_media, viper_media.empty() ? race::CampaignFlow::kViperMedia : viper_media,
+            starter_media.empty() ? std::string("VW_CorradoVR6_95") : starter_media);
+        if (!app.headless && !app.bench && !app.car_given && !app.show_title && !canonical_car.empty() &&
+            lower_ascii(canonical_car) != lower_ascii(app.car) &&
+            drive::campaign_stage_is_onboarding(app.saved.campaign_stage)) {
+          const std::string baked_match = find_baked_car(canonical_car, 0);
+          if (!baked_match.empty() && lower_ascii(baked_match) != lower_ascii(app.car)) {
+            app.next_car = baked_match;
+          }
+        }
+      }
+      events_page.set_ghosts_dir(resolve_ghosts_dir(app, replays_dir));
+
       // Apply any custom Paint Shop / Vinyl Livery (.liv) saved on the active garage car.
       if (app.have_garage) {
         if (const garage::Car* gc = app.career_garage.selected_car()) {
@@ -228,6 +329,57 @@ void DriveSession::init_session() {
           app.status = 1;
         }
         if (app.status == 0 && !app.render_ground) app.race->clip_room(host.collision);
+        // R3-CAM-07: Wire Rivals / Time Trials ghost playback & `.shgh` recording.
+        if (app.status == 0) {
+          const auto ghosts_dir = resolve_ghosts_dir(app, replays_dir);
+          const bool is_rivals = app.active_rivals.active;
+          const bool is_stage = app.race->is_stage();
+          if (is_rivals || is_stage) {
+            app.race->enable_ghost_recording(true);
+            if (is_rivals) {
+              app.race->set_rivals_solo(true);
+              race::GhostRun ghost;
+              bool have_ghost = false;
+              if (app.active_rivals.tier_index == 0) {
+                have_ghost = race::load_personal_best_ghost(ghosts_dir, app.active_rivals.event_id, ghost, nullptr);
+              }
+              if (!have_ghost) {
+                int shown_pi = 500;
+                if (app.have_garage) {
+                  if (const garage::Car* sc = app.career_garage.selected_car(); sc && !app.class_bands.empty()) {
+                    shown_pi = garage::shown_index(sc->performance_index, app.class_bands);
+                  }
+                }
+                have_ghost = app.race->build_rivals_ghost(app.active_rivals.target_time_s, app.active_rivals.rival_name,
+                                                          app.car, info.car_id, shown_pi, ghost);
+              }
+              if (have_ghost) {
+                Showroom* ghost_sr = app.race->find_loaded_model(ghost.car_media);
+                if (!ghost_sr) {
+                  auto gs = std::make_unique<Showroom>(host.renderer);
+                  gs->set_guest();
+                  ShowroomOptions opt{};
+                  opt.game_root = app.game_root_of();
+                  std::string ge;
+                  const std::string gmedia = !ghost.car_media.empty() ? ghost.car_media : app.car;
+                  if (gs->load(app.bake_dir, gmedia, opt, ge) && gs->upload(ge)) {
+                    gs->load_car_lamps(app.game_root_of(), gmedia);
+                    ghost_sr = gs.get();
+                    festival_guests.emplace("__rivals_ghost__", std::move(gs));
+                  }
+                }
+                app.race->set_ghost(std::move(ghost), ghost_sr ? ghost_sr : &host.showroom, 0.42f);
+              }
+            } else if (is_stage) {
+              const std::string stage_eid =
+                  !app.race_event.empty() ? app.race_event : ("stage:" + std::to_string(app.race->stage_track().route_id));
+              race::GhostRun pb;
+              if (race::load_personal_best_ghost(ghosts_dir, stage_eid, pb, nullptr) && !pb.empty()) {
+                app.race->set_ghost(std::move(pb), &host.showroom, 0.40f);
+              }
+            }
+          }
+        }
       }
       if (app.status == 0 && host.streamer && app.colorado_world() &&
           (app.traffic_flag == 1 || (app.traffic_flag < 0 && !app.headless && (!app.race || app.race->uses_traffic())))) {
@@ -425,6 +577,9 @@ void DriveSession::init_session() {
         slice12.trainer.pacing = boot_live_settings.festival_pacing;
         slice12.trainer.hidden_cars = boot_live_settings.hidden_cars;
         const bool already_isolated = app.slice12_modded_save || app.mods_session.isolation().isolated;
+        if (app.have_saved && app.saved.fast_travel_anywhere) {
+          slice12.trainer.config.fast_travel_anywhere = true;
+        }
         const std::filesystem::path clean_dir =
             !app.clean_user_dir.empty()
                 ? app.clean_user_dir
@@ -483,8 +638,34 @@ void DriveSession::init_session() {
         rm.tod_sec = app.tod_clock.tod_sec;
         rm.sample_hz = 60.0;
         rm.is_race = app.race != nullptr;
-        rm.roster.push_back({0u, int32_t(info.car_id), app.car, carview::car_name(app.car), true, false});
+        drive::ReplayCarInfo player_ri;
+        player_ri.slot = 0u;
+        player_ri.car_id = int32_t(resolve_active_car_id(app, info));
+        player_ri.car_media = app.car;
+        player_ri.driver_name = carview::car_name(app.car);
+        player_ri.is_player = true;
+        player_ri.is_traffic = false;
+        player_ri.paint_index = app.paint_sequence >= 0 ? int32_t(app.paint_sequence) : -1;
+        rm.roster.push_back(std::move(player_ri));
+        if (app.race) {
+          app.race->collect_replay_roster(rm.roster);
+          rm.field_size = int(rm.roster.size());
+        }
         replay_rec.begin(rm, drive::ReplayRecorder::kDefaultMaxFrames, !app.race);
+      }
+      // R3-CAM-18: Initialize per-session car_history tracker & register active driven car.
+      {
+        int64_t gid = 0;
+        const int64_t cid = resolve_active_car_id(app, info, &gid);
+        if (cid > 0) drive::update_car_history(app.saved.car_history, gid, cid, 0.0, 0.0);
+        auto& cht = car_history_tracker();
+        cht.session = this;
+        cht.last_time_s = vehicle.time();
+        cht.last_total_dist_m = app.progress_loaded ? app.progress.total_distance : 0.0;
+        cht.last_races = app.career.num_races;
+        cht.last_victories = app.career.num_victories;
+        cht.last_podiums = app.career.num_podiums;
+        cht.last_winnings = app.career.total_winnings;
       }
       cockpit_dial_max_speed = drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params());
       cockpit_dial_max_boost = drive::CockpitAnimState::gauge_max_boost_psi(vehicle.params());
@@ -603,6 +784,10 @@ void DriveSession::init_session() {
         kept.reserve(app.pending_barn_restorations.size());
         for (auto& br : app.pending_barn_restorations) {
           if (br.car_id <= 0 || owns_car(br.car_id)) continue;
+          if (br.ready_after_s <= 0.0) {
+            br.ready_to_claim = true;
+            br.notified_ready = true;
+          }
           for (const auto& b : app.collectibles.barns) {
             if (b.car_id == br.car_id || b.name == br.barn_id) {
               br.barn_id = b.name;
@@ -628,7 +813,7 @@ void DriveSession::init_session() {
             }
           }
           if (in_pending) continue;
-          const std::string awarded = app.award_garage_car(b.car_id, 0, false);
+          const std::string awarded = app.award_garage_car(b.car_id, 0, false, true);
           if (!awarded.empty()) {
             ++reconciled_count;
             std::printf("barn finds: reconciled missing %s (%s, Data_Car %d) into garage\n", b.name.c_str(),
@@ -783,6 +968,7 @@ void DriveSession::finalize_session(bool& session_again) {
         }
         if (app.leave_race) {
           app.leave_race = false;
+          app.active_rivals = {};
           if (app.race) {
             app.race->release_models();
             app.race.reset();
@@ -803,6 +989,23 @@ void DriveSession::finalize_session(bool& session_again) {
           const std::string fallback_id = app.next_event_fallback;
           app.next_event.clear();
           app.next_event_fallback.clear();
+          // R3-CAM-07: Propagate Rivals / Time Trials challenge context when launched from the Rivals tab.
+          if (events_page.active_tab() == EventsPage::kRivals) {
+            if (const auto* sel = events_page.selected_entry();
+                sel && sel->is_rivals && sel->event && sel->event->horizon_id == id) {
+              app.active_rivals = DriveApp::RivalsAttempt{};
+              app.active_rivals.active = true;
+              app.active_rivals.is_rally_stage = false;
+              app.active_rivals.event_id = id;
+              app.active_rivals.rival_name = sel->rival_name;
+              app.active_rivals.target_time_s = sel->target_time_s;
+              app.active_rivals.bounty_cr = sel->bounty_cr;
+              app.active_rivals.tier_index = sel->rival_tier_index;
+              app.active_rivals.completed = false;
+            }
+          } else if (app.active_rivals.active && app.active_rivals.event_id != id) {
+            app.active_rivals = {};
+          }
           if (app.race) app.race->release_models();
           app.race.reset();
           std::string opened_id;
@@ -1135,8 +1338,15 @@ void DriveSession::save_now(const char* why) {
         }
         s.owned_garage = app.have_garage || (app.have_saved && app.saved.owned_garage);
         s.career_started = (app.have_saved && app.saved.career_started) || s.owned_garage || app.career.num_races > 0 || app.career.credits > 0;
-        s.intro_completed = app.have_saved ? app.saved.intro_completed : true;
         app.campaign.save_to_save(s);
+        // R3-CAM-23: Keep intro_completed strictly aligned with canonical campaign_stage.
+        if (drive::campaign_stage_is_onboarding(s.campaign_stage)) {
+          s.intro_completed = false;
+        } else if (!s.campaign_stage.empty() && s.campaign_stage != "title") {
+          s.intro_completed = true;
+        } else {
+          s.intro_completed = app.have_saved ? app.saved.intro_completed : true;
+        }
         s.tod_sec = app.tod_clock.tod_sec;
         s.collected_wristband = app.collected_wristband;
         s.popularity_points = app.skill_tracker ? app.skill_tracker->popularity_points() : (app.have_saved ? app.saved.popularity_points : 0.0);
@@ -1148,6 +1358,11 @@ void DriveSession::save_now(const char* why) {
         s.ai_mode = int(app.race_options.ai_mode);
         app.audio_host.save_radio_state(s);
         s.treasure_map = app.treasure_map_setting;
+        // R3-CAM-18: Persist codriver_enabled & fast_travel_anywhere symmetrically on save & load.
+        s.codriver_enabled = app.have_saved ? app.saved.codriver_enabled : true;
+        s.fast_travel_anywhere = slice12.trainer.config.cheats_enabled
+                                     ? slice12.trainer.config.fast_travel_anywhere
+                                     : (app.have_saved ? app.saved.fast_travel_anywhere : false);
         if (app.road_discovery.ready()) {
           s.road_discovery_nodes = app.road_discovery.node_count();
           s.road_discovery_words = app.road_discovery.words();
@@ -1174,9 +1389,35 @@ void DriveSession::save_now(const char* why) {
         }
         s.h2h_races = app.h2h_races;
         s.h2h_wins = app.h2h_wins;
+        s.rivals_beaten = app.have_saved ? app.saved.rivals_beaten : 0;
+        s.rally_rivals_beaten = app.have_saved ? app.saved.rally_rivals_beaten : 0;
         s.driver_xp = app.career.driver_xp;
         for (const auto& [mid, xp] : app.career.make_affinity_xp) s.make_affinity.emplace_back(mid, xp);
         s.promo_cars = promo_tracker.save_ids();
+        // R3-CAM-18: Flush native driving distance/time & race stats into car_history.
+        s.car_history = app.saved.car_history;
+        {
+          int64_t gid = 0;
+          const int64_t cid = resolve_active_car_id(app, info, &gid);
+          auto& cht = car_history_tracker();
+          if (cht.session == this && cid > 0) {
+            const double cur_t = vehicle.time();
+            const double dt_s = std::max(0.0, cur_t - cht.last_time_s);
+            const double cur_dist = app.progress_loaded ? app.progress.total_distance : cht.last_total_dist_m;
+            const double d_dist = std::max(0.0, cur_dist - cht.last_total_dist_m);
+            const int64_t d_win = std::max<int64_t>(0, app.career.total_winnings - cht.last_winnings);
+            const int64_t d_races = std::max<int64_t>(0, app.career.num_races - cht.last_races);
+            const int64_t d_vic = std::max<int64_t>(0, app.career.num_victories - cht.last_victories);
+            const int64_t d_pod = std::max<int64_t>(0, app.career.num_podiums - cht.last_podiums);
+            drive::update_car_history(s.car_history, gid, cid, d_dist, dt_s, d_win, d_races, d_vic, d_pod);
+            cht.last_time_s = cur_t;
+            cht.last_total_dist_m = cur_dist;
+            cht.last_winnings = app.career.total_winnings;
+            cht.last_races = app.career.num_races;
+            cht.last_victories = app.career.num_victories;
+            cht.last_podiums = app.career.num_podiums;
+          }
+        }
         if (app.have_saved) s.carry_from(app.saved);
         if (app.career.driver_level > 0) s.level = app.career.driver_level;
         s.club = app.saved.club;
@@ -1228,7 +1469,11 @@ void DriveSession::eval_achievements(bool toasts) {
         ags.club_bmw_cars = cstats.bmw_cars;
         ags.club_british_cars = cstats.british_cars;
         ags.club_ford_cars = cstats.ford_cars;
-        if (achievements.evaluate(ags, toasts) > 0 && app.demo_achievements_png.empty())
+        int newly_unlocked = achievements.evaluate(ags, toasts);
+        // R3-CAM-07: Rivals & Rally Rivals offline achievements (165 & 212).
+        if (snap.rivals_beaten > 0 && achievements.unlock(165, 0, toasts)) ++newly_unlocked;
+        if (snap.rally_rivals_beaten > 0 && achievements.unlock(212, 0, toasts)) ++newly_unlocked;
+        if (newly_unlocked > 0 && app.demo_achievements_png.empty())
           achievements.save_state(achievements_path);
 }
 

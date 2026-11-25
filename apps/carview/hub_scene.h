@@ -5,8 +5,10 @@
 // UI overlay builders (ui::List).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -92,6 +94,26 @@ std::array<float, 3> hub_background_color(HubRoom room);
 enum class GarageSort { kClass = 0, kMake, kValue, kDrivetrain, kPi, kYear, kCount };
 const char* garage_sort_name(GarageSort s);
 
+enum class GarageTab { kMyCars = 0, kRestorationBay = 1 };
+
+struct BarnRestorationEntry {
+  std::string barn_id;
+  std::string car_name;
+  int64_t car_id = 0;
+  double ready_after_s = 45.0;
+  double elapsed_s = 0.0;
+  bool ready_to_claim = false;
+
+  float progress() const {
+    if (ready_to_claim || ready_after_s <= 0.0) return 1.0f;
+    return float(std::clamp(elapsed_s / ready_after_s, 0.0, 1.0));
+  }
+  double remaining_s() const {
+    if (ready_to_claim) return 0.0;
+    return std::max(0.0, ready_after_s - elapsed_s);
+  }
+};
+
 struct GarageEntry {
   int64_t garage_id = 0;
   int64_t car_id = 0;
@@ -157,6 +179,42 @@ class GarageBrowser {
   bool sell_selected(garage::Garage& g, const cars::PartsDb* db, const std::vector<garage::ClassBand>& bands,
                      int64_t& credits, std::string& message);
 
+  // Dedicated "REMOVE CAR" action (two-step confirmation; blocked on the last remaining car
+  // or currently active car unless `allow_switch_active` is true; prize/barn cars ALWAYS yield
+  // 0 CR on removal so prize cars cannot be exploited for Autoshow refunds).
+  int64_t remove_confirm_garage_id() const { return remove_confirm_id_; }
+  void cancel_remove_confirm() { remove_confirm_id_ = -1; }
+  bool remove_selected(garage::Garage& g, const cars::PartsDb* db, const std::vector<garage::ClassBand>& bands,
+                       int64_t& credits, std::string& message, bool confirmed = false,
+                       bool allow_switch_active = false);
+
+  // Dak's Garage Barn Find Restoration Bay tab.
+  GarageTab active_tab() const { return tab_; }
+  void set_tab(GarageTab t);
+  void toggle_tab();
+  void set_restorations(std::vector<BarnRestorationEntry> items);
+  const std::vector<BarnRestorationEntry>& restorations() const { return restorations_; }
+  size_t selected_restoration_index() const { return selected_restoration_; }
+  void select_restoration_index(size_t idx) {
+    if (idx < restorations_.size()) selected_restoration_ = idx;
+  }
+  const BarnRestorationEntry* selected_restoration() const {
+    return selected_restoration_ < restorations_.size() ? &restorations_[selected_restoration_] : nullptr;
+  }
+  int ready_restoration_count() const;
+
+  using AwardCarCallback =
+      std::function<std::string(int64_t car_id, int colour_seq, bool select_it, bool is_prize)>;
+  // Claims the selected restoration if `ready_to_claim` is true, awarding the car with
+  // `is_prize = true` via `award_fn` (or directly into `g` via `garage::award_prize_car`)
+  // and removing it from `restorations_`.
+  bool claim_selected_restoration(garage::Garage& g, const cars::PartsDb* db,
+                                  const std::vector<garage::ClassBand>& bands, const AwardCarCallback& award_fn,
+                                  std::string& claimed_barn_id_out, std::string& message);
+  bool claim_selected_restoration(garage::Garage& g, const cars::PartsDb* db,
+                                  const std::vector<garage::ClassBand>& bands, std::string& claimed_barn_id_out,
+                                  std::string& message);
+
  private:
   void apply_filter_and_sort();
   std::vector<GarageEntry> all_;
@@ -165,6 +223,10 @@ class GarageBrowser {
   int class_filter_ = -1;  // -1 = All, 0..10 = F..X
   bool favorites_only_ = false;
   size_t selected_ = 0;
+  int64_t remove_confirm_id_ = -1;
+  GarageTab tab_ = GarageTab::kMyCars;
+  std::vector<BarnRestorationEntry> restorations_;
+  size_t selected_restoration_ = 0;
 };
 
 // --- Barn Find Restoration Card ---

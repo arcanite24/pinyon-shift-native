@@ -94,6 +94,36 @@ struct LiveryDocument {
   uint32_t binary_size_bytes = 0;   // byte size of imported binary .liv (0 for text format)
 };
 
+// Reusable multi-layer Vinyl Group stamp (stored as `.vg` files and stampable
+// across cars and projection planes with group translate/scale/rotate/mirror).
+struct VinylGroup {
+  std::string name = "Vinyl Group";
+  std::vector<VinylLayer> layers;  // normalized around centroid (0.5, 0.5)
+};
+
+// Extracts all layers sharing `group_id` (>0) into a centroid-normalized VinylGroup.
+VinylGroup extract_vinyl_group(const std::vector<VinylLayer>& layers, int group_id,
+                               const std::string& name = "Vinyl Group");
+
+// Applies a cohesive group translate, scale (multiplicative around centroid), and
+// clockwise rotation (deg) to every layer in `group`.
+void transform_vinyl_group(VinylGroup& group, float dx, float dy, float scale_x_factor, float scale_y_factor,
+                           float drot_deg);
+
+// Returns a mirrored copy of `group`. When `flip_plane` is true, Left <-> Right planes
+// swap cleanly and mirror across X, Top mirrors across Y, and other planes mirror across X.
+VinylGroup mirror_vinyl_group(const VinylGroup& group, bool flip_plane = true);
+
+// Instantiates `group` onto `plane` centered at `(cx, cy)` with optional scale/rotation
+// and assigns `assign_group_id` to all produced layers.
+std::vector<VinylLayer> instantiate_vinyl_group(const VinylGroup& group, LiveryPlaneKind plane, float cx = 0.5f,
+                                                float cy = 0.5f, float scale_x = 1.0f, float scale_y = 1.0f,
+                                                float rot_deg = 0.0f, int assign_group_id = 0);
+
+// Saves/loads a reusable VinylGroup stamp to/from a `.vg` file ("shift-vinyl-group 1").
+bool save_vinyl_group_file(const std::filesystem::path& path, const VinylGroup& group, std::string* error = nullptr);
+bool load_vinyl_group_file(const std::filesystem::path& path, VinylGroup& out, std::string* error = nullptr);
+
 struct LiveryPlaneMask {
   std::string plane_name;  // lower-case plane name ("front", "back", "top", "left", "right", "wing")
   uint32_t width = 0;

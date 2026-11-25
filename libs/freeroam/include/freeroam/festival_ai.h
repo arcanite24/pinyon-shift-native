@@ -115,13 +115,14 @@ struct HeadToHeadHud {
   double finish_at = -1e9;
 };
 
-// Computes credit reward for a Head-to-Head challenge using retail PI-differential scaling:
+// Computes credit reward / wager for a Head-to-Head challenge using retail PI-differential
+// and difficulty scaling:
 // RewardBaseLevel = 5000, RewardPlayerLowerMultiplier = 20 (player PI < opponent PI),
-// RewardPlayerHigherMultiplier = 10 (player PI > opponent PI).
-int64_t h2h_reward_credits(int player_pi, int opponent_pi);
+// RewardPlayerHigherMultiplier = 10 (player PI > opponent PI), scaled by difficulty_scale.
+int64_t h2h_reward_credits(int player_pi, int opponent_pi, double difficulty_scale = 1.0);
 
-// Backwards-compatible wrapper using default baseline player PI (500).
-int64_t h2h_wager_credits(int pi, int wristband_level);
+// Exact 1:1 alias for the offered H2H wager displayed to the player (matches payout 1:1).
+int64_t h2h_wager_credits(int player_pi, int opponent_pi, double difficulty_scale = 1.0);
 
 class FestivalManager {
  public:
@@ -154,6 +155,8 @@ class FestivalManager {
   void set_wristband_level(int level) { wristband_level_ = level; }
   void set_player_pi(int pi) { player_pi_ = std::clamp(pi, 100, 999); }
   int player_pi() const { return player_pi_; }
+  void set_difficulty_scale(double scale) { difficulty_scale_ = std::clamp(scale, 0.5, 2.5); }
+  double difficulty_scale() const { return difficulty_scale_; }
 
   // Advances roaming Festival AI cars and any active Head-to-Head race with
   // corner curvature braking, traffic/player overtaking avoidance, and velocity/RPM telemetry.
@@ -190,7 +193,7 @@ class FestivalManager {
     double prompt_dist = 1e9;
     bool h2h_active = false;
     uint32_t h2h_car_id = 0;
-    int64_t h2h_wager = 2000;
+    int64_t h2h_wager = 5000;
     double h2h_elapsed = 0.0;
     double h2h_player_s = 0.0;
     double h2h_length = 0.0;
@@ -253,6 +256,7 @@ class FestivalManager {
   double hour_ = 12.0;
   int wristband_level_ = 0;
   int player_pi_ = 500;
+  double difficulty_scale_ = 1.0;
   bool started_ = false;
   double next_spawn_ = 0.0;
 
@@ -263,7 +267,7 @@ class FestivalManager {
   // Active Head-to-Head state
   bool h2h_active_ = false;
   uint32_t h2h_car_id_ = 0;
-  int64_t h2h_wager_ = 2000;
+  int64_t h2h_wager_ = 5000;
   double h2h_elapsed_ = 0.0;
   double h2h_player_s_ = 0.0;
   double h2h_length_ = 0.0;

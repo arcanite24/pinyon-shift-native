@@ -7,13 +7,16 @@
 // - Stage & Championship Final Results screen
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "garage/rally_kit.h"
 #include "race/rally_championship.h"
 #include "race/rally_codriver.h"
+#include "race/rivals.h"
 #include "ui.h"
 
 namespace carview {
@@ -37,11 +40,11 @@ struct RallyStageHud {
 
 // Horizon Rally Hub screen model.
 struct RallyHubItem {
-  enum Kind { kHeats, kChampionship, kFitRallyKit, kFreeRoam, kReturnColorado };
+  enum Kind { kHeats, kChampionship, kRivals, kFitRallyKit, kFreeRoam, kReturnColorado };
   Kind kind = kChampionship;
   int64_t event_id = 0;
   std::string title;
-  std::string class_badge;   // "B", "A", "S", "R3", "LOAN", "KIT"
+  std::string class_badge;   // "B", "A", "S", "R3", "LOAN", "RIVAL", "KIT"
   std::string status_badge;  // "NEW", "1ST", "LOCKED", "READY"
   bool unlocked = true;
   bool eligible = true;
@@ -49,6 +52,15 @@ struct RallyHubItem {
   int64_t cash_prize = 0;
   int stages = 4;
   std::vector<std::string> stage_names;
+  // Rivals / Time Trials metadata (populated for `kind == kRivals`).
+  int route_id = 0;
+  double pb_time_s = 0.0;
+  bool pb_clean = false;
+  int rival_tier_index = 1;  // 0 = PB, 1 = Bronze, 2 = Silver, 3 = Gold
+  std::string rival_name;
+  double target_time_s = 0.0;
+  int64_t bounty_cr = 0;
+  std::array<race::RivalTarget, 3> rival_tiers{};
 };
 
 struct RallyHubState {
@@ -140,7 +152,7 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
                                    const garage::Garage* garage, const cars::PartsDb* db,
                                    const std::vector<garage::ClassBand>& bands, const std::string& car_media,
                                    int car_class_id, int car_pi, int discount_pct, int selected,
-                                   const std::string& notice);
+                                   const std::string& notice, const std::filesystem::path& ghosts_dir = {});
 
 RallyServiceAreaState make_rally_service_state(const race::RallyChampionshipSession& session,
                                                const std::string& car_name, const std::string& car_class, int car_pi,

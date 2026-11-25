@@ -1,8 +1,10 @@
 #include "drive/replay.h"
 #include "replay_view.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 
@@ -386,6 +388,185 @@ void test_real_telemetry_v3_and_units() {
   }
 }
 
+void test_r3_multicar_roster_events_and_v3_compat() {
+  // 1. Multi-car roster with Race AI + stable persistent Traffic slots + audio/VFX event markers.
+  drive::ReplayMetadata meta;
+  meta.event_name = "R3 MULTI-CAR TEST";
+  meta.world_name = "Colorado";
+  meta.is_race = true;
+  meta.sample_hz = 60.0;
+  meta.roster = {
+      {0u, 1219, "NIS_SkylineGTRVSpecII_02", "PLAYER", true, false, 2, 0, false, 0, ""},
+      {1u, 1031, "SUB_ImprezaWRXSTI_11", "RAMONA", false, false, 1, 0xFF2244u, true, 0, ""},
+  };
+
+  drive::ReplayRecorder rec;
+  rec.begin(meta, 120, true);
+  rec.upsert_roster({1042u, 2001, "FOR_FocusSVT_03", "TRAFFIC A", false, true, -1, 0, false, 0, ""});
+  rec.upsert_roster({1099u, 2002, "VOL_RabbitGTI_84", "TRAFFIC B", false, true, -1, 0, false, 0, ""});
+  // Update slot 1042 in place (upsert must not duplicate).
+  rec.upsert_roster({1042u, 2001, "FOR_FocusSVT_03", "TRAFFIC A UPDATED", false, true, -1, 0, false, 0, ""});
+
+  for (int i = 0; i < 60; ++i) {
+    const double t = double(i) / 60.0;
+    auto p = make_car(0u, 0.0f, 1.0f, float(t * 42.0), 0.1f, 42.0f, 6500.0f, i < 30 ? 3 : 4);
+    if (i == 20) {
+      p.event_bits |= drive::kReplayEventBackfire;
+    }
+    if (i == 30) {
+      p.event_bits |= drive::kReplayEventGearShift;
+    }
+    if (i == 40) {
+      p.event_bits |= drive::kReplayEventImpact;
+      p.impact_intensity_u8 = 180u;
+    }
+    if (i >= 45) {
+      p.event_bits |= drive::kReplayEventSkid;
+      p.skid_intensity_u8 = 210u;
+    }
+    auto ai = make_car(1u, 3.5f, 1.0f, float(t * 40.0), 0.08f, 40.0f, 6100.0f, 3);
+    ai.lamp_bits = drive::kReplayLampHeadlights | drive::kReplayLampBrake;
+
+    std::vector<drive::ReplayCarSample> frame = {p, ai};
+    // Traffic 1042 present only in first half; 1099 present throughout with same stable slot ID.
+    if (i < 30) {
+      frame.push_back(make_car(1042u, -3.5f, 1.0f, float(50.0 + t * 18.0), 0.0f, 18.0f, 2400.0f, 2));
+    }
+    frame.push_back(make_car(1099u, 7.0f, 1.0f, float(80.0 - t * 15.0), 3.14f, 15.0f, 2100.0f, 2));
+    rec.record_frame(t, std::move(frame));
+  }
+
+  const auto snap = rec.snapshot();
+  check(snap.meta.roster.size() == 4, "roster keeps 4 unique stable slots without duplication");
+  check(snap.find_car_info(1u) && snap.find_car_info(1u)->car_media == "SUB_ImprezaWRXSTI_11" &&
+            snap.find_car_info(1u)->has_body_color && snap.find_car_info(1u)->body_color == 0xFF2244u,
+        "opponent car media & body color preserved");
+  check(snap.find_car_info(1042u) && snap.find_car_info(1042u)->driver_name == "TRAFFIC A UPDATED",
+        "upsert_roster updated existing traffic slot in place");
+  check(snap.find_car_info(1099u) && snap.find_car_info(1099u)->is_traffic,
+        "persistent traffic slot 1099 preserved");
+
+  // Save & reload v4 file and verify event markers & collect_events().
+  const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_replay_r3_tests";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp_dir, ec);
+  const auto p4 = tmp_dir / "v4_events.shrep";
+  std::string err;
+  check(drive::save_replay_file(p4, snap, &err), "save v4 replay succeeds");
+  drive::ReplayRecording loaded;
+  check(drive::load_replay_file(p4, loaded, &err), "load v4 replay succeeds");
+  check(loaded.meta.roster.size() == 4, "loaded v4 replay retains full multi-car roster");
+
+  std::vector<drive::ReplayCarSample> evs;
+  loaded.collect_events(0.25, 0.72, evs);
+  bool saw_bf = false, saw_shift = false, saw_imp = false;
+  uint8_t max_imp = 0;
+  for (const auto& ev : evs) {
+    if (ev.slot == 0u) {
+      if (ev.event_bits & drive::kReplayEventBackfire) saw_bf = true;
+      if (ev.event_bits & drive::kReplayEventGearShift) saw_shift = true;
+      if (ev.event_bits & drive::kReplayEventImpact) {
+        saw_imp = true;
+        max_imp = std::max(max_imp, ev.impact_intensity_u8);
+      }
+    }
+  }
+  check(saw_bf && saw_shift && saw_imp && max_imp == 180u,
+        "collect_events returns recorded backfire, gear_shift, and impact markers");
+
+  // Verify traffic slot 1099 stays stable in the second half after 1042 leaves.
+  drive::ReplayCarSample t1099{};
+  check(loaded.sample_car(0.75, 1099u, t1099) && t1099.slot == 1099u,
+        "traffic car keeps stable slot 1099 after another traffic car despawns");
+
+  // 2. Backwards compatibility: synthetic v3 binary replay (208-byte samples) loads cleanly.
+  {
+    auto crc32_local = [](const uint8_t* data, size_t len) {
+      uint32_t crc = 0xFFFFFFFFu;
+      for (size_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; ++b) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+      }
+      return ~crc;
+    };
+    std::vector<uint8_t> pay;
+    auto push_pod = [&](const auto& v) {
+      const auto* ptr = reinterpret_cast<const uint8_t*>(&v);
+      pay.insert(pay.end(), ptr, ptr + sizeof(v));
+    };
+    auto push_str = [&](const std::string& s) {
+      const uint32_t n = uint32_t(s.size());
+      push_pod(n);
+      pay.insert(pay.end(), s.begin(), s.end());
+    };
+    push_str("LEGACY V3");
+    push_str("Colorado");
+    const double tod = 43200.0;
+    const int64_t utc = 1700000000;
+    const double hz = 60.0;
+    const uint8_t is_race = 0;
+    const int32_t place = 1, field = 1;
+    const double best_lap = -1.0;
+    push_pod(tod);
+    push_pod(utc);
+    push_pod(hz);
+    push_pod(is_race);
+    push_pod(place);
+    push_pod(field);
+    push_pod(best_lap);
+    const uint32_t roster_n = 1;
+    push_pod(roster_n);
+    const uint32_t rslot = 0;
+    const int32_t rcid = 1219;
+    const uint8_t rflags = 1;
+    const int32_t paint_idx = -1, rim_id = 0;
+    const uint32_t bcol = 0;
+    push_pod(rslot);
+    push_pod(rcid);
+    push_str("NIS_SkylineGTRVSpecII_02");
+    push_str("PLAYER");
+    push_pod(rflags);
+    push_pod(paint_idx);
+    push_pod(bcol);
+    push_pod(rim_id);
+    push_str("");
+    const uint32_t marker_n = 0;
+    push_pod(marker_n);
+    const uint32_t frame_n = 1;
+    push_pod(frame_n);
+    const double ft = 0.0;
+    const uint32_t car_n = 1;
+    push_pod(ft);
+    push_pod(car_n);
+    drive::ReplayCarSample v3_src = make_car(0u, 12.0f, 3.0f, 45.0f, 0.2f, 28.0f, 4800.0f, 3);
+    v3_src.boost_psi = 14.5f;
+    // Write only the 208-byte v3 prefix.
+    const auto* raw = reinterpret_cast<const uint8_t*>(&v3_src);
+    pay.insert(pay.end(), raw, raw + 208);
+
+    const auto p3 = tmp_dir / "legacy_v3.shrep";
+    std::ofstream out(p3, std::ios::binary | std::ios::trunc);
+    const char magic[8] = {'S', 'H', 'F', 'T', 'R', 'E', 'P', 'L'};
+    const uint32_t ver = 3;
+    const uint32_t plen = uint32_t(pay.size());
+    const uint32_t crc = crc32_local(pay.data(), pay.size());
+    out.write(magic, 8);
+    out.write(reinterpret_cast<const char*>(&ver), 4);
+    out.write(reinterpret_cast<const char*>(&plen), 4);
+    out.write(reinterpret_cast<const char*>(&crc), 4);
+    out.write(reinterpret_cast<const char*>(pay.data()), std::streamsize(pay.size()));
+    out.close();
+
+    drive::ReplayRecording v3_loaded;
+    check(drive::load_replay_file(p3, v3_loaded, &err), "v3 legacy replay loads cleanly in v4 reader");
+    check(v3_loaded.frame_count() == 1 && v3_loaded.frames[0].cars.size() == 1, "v3 frame & car count match");
+    check(std::fabs(v3_loaded.frames[0].cars[0].boost_psi - 14.5f) < 1e-3f, "v3 telemetry fields preserved");
+    check(v3_loaded.frames[0].cars[0].event_bits == 0u, "v3 event_bits default to 0");
+  }
+
+  std::filesystem::remove_all(tmp_dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -393,6 +574,7 @@ int main() {
   test_file_roundtrip_and_crc();
   test_replay_viewer_controls_cameras_and_hud();
   test_real_telemetry_v3_and_units();
+  test_r3_multicar_roster_events_and_v3_compat();
   if (g_fails == 0) {
     std::printf("replay_tests: all passed\n");
     return 0;

@@ -17,7 +17,26 @@ const char* tab_name(EventsPage::Tab t) {
     case EventsPage::kStreet: return "STREET RACES";
     case EventsPage::kShowcase: return "SHOWCASES";
     case EventsPage::kShowdown: return "SHOWDOWNS";
+    case EventsPage::kRivals: return "RIVALS / TIME TRIALS";
     default: return "EVENTS";
+  }
+}
+
+void apply_rival_tier(EventsPage::Entry& e, int tier_index) {
+  const bool has_pb = e.pb_time_s > 0.0;
+  int clamped = std::clamp(tier_index, has_pb ? 0 : 1, 3);
+  e.rival_tier_index = clamped;
+  if (clamped == 0 && has_pb) {
+    e.rival_tier_label = "PB";
+    e.rival_name = "PERSONAL BEST";
+    e.target_time_s = e.pb_time_s;
+    e.bounty_cr = e.rival_tiers[2].bounty_cr;
+  } else {
+    const auto& rt = e.rival_tiers[size_t(std::clamp(clamped - 1, 0, 2))];
+    e.rival_tier_label = rt.tier_label;
+    e.rival_name = rt.rival_name;
+    e.target_time_s = rt.target_time_s;
+    e.bounty_cr = rt.bounty_cr;
   }
 }
 
@@ -33,7 +52,8 @@ std::string resolve_event_name(const race::CareerEvent& ev) {
 
 void EventsPage::open(const race::CareerCatalog& catalog, const race::CareerRecord& career, int collected_wristband,
                       int popularity_rank, int64_t current_car_id, int current_class_id,
-                      const std::vector<garage::ClassBand>& bands, int hub_filter) {
+                      const std::vector<garage::ClassBand>& bands, int hub_filter,
+                      const std::filesystem::path& ghosts_dir) {
   catalog_ = &catalog;
   career_ = &career;
   collected_wristband_ = collected_wristband;
@@ -43,10 +63,24 @@ void EventsPage::open(const race::CareerCatalog& catalog, const race::CareerReco
   class_names_.clear();
   for (const auto& b : bands) class_names_.push_back(b.name);
   hub_filter_ = hub_filter;
+  if (!ghosts_dir.empty()) ghosts_dir_ = ghosts_dir;
   tab_ = hub_filter > 0 ? kStreet : kAll;
   selected_ = 0;
   open_ = true;
   rebuild();
+}
+
+void EventsPage::cycle_rival_tier(int by) {
+  if (entries_.empty() || selected_ >= entries_.size()) return;
+  auto& e = entries_[selected_];
+  if (!e.is_rivals) return;
+  const int lo = e.pb_time_s > 0.0 ? 0 : 1;
+  const int span = 4 - lo;
+  const int next = lo + (((e.rival_tier_index - lo + by) % span) + span) % span;
+  apply_rival_tier(e, next);
+  if (e.event) {
+    e.display_name = "RIVALS: " + resolve_event_name(*e.event) + " [" + e.rival_tier_label + "]";
+  }
 }
 
 void EventsPage::rebuild() {
@@ -67,6 +101,44 @@ void EventsPage::rebuild() {
       e.display_name = "COLLECT " + cname + " WRISTBAND!";
       entries_.push_back(std::move(e));
     }
+  }
+
+  if (tab_ == kRivals && hub_filter_ == 0) {
+    for (const auto& ev : catalog_->events) {
+      if (ev.style != 1 && ev.style != 2) continue;
+      if (!catalog_->is_event_unlocked(ev, *career_, collected_wristband_, popularity_rank_)) continue;
+      Entry e;
+      e.event = &ev;
+      e.is_rivals = true;
+      e.unlocked = true;
+      const auto elig = catalog_->check_eligibility(ev, car_id_, car_class_id_, class_names_);
+      e.eligible = elig.eligible;
+      e.uses_loaner = elig.uses_loaner;
+      e.reason = elig.reason;
+      e.best_place = catalog_->best_place(ev, *career_);
+      const double est_base_s = std::max(55.0, 132.0 - double(std::clamp(ev.target_class, 0, 7)) * 6.5);
+      e.rival_tiers = race::generate_rivals_targets(ev.horizon_id, est_base_s, int64_t(ev.cash_prize), false);
+      if (!ghosts_dir_.empty()) {
+        race::GhostRun pb;
+        if (race::load_personal_best_ghost(ghosts_dir_, ev.horizon_id, pb, nullptr) && pb.total_time > 0.0) {
+          e.pb_time_s = pb.total_time;
+          e.pb_clean = pb.clean;
+        }
+      }
+      // Default to the next unbeaten Rival target tier (Bronze -> Silver -> Gold -> Personal Best).
+      int default_tier = 1;
+      if (e.pb_time_s > 0.0) {
+        if (e.pb_time_s < e.rival_tiers[2].target_time_s) default_tier = 0;
+        else if (e.pb_time_s < e.rival_tiers[1].target_time_s) default_tier = 3;
+        else if (e.pb_time_s < e.rival_tiers[0].target_time_s) default_tier = 2;
+      }
+      apply_rival_tier(e, default_tier);
+      e.display_name = "RIVALS: " + resolve_event_name(ev) + " [" + e.rival_tier_label + "]";
+      entries_.push_back(std::move(e));
+    }
+    if (entries_.empty()) selected_ = 0;
+    else selected_ = std::min(selected_, entries_.size() - 1);
+    return;
   }
 
   std::vector<Entry> unlocked_list, locked_list;
@@ -192,6 +264,27 @@ void EventsPage::fill(std::string& title, std::vector<std::string>& lines, int& 
       if (const auto* cs = catalog_->find_car(wb.reward_car_id))
         detail_lines.push_back("BONUS CAR: " + car_name(cs->media_name));
     }
+    return;
+  }
+
+  if (sel.is_rivals && sel.event) {
+    const auto& ev = *sel.event;
+    detail_title = "RIVALS / TIME TRIALS";
+    detail_lines.push_back("EVENT: " + resolve_event_name(ev));
+    if (sel.pb_time_s > 0.0) {
+      detail_lines.push_back("PERSONAL BEST: " + race::format_rivals_time(sel.pb_time_s) +
+                             (sel.pb_clean ? " (CLEAN)" : " (DIRTY)"));
+    } else {
+      detail_lines.push_back("PERSONAL BEST: --:--.--- (NO GHOST RECORDED)");
+    }
+    for (const auto& rt : sel.rival_tiers) {
+      detail_lines.push_back(rt.tier_label + ": " + rt.rival_name + "  " + race::format_rivals_time(rt.target_time_s) +
+                             "  (" + thousands(rt.bounty_cr) + " Cr)");
+    }
+    detail_lines.push_back("ACTIVE TARGET [" + sel.rival_tier_label + "]: " + sel.rival_name + "  " +
+                           race::format_rivals_time(sel.target_time_s) + "  BOUNTY " + thousands(sel.bounty_cr) + " Cr");
+    if (!sel.eligible) detail_lines.push_back("INELIGIBLE: " + sel.reason);
+    else detail_lines.push_back("PRESS ENTER / [A] TO LAUNCH RIVALS GHOST RUN");
     return;
   }
 

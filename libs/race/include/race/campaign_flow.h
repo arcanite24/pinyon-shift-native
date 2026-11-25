@@ -118,7 +118,7 @@ struct ShowcaseMilestoneSpec {
   int64_t event_id = 0;
   const char* horizon_id = "";
   const char* display_name = "";
-  const char* opponent_label = "";  // e.g. "P-51 MUSTANG", "HOT-AIR BALLOON", "ATTACK HELICOPTER"
+  const char* opponent_label = "";  // e.g. "P-51 MUSTANG", "HOT-AIR BALLOON", "HELICOPTER", "BIPLANE"
   int popularity_rank_req = 250;
   int64_t loaner_car_id = 0;
   const char* loaner_car_media = "";
@@ -279,6 +279,20 @@ enum class PostRaceStage : uint8_t {
   kWristbandAndPrize = 2,  // Stage 3: WRISTBAND & POPULARITY + PRIZE CAR AWARDED
 };
 
+// Real post-race standing row captured from RaceView::hud_info() / standings (R3-CAM-03).
+struct RaceFinishStanding {
+  int place = 1;
+  std::string driver_name;
+  std::string car_name;
+  std::string class_name;
+  int pi = 0;
+  double finish_time_s = -1.0;
+  double gap_s = -1.0;
+  double best_lap_s = -1.0;
+  bool is_player = false;
+  bool is_boss = false;
+};
+
 struct RewardTallyRow {
   int place = 1;
   std::string driver;
@@ -288,6 +302,8 @@ struct RewardTallyRow {
   double time_s = -1.0;
   double gap_s = -1.0;
   bool player = false;
+  double best_lap_s = -1.0;
+  bool is_boss = false;
 };
 
 struct RewardTallyState {
@@ -303,6 +319,9 @@ struct RewardTallyState {
   bool is_boss = false;
   bool is_showcase = false;
   bool is_finale = false;
+  bool qualified = true;
+  bool retry_required = false;
+  int qualify_cutoff_place = 3;
   std::vector<RewardTallyRow> results_rows;
 
   // Credit breakdown lines
@@ -440,6 +459,8 @@ class CampaignFlow {
   static constexpr int64_t kCorradoCarId = 309;
   static constexpr const char* kQualifyEventId = "FESTIVAL_SECOND";
   static constexpr int kQualifyRouteId = 16;
+  static constexpr int kQualifyCutoffPlace = 3;  // Top-3 podium required to qualify in FESTIVAL_SECOND
+  static constexpr int kViperConvoyTarget = 5;   // Festival-bound convoy drivers to overtake during Viper drive
   static constexpr double kFestivalArrivalRadiusM = 120.0;
   // Verified Colorado highway asphalt spawn (COLLISION.md measured free-roam spawn).
   static constexpr std::array<double, 3> kViperSpawnPos = {2002.96, 143.38, 960.00};
@@ -465,7 +486,10 @@ class CampaignFlow {
   CampaignAction on_race_finished(const CareerEvent* ev, const RaceAward& award, int place, int total_cars,
                                   int old_pop_rank, int new_pop_rank, int64_t balance_before,
                                   int64_t balance_after, int wb_points_after, int collected_wristband,
-                                  const std::string& prize_car_name, const CareerCatalog* catalog = nullptr);
+                                  const std::string& prize_car_name, const CareerCatalog* catalog = nullptr,
+                                  const std::vector<RaceFinishStanding>& standings = {});
+  // Records Festival-bound convoy overtakes during the Viper opening highway drive (R3-CAM-15).
+  bool on_viper_convoy_pass(int passed_delta = 1);
   CampaignAction on_wristband_collected(int wristband_level, const std::string& bonus_car_name = {},
                                         int newly_unlocked_events = 0);
   CampaignAction on_barn_find(bool discovered, const std::string& barn_id, const std::string& car_name);
@@ -509,6 +533,10 @@ class CampaignFlow {
   const std::set<std::string>& unlocked_showcases() const { return unlocked_showcases_; }
   bool finale_complete() const { return finale_complete_; }
   bool pending_darius_showdown() const { return pending_darius_showdown_; }
+  bool qualify_retry_pending() const { return qualify_retry_pending_; }
+  int viper_convoy_passed() const { return viper_convoy_passed_; }
+  int viper_convoy_target() const { return kViperConvoyTarget; }
+  int viper_convoy_remaining() const { return std::max(0, kViperConvoyTarget - viper_convoy_passed_); }
   bool starter_autoshow_onboarding() const { return starter_autoshow_onboarding_; }
   bool consume_starter_autoshow_onboarding() {
     const bool v = starter_autoshow_onboarding_;
@@ -531,7 +559,9 @@ class CampaignFlow {
   bool skip_movies_ = false;
   bool finale_complete_ = false;
   bool qualify_launched_ = false;
+  bool qualify_retry_pending_ = false;
   int viper_beat_idx_ = 0;
+  int viper_convoy_passed_ = 0;
   int reg_beat_idx_ = 0;
   int active_wristband_ = 0;
   int active_boss_idx_ = -1;

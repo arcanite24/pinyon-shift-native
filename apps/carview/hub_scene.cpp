@@ -842,18 +842,27 @@ void GarageBrowser::apply_filter_and_sort() {
 }
 
 void GarageBrowser::move(int by) {
+  remove_confirm_id_ = -1;
+  if (tab_ == GarageTab::kRestorationBay) {
+    if (restorations_.empty()) return;
+    const int n = int(restorations_.size());
+    selected_restoration_ = size_t(((int(selected_restoration_) + by) % n + n) % n);
+    return;
+  }
   if (visible_.empty()) return;
   const int n = int(visible_.size());
   selected_ = size_t(((int(selected_) + by) % n + n) % n);
 }
 
 void GarageBrowser::cycle_sort(int by) {
+  remove_confirm_id_ = -1;
   const int n = int(GarageSort::kCount);
   sort_ = GarageSort(((int(sort_) + by) % n + n) % n);
   apply_filter_and_sort();
 }
 
 void GarageBrowser::cycle_class_filter(int by) {
+  remove_confirm_id_ = -1;
   // Cycle: -1 (All), 0 (F), 1 (E), 2 (D), ..., 9 (R1), 10 (X).
   static constexpr int kCycle[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
   constexpr int n = int(sizeof(kCycle) / sizeof(kCycle[0]));
@@ -867,12 +876,14 @@ void GarageBrowser::cycle_class_filter(int by) {
 }
 
 void GarageBrowser::toggle_favorites_filter() {
+  remove_confirm_id_ = -1;
   favorites_only_ = !favorites_only_;
   selected_ = 0;
   apply_filter_and_sort();
 }
 
 void GarageBrowser::set_favorites_filter(bool on) {
+  remove_confirm_id_ = -1;
   favorites_only_ = on;
   selected_ = 0;
   apply_filter_and_sort();
@@ -897,6 +908,7 @@ bool GarageBrowser::toggle_favorite_selected(garage::Garage& g, const cars::Part
 bool GarageBrowser::sell_selected(garage::Garage& g, const cars::PartsDb* db,
                                   const std::vector<garage::ClassBand>& bands, int64_t& credits,
                                   std::string& message) {
+  remove_confirm_id_ = -1;
   const GarageEntry* e = selected_entry();
   if (!e) {
     message = "no car selected";
@@ -911,6 +923,150 @@ bool GarageBrowser::sell_selected(garage::Garage& g, const cars::PartsDb* db,
   message = "sold " + e->display_name + " for +" + credits_text(sr.payout);
   refresh(g, db, bands);
   return true;
+}
+
+bool GarageBrowser::remove_selected(garage::Garage& g, const cars::PartsDb* db,
+                                    const std::vector<garage::ClassBand>& bands, int64_t& credits,
+                                    std::string& message, bool confirmed, bool allow_switch_active) {
+  const GarageEntry* e = selected_entry();
+  if (!e) {
+    remove_confirm_id_ = -1;
+    message = "no car selected";
+    return false;
+  }
+  if (g.cars.size() <= 1) {
+    remove_confirm_id_ = -1;
+    message = "cannot remove your last car";
+    return false;
+  }
+  if (e->is_current && !allow_switch_active) {
+    remove_confirm_id_ = -1;
+    message = "switch cars before removing your active car";
+    return false;
+  }
+  if (!confirmed && remove_confirm_id_ != e->garage_id) {
+    remove_confirm_id_ = e->garage_id;
+    message = e->is_prize ? ("CONFIRM REMOVE PRIZE CAR " + e->display_name + " (0 CR)?")
+                          : ("CONFIRM REMOVE " + e->display_name + " FROM GARAGE (0 CR)?");
+    return false;
+  }
+
+  const int64_t target_id = e->garage_id;
+  const std::string name = e->display_name;
+  const bool prize = e->is_prize;
+  auto it = std::find_if(g.cars.begin(), g.cars.end(), [target_id](const garage::Car& c) { return c.id == target_id; });
+  if (it == g.cars.end()) {
+    remove_confirm_id_ = -1;
+    message = "car not found in garage";
+    return false;
+  }
+  g.cars.erase(it);
+  g.bought.erase(std::remove_if(g.bought.begin(), g.bought.end(),
+                                [target_id](const garage::Bought& b) { return b.garage_id == target_id; }),
+                 g.bought.end());
+  g.club_shared_garage_ids.erase(
+      std::remove(g.club_shared_garage_ids.begin(), g.club_shared_garage_ids.end(), target_id),
+      g.club_shared_garage_ids.end());
+  if (g.selected == target_id && !g.cars.empty()) {
+    g.selected = g.cars.front().id;
+  }
+  // Removing a car yields 0 CR (prize/barn cars never refund Autoshow value).
+  (void)credits;
+  remove_confirm_id_ = -1;
+  message = prize ? ("removed prize car " + name + " (0 Cr)") : ("removed " + name + " from garage (0 Cr)");
+  refresh(g, db, bands);
+  return true;
+}
+
+void GarageBrowser::set_tab(GarageTab t) {
+  tab_ = t;
+  remove_confirm_id_ = -1;
+  if (tab_ == GarageTab::kRestorationBay && !restorations_.empty()) {
+    selected_restoration_ = std::min(selected_restoration_, restorations_.size() - 1);
+  }
+}
+
+void GarageBrowser::toggle_tab() {
+  set_tab(tab_ == GarageTab::kMyCars ? GarageTab::kRestorationBay : GarageTab::kMyCars);
+}
+
+void GarageBrowser::set_restorations(std::vector<BarnRestorationEntry> items) {
+  restorations_ = std::move(items);
+  if (restorations_.empty()) {
+    selected_restoration_ = 0;
+  } else {
+    selected_restoration_ = std::min(selected_restoration_, restorations_.size() - 1);
+  }
+}
+
+int GarageBrowser::ready_restoration_count() const {
+  int n = 0;
+  for (const auto& r : restorations_) {
+    if (r.ready_to_claim) ++n;
+  }
+  return n;
+}
+
+bool GarageBrowser::claim_selected_restoration(garage::Garage& g, const cars::PartsDb* db,
+                                               const std::vector<garage::ClassBand>& bands,
+                                               const AwardCarCallback& award_fn, std::string& claimed_barn_id_out,
+                                               std::string& message) {
+  claimed_barn_id_out.clear();
+  if (restorations_.empty() || selected_restoration_ >= restorations_.size()) {
+    message = "NO BARN FIND SELECTED";
+    return false;
+  }
+  const BarnRestorationEntry entry = restorations_[selected_restoration_];
+  if (!entry.ready_to_claim) {
+    const int pct = int(std::lround(entry.progress() * 100.0f));
+    message = "DAK IS STILL RESTORING " + entry.car_name + " (" + std::to_string(pct) + "%)";
+    return false;
+  }
+  if (entry.car_id <= 0) {
+    message = "INVALID BARN FIND CAR";
+    return false;
+  }
+  std::string awarded_name;
+  if (award_fn) {
+    awarded_name = award_fn(entry.car_id, 0, false, /*is_prize=*/true);
+  } else {
+    std::map<std::string, int64_t> stock;
+    double stock_pi = 0.5;
+    int stock_cls = bands.empty() ? 2 : garage::class_of(stock_pi, bands);
+    if (db) {
+      std::string ignored;
+      db->stock_slots(entry.car_id, stock, &ignored);
+      std::vector<cars::DealerCar> dcars;
+      if (db->dealer(dcars, nullptr, true)) {
+        for (const auto& dc : dcars) {
+          if (dc.id == entry.car_id) {
+            stock_pi = dc.performance_index;
+            stock_cls = bands.empty() ? int(dc.class_id) : garage::class_of(stock_pi, bands);
+            break;
+          }
+        }
+      }
+    }
+    garage::award_prize_car(g, entry.car_id, stock_pi, stock_cls, 0, stock, nullptr, false);
+    awarded_name = entry.car_name;
+  }
+  if (awarded_name.empty()) awarded_name = entry.car_name;
+  claimed_barn_id_out = entry.barn_id;
+  restorations_.erase(restorations_.begin() + std::ptrdiff_t(selected_restoration_));
+  if (!restorations_.empty()) {
+    selected_restoration_ = std::min(selected_restoration_, restorations_.size() - 1);
+  } else {
+    selected_restoration_ = 0;
+  }
+  refresh(g, db, bands);
+  message = "CLAIMED BARN FIND: " + awarded_name + " (PRIZE CAR)";
+  return true;
+}
+
+bool GarageBrowser::claim_selected_restoration(garage::Garage& g, const cars::PartsDb* db,
+                                               const std::vector<garage::ClassBand>& bands,
+                                               std::string& claimed_barn_id_out, std::string& message) {
+  return claim_selected_restoration(g, db, bands, AwardCarCallback{}, claimed_barn_id_out, message);
 }
 
 // --- Authentic FH1 UI4 +3.0 deg .bgf-Driven 3D Festival Hub Overlays ---
@@ -2068,9 +2224,13 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
   ui4::subtle_vignette(list, w, h, 0.20f);
 
   const float tilt_rad = scene_tilt_rad("106_C_CAR_LIST", "RotationHelper");
+  const bool in_bay = browser.active_tab() == GarageTab::kRestorationBay;
+  const int ready_bay_n = browser.ready_restoration_count();
 
-  // Top-left PlayerBar + Sort/Filter/Favorites PILL01 chips (106_C_CAR_LIST)
-  draw_hub_player_bar(list, s, credits, "MY GARAGE  //  " + std::to_string(browser.visible().size()) + " CARS");
+  // Top-left PlayerBar + Dak's Garage Tab Strip (MY CARS / RESTORATION BAY)
+  draw_hub_player_bar(list, s, credits,
+                      in_bay ? ("DAK'S RESTORATION BAY  //  " + std::to_string(browser.restorations().size()) + " BAY")
+                             : ("MY GARAGE  //  " + std::to_string(browser.visible().size()) + " CARS"));
 
   const std::string filt = browser.class_filter() < 0
                                ? "ALL CLASSES"
@@ -2080,15 +2240,126 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
   {
     ui4::TiltScope top_rot(list, 310.0f * s, 78.0f * s, tilt_rad);
     const float pill_y = 64.0f * s;
-    ui4::pill(list, 56.0f * s, pill_y, 232.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(70.0f * s, pill_y + 6.0f * s, "SORT: " + std::string(garage_sort_name(browser.sort_mode())),
-              ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
-    ui4::pill(list, 238.0f * s, pill_y, 418.0f * s, pill_y + 26.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(252.0f * s, pill_y + 6.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 12.0f * s, ui4::kWhite));
-    ui4::pill(list, 424.0f * s, pill_y, 580.0f * s, pill_y + 26.0f * s,
-              browser.favorites_only() ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
-    list.text(438.0f * s, pill_y + 6.0f * s, browser.favorites_only() ? "FAVORITES: ONLY" : "FAVORITES: ALL",
-              ui4::style(ui::Font::kB, 12.0f * s, browser.favorites_only() ? ui4::kYellow : ui4::kWhite));
+    // Tab pills (clickable via kHitTab 0 = MY CARS, 1 = RESTORATION BAY)
+    list.add_hit(56.0f * s, pill_y, 174.0f * s, pill_y + 26.0f * s, ui::kHitTab, 0);
+    ui4::pill(list, 56.0f * s, pill_y, 174.0f * s, pill_y + 26.0f * s,
+              !in_bay ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+    list.text(115.0f * s, pill_y + 6.0f * s, "MY CARS",
+              ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite, ui::Align::kCenter));
+
+    std::string bay_lbl = "RESTORATION BAY";
+    if (ready_bay_n > 0) bay_lbl += " (" + std::to_string(ready_bay_n) + " READY)";
+    else if (!browser.restorations().empty()) bay_lbl += " (" + std::to_string(browser.restorations().size()) + ")";
+    const float bay_x1 = ready_bay_n > 0 ? 396.0f * s : 352.0f * s;
+    const uint32_t bay_col = in_bay ? ui4::kAmber : (ready_bay_n > 0 ? ui4::kGreen : ui4::kPillGrey);
+    list.add_hit(180.0f * s, pill_y, bay_x1, pill_y + 26.0f * s, ui::kHitTab, 1);
+    ui4::pill(list, 180.0f * s, pill_y, bay_x1, pill_y + 26.0f * s, bay_col, ui4::PillKind::kMenu, false, true);
+    ui::TextStyle bay_ts =
+        ui4::style(ui::Font::kE, 11.5f * s, (in_bay || ready_bay_n > 0) ? ui4::kInk : ui4::kWhite, ui::Align::kCenter);
+    ui4::fit_text(bay_lbl, bay_ts, (bay_x1 - 180.0f * s) - 16.0f * s, 8.5f * s);
+    list.text(0.5f * (180.0f * s + bay_x1), pill_y + 6.0f * s, bay_lbl, bay_ts);
+
+    if (!in_bay) {
+      const float flt_y = 95.0f * s;
+      ui4::pill(list, 56.0f * s, flt_y, 232.0f * s, flt_y + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+      list.text(70.0f * s, flt_y + 5.0f * s, "SORT: " + std::string(garage_sort_name(browser.sort_mode())),
+                ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      ui4::pill(list, 238.0f * s, flt_y, 418.0f * s, flt_y + 24.0f * s, ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+      list.text(252.0f * s, flt_y + 5.0f * s, "FILTER: " + filt, ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite));
+      ui4::pill(list, 424.0f * s, flt_y, 580.0f * s, flt_y + 24.0f * s,
+                browser.favorites_only() ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kMenu, false, true);
+      list.text(438.0f * s, flt_y + 5.0f * s, browser.favorites_only() ? "FAVORITES: ONLY" : "FAVORITES: ALL",
+                ui4::style(ui::Font::kB, 11.5f * s, browser.favorites_only() ? ui4::kYellow : ui4::kWhite));
+    }
+  }
+
+  if (in_bay) {
+    ui4::TiltScope rot(list, 0.5f * w, 0.5f * h, tilt_rad);
+    ui4::title_tape(list, s, 88.0f * s, 146.0f * s, "BARN FIND RESTORATION BAY", ui4::kAmber, 32.0f, 520.0f);
+
+    const auto& bay = browser.restorations();
+    if (bay.empty()) {
+      const float px0 = 88.0f * s, py0 = 216.0f * s, px1 = w - 88.0f * s, py1 = 380.0f * s;
+      ui4::panel(list, px0, py0, px1, py1, s, ui4::kCharcoalDark, ui4::kAmber, 0, true);
+      list.text(0.5f * (px0 + px1), py0 + 52.0f * s, "NO BARN FINDS IN RESTORATION",
+                ui4::style(ui::Font::kE, 22.0f * s, ui4::kWhite, ui::Align::kCenter));
+      list.text(0.5f * (px0 + px1), py0 + 96.0f * s,
+                "EXPLORE COLORADO TO DISCOVER BARN FIND RUMOURS — DAK WILL RESTORE THEM HERE.",
+                ui4::style(ui::Font::kB, 13.5f * s, ui4::kDim, ui::Align::kCenter));
+    } else {
+      const float bx0 = 88.0f * s, by0 = 206.0f * s;
+      const float card_w = std::min(560.0f * s, w * 0.48f);
+      const float row_h = 84.0f * s, row_gap = 12.0f * s;
+      const int sel = int(browser.selected_restoration_index());
+      for (size_t i = 0; i < bay.size() && i < 5; ++i) {
+        const auto& br = bay[i];
+        const bool act = int(i) == sel;
+        const float ry0 = by0 + float(i) * (row_h + row_gap);
+        const float ry1 = ry0 + row_h;
+        list.add_hit(bx0, ry0, bx0 + card_w, ry1, ui::kHitRow, int(i));
+        draw_bigpane_card(list, bx0, ry0, bx0 + card_w, ry1, s, act, br.ready_to_claim ? ui4::kGreen : ui4::kAmber);
+
+        ui::TextStyle nm = ui4::style(ui::Font::kE, 17.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+        ui4::fit_text(br.car_name, nm, card_w - 190.0f * s, 11.0f * s);
+        list.text(bx0 + 16.0f * s, ry0 + 12.0f * s, br.car_name, nm);
+
+        const int pct = int(std::lround(br.progress() * 100.0f));
+        const std::string status_txt =
+            br.ready_to_claim ? "READY TO CLAIM" : ("RESTORING... " + std::to_string(pct) + "%");
+        const uint32_t badge_col = br.ready_to_claim ? ui4::kGreen : ui4::kAmber;
+        ui4::brush(list, bx0 + card_w - 168.0f * s, ry0 + 10.0f * s, bx0 + card_w - 12.0f * s, ry0 + 34.0f * s,
+                   badge_col);
+        list.text(bx0 + card_w - 90.0f * s, ry0 + 15.0f * s, status_txt,
+                  ui4::style(ui::Font::kE, 11.5f * s, ui4::kInk, ui::Align::kCenter));
+
+        // Progress bar
+        const float bar_x0 = bx0 + 16.0f * s, bar_x1 = bx0 + card_w - 16.0f * s;
+        const float bar_y0 = ry0 + 46.0f * s, bar_y1 = ry0 + 56.0f * s;
+        list.rect(bar_x0, bar_y0, bar_x1, bar_y1, ui::rgba(255, 255, 255, 32));
+        list.rect(bar_x0, bar_y0, bar_x0 + (bar_x1 - bar_x0) * br.progress(), bar_y1, badge_col);
+
+        const std::string sub = br.ready_to_claim
+                                    ? "RESTORATION COMPLETE  •  PRESS [A] / ENTER TO CLAIM INTO YOUR GARAGE"
+                                    : ("DAK'S WORKSHOP  •  " + std::to_string(int(std::ceil(br.remaining_s()))) +
+                                       "s REMAINING");
+        list.text(bx0 + 16.0f * s, ry0 + 62.0f * s, sub, ui4::style(ui::Font::kB, 11.0f * s, ui4::kDim));
+      }
+
+      if (const BarnRestorationEntry* cur = browser.selected_restoration()) {
+        const float dx0 = bx0 + card_w + 28.0f * s, dx1 = w - 68.0f * s;
+        const float dy0 = by0, dy1 = by0 + 250.0f * s;
+        if (dx1 - dx0 > 180.0f * s) {
+          ui4::panel(list, dx0, dy0, dx1, dy1, s, ui4::kCharcoalDark,
+                     cur->ready_to_claim ? ui4::kGreen : ui4::kAmber, 0, true);
+          list.text(dx0 + 18.0f * s, dy0 + 16.0f * s, "DAK'S RESTORATION REPORT",
+                    ui4::style(ui::Font::kD, 13.0f * s, ui4::kDim));
+          ui::TextStyle cn = ui4::style(ui::Font::kE, 21.0f * s, ui4::kWhite, ui::Align::kLeft, true);
+          ui4::fit_text(cur->car_name, cn, dx1 - dx0 - 36.0f * s, 12.0f * s);
+          list.text(dx0 + 18.0f * s, dy0 + 44.0f * s, cur->car_name, cn);
+          const int pct = int(std::lround(cur->progress() * 100.0f));
+          list.text(dx0 + 18.0f * s, dy0 + 90.0f * s,
+                    cur->ready_to_claim ? "STATUS: READY TO CLAIM" : ("STATUS: RESTORING... " + std::to_string(pct) + "%"),
+                    ui4::style(ui::Font::kE, 14.5f * s, cur->ready_to_claim ? ui4::kGreen : ui4::kAmber));
+          list.text(dx0 + 18.0f * s, dy0 + 126.0f * s, "BARN FIND PRIZE CAR  •  REMOVAL VALUE: 0 CR",
+                    ui4::style(ui::Font::kB, 11.5f * s, ui4::kDim));
+        }
+      }
+    }
+
+    if (!notice.empty()) {
+      ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
+      ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
+      ui4::fit_text(notice, ns, 340.0f * s, 9.0f * s);
+      list.text(w - 68.0f * s, h - 60.0f * s, notice, ns);
+    }
+
+    const bool can_claim = browser.selected_restoration() && browser.selected_restoration()->ready_to_claim;
+    ui4::button_bar(list,
+                    {{"A", can_claim ? "CLAIM CAR" : "RESTORING..."},
+                     {"LB", "MY CARS"},
+                     {"B", "BACK"}},
+                    w, h, 56.0f);
+    return;
   }
 
   // Entire Garage details & car carousel tilted +3.0 deg (106_C_CAR_LIST + 104_C_CAR_DETAILS)!
@@ -2269,6 +2540,21 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
     }
   }
 
+  if (const GarageEntry* sel_e = browser.selected_entry();
+      sel_e && browser.remove_confirm_garage_id() == sel_e->garage_id) {
+    const float mw = 520.0f * s, mh = 92.0f * s;
+    const float mx0 = 0.5f * (w - mw), my0 = 0.5f * (h - mh) - 20.0f * s;
+    ui4::panel(list, mx0, my0, mx0 + mw, my0 + mh, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
+    list.text(mx0 + 0.5f * mw, my0 + 18.0f * s, "REMOVE CAR FROM GARAGE?",
+              ui4::style(ui::Font::kE, 18.0f * s, ui4::kWhite, ui::Align::kCenter));
+    const std::string sub = sel_e->is_prize
+                                ? (sel_e->display_name + "  •  PRIZE / BARN CAR (0 CR)")
+                                : (sel_e->display_name + "  •  PERMANENT REMOVAL (0 CR)");
+    ui::TextStyle ss = ui4::style(ui::Font::kB, 12.5f * s, ui4::kAmber, ui::Align::kCenter);
+    ui4::fit_text(sub, ss, mw - 28.0f * s, 9.0f * s);
+    list.text(mx0 + 0.5f * mw, my0 + 52.0f * s, sub, ss);
+  }
+
   if (!notice.empty()) {
     ui4::brush(list, w - 420.0f * s, h - 68.0f * s, w - 56.0f * s, h - 38.0f * s, ui4::kPink);
     ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * s, ui4::kWhite, ui::Align::kRight);
@@ -2281,7 +2567,7 @@ void draw_garage_hud(ui::List& list, float w, float h, const GarageBrowser& brow
                    {"Y", "SORT"},
                    {"X", "FILTER"},
                    {"RB", "FAVORITE"},
-                   {"LB", "SELL CAR"},
+                   {"LB", "REMOVE CAR"},
                    {"B", "BACK"}},
                   w, h, 56.0f);
 }

@@ -72,6 +72,7 @@ class StoryIntro {
   static constexpr const char* kCorradoMedia = "VW_Corrado_95";
   static constexpr int kCorradoCarId = 309;
   static constexpr int kQualifyRouteId = 16;  // FESTIVAL_SECOND qualification route
+  static constexpr int kConvoyTarget = 5;     // Festival-bound convoy cars to overtake on Viper drive
   static constexpr double kFestivalArrivalRadiusM = 120.0;
 
   // Starts boot splash sequence (respects `skip_intro_movies` and
@@ -107,6 +108,12 @@ class StoryIntro {
   bool completed() const { return stage_ == StoryStage::kCompleted; }
   double stage_time() const { return stage_time_; }
   double distance_to_festival() const { return dist_to_festival_; }
+  void on_convoy_pass(int delta = 1) {
+    if (stage_ == StoryStage::kViperDrive && delta > 0)
+      convoy_passed_ = std::min(kConvoyTarget, convoy_passed_ + delta);
+  }
+  int convoy_passed() const { return convoy_passed_; }
+  int convoy_target() const { return kConvoyTarget; }
   const std::string& active_speaker() const { return active_speaker_; }
   const std::string& active_caption() const { return active_caption_; }
   const std::string& objective_title() const { return objective_title_; }
@@ -148,6 +155,7 @@ class StoryIntro {
   std::string objective_detail_;
   bool qualify_launched_ = false;
   bool ceremony_fmv_triggered_ = false;
+  int convoy_passed_ = 0;
 };
 
 }  // namespace carview

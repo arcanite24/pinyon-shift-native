@@ -225,7 +225,23 @@ std::filesystem::path ghost_file_path(const std::filesystem::path& ghost_dir, st
     else safe.push_back('_');
   }
   if (safe.empty()) safe = "run";
-  return ghost_dir / (safe + ".ghost");
+  return ghost_dir / (safe + ".shgh");
+}
+
+bool load_personal_best_ghost(const std::filesystem::path& ghost_dir, std::string_view event_id, GhostRun& out,
+                              std::string* error) {
+  const auto shgh_path = ghost_file_path(ghost_dir, event_id);
+  std::error_code ec;
+  if (std::filesystem::exists(shgh_path, ec)) {
+    return GhostRun::load(shgh_path, out, error);
+  }
+  auto legacy_path = shgh_path;
+  legacy_path.replace_extension(".ghost");
+  if (std::filesystem::exists(legacy_path, ec)) {
+    return GhostRun::load(legacy_path, out, error);
+  }
+  if (error) *error = "ghost: not found";
+  return false;
 }
 
 bool update_personal_best_ghost(const std::filesystem::path& ghost_dir, const GhostRun& candidate,
@@ -235,11 +251,138 @@ bool update_personal_best_ghost(const std::filesystem::path& ghost_dir, const Gh
   const auto path = ghost_file_path(ghost_dir, candidate.event_id);
   GhostRun existing;
   std::string load_err;
-  const bool have_existing = std::filesystem::exists(path) && GhostRun::load(path, existing, &load_err);
+  const bool have_existing = load_personal_best_ghost(ghost_dir, candidate.event_id, existing, &load_err);
   if (have_existing && !GhostRun::is_better(candidate, existing)) return true;
   if (!candidate.save(path, error)) return false;
   if (saved_new_best) *saved_new_best = true;
   return true;
+}
+
+std::array<RivalTarget, 3> generate_rivals_targets(std::string_view event_id, double base_time_s,
+                                                   int64_t base_prize_cr, bool is_rally_stage) {
+  // Deterministic hash from event_id so rival pairings stay consistent across sessions.
+  uint32_t h = 2166136261u;
+  for (unsigned char c : event_id) {
+    h ^= c;
+    h *= 16777619u;
+  }
+  static constexpr const char* kRoadBronze[] = {"DAK STEWART", "HOLLY CRUZ", "SCOTT TYLER", "ALI HOWARD"};
+  static constexpr const char* kRoadSilver[] = {"RAMONA CRAVACHE", "DUKE MAGUIRE", "ZAKI MALIK", "MARKO BARAN"};
+  static constexpr const char* kRoadGold[] = {"DARIUS FLYNT", "HALEY HARPER", "ALICE HART", "DARIUS FLYNT"};
+  static constexpr const char* kRallyBronze[] = {"COLIN MCRAE CLUB", "BOULDER DIRT CLUB", "RED ROCK CLUB", "PINYON CLUB"};
+  static constexpr const char* kRallySilver[] = {"CLEAR SPRINGS PRO", "MONTANO STAGE ACE", "BEAUMONT RALLY PRO", "COPPER RIDGE ACE"};
+  static constexpr const char* kRallyGold[] = {"HORIZON RALLY CHAMP", "COLORADO DIRT KING", "STAGE RECORD HOLDER", "GROUP B LEGEND"};
+
+  const double safe_base = std::max(15.0, base_time_s > 1.0 ? base_time_s : (is_rally_stage ? 95.0 : 120.0));
+  const int64_t safe_prize = std::max<int64_t>(10000, base_prize_cr);
+  const size_t pick = size_t(h % 4u);
+
+  std::array<RivalTarget, 3> out{};
+  out[0].tier_index = 1;
+  out[0].tier_label = "BRONZE";
+  out[0].rival_name = is_rally_stage ? kRallyBronze[pick] : kRoadBronze[pick];
+  out[0].target_time_s = safe_base * 1.12;
+  out[0].bounty_cr = std::max<int64_t>(2500, (safe_prize * 25) / 100);
+
+  out[1].tier_index = 2;
+  out[1].tier_label = "SILVER";
+  out[1].rival_name = is_rally_stage ? kRallySilver[pick] : kRoadSilver[pick];
+  out[1].target_time_s = safe_base * 1.04;
+  out[1].bounty_cr = std::max<int64_t>(5000, (safe_prize * 50) / 100);
+
+  out[2].tier_index = 3;
+  out[2].tier_label = "GOLD";
+  out[2].rival_name = is_rally_stage ? kRallyGold[pick] : kRoadGold[pick];
+  out[2].target_time_s = safe_base * 0.96;
+  out[2].bounty_cr = std::max<int64_t>(10000, safe_prize);
+  return out;
+}
+
+GhostRun synthesize_target_ghost(const std::vector<GhostWaypoint>& waypoints, double target_time_s,
+                                 std::string_view event_id, std::string_view rival_name,
+                                 std::string_view car_media, int64_t car_id, int shown_pi, double sample_interval) {
+  GhostRun out;
+  out.event_id = std::string(event_id);
+  out.driver_name = std::string(rival_name);
+  out.car_media = std::string(car_media);
+  out.car_id = car_id;
+  out.shown_pi = shown_pi;
+  out.total_time = std::max(1.0, target_time_s);
+  out.clean = true;
+  out.sample_interval = std::clamp(sample_interval, 1.0 / 60.0, 0.5);
+  if (waypoints.size() < 2) return out;
+
+  const double s0 = waypoints.front().progress;
+  const double s1 = waypoints.back().progress;
+  const double total_len = std::max(1.0, s1 - s0);
+  const double avg_speed = total_len / out.total_time;
+  const int steps = std::max(2, int(std::ceil(out.total_time / out.sample_interval)));
+  out.samples.reserve(size_t(steps) + 1);
+
+  auto eval_at_progress = [&](double s_want, double& x, double& y, double& z, double& dx, double& dy, double& dz) {
+    auto it = std::lower_bound(waypoints.begin(), waypoints.end(), s_want,
+                               [](const GhostWaypoint& w, double v) { return w.progress < v; });
+    size_t i1 = size_t(it - waypoints.begin());
+    if (i1 == 0) i1 = 1;
+    if (i1 >= waypoints.size()) i1 = waypoints.size() - 1;
+    const auto& a = waypoints[i1 - 1];
+    const auto& b = waypoints[i1];
+    const double seg = b.progress - a.progress;
+    const double u = seg > 1e-6 ? std::clamp((s_want - a.progress) / seg, 0.0, 1.0) : 0.0;
+    x = a.x + u * (b.x - a.x);
+    y = a.y + u * (b.y - a.y);
+    z = a.z + u * (b.z - a.z);
+    dx = b.x - a.x;
+    dy = b.y - a.y;
+    dz = b.z - a.z;
+  };
+
+  for (int i = 0; i <= steps; ++i) {
+    const double frac = double(i) / double(steps);
+    const double t = frac * out.total_time;
+    // Slight smooth standing-launch ramp over the first 2 seconds, then steady target pace.
+    const double ramp_f = std::min(1.0, t / 2.0);
+    const double eff_frac = std::clamp(frac, 0.0, 1.0);
+    const double s_cur = s0 + eff_frac * total_len;
+    double x = 0, y = 0, z = 0, dx = 0, dy = 0, dz = 1;
+    eval_at_progress(s_cur, x, y, z, dx, dy, dz);
+    const double horiz = std::hypot(dx, dz);
+    const double heading = horiz > 1e-6 ? std::atan2(dx, dz) : 0.0;
+    const double pitch = horiz > 1e-6 ? std::atan2(dy, horiz) : 0.0;
+    const double cy = std::cos(heading * 0.5), sy = std::sin(heading * 0.5);
+    const double cp = std::cos(-pitch * 0.5), sp = std::sin(-pitch * 0.5);
+    GhostSample gs{};
+    gs.time = t;
+    gs.x = x;
+    gs.y = y;
+    gs.z = z;
+    gs.qx = cy * sp;
+    gs.qy = sy * cp;
+    gs.qz = -sy * sp;
+    gs.qw = cy * cp;
+    gs.speed = avg_speed * (0.25 + 0.75 * ramp_f);
+    gs.gear = std::clamp(1 + int(gs.speed / 14.0), 1, 6);
+    out.record(gs, i == 0 || i == steps);
+  }
+  return out;
+}
+
+int64_t evaluate_rivals_bounty(double player_time_s, bool clean, double target_time_s, int64_t base_bounty_cr,
+                               bool& beat_rival) {
+  beat_rival = (player_time_s > 0.0 && target_time_s > 0.0 && player_time_s < target_time_s);
+  if (!beat_rival || base_bounty_cr <= 0) return 0;
+  return clean ? base_bounty_cr : std::max<int64_t>(500, (base_bounty_cr * 75) / 100);
+}
+
+std::string format_rivals_time(double seconds) {
+  if (!(seconds > 0.0) || !std::isfinite(seconds)) return "--:--.---";
+  const int total_ms = int(std::llround(seconds * 1000.0));
+  const int mins = total_ms / 60000;
+  const int secs = (total_ms / 1000) % 60;
+  const int ms = total_ms % 1000;
+  char buf[32];
+  std::snprintf(buf, sizeof buf, "%02d:%02d.%03d", mins, secs, ms);
+  return buf;
 }
 
 }  // namespace race

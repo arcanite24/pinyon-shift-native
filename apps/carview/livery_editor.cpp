@@ -56,6 +56,12 @@ bool LiveryEditor::open(const cars::PartsDb* db, const std::filesystem::path& ga
   if (!liv_path.empty() && liv_path.has_parent_path()) {
     catalog_dir_ = liv_path.parent_path();
     scan_design_catalog(catalog_dir_);
+    vg_dir_ = catalog_dir_ / "vinyl_groups";
+    scan_vinyl_group_catalog(vg_dir_);
+  } else {
+    vg_dir_.clear();
+    vg_catalog_.clear();
+    vg_idx_ = 0;
   }
   uint32_t max_gid = 0;
   for (const auto& ly : doc_.layers) {
@@ -606,6 +612,57 @@ void LiveryEditor::toggle_layer_group() {
   dirty_ = true;
 }
 
+bool LiveryEditor::group_layers(const std::vector<size_t>& indices) {
+  if (indices.size() < 2 || doc_.layers.empty()) return false;
+  std::vector<size_t> valid;
+  valid.reserve(indices.size());
+  for (size_t idx : indices) {
+    if (idx < doc_.layers.size() && std::find(valid.begin(), valid.end(), idx) == valid.end()) {
+      valid.push_back(idx);
+    }
+  }
+  if (valid.size() < 2) return false;
+  push_undo();
+  const int gid = int(next_group_id_++);
+  for (size_t idx : valid) doc_.layers[idx].group_id = gid;
+  layer_idx_ = valid.front();
+  dirty_ = true;
+  return true;
+}
+
+bool LiveryEditor::ungroup_selected_group() {
+  if (layer_idx_ >= doc_.layers.size()) return false;
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid == 0) return false;
+  push_undo();
+  for (auto& ly : doc_.layers) {
+    if (ly.group_id == gid) ly.group_id = 0;
+  }
+  dirty_ = true;
+  return true;
+}
+
+bool LiveryEditor::transform_selected_group(float dx, float dy, float scale_x_factor, float scale_y_factor,
+                                            float drot_deg) {
+  if (layer_idx_ >= doc_.layers.size()) return false;
+  const int gid = doc_.layers[layer_idx_].group_id;
+  push_undo();
+  cars::VinylGroup vg;
+  std::vector<size_t> member_indices;
+  for (size_t i = 0; i < doc_.layers.size(); ++i) {
+    if (gid != 0 ? (doc_.layers[i].group_id == gid) : (i == layer_idx_)) {
+      vg.layers.push_back(doc_.layers[i]);
+      member_indices.push_back(i);
+    }
+  }
+  cars::transform_vinyl_group(vg, dx, dy, scale_x_factor, scale_y_factor, drot_deg);
+  for (size_t k = 0; k < member_indices.size(); ++k) {
+    doc_.layers[member_indices[k]] = vg.layers[k];
+  }
+  dirty_ = true;
+  return true;
+}
+
 bool LiveryEditor::duplicate_selected_layer() {
   if (layer_idx_ >= doc_.layers.size()) return false;
   push_undo();
@@ -638,35 +695,134 @@ bool LiveryEditor::duplicate_selected_layer() {
 bool LiveryEditor::mirror_selected_layer() {
   if (layer_idx_ >= doc_.layers.size()) return false;
   push_undo();
-  cars::VinylLayer mir = doc_.layers[layer_idx_];
-  const float norm_rot = std::fmod(std::fmod(mir.rot_deg, 360.0f) + 360.0f, 360.0f);
-  if (mir.plane == cars::LiveryPlaneKind::kLeft || mir.plane == cars::LiveryPlaneKind::kRight) {
-    // Left <-> Right viewer coordinates both have y=0 at roof and y=1 at rocker;
-    // nose sits at x=0 on Left and x=1 on Right, while composite_livery rotates
-    // the Right plane by Masks.xml rotation=180 into right.tga atlas space.
-    mir.plane = (mir.plane == cars::LiveryPlaneKind::kLeft) ? cars::LiveryPlaneKind::kRight
-                                                            : cars::LiveryPlaneKind::kLeft;
-    mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
-    mir.flip_x = !mir.flip_x;
-    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
-    mir.skew = -mir.skew;
-  } else if (mir.plane == cars::LiveryPlaneKind::kTop) {
-    // Top plane runs nose-to-tail along X and left-to-right across the car along Y.
-    mir.y = std::clamp(1.0f - mir.y, 0.0f, 1.0f);
-    mir.flip_y = !mir.flip_y;
-    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
-    mir.skew = -mir.skew;
-  } else {
-    // Front, Rear, Wing, and FullAtlas mirror symmetrically across horizontal X.
-    mir.x = std::clamp(1.0f - mir.x, 0.0f, 1.0f);
-    mir.flip_x = !mir.flip_x;
-    mir.rot_deg = std::fmod(360.0f - norm_rot, 360.0f);
-    mir.skew = -mir.skew;
+  const int gid = doc_.layers[layer_idx_].group_id;
+  if (gid != 0) {
+    cars::VinylGroup src;
+    for (const auto& ly : doc_.layers) {
+      if (ly.group_id == gid) src.layers.push_back(ly);
+    }
+    cars::VinylGroup mirrored = cars::mirror_vinyl_group(src, true);
+    const int new_gid = int(next_group_id_++);
+    const size_t ins = doc_.layers.size();
+    for (auto& ml : mirrored.layers) {
+      ml.group_id = new_gid;
+      doc_.layers.push_back(std::move(ml));
+    }
+    layer_idx_ = ins;
+    dirty_ = true;
+    return true;
   }
-  doc_.layers.insert(doc_.layers.begin() + ptrdiff_t(layer_idx_ + 1), mir);
+  cars::VinylGroup single;
+  single.layers.push_back(doc_.layers[layer_idx_]);
+  cars::VinylGroup mirrored = cars::mirror_vinyl_group(single, true);
+  doc_.layers.insert(doc_.layers.begin() + ptrdiff_t(layer_idx_ + 1), mirrored.layers.front());
   layer_idx_ += 1;
   dirty_ = true;
   return true;
+}
+
+void LiveryEditor::scan_vinyl_group_catalog(const std::filesystem::path& groups_dir) {
+  vg_catalog_.clear();
+  vg_idx_ = 0;
+  vg_dir_ = groups_dir;
+  if (groups_dir.empty()) return;
+  std::error_code ec;
+  if (!std::filesystem::is_directory(groups_dir, ec)) return;
+  for (const auto& entry : std::filesystem::directory_iterator(groups_dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    if (entry.path().extension() != ".vg") continue;
+    cars::VinylGroup tmp;
+    if (!cars::load_vinyl_group_file(entry.path(), tmp, nullptr)) continue;
+    VinylGroupCatalogEntry e;
+    e.path = entry.path();
+    e.name = tmp.name.empty() ? entry.path().stem().string() : tmp.name;
+    e.layer_count = tmp.layers.size();
+    vg_catalog_.push_back(std::move(e));
+  }
+  std::sort(vg_catalog_.begin(), vg_catalog_.end(),
+            [](const VinylGroupCatalogEntry& a, const VinylGroupCatalogEntry& b) { return a.name < b.name; });
+}
+
+void LiveryEditor::move_vinyl_group_selection(int by) {
+  if (vg_catalog_.empty()) return;
+  const int n = int(vg_catalog_.size());
+  vg_idx_ = size_t(((int(vg_idx_) + by) % n + n) % n);
+}
+
+void LiveryEditor::select_vinyl_group_index(size_t idx) {
+  if (vg_catalog_.empty()) return;
+  vg_idx_ = std::min(idx, vg_catalog_.size() - 1);
+}
+
+bool LiveryEditor::save_selected_group_stamp(const std::filesystem::path& groups_dir, const std::string& group_name,
+                                             std::string* error) {
+  if (layer_idx_ >= doc_.layers.size()) {
+    if (error) *error = "no vinyl layer selected";
+    return false;
+  }
+  const std::filesystem::path dir = !groups_dir.empty() ? groups_dir : vg_dir_;
+  if (dir.empty()) {
+    if (error) *error = "no vinyl groups directory";
+    return false;
+  }
+  const int gid = doc_.layers[layer_idx_].group_id;
+  cars::VinylGroup vg;
+  const std::string clean_name = group_name.empty() ? ("Group_" + std::to_string(vg_catalog_.size() + 1)) : group_name;
+  if (gid != 0) {
+    vg = cars::extract_vinyl_group(doc_.layers, gid, clean_name);
+  } else {
+    vg.name = clean_name;
+    cars::VinylLayer one = doc_.layers[layer_idx_];
+    one.x = 0.5f;
+    one.y = 0.5f;
+    one.group_id = 0;
+    vg.layers.push_back(std::move(one));
+  }
+  std::string stem;
+  for (unsigned char ch : clean_name) {
+    if (std::isalnum(ch) || ch == '-' || ch == '_') stem.push_back(char(ch));
+    else if (ch == ' ') stem.push_back('_');
+  }
+  if (stem.empty()) stem = "vinyl_group";
+  const auto dst = dir / (stem + ".vg");
+  if (!cars::save_vinyl_group_file(dst, vg, error)) return false;
+  scan_vinyl_group_catalog(dir);
+  for (size_t i = 0; i < vg_catalog_.size(); ++i) {
+    if (vg_catalog_[i].path == dst) {
+      vg_idx_ = i;
+      break;
+    }
+  }
+  return true;
+}
+
+bool LiveryEditor::stamp_vinyl_group_file(const std::filesystem::path& vg_path, cars::LiveryPlaneKind target_plane,
+                                          float cx, float cy, std::string* error) {
+  cars::VinylGroup vg;
+  if (!cars::load_vinyl_group_file(vg_path, vg, error)) return false;
+  push_undo();
+  const int new_gid = int(next_group_id_++);
+  auto stamped = cars::instantiate_vinyl_group(vg, target_plane, cx, cy, 1.0f, 1.0f, 0.0f, new_gid);
+  if (stamped.empty()) {
+    undo_stack_.pop_back();
+    if (error) *error = "vinyl group has no layers";
+    return false;
+  }
+  const size_t ins = doc_.layers.size();
+  for (auto& ly : stamped) doc_.layers.push_back(std::move(ly));
+  layer_idx_ = ins;
+  dirty_ = true;
+  return true;
+}
+
+bool LiveryEditor::stamp_selected_vinyl_group(std::string* error) {
+  if (vg_catalog_.empty() || vg_idx_ >= vg_catalog_.size()) {
+    if (error) *error = "no vinyl group selected";
+    return false;
+  }
+  const cars::LiveryPlaneKind target_plane =
+      (layer_idx_ < doc_.layers.size()) ? doc_.layers[layer_idx_].plane : cars::LiveryPlaneKind::kFullAtlas;
+  return stamp_vinyl_group_file(vg_catalog_[vg_idx_].path, target_plane, 0.5f, 0.5f, error);
 }
 
 bool LiveryEditor::copy_selected_layer() {
@@ -855,8 +1011,9 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
               editor.has_clipboard() ? "CLIPBOARD: COPIED" : "LIV CLIPBOARD",
               ui4::style(ui::Font::kE, 11.5f * s, editor.has_clipboard() ? ui4::kYellow : ui4::kPink));
     list.text(cb_x0 + 14.0f * s, cb_y0 + 30.0f * s,
-              std::to_string(editor.document().layers.size()) + " LAYERS",
-              ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite));
+              std::to_string(editor.document().layers.size()) + " LAYERS  •  " +
+                  std::to_string(editor.vinyl_group_catalog().size()) + " VG",
+              ui4::style(ui::Font::kE, 14.0f * s, ui4::kWhite));
     list.text(cb_x0 + 14.0f * s, cb_y0 + 52.0f * s,
               std::string("CAT: ") + shape_category_name(editor.shape_category()) + " (" +
                   std::to_string(editor.library_shape_count()) + ")",
@@ -1187,8 +1344,9 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
 
         if (is_layer) {
           const auto& ly = layers[size_t(idx)];
-          char idx_b[16];
-          std::snprintf(idx_b, sizeof idx_b, "LAYER %02d", idx + 1);
+          char idx_b[32];
+          if (ly.group_id > 0) std::snprintf(idx_b, sizeof idx_b, "LAYER %02d [G%d]", idx + 1, ly.group_id);
+          else std::snprintf(idx_b, sizeof idx_b, "LAYER %02d", idx + 1);
           list.text(bx + 10.0f * s, by + 8.0f * s - lift, idx_b, ui4::style(ui::Font::kE, 11.0f * s, ui4::kYellow));
           list.rect(bx + cw - 36.0f * s, by + 8.0f * s - lift, bx + cw - 10.0f * s, by + 34.0f * s - lift,
                     ui::rgba(uint8_t((ly.rgb >> 16) & 0xFF), uint8_t((ly.rgb >> 8) & 0xFF), uint8_t(ly.rgb & 0xFF), 255));

@@ -17,6 +17,7 @@
 #include "achievements.h"
 #include "drive/save.h"
 #include "fh1data/spa.h"
+#include "race/career.h"
 #include "ui4_chrome.h"
 
 namespace {
@@ -495,6 +496,67 @@ void test_achievements_system_and_persistence() {
     st = carview::AchievementGameplayState::from_drive_save(ds);
     r2_sys.evaluate(st, false);
     assert(r2_sys.find(215)->unlocked);
+  }
+
+  // R3-CAM-17 parity: real street_races_won from event_results (no fabricated time_street heuristic),
+  // Popularity Rank (1..250) on IDs 170..174, and ALL outposts (total_outposts = 10) on ID 187.
+  {
+    fh1::SpaDatabase r3_db;
+    for (uint16_t id : {uint16_t(170), uint16_t(171), uint16_t(172), uint16_t(173), uint16_t(174), uint16_t(183),
+                        uint16_t(184), uint16_t(187)}) {
+      fh1::SpaAchievement sa;
+      sa.id = id;
+      sa.gamerscore = 20;
+      sa.label = "R3 Ach #" + std::to_string(id);
+      r3_db.achievements.push_back(sa);
+    }
+    carview::AchievementsSystem r3_sys;
+    r3_sys.init(r3_db);
+
+    // 1. Fabricated street_races_won MUST NOT happen from time_street + num_victories alone.
+    drive::DriveSave ds;
+    ds.time_street = 500.0;
+    ds.num_victories = 40;
+    ds.popularity_points = 999999.0;  // raw points alone must NOT unlock Popularity Rank achievements!
+    for (int i = 1; i <= 6; ++i) ds.discovered_outposts.push_back("GasStation_0" + std::to_string(i));
+    auto st0 = carview::AchievementGameplayState::from_drive_save(ds);
+    assert(st0.street_races_won == 0);
+    assert(st0.popularity_rank == 250);
+    r3_sys.evaluate(st0, false);
+    assert(!r3_sys.find(170)->unlocked && !r3_sys.find(171)->unlocked && !r3_sys.find(174)->unlocked);
+    assert(!r3_sys.find(184)->unlocked);
+    // 6 outposts is NOT enough when Colorado has 10 total outposts!
+    assert(!r3_sys.find(187)->unlocked && r3_sys.find(187)->progress->target == 10);
+
+    // 2. Real street vs festival wins classified via CareerCatalog + Popularity Rank milestones + all 10 outposts.
+    race::CareerCatalog cat;
+    for (int i = 1; i <= 10; ++i) {
+      race::CareerEvent se;
+      se.event_id = 100 + i;
+      se.style = 2;  // Street Race
+      cat.events.push_back(se);
+      ds.event_results.emplace_back(se.event_id, 1);
+
+      race::CareerEvent fe;
+      fe.event_id = 200 + i;
+      fe.style = 1;  // Festival Race
+      cat.events.push_back(fe);
+      ds.event_results.emplace_back(fe.event_id, 1);
+    }
+    for (int i = 7; i <= 10; ++i) ds.discovered_outposts.push_back("GasStation_" + std::to_string(i));
+    auto st1 = carview::AchievementGameplayState::from_drive_save(ds, 0, 0, &cat, /*popularity_rank=*/50,
+                                                                  /*total_outposts=*/10);
+    assert(st1.street_races_won == 10 && st1.festival_races_won == 10);
+    r3_sys.evaluate(st1, false);
+    assert(r3_sys.find(183)->unlocked && r3_sys.find(184)->unlocked);
+    assert(r3_sys.find(187)->unlocked);
+    // Rank 50 unlocks Top 200 (170), Top 100 (171), Top 50 (172), NOT Top 10 (173) or #1 (174).
+    assert(r3_sys.find(170)->unlocked && r3_sys.find(171)->unlocked && r3_sys.find(172)->unlocked);
+    assert(!r3_sys.find(173)->unlocked && !r3_sys.find(174)->unlocked);
+
+    st1.popularity_rank = 1;
+    r3_sys.evaluate(st1, false);
+    assert(r3_sys.find(173)->unlocked && r3_sys.find(174)->unlocked);
   }
 }
 

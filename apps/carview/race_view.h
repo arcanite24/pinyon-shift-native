@@ -35,6 +35,8 @@
 #include "showroom.h"
 
 namespace drive {
+struct ReplayCarInfo;
+struct ReplayCarSample;
 struct RewindActorPose;
 }
 
@@ -154,7 +156,7 @@ class RaceView {
   // awarded this call. `top_speed` m/s for the counters.
   const race::RaceAward* award(race::CareerRecord& career, const race::WristbandTables& tables, double top_speed,
                                const race::RaceBonusInputs& extras = {});
-  // Opponents' 3D world positions + names + leader flag (for overhead tags and skill detection).
+  // Opponents' 3D world positions + names + leader flag (for overhead tags, skill detection, and Horizon Promo).
   struct OpponentTag {
     double x = 0, y = 0, z = 0;
     double speed = 0;
@@ -162,7 +164,13 @@ class RaceView {
     bool leader = false;
     double vx = 0, vy = 0, vz = 0;
     double rpm = 1000;
+    int64_t car_id = 0;
+    std::string car_media;
+    std::string car_name;
   };
+  // Collects full Race AI opponent metadata & per-frame samples (quaternion, wheels, lamps, audio/VFX events) for replays.
+  void collect_replay_roster(std::vector<drive::ReplayCarInfo>& out) const;
+  void collect_replay_samples(std::vector<drive::ReplayCarSample>& out) const;
   // Airborne Showcase support (PLANE_RACE_001..007): textured 3D aircraft mesh & sky tag.
   bool is_showcase() const { return showcase_.active(); }
   const race::ShowcaseOpponent& showcase() const { return showcase_; }
@@ -234,6 +242,12 @@ class RaceView {
   bool ghost_sample(race::GhostSample& out) const;
   void enable_ghost_recording(bool on);
   const race::GhostRun& recorded_ghost() const { return recorded_ghost_; }
+  // Synthesizes a target-tier `.shgh` ghost along this event's racing line finishing in `target_time_s`.
+  bool build_rivals_ghost(double target_time_s, std::string_view rival_name, std::string_view car_media,
+                          int64_t car_id, int shown_pi, race::GhostRun& out) const;
+  // Solo Rivals / Time Trials mode: hides AI opponents & disables AI-vs-player collision so the player races the ghost 1v1.
+  void set_rivals_solo(bool on) { rivals_solo_ = on; }
+  bool rivals_solo() const { return rivals_solo_; }
   std::string summary() const;
 
   // Full race-world rewind snapshot & restore (P0-4): captures every AI rival
@@ -384,6 +398,8 @@ class RaceView {
   Showroom* ghost_model_ = nullptr;
   bool record_ghost_ = false;
   race::GhostRun recorded_ghost_;
+  bool rivals_solo_ = false;
+  mutable std::vector<int8_t> replay_prev_gears_;
   // Persistent worker pool for parallel multi-car AI physics steps (zero per-step spawn cost).
   struct PhysicsStepPool;
   std::unique_ptr<PhysicsStepPool> step_pool_;

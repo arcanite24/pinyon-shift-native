@@ -64,6 +64,12 @@ struct DesignCatalogEntry {
   size_t layer_count = 0;
 };
 
+struct VinylGroupCatalogEntry {
+  std::string name;
+  std::filesystem::path path;
+  size_t layer_count = 0;
+};
+
 class LiveryEditor {
  public:
   bool open(const cars::PartsDb* db, const std::filesystem::path& game_root, int64_t car_id,
@@ -128,11 +134,27 @@ class LiveryEditor {
   void adjust_layer_alpha(float dalpha);
   void toggle_layer_mask();
   void toggle_layer_group();
+  bool group_layers(const std::vector<size_t>& indices);
+  bool ungroup_selected_group();
+  bool transform_selected_group(float dx, float dy, float scale_x_factor, float scale_y_factor, float drot_deg);
   bool duplicate_selected_layer();
   bool mirror_selected_layer();
   bool copy_selected_layer();
   bool paste_layer();
   bool has_clipboard() const { return clipboard_.has_value(); }
+
+  // Reusable Vinyl Group `.vg` stamp catalog (save/load/stamp across cars & sides).
+  void scan_vinyl_group_catalog(const std::filesystem::path& groups_dir);
+  const std::vector<VinylGroupCatalogEntry>& vinyl_group_catalog() const { return vg_catalog_; }
+  size_t selected_vinyl_group() const { return vg_idx_; }
+  void move_vinyl_group_selection(int by);
+  void select_vinyl_group_index(size_t idx);
+  bool save_selected_group_stamp(const std::filesystem::path& groups_dir, const std::string& group_name,
+                                 std::string* error = nullptr);
+  bool stamp_vinyl_group_file(const std::filesystem::path& vg_path, cars::LiveryPlaneKind target_plane,
+                              float cx = 0.5f, float cy = 0.5f, std::string* error = nullptr);
+  bool stamp_selected_vinyl_group(std::string* error = nullptr);
+  const std::filesystem::path& vinyl_groups_dir() const { return vg_dir_; }
 
   // Debounced / throttled GPU livery preview upload state (eliminates per-tick
   // vkDeviceWaitIdle stalls during analog stick dragging).
@@ -216,6 +238,9 @@ class LiveryEditor {
   size_t catalog_idx_ = 0;
   bool catalog_open_ = false;
   std::filesystem::path catalog_dir_;
+  std::vector<VinylGroupCatalogEntry> vg_catalog_;
+  size_t vg_idx_ = 0;
+  std::filesystem::path vg_dir_;
   uint32_t next_group_id_ = 1;
   size_t special_idx_ = 0;
   size_t mfg_idx_ = 0;

@@ -209,21 +209,28 @@ int main() {
     auto e1 = tr.step(in);
     CHECK(e1.size() == 1 && e1[0].kind == SkillEvent::kSkillAwarded);
     in.smashed_object = false;
-    in.time = 1.4;  // >= 0.3 s later: queued Landscaping tag flushes & triggers AnySkill sponsor tier!
+    in.time = 1.4;  // >= 0.3 s later: queued Landscaping tag flushes (sponsor progress deferred until bank!)
     auto e2 = tr.step(in);
-    bool got_landscaping = false, got_sponsor = false;
+    bool got_landscaping = false, got_sponsor_unbanked = false;
     for (const auto& ev : e2) {
       if (ev.skill_id == "Landscaping") got_landscaping = true;
-      if (ev.kind == SkillEvent::kSponsorChallenge && ev.credits == 5000) got_sponsor = true;
+      if (ev.kind == SkillEvent::kSponsorChallenge) got_sponsor_unbanked = true;
     }
     CHECK(got_landscaping);
-    CHECK(got_sponsor);
-    // 2. Bank chain after timeout at speed -> updates MaxSkillsCarOrdinal!
+    CHECK(!got_sponsor_unbanked);
+    // 2. Bank chain after timeout at speed -> commits deferred AnySkill sponsor tier & updates MaxSkillsCarOrdinal!
     in.time = 5.0;
     auto e3 = tr.step(in);
-    CHECK(!e3.empty() && e3[0].kind == SkillEvent::kChainBanked);
+    bool got_banked = false, got_sponsor_banked = false;
+    for (const auto& ev : e3) {
+      if (ev.kind == SkillEvent::kChainBanked) got_banked = true;
+      if (ev.kind == SkillEvent::kSponsorChallenge && ev.credits == 5000) got_sponsor_banked = true;
+    }
+    CHECK(got_banked);
+    CHECK(got_sponsor_banked);
     CHECK(tr.max_skills_score() >= 1100 && tr.max_skills_car() == 1219);
-    // 3. MinSpeedToCancelFeats: dropping below 10 mph cancels active chain instead of banking!
+    // 3. R3-CAM-05: Braking to a stop (< 10 mph for > 1 s) must NOT destroy the unbanked Skill Chain;
+    //    the chain lets bank_timeout expire and banks cleanly!
     in.time = 6.0;
     in.car_impact_ms = 2.0;  // Trading Paint (below 12 m/s crash threshold)
     in.nearest_car_dist = 2.0;
@@ -235,7 +242,28 @@ int main() {
     in.forward_speed_ms = 2.0;
     in.time = 7.5;
     auto e5 = tr.step(in);
-    CHECK(!e5.empty() && e5[0].kind == SkillEvent::kChainLost);
+    bool lost_on_brake = false;
+    for (const auto& ev : e5)
+      if (ev.kind == SkillEvent::kChainLost) lost_on_brake = true;
+    CHECK(!lost_on_brake && tr.hud().active);
+    in.time = 9.2;  // >= 3.0 s bank_timeout after t=6.0 -> banks cleanly while stopped!
+    auto e6 = tr.step(in);
+    bool banked_on_stop = false;
+    for (const auto& ev : e6)
+      if (ev.kind == SkillEvent::kChainBanked) banked_on_stop = true;
+    CHECK(banked_on_stop && !tr.hud().active);
+    // Hard collision (>= 12 m/s) still cancels an active chain!
+    in.speed_ms = 30.0;
+    in.forward_speed_ms = 30.0;
+    in.time = 10.0;
+    in.smashed_object = true;
+    in.smashed_type = SmashObjectType::kGeneric;
+    CHECK(!tr.step(in).empty());
+    in.smashed_object = false;
+    in.time = 10.5;
+    in.world_impact_ms = 15.0;
+    auto e7 = tr.step(in);
+    CHECK(!e7.empty() && e7[0].kind == SkillEvent::kChainLost);
   }
 
   // Synthetic Festival AI & Head-to-Head point-to-point race.
@@ -620,7 +648,8 @@ int main() {
     CHECK(h_after.active && h_after.chain_points == h_before.chain_points && h_after.multiplier == h_before.multiplier);
     CHECK(st.chain_remaining_s(11.5) > 2.0);
   }
-  // Phase 1 parity: Sponsor challenge active tier checks sc.tiers[claimed_tiers] (not always tiers[0]).
+  // Phase 1 + R3-CAM-10 parity: Sponsor challenge active tier checks sc.tiers[claimed_tiers]
+  // AND defers increments until chain banks (wiping on cancel_chain).
   {
     SkillsData sd;
     sd.bank_timeout = 3.0;
@@ -631,12 +660,39 @@ int main() {
     sc.tiers = {{"Drift", 4, 1, 1000}, {"Drift", 1, 2, 5000}};  // tier 0: any grade x1; tier 1: Awesome (grade 3+) x2
     sd.sponsor_challenges.push_back(sc);
     SkillTracker st(sd, 0.0, 0);
-    st.award_named("Drift", 1, 1.0);  // Standard -> satisfies tier 0
+    auto bank_at = [&](double t) {
+      SkillInput bi;
+      bi.dt = 0.1;
+      bi.time = t;
+      bi.speed_ms = 20.0;
+      bi.forward_speed_ms = 20.0;
+      return st.step(bi);
+    };
+    st.award_named("Drift", 1, 1.0);  // Unbanked -> must NOT commit sponsor progress yet!
+    CHECK(st.sponsor_progress().find("test_sponsor") == st.sponsor_progress().end() ||
+          st.sponsor_progress().at("test_sponsor").claimed_tiers == 0);
+    // Hard collision cancels chain and wipes deferred sponsor feat!
+    {
+      SkillInput crash;
+      crash.dt = 0.1;
+      crash.time = 1.5;
+      crash.speed_ms = 25.0;
+      crash.forward_speed_ms = 25.0;
+      crash.world_impact_ms = 20.0;
+      st.step(crash);
+    }
+    CHECK(st.sponsor_progress().find("test_sponsor") == st.sponsor_progress().end() ||
+          st.sponsor_progress().at("test_sponsor").count == 0);
+    // Now award & bank cleanly (after 3.0 s cancel lockout -> t=6.0):
+    st.award_named("Drift", 1, 6.0);
+    bank_at(10.0);
     CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 1);
-    st.award_named("Drift", 1, 2.0);  // Standard -> must NOT advance tier 1 (requires Awesome)
+    st.award_named("Drift", 1, 11.0);  // Standard -> must NOT advance tier 1 (requires Awesome)
+    bank_at(15.0);
     CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 1);
     CHECK(st.sponsor_progress().at("test_sponsor").count == 1);
-    st.award_named("Drift", 3, 3.0);  // Awesome -> increments count to 2 and claims tier 1
+    st.award_named("Drift", 3, 16.0);  // Awesome -> increments count to 2 and claims tier 1 on bank!
+    bank_at(20.0);
     CHECK(st.sponsor_progress().at("test_sponsor").claimed_tiers == 2);
   }
   // R2-5 parity: Fame.xml dialogueEvent & radioFestivalUpdate propagate onto FameLevel and kRankUp SkillEvent.
@@ -739,6 +795,162 @@ int main() {
     auto ev38 = wfr.step(c38);
     CHECK(ev38.size() == 1 && ev38[0].kind == Event::kSignSmashed && ev38[0].index == 1);
     CHECK(wfr.signs_found() == 2 && wfr.hidden()->count("flyer_038"));
+  }
+
+  // Round 3 parity: R3-CAM-04 (add_popularity rank-up/sponsor), R3-CAM-10 (1.0x..5.0x 0.5x multiplier + Donut XML),
+  // R3-CAM-11 (Speed Zone off-road fail, Rewind cancel & corridor distance), R3-CAM-09 (Barn progression gating),
+  // R3-CAM-21 (H2H wager alignment & difficulty scaling).
+  {
+    // 1. R3-CAM-04: add_popularity() triggers rank-up, Fame Sponsor CR payouts, and Showcase dialogue/radio metadata.
+    const char* kFame = R"(<Fame>
+      <Level rank="249" target="1000" dialogueEvent="Rank249Dlg"/>
+      <Level rank="225" target="5000" radioFestivalUpdate="Rank225Radio"/>
+    </Fame>)";
+    const char* kFeats = R"(<RaceFeats WorldCollisionThreshold="12" CarCollisionThreshold="12" MinSpeedToCancelFeats="10" DelayAfterCancelling="3">
+      <Donut RetriggerDelay="1.0">
+        <Grade LocString="IDS_Donut4" Distance="45" Fame="600"/>
+        <Grade LocString="IDS_Donut3" Distance="30" Fame="350"/>
+        <Grade LocString="IDS_Donut2" Distance="18" Fame="200"/>
+        <Grade LocString="IDS_Donut1" Distance="8" Fame="120"/>
+      </Donut>
+    </RaceFeats>)";
+    const char* kSpon = R"(<SkillChallenges>
+      <Challenge id="Fame" type="FameRankChallenge"><Rank levelRequired="225" credits="5000"/></Challenge>
+    </SkillChallenges>)";
+    SkillsData sd;
+    std::string serr;
+    CHECK(parse_skills_data(kFame, kFeats, kSpon, sd, &serr));
+    SkillTracker tr(sd, 0.0, 0);
+    // Explicit-time add_popularity immediately evaluates & returns rank-up + Fame Sponsor payout.
+    auto pop_evs = tr.add_popularity(5000.0, 2.0);
+    bool saw_rank = false, saw_sponsor = false;
+    for (const auto& ev : pop_evs) {
+      if (ev.kind == SkillEvent::kRankUp && ev.rank == 225 && ev.dialogue_event == "Rank249Dlg" &&
+          ev.radio_festival_update == "Rank225Radio")
+        saw_rank = true;
+      if (ev.kind == SkillEvent::kFameSponsor && ev.credits == 5000) saw_sponsor = true;
+    }
+    CHECK(saw_rank && saw_sponsor);
+    CHECK(tr.popularity_rank() == 225 && tr.fame_rewards_claimed() == 1);
+    // 1-arg add_popularity queues events for the next step() call so fire-and-forget callers receive them.
+    SkillTracker tr2(sd, 0.0, 0);
+    tr2.add_popularity(5000.0);
+    CHECK(tr2.popularity_rank() == 225 && tr2.fame_rewards_claimed() == 1);
+    SkillInput ping;
+    ping.dt = 0.1;
+    ping.time = 3.0;
+    ping.speed_ms = 20.0;
+    ping.forward_speed_ms = 20.0;
+    auto step_evs = tr2.step(ping);
+    bool step_rank = false, step_spon = false;
+    for (const auto& ev : step_evs) {
+      if (ev.kind == SkillEvent::kRankUp && ev.rank == 225) step_rank = true;
+      if (ev.kind == SkillEvent::kFameSponsor && ev.credits == 5000) step_spon = true;
+    }
+    CHECK(step_rank && step_spon);
+
+    // 2. R3-CAM-10: Float multiplier 1.0x..5.0x in 0.5x steps + Donut XML grades.
+    SkillTracker tm(sd, 0.0, 0);
+    CHECK(near(tm.chain_multiplier(), 1.0f));
+    for (int i = 1; i <= 10; ++i) {
+      tm.award_named("Drift", 1, 1.0 + i * 0.5);
+      const float expected = std::min(5.0f, 1.0f + 0.5f * float(i - 1));
+      CHECK(near(tm.chain_multiplier(), expected, 1e-4));
+      CHECK(near(tm.hud().multiplier_f, expected, 1e-4));
+    }
+    CHECK(near(tm.chain_multiplier(), 5.0f, 1e-4));
+
+    // Donut XML grades: ~20 m distance spin (>= 18 m, < 30 m) awards grade 2 with XML Fame=200 (not hardcoded 150!).
+    SkillTracker td(sd, 0.0, 0);
+    SkillInput di;
+    di.dt = 0.1;
+    di.wheels_on_ground = 4;
+    di.wheel_spin = 15.0;
+    di.speed_ms = 5.0;  // ~11.2 mph <= 25 mph; 40 steps * 0.5 m = 20 m distance
+    di.forward_speed_ms = 5.0;
+    di.yaw_rate = 2.0;  // 40 steps * 0.2 rad = 8.0 rad >= 5.2 rad
+    for (int k = 0; k < 40; ++k) {
+      di.time = 1.0 + k * 0.1;
+      td.step(di);
+    }
+    di.time = 5.1;
+    di.yaw_rate = 0.0;
+    di.wheel_spin = 0.0;
+    auto dev = td.step(di);
+    CHECK(!dev.empty() && dev[0].skill_id == "Donut" && dev[0].grade == 2 && dev[0].points == 200);
+
+    // 3. R3-CAM-11: Speed Zone off-road fail (>1.5 s), Rewind cancel_active(), and authored corridor distance.
+    const char* kAvgXml = R"(<ActivityManager>
+      <Activity type="ActivityAverageSpeed" name="average_speed_01" scoreboard_id="101"><SpeedThreshold minimumSpeed="30.0"/></Activity>
+    </ActivityManager>)";
+    const char* kSpObjs = R"(<GameObjs>
+      <Obj1 GameplayID="average_speed_01_left1"><Pos x="-10" y="0" z="100"/></Obj1>
+      <Obj2 GameplayID="average_speed_01_right1"><Pos x="10" y="0" z="100"/></Obj2>
+      <Obj3 GameplayID="average_speed_01_left2"><Pos x="-10" y="0" z="300"/></Obj3>
+      <Obj4 GameplayID="average_speed_01_right2"><Pos x="10" y="0" z="300"/></Obj4>
+    </GameObjs>)";
+    SpeedActivitiesData sdata;
+    CHECK(parse_speed_activities("<ActivityManager/>", kAvgXml, kSpObjs, sdata, &serr));
+    CHECK(near(sdata.zones[0].corridor_distance_m, 200.0, 1e-3));
+    SpeedActivityTracker szt(sdata);
+    // Enter gate 1, then cancel_active() (simulating Rewind):
+    CHECK(szt.step(0.1, 1.0, 0, 98, 0, 102, 40.0).size() == 1);
+    CHECK(szt.zone_active());
+    szt.cancel_active();
+    CHECK(!szt.zone_active() && !szt.hud(1.1).zone_active);
+    // Re-enter gate 1, go off-road for > 1.5 s -> fails cleanly with kZoneCancelled + failed_off_road!
+    CHECK(szt.step(0.1, 2.0, 0, 98, 0, 102, 40.0).size() == 1);
+    szt.set_off_road(true);
+    bool offroad_failed = false;
+    for (int k = 1; k <= 17; ++k) {
+      auto evs = szt.step(0.1, 2.0 + k * 0.1, 0, 102 + (k - 1) * 4.0, 0, 102 + k * 4.0, 40.0);
+      for (const auto& e : evs) {
+        if (e.kind == SpeedActivityEvent::kZoneCancelled && e.failed_off_road) offroad_failed = true;
+      }
+    }
+    CHECK(offroad_failed && !szt.zone_active());
+    szt.set_off_road(false);
+    // Zig-zagging inside the 200 m corridor over 4.0 s must NOT inflate average speed above ~111.8 mph!
+    CHECK(szt.step(0.1, 10.0, 0, 98, 0, 102, 50.0).size() == 1);
+    double prev_x = 0.0, prev_z = 102.0;
+    for (int k = 1; k <= 39; ++k) {
+      const double nx = (k % 2 == 0) ? 8.0 : -8.0;  // aggressive zig-zag
+      const double nz = 102.0 + k * 5.0;
+      szt.step(0.1, 10.0 + k * 0.1, prev_x, prev_z, nx, nz, 50.0);
+      prev_x = nx;
+      prev_z = nz;
+    }
+    auto zev = szt.step(0.1, 14.0, prev_x, prev_z, 0.0, 303.0, 50.0);
+    CHECK(zev.size() == 1 && zev[0].kind == SpeedActivityEvent::kZoneCompleted);
+    // True corridor average is 200 m / 4.0 s = 50 m/s = 111.85 mph (not ~350+ mph from zig-zagging!).
+    CHECK(zev[0].speed_mph > 105.0 && zev[0].speed_mph < 120.0);
+
+    // 4. R3-CAM-09: Barn Find progression-aware rumour gating.
+    Collectibles bdata;
+    CHECK(parse_collectibles(kFlyers, kBarns, kObjs, bdata, &serr));
+    Progress bprog;
+    FreeRoam bfr(bdata, bprog);
+    CarState bcar;
+    bcar.x = 5000;
+    bcar.z = 5000;
+    bcar.moved = 9000.0;  // 9 km (> 8 km gate for Barn 1), but 0 events completed -> still locked!
+    CHECK(bfr.step(bcar, {0, 0, true}).empty());
+    CHECK(bprog.barns[0].status == kBarnNotSpawned);
+    bcar.moved = 0.0;
+    // Complete 1 event at Yellow wristband -> Barn 1 rumour unlocks cleanly!
+    auto brev = bfr.step(bcar, {0, 1, true});
+    CHECK(brev.size() == 1 && brev[0].kind == Event::kRumourStarted && brev[0].index == 0);
+    // Barn 2 requires Green wristband (1), 3+ events, and +12 km distance:
+    bcar.moved = 13000.0;
+    CHECK(bfr.step(bcar, {0, 5, true}).empty());  // still Yellow wristband -> blocked
+    bcar.moved = 6000.0;  // extra distance while active_rumours > 0 -> 19 km >= 12 * 1.5 = 18 km
+    auto brev2 = bfr.step(bcar, {1, 3, true});
+    CHECK(brev2.size() == 1 && brev2[0].kind == Event::kRumourStarted && brev2[0].index == 1);
+
+    // 5. R3-CAM-21: h2h_wager_credits 1:1 alignment & difficulty scaling.
+    CHECK(h2h_wager_credits(500, 650) == h2h_reward_credits(500, 650));
+    CHECK(h2h_wager_credits(700, 500, 1.25) == h2h_reward_credits(700, 500, 1.25));
+    CHECK(h2h_wager_credits(500, 500, 1.5) == 7500);
   }
   if (failures) return 1;
   std::printf("freeroam_tests: all passed\n");

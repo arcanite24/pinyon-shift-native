@@ -476,6 +476,70 @@ void test_disc_hub_shops_and_garage() {
   CHECK(credits > cr_before_sell_car);
   CHECK(g.cars.size() == 2);
 
+  // R3-CAM-09 & R3-CAM-20: Dak's Garage Barn Find Restoration Bay tab ("READY TO CLAIM")
+  // and dedicated "REMOVE CAR" two-step confirmation respecting `is_prize` (0 CR).
+  {
+    int64_t prize_rm_gid = 0;
+    CHECK(garage::award_prize_car(g, 445, 0.62982, 4, 1, s445, &prize_rm_gid));
+    gb.refresh(g, &db, bands);
+    // Select the newly added non-active prize car.
+    for (size_t i = 0; i < gb.visible().size(); ++i) {
+      if (gb.visible()[i].garage_id == prize_rm_gid) {
+        gb.select_index(i);
+        break;
+      }
+    }
+    CHECK(gb.selected_entry() && gb.selected_entry()->is_prize && !gb.selected_entry()->is_current);
+    const int64_t cr_before_remove = credits;
+    // Step 1 arms confirmation without removing yet.
+    CHECK(!gb.remove_selected(g, &db, bands, credits, msg));
+    CHECK(gb.remove_confirm_garage_id() == prize_rm_gid);
+    // Render HUD while confirm modal is active.
+    carview::ui::List l_confirm;
+    carview::draw_garage_hud(l_confirm, 1280.0f, 720.0f, gb, bands, credits);
+    CHECK(!l_confirm.empty());
+    // Step 2 confirms removal -> prize car removed for 0 CR!
+    CHECK(gb.remove_selected(g, &db, bands, credits, msg));
+    CHECK(credits == cr_before_remove);
+    CHECK(g.find(prize_rm_gid) == nullptr);
+
+    // Active car cannot be removed without allow_switch_active.
+    for (size_t i = 0; i < gb.visible().size(); ++i) {
+      if (gb.visible()[i].is_current) {
+        gb.select_index(i);
+        break;
+      }
+    }
+    CHECK(!gb.remove_selected(g, &db, bands, credits, msg, /*confirmed=*/true, /*allow_switch_active=*/false));
+
+    // Barn Find Restoration Bay tab: in-progress cannot be claimed, ready-to-claim awards car with is_prize=true!
+    std::vector<carview::BarnRestorationEntry> bay = {
+        {"barnfind_01", "1956 Jaguar D-Type", 309, 45.0, 20.0, false},
+        {"barnfind_02", "1964 Aston Martin DB5", 445, 45.0, 45.0, true},
+    };
+    gb.set_restorations(bay);
+    CHECK(gb.ready_restoration_count() == 1);
+    gb.set_tab(carview::GarageTab::kRestorationBay);
+    CHECK(gb.active_tab() == carview::GarageTab::kRestorationBay);
+    carview::ui::List l_bay;
+    carview::draw_garage_hud(l_bay, 1280.0f, 720.0f, gb, bands, credits);
+    CHECK(!l_bay.empty());
+
+    std::string claimed_id;
+    // Index 0 is still restoring -> claim must fail cleanly.
+    CHECK(!gb.claim_selected_restoration(g, &db, bands, claimed_id, msg));
+    CHECK(claimed_id.empty() && gb.restorations().size() == 2);
+    // Move to index 1 (ready_to_claim = true) -> claim succeeds and awards car with is_prize = true!
+    gb.move(1);
+    const size_t cars_before_claim = g.cars.size();
+    CHECK(gb.claim_selected_restoration(g, &db, bands, claimed_id, msg));
+    CHECK(claimed_id == "barnfind_02");
+    CHECK(gb.restorations().size() == 1);
+    CHECK(g.cars.size() == cars_before_claim + 1);
+    CHECK(g.cars.back().car_id == 445 && g.cars.back().is_prize);
+    gb.set_tab(carview::GarageTab::kMyCars);
+  }
+
   // 5. Render Autoshow (all 3 steps: 115 Make -> 108 Car -> 114 Color), UpgradeShop (+Tuning), and Garage.
   std::set<std::string> requested_textures;
   carview::ui4::set_texture_loader([&](const std::string& path, std::array<float, 4>& uv) {
@@ -733,12 +797,82 @@ void test_autoshow_layout_and_studio_camera() {
   }
 }
 
+void test_garage_restoration_bay_and_remove_car_standalone() {
+  garage::Garage g;
+  g.last_id = 2;
+  g.selected = 1;
+  garage::Car active_car;
+  active_car.id = 1;
+  active_car.car_id = 309;
+  active_car.performance_index = 0.45;
+  active_car.class_id = 2;
+  garage::Car prize_car;
+  prize_car.id = 2;
+  prize_car.car_id = 445;
+  prize_car.performance_index = 0.72;
+  prize_car.class_id = 5;
+  prize_car.is_prize = true;
+  g.cars = {active_car, prize_car};
+
+  std::vector<garage::ClassBand> bands = {
+      {0.2, 200, "E"}, {0.35, 300, "D"}, {0.5, 400, "C"}, {0.65, 500, "B"}, {0.8, 600, "A"}, {1.0, 999, "R1"}};
+  carview::GarageBrowser gb;
+  gb.refresh(g, nullptr, bands);
+  CHECK(gb.visible().size() == 2);
+
+  // Select the prize car and confirm two-step REMOVE CAR yields 0 CR.
+  for (size_t i = 0; i < gb.visible().size(); ++i) {
+    if (gb.visible()[i].garage_id == 2) {
+      gb.select_index(i);
+      break;
+    }
+  }
+  int64_t cr = 50000;
+  std::string msg;
+  CHECK(!gb.remove_selected(g, nullptr, bands, cr, msg));
+  CHECK(gb.remove_confirm_garage_id() == 2);
+  CHECK(gb.remove_selected(g, nullptr, bands, cr, msg));
+  CHECK(cr == 50000);
+  CHECK(g.cars.size() == 1);
+  // Last remaining car cannot be removed.
+  CHECK(!gb.remove_selected(g, nullptr, bands, cr, msg, /*confirmed=*/true, /*allow_switch_active=*/true));
+  CHECK(g.cars.size() == 1);
+
+  // Restoration Bay: in-progress blocked; READY TO CLAIM invokes award callback with is_prize = true.
+  gb.set_restorations({{"barnfind_01", "1956 Jaguar D-Type", 901, 45.0, 15.0, false},
+                       {"barnfind_02", "1964 Aston Martin DB5", 902, 45.0, 45.0, true}});
+  gb.set_tab(carview::GarageTab::kRestorationBay);
+  std::string claimed_id;
+  CHECK(!gb.claim_selected_restoration(g, nullptr, bands, claimed_id, msg));
+  gb.move(1);
+  bool saw_prize_flag = false;
+  CHECK(gb.claim_selected_restoration(
+      g, nullptr, bands,
+      [&](int64_t cid, int /*col*/, bool /*sel*/, bool is_prize) -> std::string {
+        saw_prize_flag = is_prize && cid == 902;
+        garage::Car nc;
+        nc.id = ++g.last_id;
+        nc.car_id = cid;
+        nc.is_prize = is_prize;
+        g.cars.push_back(nc);
+        return "1964 Aston Martin DB5";
+      },
+      claimed_id, msg));
+  CHECK(saw_prize_flag && claimed_id == "barnfind_02" && gb.restorations().size() == 1 && g.cars.size() == 2 &&
+        g.cars.back().is_prize);
+
+  carview::ui::List l_bay;
+  carview::draw_garage_hud(l_bay, 1280.0f, 720.0f, gb, bands, cr);
+  CHECK(!l_bay.empty());
+}
+
 }  // namespace
 
 int main() {
   test_hub_stage_and_camera();
   test_autoshow_layout_and_studio_camera();
   test_livery_editor_groups_undo_and_catalog();
+  test_garage_restoration_bay_and_remove_car_standalone();
   test_disc_hub_shops_and_garage();
   if (g_failed) {
     std::fprintf(stderr, "hub_shop_tests: %d FAILED\n", g_failed);

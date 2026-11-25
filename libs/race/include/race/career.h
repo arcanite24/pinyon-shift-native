@@ -128,10 +128,17 @@ struct CareerCatalog {
 
   // Event & hub unlock predicates.
   bool is_hub_unlocked(const StreetHub& hub, const CareerRecord& rec, int collected_wristband) const;
+  int hub_events_completed(int hub_id, const CareerRecord& rec) const;
+  int hub_unlock_requirement(int hub_id) const;
   bool is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,
                          int popularity_rank) const;
   bool is_event_completed(const CareerEvent& ev, const CareerRecord& rec) const;
   int best_place(const CareerEvent& ev, const CareerRecord& rec) const;
+
+  // Street Race entry buy-in fee (CR) & atomic credit validation/deduction (R3-CAM-13).
+  static int64_t street_race_buy_in(const CareerEvent& ev);
+  static bool charge_street_race_buy_in(const CareerEvent& ev, CareerRecord& rec, int64_t* out_fee = nullptr,
+                                        std::string* reason = nullptr);
 
   // Car eligibility check against TargetClass + EventRestrictions bucket 0.
   // When `any_car_override` is true (F10 Trainer), bypasses class & restriction checks.

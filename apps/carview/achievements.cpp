@@ -11,7 +11,9 @@
 
 #include <stb_image.h>
 
+#include "freeroam/club.h"
 #include "game_hud.h"
+#include "race/career.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -165,11 +167,27 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 166: return counter(s.garage_cars, 10);
     case 167: return counter(s.promo_cars_spotted, 1);
     case 169: return counter(int(std::min<int64_t>(s.total_winnings / 1000, 1000000)), 1000);
-    case 170: return counter(int(s.popularity_points / 1000.0), 10);
-    case 171: return counter(int(s.popularity_points / 1000.0), 50);
-    case 172: return counter(int(s.popularity_points / 1000.0), 100);
-    case 173: return counter(int(s.popularity_points / 1000.0), 250);
-    case 174: return counter(int(s.popularity_points / 1000.0), 500);
+    // Popularity Rank milestones (250th -> Top 200, Top 100, Top 50, Top 10, Rank #1).
+    case 170: {
+      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
+      return counter(climbed, 250 - 200);
+    }
+    case 171: {
+      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
+      return counter(climbed, 250 - 100);
+    }
+    case 172: {
+      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
+      return counter(climbed, 250 - 50);
+    }
+    case 173: {
+      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
+      return counter(climbed, 250 - 10);
+    }
+    case 174: {
+      const int climbed = std::clamp(250 - std::clamp(s.popularity_rank, 1, 250), 0, 249);
+      return counter(climbed, 250 - 1);
+    }
     case 175: return counter(s.wristbands_earned, 1);
     case 176: return counter(s.wristbands_earned, 2);
     case 177: return counter(s.wristbands_earned, 3);
@@ -182,7 +200,7 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 184: return counter(s.street_races_won, 10);
     case 185: return counter(s.num_victories, 50);
     case 186: should_unlock = s.top_speed_mps >= 89.4; return counter(int(s.top_speed_mps * 2.23694), 200);
-    case 187: return counter(s.outposts_discovered, 6);
+    case 187: return counter(s.outposts_discovered, std::max(1, s.total_outposts));
     case 188: return counter(s.num_victories, 70);
     case 189: return counter(s.pr_stunts_completed, 1);
     case 190: return counter(s.pr_stunts_completed, 10);
@@ -200,17 +218,17 @@ std::optional<AchievementProgress> eval_condition(uint16_t id, const Achievement
     case 211: return counter(s.rally_stages_done, 4);
     case 214: return counter(s.rally_stages_done, 28);
     case 215: return counter((s.rally_level >= 1 || s.rally_victories >= 7) ? 1 : 0, 1);
-    // 1000 Club (216-225)
-    case 216: return counter(s.club_medals_total, 1);
-    case 217: return counter(s.club_ferrari_cars, 14);
-    case 218: return counter(s.club_million_cr_cars, 14);
-    case 219: return counter(s.club_shelby_cars, 3);
-    case 220: return counter(s.club_lamborghini_cars, 8);
-    case 221: return counter(s.club_nissan_cars, 7);
-    case 222: return counter(s.club_bmw_cars, 10);
-    case 223: return counter(s.club_british_cars, 20);
-    case 224: return counter(s.club_ford_cars, 13);
-    case 225: return counter(s.club_cars_with_medal, 146);
+    // 1000 Club (216-225) — unified thresholds shared with freeroam::club::compute_medal_stats()
+    case 216: return counter(s.club_medals_total, freeroam::club::kClubThresholdFirstMedal);
+    case 217: return counter(s.club_ferrari_cars, freeroam::club::kClubThresholdFerrari);
+    case 218: return counter(s.club_million_cr_cars, freeroam::club::kClubThresholdMillionCr);
+    case 219: return counter(s.club_shelby_cars, freeroam::club::kClubThresholdShelby);
+    case 220: return counter(s.club_lamborghini_cars, freeroam::club::kClubThresholdLamborghini);
+    case 221: return counter(s.club_nissan_cars, freeroam::club::kClubThresholdNissan);
+    case 222: return counter(s.club_bmw_cars, freeroam::club::kClubThresholdBmw);
+    case 223: return counter(s.club_british_cars, freeroam::club::kClubThresholdBritish);
+    case 224: return counter(s.club_ford_cars, freeroam::club::kClubThresholdFord);
+    case 225: return counter(s.club_cars_with_medal, freeroam::club::kClubThresholdMultiCars);
     default: return std::nullopt;
   }
 }
@@ -336,7 +354,9 @@ const WristbandTierInfo& wristband_tier_info(int tier) {
 }
 
 AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::DriveSave& save,
-                                                                   int roads_discovered_count, int race_encounters) {
+                                                                   int roads_discovered_count, int race_encounters,
+                                                                   const race::CareerCatalog* catalog,
+                                                                   int popularity_rank, int total_outposts) {
   AchievementGameplayState st;
   st.career_started = save.career_started;
   st.finale_complete = save.finale_complete;
@@ -350,11 +370,20 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   st.num_races = save.num_races;
   st.num_victories = save.num_victories;
   st.num_podiums = save.num_podiums;
+  // Count actual Festival vs Street Race wins from event_results (never fabricate from num_victories).
   for (const auto& [eid, place] : save.event_results) {
-    if (place == 1) ++st.festival_races_won;
-  }
-  if (save.time_street > 1.0 && save.num_victories > 0) {
-    st.street_races_won = std::max(1, save.num_victories / 4);
+    if (place != 1) continue;
+    if (catalog) {
+      if (const auto* ev = catalog->find_event_by_id(eid)) {
+        if (ev->style == 2) {
+          ++st.street_races_won;
+        } else if (ev->style == 1 || ev->style == 5 || ev->style == 6) {
+          ++st.festival_races_won;
+        }
+        continue;
+      }
+    }
+    ++st.festival_races_won;
   }
   st.race_encounters_won = race_encounters;
   st.discount_signs_found = int(save.signs_found.size());
@@ -363,6 +392,7 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   }
   st.roads_discovered = roads_discovered_count;
   st.outposts_discovered = int(save.discovered_outposts.size());
+  st.total_outposts = std::max(1, total_outposts);
   st.pr_stunts_completed = int(save.completed_pr_stunts.size());
   st.garage_cars = int(save.garage.size());
   st.promo_cars_spotted = int(save.promo_cars.size());
@@ -371,6 +401,7 @@ AchievementGameplayState AchievementGameplayState::from_drive_save(const drive::
   st.total_winnings = save.total_winnings;
   st.max_skills_score = save.max_skills_score;
   st.popularity_points = save.popularity_points;
+  st.popularity_rank = (popularity_rank >= 1 && popularity_rank <= 250) ? popularity_rank : 250;
   st.driver_level = save.level;
   st.has_rally = save.has_rally;
   st.rally_stages_done = save.num_rally_stages;

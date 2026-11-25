@@ -44,6 +44,7 @@
 // record per car (each challenge's key and completed flag, in file order).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -145,8 +146,9 @@ struct DriveSave {
     int claimed = 0;
   };
   std::vector<SavedSponsor> sponsors;
-  // Head-to-Head counters.
+  // Head-to-Head & Rivals counters.
   int h2h_races = 0, h2h_wins = 0;
+  int rivals_beaten = 0, rally_rivals_beaten = 0;
   // Driver XP (PlayerLevelDef) & Manufacturer Affinity XP (AffinityLevelDef: make_id -> xp).
   int driver_xp = 0;
   std::vector<std::pair<int64_t, int>> make_affinity;
@@ -176,7 +178,8 @@ struct DriveSave {
     has_rally = s.has_rally, num_rallies = s.num_rallies, num_rally_stages = s.num_rally_stages, club = s.club;
     num_rally_victories = s.num_rally_victories, rally_xp = s.rally_xp, rally_level = s.rally_level;
     rally_winnings = s.rally_winnings;
-    if (!fast_travel_anywhere && s.fast_travel_anywhere) fast_travel_anywhere = true;
+    rivals_beaten = std::max(rivals_beaten, s.rivals_beaten);
+    rally_rivals_beaten = std::max(rally_rivals_beaten, s.rally_rivals_beaten);
     if (car_history.empty()) car_history = s.car_history;
     if (car_club_name.empty()) car_club_name = s.car_club_name;
     if (car_club_tag.empty()) car_club_tag = s.car_club_tag;
@@ -222,5 +225,20 @@ bool load_save_with_recovery(const std::filesystem::path& save_path, const std::
 // `backup_dir` (or `<save_dir>/../backups/saves` if omitted) and `<save_path>.bak`.
 bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save, std::string* error = nullptr,
                     const std::filesystem::path& backup_dir = {}, std::filesystem::path* recovered_from = nullptr);
+
+// Updates (or inserts) a per-car driving & race history entry in `history`.
+void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id, int64_t car_id,
+                        double delta_distance_m, double delta_time_s, int64_t delta_winnings = 0,
+                        int64_t delta_races = 0, int64_t delta_victories = 0, int64_t delta_podiums = 0);
+
+// Returns true when `campaign_stage` denotes a pre-Free-Roam onboarding stage
+// (opening cutscene, Viper highway drive, Corrado qualification, or registration).
+bool campaign_stage_is_onboarding(std::string_view campaign_stage);
+
+// Reconciles `save.intro_completed` and `save.campaign_stage` on Continue Career
+// reload and returns the canonical car media name that should be loaded.
+std::string resolve_campaign_reload_car(DriveSave& save, const std::string& selected_garage_car,
+                                        const std::string& viper_media = "VIP_Viper_13",
+                                        const std::string& starter_media = "VW_CorradoVR6_95");
 
 }  // namespace drive

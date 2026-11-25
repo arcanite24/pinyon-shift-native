@@ -129,8 +129,9 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
       break;
 
     case StoryStage::kViperDrive:
+      convoy_passed_ = 0;
       objective_title_ = "DRIVE TO THE HORIZON FESTIVAL";
-      objective_detail_ = "2013 SRT VIPER GTS — CLAIM YOUR FESTIVAL WRISTBAND";
+      objective_detail_ = "2013 SRT VIPER GTS — PASS FESTIVAL DRIVERS TO THE MAIN GATE";
       act.swap_car = true;
       act.car_media = kViperMedia;
       act.car_id = kViperCarId;
@@ -326,11 +327,13 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h) const {
   // 947_HUD/HUDInstruction: slim sharp FH1 tilted tape + HUDPILL01 strips (ZERO 4px rounded boxes!).
   std::string sub = objective_detail_;
   if (stage_ == StoryStage::kViperDrive) {
-    char dbuf[64];
+    char dbuf[128];
     if (dist_to_festival_ >= 1000.0)
-      std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f KM REMAINING", dist_to_festival_ / 1000.0);
+      std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %.1f KM  •  PASSED %d / %d DRIVERS",
+                    dist_to_festival_ / 1000.0, convoy_passed_, kConvoyTarget);
     else
-      std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d M REMAINING", int(std::lround(dist_to_festival_)));
+      std::snprintf(dbuf, sizeof dbuf, "HORIZON FESTIVAL  •  %d M  •  PASSED %d / %d DRIVERS",
+                    int(std::lround(dist_to_festival_)), convoy_passed_, kConvoyTarget);
     sub = dbuf;
   }
   ui::TextStyle title_ts = ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite);

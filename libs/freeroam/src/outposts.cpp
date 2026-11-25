@@ -722,6 +722,7 @@ void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points, 
   }
   state_ = PrStuntState::kActive;
   baseline_skill_points_ = baseline_skill_points;
+  last_banked_skill_points_ = baseline_skill_points;
   earned_skill_points_ = 0;
   time_remaining_s_ = stunt_.time_limit_s;
   elapsed_s_ = 0.0;
@@ -729,11 +730,77 @@ void PrStuntSession::start(const PrStunt& stunt, int64_t baseline_skill_points, 
   distance_to_target_ = std::hypot(stunt_.target_pos.x - stunt_.start_pos.x, stunt_.target_pos.z - stunt_.start_pos.z);
   photo_hold_s_ = 0.0;
   in_target_zone_ = false;
+  photo_framed_ = false;
 }
 
 void PrStuntSession::cancel() {
   state_ = PrStuntState::kInactive;
   in_target_zone_ = false;
+  photo_framed_ = false;
+}
+
+bool PrStuntSession::point_in_camera_frustum(const std::array<double, 3>& point, const std::array<double, 3>& cam_pos,
+                                             const std::array<double, 3>& cam_fwd,
+                                             const std::array<double, 3>& cam_right,
+                                             const std::array<double, 3>& cam_up, double vfov_deg, double aspect,
+                                             double radius_m, double max_range_m) {
+  auto len3 = [](const std::array<double, 3>& v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); };
+  auto dot3 = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  };
+  auto cross3 = [](const std::array<double, 3>& a, const std::array<double, 3>& b) -> std::array<double, 3> {
+    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+  };
+
+  const double fl = len3(cam_fwd);
+  if (fl < 1e-6) return false;
+  const std::array<double, 3> fwd{cam_fwd[0] / fl, cam_fwd[1] / fl, cam_fwd[2] / fl};
+
+  // Orthonormalize right and up vectors (deriving from world-up if caller supplied degenerate axes).
+  std::array<double, 3> right = cam_right;
+  double rl = len3(right);
+  if (rl < 1e-6 || std::fabs(dot3(right, fwd) / rl) > 0.99) {
+    const std::array<double, 3> world_up = std::fabs(fwd[1]) > 0.95 ? std::array<double, 3>{1.0, 0.0, 0.0}
+                                                                    : std::array<double, 3>{0.0, 1.0, 0.0};
+    right = cross3(world_up, fwd);
+    rl = len3(right);
+    if (rl < 1e-6) return false;
+  } else {
+    const double d = dot3(right, fwd);
+    right = {right[0] - d * fwd[0], right[1] - d * fwd[1], right[2] - d * fwd[2]};
+    rl = len3(right);
+    if (rl < 1e-6) return false;
+  }
+  right = {right[0] / rl, right[1] / rl, right[2] / rl};
+
+  std::array<double, 3> up = cam_up;
+  double ul = len3(up);
+  if (ul < 1e-6 || std::fabs(dot3(up, fwd) / ul) > 0.99) {
+    up = cross3(fwd, right);
+    ul = len3(up);
+    if (ul < 1e-6) return false;
+  } else {
+    const double df = dot3(up, fwd);
+    const double dr = dot3(up, right);
+    up = {up[0] - df * fwd[0] - dr * right[0], up[1] - df * fwd[1] - dr * right[1],
+          up[2] - df * fwd[2] - dr * right[2]};
+    ul = len3(up);
+    if (ul < 1e-6) return false;
+  }
+  up = {up[0] / ul, up[1] / ul, up[2] / ul};
+
+  const std::array<double, 3> v{point[0] - cam_pos[0], point[1] - cam_pos[1], point[2] - cam_pos[2]};
+  const double z = dot3(v, fwd);
+  if (z <= 0.5 || z > std::max(10.0, max_range_m)) return false;
+
+  const double x = dot3(v, right);
+  const double y = dot3(v, up);
+  constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
+  const double half_v = 0.5 * std::clamp(vfov_deg, 10.0, 150.0) * kDegToRad;
+  const double tan_v = std::tan(half_v);
+  const double tan_h = tan_v * std::clamp(aspect, 0.5, 4.0);
+  const double r = std::max(0.0, radius_m);
+  return std::fabs(x) <= z * tan_h + r && std::fabs(y) <= z * tan_v + r;
 }
 
 PrStuntState PrStuntSession::update(const PrStuntUpdate& u) {
@@ -774,8 +841,16 @@ PrStuntState PrStuntSession::update(const PrStuntUpdate& u) {
 
     case PrStuntKind::kSkill: {
       in_target_zone_ = distance_to_target_ <= 350.0;
-      const int64_t delta = std::max<int64_t>(0, u.total_skill_points - baseline_skill_points_);
-      earned_skill_points_ = std::max(earned_skill_points_, delta);
+      const int64_t banked_now =
+          u.banked_skill_points >= 0
+              ? u.banked_skill_points
+              : std::max<int64_t>(0, u.total_skill_points - std::max<int64_t>(0, u.unbanked_skill_points));
+      const int64_t banked_delta = std::max<int64_t>(0, banked_now - last_banked_skill_points_);
+      last_banked_skill_points_ = std::max(last_banked_skill_points_, banked_now);
+      // Only credit BANKED skill points earned while inside the target stunt zone.
+      if (in_target_zone_ && banked_delta > 0) {
+        earned_skill_points_ += banked_delta;
+      }
       if (stunt_.target_points > 0 && earned_skill_points_ >= stunt_.target_points) {
         state_ = PrStuntState::kSucceeded;
         return state_;
@@ -787,12 +862,24 @@ PrStuntState PrStuntSession::update(const PrStuntUpdate& u) {
       const double effective_r = std::max(55.0, stunt_.photo_radius);
       in_target_zone_ = distance_to_target_ <= effective_r;
       if (in_target_zone_) {
-        if (u.photo_pressed) {
+        if (u.has_camera) {
+          const std::array<double, 3> car_pt{u.car_x, u.car_y + 0.8, u.car_z};
+          const std::array<double, 3> lm_pt{stunt_.target_pos.x, stunt_.target_pos.y + 1.5, stunt_.target_pos.z};
+          const bool car_vis = point_in_camera_frustum(car_pt, u.camera_pos, u.camera_forward, u.camera_right,
+                                                       u.camera_up, u.camera_vfov_deg, u.camera_aspect, 1.5, 250.0);
+          const bool lm_vis = point_in_camera_frustum(lm_pt, u.camera_pos, u.camera_forward, u.camera_right,
+                                                      u.camera_up, u.camera_vfov_deg, u.camera_aspect, 2.5, 250.0);
+          photo_framed_ = car_vis && lm_vis;
+        } else {
+          photo_framed_ = true;
+        }
+        if (u.photo_pressed && photo_framed_) {
           state_ = PrStuntState::kSucceeded;
           return state_;
         }
-        photo_hold_s_ = std::min(1.5, photo_hold_s_ + dt);
+        photo_hold_s_ = photo_framed_ ? std::min(1.5, photo_hold_s_ + dt) : 0.0;
       } else {
+        photo_framed_ = false;
         photo_hold_s_ = 0.0;
       }
       break;
@@ -827,11 +914,18 @@ std::string PrStuntSession::status_line() const {
                     distance_to_target_);
       return buf;
     case PrStuntKind::kSkill:
-      std::snprintf(buf, sizeof buf, "%s / %s SKILL PTS%s", format_int_commas(earned_skill_points_).c_str(),
-                    format_int_commas(stunt_.target_points).c_str(),
-                    in_target_zone_ ? "   •   IN STUNT ZONE" : "");
+      if (in_target_zone_) {
+        std::snprintf(buf, sizeof buf, "%s / %s BANKED PTS   •   IN STUNT ZONE",
+                      format_int_commas(earned_skill_points_).c_str(), format_int_commas(stunt_.target_points).c_str());
+      } else {
+        std::snprintf(buf, sizeof buf, "%s / %s BANKED PTS   •   DRIVE TO STUNT ZONE (%.0f M)",
+                      format_int_commas(earned_skill_points_).c_str(), format_int_commas(stunt_.target_points).c_str(),
+                      distance_to_target_);
+      }
       return buf;
     case PrStuntKind::kPhoto:
+      if (in_target_zone_ && !photo_framed_)
+        return "IN PHOTO ZONE   •   FRAME BOTH YOUR CAR AND LANDMARK IN VIEW";
       if (in_target_zone_) return "IN PHOTO ZONE   •   OPEN PHOTO MODE OR PRESS [P] TO SNAP PHOTO";
       std::snprintf(buf, sizeof buf, "DRIVE TO LANDMARK   •   %.0f M AWAY", distance_to_target_);
       return buf;

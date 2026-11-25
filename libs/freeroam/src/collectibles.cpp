@@ -113,11 +113,35 @@ bool load_collectibles(const std::filesystem::path& game_root, Collectibles& out
   return parse_collectibles(text(flyers.data), text(barns.data), objs.str(), out, error);
 }
 
+BarnRumourGate barn_rumour_gate(size_t barn_index) {
+  // Progression-aware rumour pacing across Colorado's 9 Barn Finds (Yellow -> Gold):
+  // combines Wristband level, events completed, and reasonable cruising distance.
+  static constexpr BarnRumourGate kGates[9] = {
+      {0, 1, 8000.0},   // Barn 1: Yellow wristband, 1+ event, 8 km
+      {1, 3, 12000.0},  // Barn 2: Green wristband, 3+ events, +12 km
+      {1, 6, 14000.0},  // Barn 3: Green wristband, 6+ events, +14 km
+      {2, 10, 15000.0}, // Barn 4: Blue wristband, 10+ events, +15 km
+      {3, 15, 16000.0}, // Barn 5: Pink wristband, 15+ events, +16 km
+      {4, 22, 18000.0}, // Barn 6: Orange wristband, 22+ events, +18 km
+      {5, 30, 20000.0}, // Barn 7: Purple wristband, 30+ events, +20 km
+      {5, 38, 22000.0}, // Barn 8: Purple wristband, 38+ events, +22 km
+      {6, 46, 25000.0}, // Barn 9: Gold wristband, 46+ events, +25 km
+  };
+  if (barn_index < 9) return kGates[barn_index];
+  return {6, 46 + int(barn_index - 8) * 6, 25000.0};
+}
+
 FreeRoam::FreeRoam(const Collectibles& data, Progress& progress) : data_(data), progress_(progress) {
   progress_.barns.resize(data_.barns.size());
   sign_found_.assign(data_.signs.size(), 0);
   for (size_t i = 0; i < data_.signs.size(); ++i) sign_found_[i] = progress_.signs_found.count(data_.signs[i].id) > 0;
   rebuild_hidden();
+}
+
+void FreeRoam::set_progression(int wristband_level, int events_completed) {
+  progression_.wristband_level = std::max(0, wristband_level);
+  progression_.events_completed = std::max(0, events_completed);
+  progression_.active = true;
 }
 
 int FreeRoam::barns_found() const {
@@ -140,7 +164,9 @@ void FreeRoam::rebuild_hidden() {
   hidden_ = std::move(set);
 }
 
-std::vector<Event> FreeRoam::step(const CarState& car) {
+std::vector<Event> FreeRoam::step(const CarState& car) { return step(car, progression_); }
+
+std::vector<Event> FreeRoam::step(const CarState& car, const BarnProgressionContext& progression) {
   std::vector<Event> events;
   bool changed = false;
   progress_.total_distance += std::max(0.0, car.moved);
@@ -225,19 +251,34 @@ std::vector<Event> FreeRoam::step(const CarState& car) {
     changed = true;
   }
 
-  // Rumours (interim): the next not-spawned barn by number once the total
-  // distance passes the last rumour's start by 50 km.
-  double last = 0;
-  for (const auto& bp : progress_.barns)
+  // Rumours: progression-gated (Wristband level + events completed + cruising distance)
+  // when campaign progression context is active; falls back to legacy 50 km spacing
+  // when no progression context is supplied.
+  double last = 0.0;
+  int active_rumours = 0;
+  for (const auto& bp : progress_.barns) {
     if (bp.status != kBarnNotSpawned) last = std::max(last, bp.rumour_at);
-  if (progress_.total_distance >= last + kRumourSpacing) {
-    for (size_t i = 0; i < progress_.barns.size(); ++i) {
-      if (progress_.barns[i].status != kBarnNotSpawned) continue;
+    if (bp.status == kBarnRumour) ++active_rumours;
+  }
+  for (size_t i = 0; i < progress_.barns.size(); ++i) {
+    if (progress_.barns[i].status != kBarnNotSpawned) continue;
+    bool unlock = false;
+    if (progression.active) {
+      const BarnRumourGate gate = barn_rumour_gate(i);
+      const double required_dist =
+          active_rumours > 0 ? (gate.min_distance_since_last_m * 1.5) : gate.min_distance_since_last_m;
+      const bool meets_progression =
+          progression.wristband_level >= gate.min_wristband && progression.events_completed >= gate.min_events;
+      unlock = meets_progression && (progress_.total_distance >= last + required_dist);
+    } else {
+      unlock = progress_.total_distance >= last + kRumourSpacing;
+    }
+    if (unlock) {
       progress_.barns[i].status = kBarnRumour;
       progress_.barns[i].rumour_at = progress_.total_distance;
       events.push_back({Event::kRumourStarted, int(i)});
-      break;
     }
+    break;
   }
 
   if (changed) rebuild_hidden();

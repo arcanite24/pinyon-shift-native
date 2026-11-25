@@ -79,20 +79,59 @@ void DriveSession::open_replay_viewer(bool browser_if_empty) {
 
 std::vector<PromoCarCandidate> DriveSession::gather_promo_candidates() {
         std::vector<carview::PromoCarCandidate> cands;
+        auto resolve_car_id = [&](int64_t raw_id, const std::string& media) -> int {
+          if (raw_id > 0) return int(raw_id);
+          if (!media.empty()) {
+            if (app.have_career_catalog) {
+              if (const auto* spec = app.career_catalog.find_car_by_media(media)) return int(spec->car_id);
+            }
+            const std::string want = lower_ascii(media);
+            for (const auto& [cid, bm] : app.baked_ids) {
+              if (lower_ascii(bm) == want) return int(cid);
+            }
+          }
+          return 0;
+        };
+        auto resolve_display_name = [&](int64_t cid, const std::string& media, const std::string& fallback) -> std::string {
+          if (!media.empty()) return carview::car_name(media);
+          if (cid > 0) {
+            if (auto it = app.baked_ids.find(cid); it != app.baked_ids.end()) return carview::car_name(it->second);
+            if (app.have_career_catalog) {
+              if (const auto* spec = app.career_catalog.find_car(cid)) return carview::car_name(spec->media_name);
+            }
+          }
+          return fallback;
+        };
+
         const drive::Vec3 pat = vehicle.position();
-        cands.push_back({int(info.car_id), carview::car_name(app.car), {pat.x, pat.y, pat.z}, 2.2, true});
+        const int player_cid = resolve_car_id(info.car_id, app.car);
+        if (player_cid > 0) {
+          cands.push_back({player_cid, carview::car_name(app.car), {pat.x, pat.y, pat.z}, 2.2, true});
+        }
         if (app.race) {
           std::vector<carview::RaceView::OpponentTag> otags;
           app.race->opponent_tags(otags);
-          int oid = 10000;
           for (const auto& ot : otags) {
-            cands.push_back({oid++, ot.name, {ot.x, ot.y, ot.z}, 2.2, false});
+            const int cid = resolve_car_id(ot.car_id, ot.car_media);
+            if (cid <= 0) continue;
+            const std::string cname =
+                !ot.car_name.empty() ? ot.car_name : resolve_display_name(cid, ot.car_media, ot.name);
+            cands.push_back({cid, cname, {ot.x, ot.y, ot.z}, 2.2, false});
           }
         }
         if (traffic && traffic->cars()) {
           for (const auto& tc : *traffic->cars()) {
-            cands.push_back({int(tc.model), "TRAFFIC #" + std::to_string(tc.model),
-                             {tc.position.x, tc.position.y, tc.position.z}, 2.2, false});
+            if (tc.model <= 0) continue;
+            const std::string tname = resolve_display_name(tc.model, {}, "TRAFFIC CAR");
+            cands.push_back({int(tc.model), tname, {tc.position.x, tc.position.y, tc.position.z}, 2.2, false});
+          }
+        }
+        if (festival_mgr) {
+          for (const auto& fc : festival_mgr->cars()) {
+            const int cid = resolve_car_id(fc.spec.car_id, fc.spec.car_media);
+            if (cid <= 0) continue;
+            const std::string fname = resolve_display_name(cid, fc.spec.car_media, fc.spec.driver_name);
+            cands.push_back({cid, fname, {fc.position.x, fc.position.y, fc.position.z}, 2.2, false});
           }
         }
         return cands;
@@ -149,7 +188,26 @@ void DriveSession::place_world() {
             if (rc.slot == 0u) continue;
             if (hide_focus_bumper && rc.slot == focus_slot) continue;
             const auto* cinfo = replay_viewer.recording().find_car_info(rc.slot);
-            std::string media = (cinfo && !cinfo->car_media.empty()) ? cinfo->car_media : app.car;
+            std::string media;
+            if (cinfo && !cinfo->car_media.empty()) {
+              media = cinfo->car_media;
+            } else if (cinfo && cinfo->car_id > 0) {
+              if (auto bit = app.baked_ids.find(cinfo->car_id); bit != app.baked_ids.end()) {
+                media = bit->second;
+              } else if (app.have_career_catalog) {
+                if (const auto* sp = app.career_catalog.find_car(cinfo->car_id)) media = sp->media_name;
+              }
+            }
+            if (media.empty()) {
+              // Last-resort fallback: prefer a baked non-player model if available, else player model.
+              for (const auto& bc : app.baked_cars) {
+                if (lower_ascii(bc) != lower_ascii(app.car)) {
+                  media = bc;
+                  break;
+                }
+              }
+              if (media.empty()) media = app.car;
+            }
             const int64_t paint_seq = cinfo ? int64_t(cinfo->paint_index) : -1;
             // Claim a distinct guest Showroom per replay car so identical-model cars never
             // overwrite each other's wheel steer, spin, omega blur, or suspension Y.
@@ -171,7 +229,7 @@ void DriveSession::place_world() {
                   }
                 }
               }
-              if (it == festival_guests.end() && festival_guests.size() < 24 && uploads_this_frame < 1) {
+              if (it == festival_guests.end() && festival_guests.size() < 36 && uploads_this_frame < 1) {
                 ++uploads_this_frame;
                 auto gs = std::make_unique<Showroom>(host.renderer);
                 gs->set_guest();
@@ -190,7 +248,8 @@ void DriveSession::place_world() {
                 }
               }
               if (it != festival_guests.end() && it->second) guest_sr = it->second.get();
-              // Temporary fallback while an extra slot clone awaits the 1-per-frame upload budget.
+              // Temporary fallback while an extra slot clone awaits the 1-per-frame upload budget,
+              // or if a recorded model is absent from the local bake directory.
               if (!guest_sr) {
                 if (app.race) guest_sr = app.race->find_loaded_model(media, paint_seq);
                 if (!guest_sr) {
@@ -198,6 +257,13 @@ void DriveSession::place_world() {
                     guest_sr = it_b->second.get();
                   } else if (auto it_m = festival_guests.find(media); it_m != festival_guests.end() && it_m->second) {
                     guest_sr = it_m->second.get();
+                  } else {
+                    for (const auto& [k, ptr] : festival_guests) {
+                      if (ptr) {
+                        guest_sr = ptr.get();
+                        break;
+                      }
+                    }
                   }
                 }
               }

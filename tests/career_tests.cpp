@@ -560,6 +560,102 @@ void test_r2_5_detailed_restrictions_and_fame_events() {
   CHECK(lv175 != nullptr && lv175->dialogue_event == "FameRank175" && lv175->radio_festival_update == "RadioPop175");
 }
 
+void test_r3_e1_street_hubs_and_buyins() {
+  // R3-CAM-13: Progressive 3-hub tier unlocking + CR entry buy-ins.
+  race::CareerCatalog cat;
+  cat.hubs = {
+      {1, "HUB_1", 310, {57, 80}, true, {0, 0, 0}, 24.0},
+      {2, "HUB_2", 1700, {38, 53}, true, {100, 0, 0}, 24.0},
+      {3, "HUB_3", 4500, {83, 97}, true, {200, 0, 0}, 24.0},
+  };
+
+  auto make_street = [](int64_t id, const char* hid, int hub, int pts, double cash) {
+    race::CareerEvent ev;
+    ev.event_id = id;
+    ev.horizon_id = hid;
+    ev.style = 2;
+    ev.career_type = 4;
+    ev.hub_id = hub;
+    ev.unlock_points_req = pts;
+    ev.cash_prize = cash;
+    return ev;
+  };
+  cat.events = {
+      make_street(57, "STREET_1A", 1, 310, 24000.0),
+      make_street(80, "STREET_1B", 1, 310, 22000.0),
+      make_street(38, "STREET_2A", 2, 1700, 35000.0),
+      make_street(53, "STREET_2B", 2, 1700, 36000.0),
+      make_street(83, "STREET_3A", 3, 4500, 50000.0),
+      make_street(97, "STREET_3B", 3, 4500, 100000.0),
+  };
+
+  race::CareerRecord rec;
+  rec.wristband_points = 300;
+  CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, 0));  // below 310 pts
+
+  rec.wristband_points = 5000;
+  CHECK(!cat.is_hub_unlocked(cat.hubs[0], rec, -1));  // pre-Yellow Wristband locked
+  CHECK(cat.is_hub_unlocked(cat.hubs[0], rec, 0));    // Hub 1 unlocks!
+  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));   // Hub 2 STILL locked until Hub 1 completed!
+  CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));   // Hub 3 STILL locked until Hub 2 completed!
+  CHECK(!cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(cat.hub_unlock_requirement(1) == 0);
+  CHECK(cat.hub_unlock_requirement(2) == 2);
+  CHECK(cat.hub_unlock_requirement(3) == 2);
+
+  // Complete 1 Hub 1 race -> Hub 2 still requires 1 more Hub 1 race.
+  rec.event_places[57] = 1;
+  CHECK(cat.hub_events_completed(1, rec) == 1);
+  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
+
+  // Complete 2nd Hub 1 race -> Hub 2 unlocks! Hub 3 still locked!
+  rec.event_places[80] = 2;
+  CHECK(cat.hub_events_completed(1, rec) == 2);
+  CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
+  CHECK(cat.is_event_unlocked(cat.events[2], rec, 0, 250));
+  CHECK(!cat.is_hub_unlocked(cat.hubs[2], rec, 0));
+
+  // Hub 2 also requires its points threshold (1700).
+  rec.wristband_points = 1200;
+  CHECK(!cat.is_hub_unlocked(cat.hubs[1], rec, 0));
+  rec.wristband_points = 5000;
+  CHECK(cat.is_hub_unlocked(cat.hubs[1], rec, 0));
+
+  // Complete both Hub 2 races -> Hub 3 unlocks!
+  rec.event_places[38] = 1;
+  rec.event_places[53] = 1;
+  CHECK(cat.is_hub_unlocked(cat.hubs[2], rec, 0));
+  CHECK(cat.is_event_unlocked(cat.events[4], rec, 0, 250));
+
+  // CR entry buy-in fee validation & atomic deduction.
+  race::CareerEvent fest;
+  fest.style = 1;
+  fest.cash_prize = 20000.0;
+  CHECK(race::CareerCatalog::street_race_buy_in(fest) == 0);
+  rec.credits = 0;
+  int64_t fee = -1;
+  CHECK(race::CareerCatalog::charge_street_race_buy_in(fest, rec, &fee) && fee == 0);
+
+  // Hub 1 (24,000 CR prize -> 2,500 CR buy-in), Hub 2 (35,000 -> 3,500), Hub 3 (100,000 -> 10,000).
+  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[0]) == 2500);
+  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[2]) == 3500);
+  CHECK(race::CareerCatalog::street_race_buy_in(cat.events[5]) == 10000);
+
+  // Insufficient CR refuses entry and leaves balance untouched.
+  rec.credits = 2000;
+  std::string why;
+  CHECK(!race::CareerCatalog::charge_street_race_buy_in(cat.events[0], rec, &fee, &why));
+  CHECK(fee == 2500);
+  CHECK(rec.credits == 2000);
+  CHECK(why.find("2,500") != std::string::npos);
+
+  // Sufficient CR deducts exact buy-in.
+  rec.credits = 5000;
+  why.clear();
+  CHECK(race::CareerCatalog::charge_street_race_buy_in(cat.events[0], rec, &fee, &why));
+  CHECK(fee == 2500 && rec.credits == 2500);
+}
+
 }  // namespace
 
 int main() {
@@ -569,6 +665,7 @@ int main() {
   test_skills_and_popularity();
   test_skills_reset_session_clock();
   test_r2_5_detailed_restrictions_and_fame_events();
+  test_r3_e1_street_hubs_and_buyins();
   test_real_disc_catalog();
   std::printf("career_tests: %d failures\n", failures);
   return failures ? 1 : 0;

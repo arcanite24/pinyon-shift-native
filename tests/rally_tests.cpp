@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include "garage/rally_kit.h"
 #include "race/rally_championship.h"
 #include "race/rally_codriver.h"
+#include "race/rivals.h"
 
 namespace {
 
@@ -409,6 +411,79 @@ void test_r2_5_xp_delta_podium_unlock_and_helpers() {
   CHECK(cat.champion_unlocked(save));
 }
 
+void test_r3_rivals_targets_shgh_ghost_and_bounty() {
+  // 1. Offline Bronze / Silver / Gold Rivals targets for both road events and Rally stages.
+  const auto road_tiers = race::generate_rivals_targets("FR01", 100.0, 20000, false);
+  CHECK(road_tiers[0].tier_label == "BRONZE" && road_tiers[1].tier_label == "SILVER" &&
+        road_tiers[2].tier_label == "GOLD");
+  CHECK(road_tiers[0].target_time_s > road_tiers[1].target_time_s &&
+        road_tiers[1].target_time_s > road_tiers[2].target_time_s);
+  CHECK(road_tiers[0].bounty_cr < road_tiers[1].bounty_cr && road_tiers[1].bounty_cr < road_tiers[2].bounty_cr);
+  CHECK(!road_tiers[0].rival_name.empty() && !road_tiers[2].rival_name.empty());
+
+  const auto rally_tiers = race::generate_rivals_targets("stage:24", 90.0, 15000, true);
+  CHECK(rally_tiers[0].target_time_s > rally_tiers[2].target_time_s);
+  CHECK(rally_tiers[2].bounty_cr >= 15000);
+
+  // 2. Synthesize target ghost along 3D waypoints and save/load as `.shgh`.
+  std::vector<race::GhostWaypoint> wps;
+  for (int i = 0; i <= 20; ++i) {
+    const double s = double(i) * 50.0;
+    wps.push_back({s, double(i) * 4.0, 10.0 + double(i) * 0.2, s});
+  }
+  const race::GhostRun target_ghost = race::synthesize_target_ghost(
+      wps, rally_tiers[1].target_time_s, "stage:24", rally_tiers[1].rival_name, "SUB_ImprezaWRXSTI_11", 1626, 550, 0.2);
+  CHECK(!target_ghost.empty() && near(target_ghost.total_time, rally_tiers[1].target_time_s, 1e-4));
+
+  race::GhostSample mid{};
+  CHECK(target_ghost.interpolate(rally_tiers[1].target_time_s * 0.5, mid));
+  const double qlen = std::sqrt(mid.qx * mid.qx + mid.qy * mid.qy + mid.qz * mid.qz + mid.qw * mid.qw);
+  CHECK(near(qlen, 1.0, 1e-4) && mid.speed > 1.0);
+
+  const auto tmp_dir = std::filesystem::temp_directory_path() / "shift_rally_rivals_tests";
+  std::error_code ec;
+  std::filesystem::remove_all(tmp_dir, ec);
+  const auto gpath = race::ghost_file_path(tmp_dir, "stage:24");
+  CHECK(gpath.extension() == ".shgh");
+
+  bool saved_pb = false;
+  std::string err;
+  CHECK(race::update_personal_best_ghost(tmp_dir, target_ghost, &saved_pb, &err) && saved_pb);
+  race::GhostRun loaded_pb;
+  CHECK(race::load_personal_best_ghost(tmp_dir, "stage:24", loaded_pb, &err));
+  CHECK(loaded_pb.event_id == "stage:24" && near(loaded_pb.total_time, target_ghost.total_time, 1e-4));
+
+  // 3. Bounty evaluation (clean beat = 100%, dirty beat = 75%, loss = 0).
+  bool beat = false;
+  const int64_t clean_bounty =
+      race::evaluate_rivals_bounty(rally_tiers[1].target_time_s - 1.5, true, rally_tiers[1].target_time_s,
+                                   rally_tiers[1].bounty_cr, beat);
+  CHECK(beat && clean_bounty == rally_tiers[1].bounty_cr);
+
+  const int64_t dirty_bounty =
+      race::evaluate_rivals_bounty(rally_tiers[1].target_time_s - 1.5, false, rally_tiers[1].target_time_s,
+                                   rally_tiers[1].bounty_cr, beat);
+  CHECK(beat && dirty_bounty > 0 && dirty_bounty < rally_tiers[1].bounty_cr);
+
+  const int64_t lost_bounty =
+      race::evaluate_rivals_bounty(rally_tiers[1].target_time_s + 2.0, true, rally_tiers[1].target_time_s,
+                                   rally_tiers[1].bounty_cr, beat);
+  CHECK(!beat && lost_bounty == 0);
+
+  // 4. DriveSave persistence of rivals_beaten & rally_rivals_beaten (for Achievements 165 & 212).
+  drive::DriveSave ds;
+  ds.car = "SUB_WRXSTi_05";
+  ds.position = {0, 0, 0};
+  ds.heading = 0;
+  ds.rivals_beaten = 3;
+  ds.rally_rivals_beaten = 2;
+  drive::DriveSave ds_rt;
+  CHECK(drive::save_from_text(drive::save_to_text(ds), ds_rt, &err));
+  CHECK(ds_rt.rivals_beaten == 3 && ds_rt.rally_rivals_beaten == 2);
+
+  std::filesystem::remove_all(tmp_dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -417,6 +492,7 @@ int main() {
   test_restriction_0x80_and_rally_parts();
   test_codriver_pace_notes_and_audio();
   test_real_v4_corpus();
+  test_r3_rivals_targets_shgh_ghost_and_bounty();
   if (failures) {
     std::printf("rally_tests: %d failure(s)\n", failures);
     return 1;

@@ -135,10 +135,83 @@ int CareerCatalog::pending_wristband(int wristband_points, int collected_wristba
   return std::min(collected_wristband + 1, int(wristbands.size()) - 1);
 }
 
+int CareerCatalog::hub_events_completed(int hub_id, const CareerRecord& rec) const {
+  if (hub_id <= 0) return 0;
+  int completed = 0;
+  for (const auto& ev : events) {
+    if (ev.style == 2 && ev.hub_id == hub_id && best_place(ev, rec) > 0) {
+      ++completed;
+    }
+  }
+  return completed;
+}
+
+int CareerCatalog::hub_unlock_requirement(int hub_id) const {
+  if (hub_id <= 1) return 0;
+  const StreetHub* prev = find_hub(hub_id - 1);
+  if (!prev) return 0;
+  int prev_total = 0;
+  for (const auto& ev : events) {
+    if (ev.style == 2 && ev.hub_id == prev->id) ++prev_total;
+  }
+  if (prev_total <= 0) return 0;
+  if (!prev->initial_events.empty()) {
+    int present_init = 0;
+    for (int64_t eid : prev->initial_events) {
+      if (const CareerEvent* ev = find_event_by_id(eid); ev && ev->style == 2 && ev->hub_id == prev->id) {
+        ++present_init;
+      }
+    }
+    const int base_req = present_init > 0 ? present_init : int(prev->initial_events.size());
+    return std::min(prev_total, std::max(1, base_req));
+  }
+  return std::min(prev_total, 2);
+}
+
 bool CareerCatalog::is_hub_unlocked(const StreetHub& hub, const CareerRecord& rec, int collected_wristband) const {
-  // Hub 1 unlocks at 310 pts (Green), Hub 2 at 1700 (Pink), Hub 3 at 4500 (Purple).
+  // Progressive 3-hub tier unlocking (R3-CAM-13):
+  // - Hub 1 (Carson): unlocks at its points threshold (310 pts) once Yellow Wristband is earned.
+  // - Hub 2 (Red Rock): unlocks after Hub 1 is unlocked, Hub 1 tier races are completed, and Hub 2 points (1700).
+  // - Hub 3 (Observatory): unlocks after Hub 2 is unlocked, Hub 2 tier races are completed, and Hub 3 points (4500).
+  if (collected_wristband < 0) return false;
   if (rec.wristband_points < hub.unlock_points_req) return false;
-  return collected_wristband >= 0;
+  if (hub.id > 1) {
+    if (const StreetHub* prev = find_hub(hub.id - 1)) {
+      if (!is_hub_unlocked(*prev, rec, collected_wristband)) return false;
+      const int req = hub_unlock_requirement(hub.id);
+      if (req > 0 && hub_events_completed(prev->id, rec) < req) return false;
+    }
+  }
+  return true;
+}
+
+int64_t CareerCatalog::street_race_buy_in(const CareerEvent& ev) {
+  if (ev.style != 2) return 0;
+  const int64_t min_fee = (ev.hub_id >= 3) ? 5000LL : (ev.hub_id == 2 ? 2500LL : 1000LL);
+  if (ev.cash_prize <= 0.0) return min_fee;
+  const int64_t scaled = int64_t(std::llround((ev.cash_prize * 0.10) / 500.0)) * 500LL;
+  return std::max(min_fee, scaled);
+}
+
+bool CareerCatalog::charge_street_race_buy_in(const CareerEvent& ev, CareerRecord& rec, int64_t* out_fee,
+                                              std::string* reason) {
+  const int64_t fee = street_race_buy_in(ev);
+  if (out_fee) *out_fee = fee;
+  if (fee <= 0) return true;
+  if (rec.credits < fee) {
+    if (reason) {
+      std::string digits = std::to_string(fee);
+      std::string formatted;
+      for (size_t i = 0; i < digits.size(); ++i) {
+        if (i > 0 && ((digits.size() - i) % 3 == 0)) formatted.push_back(',');
+        formatted.push_back(digits[i]);
+      }
+      *reason = "INSUFFICIENT CREDITS — STREET RACE BUY-IN REQUIRES " + formatted + " CR";
+    }
+    return false;
+  }
+  rec.credits -= fee;
+  return true;
 }
 
 bool CareerCatalog::is_event_unlocked(const CareerEvent& ev, const CareerRecord& rec, int collected_wristband,

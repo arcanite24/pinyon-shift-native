@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -85,6 +87,58 @@ struct RolloverRecoveryState {
 };
 
 RolloverRecoveryState g_rollover_state;
+
+struct RewindGuardState {
+  const DriveSession* owner = nullptr;
+  double last_sim_time = -1.0;
+};
+
+RewindGuardState g_rewind_guard;
+
+struct ViperConvoyState {
+  const DriveSession* owner = nullptr;
+  double last_spawn_t = -10.0;
+  std::map<uint32_t, double> prev_ahead_m;
+  std::set<uint32_t> counted_ids;
+};
+
+ViperConvoyState g_viper_convoy;
+
+void apply_popularity_with_events(DriveSession& s, double pts) {
+  if (!s.app.skill_tracker || pts <= 0.0) return;
+  int prev_pop_rank = s.app.skill_tracker->popularity_rank();
+  const auto evs = s.app.skill_tracker->add_popularity(pts, s.vehicle.time());
+  for (const auto& sev : evs) {
+    if (sev.kind == freeroam::SkillEvent::kFameSponsor && sev.credits > 0) {
+      const int64_t scr = s.slice12.trainer.pacing.scale_credits(sev.credits);
+      s.app.career.credits = std::min<int64_t>(999999999, s.app.career.credits + scr);
+      s.app.career.total_winnings += scr;
+      s.app.sponsor_banner_title = "FAME SPONSORSHIP TIER";
+      s.app.sponsor_banner_detail = "RANK " + std::to_string(sev.rank) + "  •  +" + carview::thousands(scr) + " Cr";
+      s.app.sponsor_banner_at = s.vehicle.time();
+      s.popup = {"FAME SPONSOR BONUS",
+                 "POPULARITY RANK " + std::to_string(sev.rank) + "  +" + carview::thousands(scr) + " Cr",
+                 s.vehicle.time(), -1, carview::ui::rgba(247, 255, 38)};
+      s.save_due = true;
+    } else if (sev.kind == freeroam::SkillEvent::kRankUp) {
+      const int old_rank = std::max(prev_pop_rank, sev.rank + 1);
+      s.app.audio_host.trigger_ui(audio::UiCue::kRankUp);
+      s.app.audio_host.radio_trigger_festival_update("PopularityRankUp");
+      s.app.campaign.on_popularity_rank_changed(old_rank, sev.rank, &s.app.audio_host);
+      if (s.app.have_career_catalog) {
+        for (const auto& cev : s.app.career_catalog.events) {
+          if (cev.style == 3 && cev.popularity_rank_req > 0 &&
+              sev.rank <= cev.popularity_rank_req && cev.popularity_rank_req < old_rank) {
+            const std::string ename = race::resolve_event_display_title(&cev);
+            s.popup = {"NEW SHOWCASE UNLOCKED!", ename, s.vehicle.time(), -1, carview::ui::rgba(245, 4, 92)};
+          }
+        }
+      }
+      prev_pop_rank = std::min(prev_pop_rank, sev.rank);
+      s.save_due = true;
+    }
+  }
+}
 
 }  // namespace
 
@@ -241,7 +295,7 @@ void DriveSession::start_pr_stunt(const freeroam::PrStunt& st) {
         int64_t base_pts = 0;
         if (app.skill_tracker) {
           const auto sh = app.skill_tracker->hud();
-          base_pts = int64_t(std::llround(sh.popularity_points)) + int64_t(sh.chain_points) * int64_t(sh.multiplier);
+          base_pts = int64_t(std::llround(sh.popularity_points));
         }
         app.pr_stunt_session.start(st, base_pts, int(app.race_options.difficulty));
         pr_stunt_has_prev = false;
@@ -345,7 +399,7 @@ bool DriveSession::free_roam_step() {
             const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
             if (disc_idx >= 0 && size_t(disc_idx) < app.outposts.outposts.size()) {
               const auto& op = app.outposts.outposts[size_t(disc_idx)];
-              if (app.skill_tracker) app.skill_tracker->add_popularity(500.0);
+              apply_popularity_with_events(*this, 500.0);
               const int dc = app.outpost_progress.discovered_count(app.outposts);
               popup = {"HORIZON OUTPOST DISCOVERED",
                        op.display_name + "  •  FAST TRAVEL UNLOCKED (" + std::to_string(dc) + "/" +
@@ -358,14 +412,33 @@ bool DriveSession::free_roam_step() {
             if (app.pr_stunt_session.active()) {
               freeroam::PrStuntUpdate psu;
               psu.car_x = at.x;
+              psu.car_y = at.y;
               psu.car_z = at.z;
               psu.prev_x = pr_stunt_has_prev ? pr_stunt_prev_x : at.x;
               psu.prev_z = pr_stunt_has_prev ? pr_stunt_prev_z : at.z;
               psu.speed_mph = std::fabs(vehicle.speed()) * 2.2369363;
               if (app.skill_tracker) {
                 const auto sh = app.skill_tracker->hud();
-                psu.total_skill_points =
-                    int64_t(std::llround(sh.popularity_points)) + int64_t(sh.chain_points) * int64_t(sh.multiplier);
+                psu.banked_skill_points = int64_t(std::llround(sh.popularity_points));
+                psu.unbanked_skill_points = int64_t(std::llround(double(sh.chain_points) * double(sh.multiplier_f)));
+                psu.total_skill_points = psu.banked_skill_points;
+              }
+              if (have_cam_view) {
+                psu.has_camera = true;
+                psu.camera_pos = last_cam_view.eye;
+                psu.camera_forward = last_cam_view.forward;
+                psu.camera_up = last_cam_view.up;
+                const auto& cf = last_cam_view.forward;
+                const auto& cu = last_cam_view.up;
+                double rx = cf[1] * cu[2] - cf[2] * cu[1];
+                double ry = cf[2] * cu[0] - cf[0] * cu[2];
+                double rz = cf[0] * cu[1] - cf[1] * cu[0];
+                const double rl = std::sqrt(rx * rx + ry * ry + rz * rz);
+                if (rl > 1e-6) {
+                  psu.camera_right = {rx / rl, ry / rl, rz / rl};
+                }
+                psu.camera_vfov_deg = last_cam_view.fov_degrees > 10.0 ? last_cam_view.fov_degrees : 55.0;
+                psu.camera_aspect = double(std::max<uint32_t>(1, app.width)) / double(std::max<uint32_t>(1, app.height));
               }
               psu.photo_pressed = pr_stunt_photo_pressed;
               psu.dt = drive::Vehicle::kStep;
@@ -382,7 +455,7 @@ bool DriveSession::free_roam_step() {
                 const int64_t pop = first_time ? st.reward_popularity : st.reward_popularity / 4;
                 app.career.credits += cr;
                 app.career.total_winnings += cr;
-                if (app.skill_tracker) app.skill_tracker->add_popularity(double(pop));
+                apply_popularity_with_events(*this, double(pop));
                 popup = {"PR STUNT COMPLETE!",
                          st.title + "   +" + carview::thousands(cr) + " Cr   +" + carview::thousands(pop) + " POP",
                          vehicle.time(),
@@ -484,13 +557,34 @@ bool DriveSession::free_roam_step() {
               const std::string t = carview::game_text("_&" + std::to_string(ref));
               if (!t.empty() && t[0] != '_') named = t;
             }
-            // Real FH1 Barn Find flow: discovery sends the wreck to Dak's garage for restoration;
-            // the car is delivered into My Garage once Dak finishes restoring it.
-            std::snprintf(line, sizeof line, "barn find! dak is restoring %s", named.c_str());
-            popup = {"BARN FIND DISCOVERED!", "DAK IS RESTORING " + named, vehicle.time(), -1, carview::ui::rgba(70, 210, 100)};
+            // R3-CAM-09: Real FH1 Barn Find flow — discovery NEVER adds the barn car to the garage
+            // immediately. Send it to Dak's Garage pending restoration queue (ready_to_claim = false)
+            // until Dak finishes restoring it and the player claims it in Dak's Garage.
+            std::snprintf(line, sizeof line, "barn find! dak is restoring %s at the garage", named.c_str());
+            popup = {"BARN FIND DISCOVERED", "DAK IS RESTORING " + named + " AT THE GARAGE", vehicle.time(), -1,
+                     carview::ui::rgba(70, 210, 100)};
+            notice = "BARN FIND DISCOVERED — DAK IS RESTORING IT AT THE GARAGE";
+            notice_until = vehicle.time() + 5.0;
             app.campaign.on_barn_find(true, b.name, named, &app.audio_host);
             app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            app.pending_barn_restorations.push_back({b.name, named, b.car_id, 45.0, 0.0});
+            bool already_queued = false;
+            for (const auto& existing : app.pending_barn_restorations) {
+              if (existing.barn_id == b.name || (b.car_id > 0 && existing.car_id == b.car_id)) {
+                already_queued = true;
+                break;
+              }
+            }
+            if (!already_queued) {
+              DriveApp::PendingBarnRestore pbr;
+              pbr.barn_id = b.name;
+              pbr.car_name = named;
+              pbr.car_id = b.car_id;
+              pbr.ready_after_s = 45.0;
+              pbr.elapsed_s = 0.0;
+              pbr.ready_to_claim = false;
+              pbr.notified_ready = false;
+              app.pending_barn_restorations.push_back(std::move(pbr));
+            }
             sync_saved_pending_barns(app);
             std::printf("t %.2f s: %s found: %s (Data_Car %d) sent to Dak for restoration\n", vehicle.time(), b.name.c_str(),
                         named.c_str(), b.car_id);
@@ -510,6 +604,20 @@ int64_t DriveSession::current_make_id() {
 
 bool DriveSession::step(const drive::Input& user_in) {
         const auto ph_t0 = std::chrono::steady_clock::now();
+        // R3-CAM-10 / R3-CAM-11: Detect rewind resume (sim time jumped backward to an earlier keyframe)
+        // and immediately cancel any active unbanked Skill Chain and any active Speed Zone run.
+        if (g_rewind_guard.owner != this) {
+          g_rewind_guard.owner = this;
+          g_rewind_guard.last_sim_time = vehicle.time();
+        } else if (vehicle.time() < g_rewind_guard.last_sim_time - 0.05) {
+          if (app.skill_tracker) app.skill_tracker->clear_active_chain();
+          if (app.speed_tracker) {
+            app.speed_tracker->cancel_active();
+            app.audio_host.set_speed_zone_active(false);
+            have_prev_speed_pos = false;
+          }
+        }
+        g_rewind_guard.last_sim_time = vehicle.time();
         // PT-31: Retail FH1 smooth Reset-to-Road UX (~0.25 s fade-out -> safe centerline
         // reposition with zero velocity & camera re-center -> ~0.30 s fade-in + 2.5 s ghosting).
         auto begin_smooth_reset = [&](const drive::Vehicle::Pose& pre_pose, const drive::Vehicle::Pose& tgt_pose,
@@ -698,7 +806,7 @@ bool DriveSession::step(const drive::Input& user_in) {
               club_pending.encounter_started = true;
               app.audio_host.trigger_ui(audio::UiCue::kH2hGo);
             }
-            if (app.have_prog_tables && app.career.driver_xp < 36000) {
+            if (app.legacy_fm4_progression && app.have_prog_tables && app.career.driver_xp < 36000) {
               race::apply_progression_xp(app.career, 36000, current_make_id(), 18000, app.prog_tables);
             }
             app.sponsor_banner_title = "SPONSORSHIP TIER 2: NEAR MISS";
@@ -723,8 +831,8 @@ bool DriveSession::step(const drive::Input& user_in) {
                        "DEFEATED BY " + hres.opponent_name + "   +" + std::to_string(hres.popularity_points) + " FAME",
                        vehicle.time(), -1, carview::ui::rgba(255, 72, 72)};
             }
-            if (app.skill_tracker) app.skill_tracker->add_popularity(double(hres.popularity_points));
-            if (app.have_prog_tables) {
+            apply_popularity_with_events(*this, double(hres.popularity_points));
+            if (app.legacy_fm4_progression && app.have_prog_tables) {
               const int hxp = slice12.trainer.pacing.scale_points(hres.driver_xp);
               race::apply_progression_xp(app.career, hxp, current_make_id(), hxp / 2, app.prog_tables);
             }
@@ -769,6 +877,72 @@ bool DriveSession::step(const drive::Input& user_in) {
                   host.particle_sys.spawn_collision_impact(cpos, cnrm, cvel, float(dv_f), true);
                 }
               }
+            }
+          }
+        }
+        // R3-CAM-15: Viper opening drive Festival-bound AI convoy & pass countdown.
+        if (!app.race && app.campaign.flow().stage() == race::CampaignStage::kViperIntroDrive) {
+          if (g_viper_convoy.owner != this || vehicle.time() < 0.05) {
+            g_viper_convoy.owner = this;
+            g_viper_convoy.last_spawn_t = -10.0;
+            g_viper_convoy.prev_ahead_m.clear();
+            g_viper_convoy.counted_ids.clear();
+          }
+          const drive::Vec3 fp = vehicle.position();
+          const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          const drive::Vec3 fr = drive::rotate(vehicle.orientation(), {1, 0, 0});
+          const double fh = std::atan2(ff.x, ff.z);
+          int convoy_ahead = 0;
+          auto track_convoy_car = [&](uint32_t cid, double cx, double cz, double chdg) {
+            const double dx = cx - fp.x, dz = cz - fp.z;
+            const double ahead_m = dx * ff.x + dz * ff.z;
+            const double lat_m = std::fabs(dx * fr.x + dz * fr.z);
+            const double align = std::sin(chdg) * ff.x + std::cos(chdg) * ff.z;
+            if (align > 0.45 && ahead_m > 10.0 && ahead_m < 280.0 && lat_m < 25.0) {
+              ++convoy_ahead;
+            }
+            if (align > 0.45 && lat_m < 22.0) {
+              auto it = g_viper_convoy.prev_ahead_m.find(cid);
+              if (it != g_viper_convoy.prev_ahead_m.end() && it->second > 2.0 && ahead_m < -2.0) {
+                if (g_viper_convoy.counted_ids.insert(cid).second) {
+                  if (app.campaign.on_viper_convoy_pass(1, &app.audio_host)) {
+                    app.story_intro.on_convoy_pass(1);
+                    app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
+                    const int passed = app.campaign.flow().viper_convoy_passed();
+                    const int target = app.campaign.flow().viper_convoy_target();
+                    const int rem = app.campaign.flow().viper_convoy_remaining();
+                    if (rem > 0) {
+                      popup = {"FESTIVAL DRIVER PASSED",
+                               std::to_string(passed) + " / " + std::to_string(target) + "  •  " +
+                                   std::to_string(rem) + " LEFT TO OVERTAKE",
+                               vehicle.time(), double(passed) / double(std::max(1, target)),
+                               carview::ui::rgba(249, 0, 100)};
+                    } else {
+                      popup = {"FESTIVAL CONVOY CLEARED!",
+                               "ALL " + std::to_string(target) + " DRIVERS PASSED  •  HEAD FOR THE MAIN GATE",
+                               vehicle.time(), 1.0, carview::ui::rgba(218, 255, 0)};
+                    }
+                  }
+                }
+              }
+            }
+            g_viper_convoy.prev_ahead_m[cid] = ahead_m;
+          };
+          if (festival_mgr) {
+            for (const auto& fc : festival_mgr->cars()) {
+              track_convoy_car(fc.id, fc.position.x, fc.position.z, fc.heading);
+            }
+            if (app.campaign.flow().viper_convoy_remaining() > 0 && convoy_ahead < 2 &&
+                vehicle.speed() > 8.0 && vehicle.time() - g_viper_convoy.last_spawn_t >= 3.5) {
+              const double dist_m = 75.0 + 35.0 * double(g_viper_convoy.counted_ids.size() % 3);
+              if (festival_mgr->spawn_ahead({fp.x, fp.y, fp.z}, fh, dist_m) != 0) {
+                g_viper_convoy.last_spawn_t = vehicle.time();
+              }
+            }
+          }
+          if (traffic && traffic->cars()) {
+            for (const auto& tc : *traffic->cars()) {
+              track_convoy_car(tc.id | 0x40000000u, tc.position.x, tc.position.z, tc.heading);
             }
           }
         }
@@ -828,6 +1002,15 @@ bool DriveSession::step(const drive::Input& user_in) {
             const auto rew = app.rally_session.finalize(app.rally_catalog, app.saved, dpct, apct);
             app.career.credits = app.saved.credits;
             app.career.total_winnings = app.saved.total_winnings;
+            // R3-CAM-01: Merge finalized Rally Championship & Stage results into app.career.event_places
+            // so save_now() never overwrites/wipes Rally completion records on the next save!
+            for (const auto& [ev_id, place] : app.saved.event_results) {
+              if (place <= 0) continue;
+              auto it = app.career.event_places.find(ev_id);
+              if (it == app.career.event_places.end() || it->second <= 0 || place < it->second) {
+                app.career.event_places[ev_id] = place;
+              }
+            }
             app.rally_results_state = carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
             app.rally_results_open = true;
             save_due = true;
@@ -859,13 +1042,13 @@ bool DriveSession::step(const drive::Input& user_in) {
               if (extra_wb != 0) app.career.wristband_points = std::max(0, app.career.wristband_points + extra_wb);
             }
             if (app.skill_tracker) app.skill_tracker->reset_race_skills_banked();
-            if (app.have_prog_tables) {
+            if (app.legacy_fm4_progression && app.have_prog_tables) {
               const int drv_xp = slice12.trainer.pacing.scale_points(a->driver_xp);
               const int aff_xp = slice12.trainer.pacing.scale_points(a->affinity_xp);
               const auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp,
                                                          app.prog_tables);
               for (int64_t gcid : pu.gift_cars) {
-                const std::string gnm = app.award_garage_car(gcid, 0, false);
+                const std::string gnm = app.award_garage_car(gcid, 0, false, /*is_prize=*/true);
                 if (!gnm.empty()) {
                   popup = {"DRIVER LEVEL " + std::to_string(pu.new_driver_level) + " GIFT CAR!", gnm, vehicle.time(),
                            -1, carview::ui::rgba(247, 255, 38)};
@@ -905,7 +1088,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             if (a->prize_car > 0) {
               int prize_col = 0;
               if (const auto* cev = app.career_catalog.find_event(app.race_event)) prize_col = cev->prize_car_colour;
-              won_car_name = app.award_garage_car(a->prize_car, prize_col, false);
+              won_car_name = app.award_garage_car(a->prize_car, prize_col, false, /*is_prize=*/true);
               app.garage_picker();
             }
             // Dynamic difficulty (AISkillAdjustments): update profile Main/AISkill
@@ -922,10 +1105,80 @@ bool DriveSession::step(const drive::Input& user_in) {
               const race::CareerEvent* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
               const int pl = app.race->player_place();
               const int ncars = app.race->is_showcase() ? 2 : int(app.race->player_index()) + 1;
+              // R3-CAM-03: Capture actual RaceView standings (real drivers, cars, class/PI, finish clock/gap/best lap)
+              // for Post-Race Stage 1 RACE RESULTS instead of fabricating boss names or fake +0.92s gaps.
+              std::vector<race::RaceFinishStanding> finish_standings;
+              const RaceHud rh = app.race->hud_info();
+              if (app.race->is_showcase()) {
+                race::RaceFinishStanding p_st;
+                p_st.place = pl;
+                p_st.is_player = true;
+                p_st.finish_time_s = rh.finish_time;
+                p_st.best_lap_s = rh.best_lap;
+                if (!rh.rows.empty()) {
+                  p_st.driver_name = rh.rows.front().name;
+                  p_st.car_name = rh.rows.front().car;
+                  p_st.class_name = rh.rows.front().car_class;
+                  p_st.pi = rh.rows.front().pi;
+                } else {
+                  p_st.driver_name = "YOU";
+                  p_st.car_name = carview::car_name(app.car);
+                }
+                const auto& sc_opp = app.race->showcase();
+                race::RaceFinishStanding a_st;
+                a_st.place = (pl == 1 ? 2 : 1);
+                a_st.driver_name = sc_opp.spec().display_name;
+                a_st.car_name = "AIRBORNE CHALLENGER";
+                a_st.finish_time_s = sc_opp.pose().finished ? sc_opp.pose().finish_time : -1.0;
+                const double est_gap =
+                    (a_st.finish_time_s > 0.0 && p_st.finish_time_s > 0.0)
+                        ? std::fabs(a_st.finish_time_s - p_st.finish_time_s)
+                        : (std::fabs(rh.showcase_gap_m) / std::max(10.0, sc_opp.pose().speed_mps));
+                p_st.gap_s = (pl == 1) ? 0.0 : est_gap;
+                a_st.gap_s = (pl == 1) ? est_gap : 0.0;
+                if (pl == 1) {
+                  finish_standings.push_back(std::move(p_st));
+                  finish_standings.push_back(std::move(a_st));
+                } else {
+                  finish_standings.push_back(std::move(a_st));
+                  finish_standings.push_back(std::move(p_st));
+                }
+              } else {
+                const bool event_is_boss = cev && race::find_boss_by_event(cev->horizon_id) != nullptr;
+                double lead_finish_t = -1.0;
+                for (const auto& r : rh.rows) {
+                  if (r.place == 1 && r.finished && r.time > 0.0) {
+                    lead_finish_t = r.time;
+                    break;
+                  }
+                }
+                finish_standings.reserve(rh.rows.size());
+                for (const auto& r : rh.rows) {
+                  race::RaceFinishStanding st;
+                  st.place = r.place;
+                  st.driver_name = !r.name.empty() ? r.name : (r.player ? "YOU" : "HORIZON DRIVER");
+                  st.car_name = r.car;
+                  st.class_name = r.car_class;
+                  st.pi = r.pi;
+                  st.finish_time_s = r.finished ? r.time : -1.0;
+                  st.best_lap_s = r.best_lap;
+                  st.is_player = r.player;
+                  st.is_boss = (!r.player && event_is_boss);
+                  if (r.place == 1) {
+                    st.gap_s = 0.0;
+                  } else if (lead_finish_t > 0.0 && r.finished && r.time > 0.0) {
+                    st.gap_s = std::max(0.0, r.time - lead_finish_t);
+                  } else {
+                    st.gap_s = std::max(0.0, r.gap);
+                  }
+                  finish_standings.push_back(std::move(st));
+                }
+              }
               const auto camp_act = app.campaign.on_race_finished(
                   cev, *a, pl, ncars, pop_before, app.current_pop_rank(), bal_before, app.career.credits,
                   app.career.wristband_points, app.collected_wristband, won_car_name,
-                  app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host);
+                  app.have_career_catalog ? &app.career_catalog : nullptr, app.fmv_player, &app.audio_host,
+                  finish_standings);
               apply_campaign_action(camp_act);
               app.campaign_owns_post_race = true;
             }
@@ -1248,6 +1501,24 @@ bool DriveSession::step(const drive::Input& user_in) {
             app.speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), g.center[0] - nx * 4.0, g.center[2] - nz * 4.0,
                                 g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, 64.5);  // ~144.3 mph flash & PB
           }
+          // R3-CAM-11: Feed live off-road state to SpeedActivityTracker before stepping Speed Zones.
+          {
+            const auto& surfs = host.collision.surfaces();
+            int grounded_wheels = 0;
+            int offroad_wheels = 0;
+            for (int wi = 0; wi < drive::kWheels; ++wi) {
+              const auto& w = vehicle.wheels()[size_t(wi)];
+              if (!w.contact) continue;
+              ++grounded_wheels;
+              if (w.surface >= 0 && size_t(w.surface) < surfs.size()) {
+                const auto& sf = surfs[size_t(w.surface)];
+                if (sf.off_roadness >= 0.5f || sf.is_penalty_surface) ++offroad_wheels;
+              }
+            }
+            const bool is_off_road =
+                (grounded_wheels >= 2 && offroad_wheels >= 3) || (grounded_wheels > 0 && offroad_wheels == grounded_wheels);
+            app.speed_tracker->set_off_road(is_off_road);
+          }
           const auto speed_evs = app.speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), prev_speed_x, prev_speed_z,
                                                      sp_at.x, sp_at.z, vehicle.speed());
           prev_speed_x = sp_at.x;
@@ -1270,10 +1541,10 @@ bool DriveSession::step(const drive::Input& user_in) {
                 if (const auto* t = app.speed_data.find_trap(ev.id)) sb_id = t->scoreboard_id;
               }
               club_pending.cameras.push_back({is_zone, sb_id, ev.id, ev.speed_mph});
-              if (ev.is_new_pb && app.have_prog_tables) {
+              if (ev.is_new_pb && app.legacy_fm4_progression && app.have_prog_tables) {
                 race::apply_progression_xp(app.career, 750, current_make_id(), 350, app.prog_tables);
               }
-              if (app.skill_tracker) app.skill_tracker->add_popularity(ev.is_new_pb ? 500.0 : 150.0);
+              apply_popularity_with_events(*this, ev.is_new_pb ? 500.0 : 150.0);
               std::printf("speed activity: %s %.1f mph%s\n", ev.label.c_str(), ev.speed_mph,
                           ev.is_new_pb ? " (NEW PB!)" : "");
               save_due = true;

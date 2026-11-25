@@ -911,6 +911,79 @@ void test_corrupt_save_recovery_with_sha256() {
   CHECK(!fs::exists(cfg.save_dir / "save.txt.tmp"));
 }
 
+void test_r3_save_persistence_car_history_and_campaign_reload() {
+  const fs::path root = fresh("r3_save_persistence");
+
+  // 1. Symmetrical persistence of codriver_enabled, fast_travel_anywhere, rivals_beaten & car_history.
+  drive::DriveSave s;
+  s.car = "NIS_SkylineGTRVSpecII_02";
+  s.position = {120.0, 15.0, -450.0};
+  s.heading = 0.75;
+  s.codriver_enabled = false;
+  s.fast_travel_anywhere = true;
+  s.rivals_beaten = 4;
+  s.rally_rivals_beaten = 2;
+  drive::update_car_history(s.car_history, 10, 1219, 4500.0, 180.0, 25000, 2, 1, 2);
+  drive::update_car_history(s.car_history, 10, 1219, 1500.0, 60.0, 10000, 1, 1, 1);
+  drive::update_car_history(s.car_history, 11, 1031, 800.0, 45.0, 0, 0, 0, 0);
+  CHECK(s.car_history.size() == 2);
+  CHECK(std::fabs(s.car_history[0].distance_driven - 6000.0) < 1e-3);
+  CHECK(std::fabs(s.car_history[0].time_driven - 240.0) < 1e-3);
+  CHECK(s.car_history[0].total_winnings == 35000 && s.car_history[0].num_races == 3 &&
+        s.car_history[0].num_victories == 2);
+
+  std::string err;
+  const fs::path save_path = root / "drive" / "save.txt";
+  CHECK(drive::write_save(save_path, s, &err));
+  drive::DriveSave rt;
+  CHECK(drive::read_save(save_path, rt, &err));
+  CHECK(!rt.codriver_enabled);
+  CHECK(rt.fast_travel_anywhere);
+  CHECK(rt.rivals_beaten == 4 && rt.rally_rivals_beaten == 2);
+  CHECK(rt.car_history.size() == 2 && rt.car_history[0].car_id == 1219 && rt.car_history[1].car_id == 1031);
+
+  // Toggling fast_travel_anywhere OFF must NOT be re-latched back ON by carry_from().
+  drive::DriveSave toggled = rt;
+  toggled.fast_travel_anywhere = false;
+  toggled.codriver_enabled = true;
+  toggled.carry_from(rt);
+  CHECK(!toggled.fast_travel_anywhere && toggled.codriver_enabled);
+  CHECK(toggled.rivals_beaten == 4 && toggled.rally_rivals_beaten == 2);
+
+  // 2. load_save_file() automatically recovers a corrupt primary save from sibling .bak.
+  const fs::path bak_path = root / "drive" / "save.txt.bak";
+  CHECK(drive::write_save(bak_path, rt, &err));
+  CHECK(drive::atomic_write_file(save_path, "TRUNCATED_CORRUPT_HEADER", &err));
+  drive::DriveSave recovered;
+  fs::path rec_from;
+  CHECK(drive::load_save_file(save_path, recovered, &err, {}, &rec_from));
+  CHECK(rec_from == bak_path);
+  CHECK(!recovered.codriver_enabled && recovered.fast_travel_anywhere && recovered.rivals_beaten == 4);
+
+  // 3. R3-CAM-23: Campaign onboarding reload consistency (intro_completed vs campaign_stage vehicle selection).
+  {
+    drive::DriveSave viper_s = rt;
+    viper_s.campaign_stage = "viper_drive";
+    viper_s.intro_completed = true;  // inconsistent stale flag
+    const std::string car = drive::resolve_campaign_reload_car(viper_s, "NIS_SkylineGTRVSpecII_02");
+    CHECK(car == "VIP_Viper_13" && !viper_s.intro_completed);
+  }
+  {
+    drive::DriveSave qual_s = rt;
+    qual_s.campaign_stage = "qualify";
+    qual_s.intro_completed = true;
+    const std::string car = drive::resolve_campaign_reload_car(qual_s, "VIP_Viper_13");
+    CHECK(car == "VW_CorradoVR6_95" && !qual_s.intro_completed);
+  }
+  {
+    drive::DriveSave roam_s = rt;
+    roam_s.campaign_stage = "freeroam";
+    roam_s.intro_completed = false;  // stale false after free roam started
+    const std::string car = drive::resolve_campaign_reload_car(roam_s, "NIS_SkylineGTRVSpecII_02");
+    CHECK(car == "NIS_SkylineGTRVSpecII_02" && roam_s.intro_completed);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -926,6 +999,7 @@ int main() {
   test_liveries_backup_and_sync();
   test_retail_profile_importer_and_export();
   test_corrupt_save_recovery_with_sha256();
+  test_r3_save_persistence_car_history_and_campaign_reload();
 
   fs::remove_all(g_root, ec);
   if (g_failed) {

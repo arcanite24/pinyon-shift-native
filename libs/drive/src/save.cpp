@@ -1,6 +1,7 @@
 #include "drive/save.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -145,6 +146,8 @@ std::string save_to_text(const DriveSave& s) {
     out += "sponsor " + sp.id + " " + std::to_string(sp.count) + " " + std::to_string(sp.claimed) + "\n";
   if (s.h2h_races > 0 || s.h2h_wins > 0)
     out += "h2h " + std::to_string(s.h2h_races) + " " + std::to_string(s.h2h_wins) + "\n";
+  if (s.rivals_beaten > 0 || s.rally_rivals_beaten > 0)
+    out += "rivals " + std::to_string(s.rivals_beaten) + " " + std::to_string(s.rally_rivals_beaten) + "\n";
   if (s.driver_xp > 0) out += "driver_xp " + std::to_string(s.driver_xp) + "\n";
   for (const auto& [make_id, xp] : s.make_affinity)
     if (xp > 0) out += "affinity " + std::to_string(make_id) + " " + std::to_string(xp) + "\n";
@@ -392,6 +395,12 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
       if (l >> sp.id >> sp.count >> sp.claimed && sp.count >= 0 && sp.claimed >= 0) out.sponsors.push_back(sp);
     } else if (key == "h2h") {
       l >> out.h2h_races >> out.h2h_wins;
+    } else if (key == "rivals") {
+      int rb = 0, rrb = 0;
+      if (l >> rb) {
+        out.rivals_beaten = std::max(0, rb);
+        if (l >> rrb) out.rally_rivals_beaten = std::max(0, rrb);
+      }
     } else if (key == "driver_xp") {
       if (!(l >> out.driver_xp) || out.driver_xp < 0) out.driver_xp = 0;
     } else if (key == "affinity") {
@@ -817,6 +826,73 @@ bool load_save_file(const std::filesystem::path& save_path, DriveSave& out_save,
     if (std::filesystem::is_directory(candidate, ec)) effective_backups = candidate;
   }
   return load_save_with_recovery(save_path, effective_backups, out_save, recovered_from, error);
+}
+
+void update_car_history(std::vector<SavedCarHistory>& history, int64_t garage_id, int64_t car_id,
+                        double delta_distance_m, double delta_time_s, int64_t delta_winnings,
+                        int64_t delta_races, int64_t delta_victories, int64_t delta_podiums) {
+  if (car_id <= 0 && garage_id <= 0) return;
+  SavedCarHistory* target = nullptr;
+  for (auto& entry : history) {
+    if ((garage_id > 0 && entry.garage_id == garage_id) ||
+        (garage_id <= 0 && entry.garage_id <= 0 && entry.car_id == car_id)) {
+      target = &entry;
+      break;
+    }
+  }
+  if (!target) {
+    SavedCarHistory fresh;
+    fresh.garage_id = garage_id;
+    fresh.car_id = car_id;
+    history.push_back(fresh);
+    target = &history.back();
+  } else if (target->car_id <= 0 && car_id > 0) {
+    target->car_id = car_id;
+  }
+  if (std::isfinite(delta_distance_m) && delta_distance_m > 0.0) target->distance_driven += delta_distance_m;
+  if (std::isfinite(delta_time_s) && delta_time_s > 0.0) target->time_driven += delta_time_s;
+  if (delta_winnings > 0) target->total_winnings += delta_winnings;
+  if (delta_races > 0) target->num_races += delta_races;
+  if (delta_victories > 0) target->num_victories += delta_victories;
+  if (delta_podiums > 0) target->num_podiums += delta_podiums;
+}
+
+bool campaign_stage_is_onboarding(std::string_view campaign_stage) {
+  std::string k(campaign_stage);
+  for (char& ch : k) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+  return k == "intro" || k == "opening" || k == "opening_cutscene" || k == "viper_drive" || k == "viper" ||
+         k == "intro_drive" || k == "qualify" || k == "corrado_qualify" || k == "registration" ||
+         k == "starter_handoff";
+}
+
+std::string resolve_campaign_reload_car(DriveSave& save, const std::string& selected_garage_car,
+                                        const std::string& viper_media, const std::string& starter_media) {
+  std::string st = save.campaign_stage;
+  for (char& ch : st) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+
+  if (st == "intro" || st == "opening" || st == "opening_cutscene" || st == "viper_drive" || st == "viper" ||
+      st == "intro_drive") {
+    save.intro_completed = false;
+    return !viper_media.empty() ? viper_media : save.car;
+  }
+  if (st == "qualify" || st == "corrado_qualify" || st == "registration" || st == "starter_handoff") {
+    save.intro_completed = false;
+    return !starter_media.empty() ? starter_media : save.car;
+  }
+  if (!st.empty() && st != "title") {
+    // Any post-registration stage (freeroam, wristband, showcase, boss, finale, credits) agrees that intro is done.
+    save.intro_completed = true;
+    return !selected_garage_car.empty() ? selected_garage_car : save.car;
+  }
+  // Empty/title stage: reconcile from intro_completed + garage ownership.
+  if (!save.intro_completed) {
+    if (save.owned_garage && !selected_garage_car.empty()) {
+      // Starter already granted -> qualification / registration phase uses the starter car.
+      return !starter_media.empty() ? starter_media : selected_garage_car;
+    }
+    return !viper_media.empty() ? viper_media : save.car;
+  }
+  return !selected_garage_car.empty() ? selected_garage_car : save.car;
 }
 
 }  // namespace drive

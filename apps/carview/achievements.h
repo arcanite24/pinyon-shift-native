@@ -19,6 +19,10 @@
 #include "fh1data/spa.h"
 #include "ui.h"
 
+namespace race {
+struct CareerCatalog;
+}
+
 namespace carview {
 
 enum class AchievementCategory : uint8_t {
@@ -88,6 +92,7 @@ struct AchievementGameplayState {
   int barns_found = 0;
   int roads_discovered = 0;
   int outposts_discovered = 0;
+  int total_outposts = 10;         // Colorado has 10 regional Horizon Outposts
   int pr_stunts_completed = 0;
   int garage_cars = 0;
   int promo_cars_spotted = 0;
@@ -96,6 +101,7 @@ struct AchievementGameplayState {
   int64_t total_winnings = 0;
   int64_t max_skills_score = 0;
   double popularity_points = 0.0;
+  int popularity_rank = 250;       // 250 (starting) down to 1 (#1 Popularity Rank)
   int driver_level = 0;
   bool has_rally = false;
   int rally_stages_done = 0;
@@ -113,7 +119,9 @@ struct AchievementGameplayState {
   int club_ford_cars = 0;
 
   static AchievementGameplayState from_drive_save(const drive::DriveSave& save, int roads_discovered_count = 0,
-                                                  int race_encounters = 0);
+                                                  int race_encounters = 0,
+                                                  const race::CareerCatalog* catalog = nullptr,
+                                                  int popularity_rank = 0, int total_outposts = 10);
 };
 
 struct AchievementEntry {

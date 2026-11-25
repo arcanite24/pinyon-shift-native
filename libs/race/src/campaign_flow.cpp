@@ -271,50 +271,50 @@ const BossRivalSpec* find_boss_by_level(int wristband_level) {
   return nullptr;
 }
 
-// ---- All 10 Showcases (Exact gamedb.slt Popularity Gates 250 -> 1) ----
+// ---- All 10 Showcases (Exact gamedb.slt Popularity Gates 250 -> 1 & airborne_challenges.xml 1:1) ----
 
 const std::vector<ShowcaseMilestoneSpec>& showcase_milestones() {
   static const std::vector<ShowcaseMilestoneSpec> kShowcases = {
       {0, 101, "PLANE_RACE_001", "MUSTANG VS MUSTANG", "P-51 MUSTANG", 250, 404, "FOR_MustangBOSS429_70",
        "1970 Ford Mustang Boss 429", 5000, true,
-       "Holly Cruz here! You're invited to the Mustang vs Mustang Showcase — race a vintage P-51 warbird across Colorado!",
+       "Holly Cruz here! You're invited to the Mustang vs Mustang Showcase — race a vintage P-51 Mustang warbird across Colorado!",
        "Unbelievable finish! You beat the P-51 Mustang to the line — the 1970 Mustang Boss 429 is yours to keep!"},
-      {1, 223, "PLANE_RACE_004", "QUATTRO VS BIPLANE", "STUNT BIPLANE", 225, 633, "AUD_SportQuattro_83",
+      {1, 223, "PLANE_RACE_004", "QUATTRO VS BALLOON", "HOT-AIR BALLOON", 225, 633, "AUD_SportQuattro_83",
        "1983 Audi Sport quattro", 6500, true,
-       "Popularity Rank 225 unlocked! Take the Group B Audi Sport quattro head-to-head against a barnstorming biplane!",
-       "Group B legend triumphs! The 1983 Audi Sport quattro has been delivered to your Horizon Garage."},
+       "Popularity Rank 225 unlocked! Take the Group B Audi Sport quattro head-to-head against a Horizon Hot-Air Balloon across the valley!",
+       "Group B legend triumphs beneath the balloon! The 1983 Audi Sport quattro has been delivered to your Horizon Garage."},
       {2, 211, "EXHIBITION_FEST_003", "MINI FESTIVAL EXHIBITION", "FESTIVAL PACK", 200, 1566, "AUS_ShowCaseMiniCooperS_65",
        "1965 Mini Cooper S", 8500, false,
        "Rank 200 Showcase unlocked! Jump into a tuned 1965 Mini Cooper S for a three-lap Festival circuit exhibition.",
        "Crowd favourite! You took first in the Mini Cooper S Showcase — check your garage for the prize car!"},
-      {3, 168, "PLANE_RACE_002", "UP, UP AND AWAY", "HOT-AIR BALLOON", 175, 1527, "CHE_CORVETTEGSC_10",
+      {3, 168, "PLANE_RACE_002", "CORVETTE VS HELICOPTER", "HELICOPTER", 175, 1527, "CHE_CORVETTEGSC_10",
        "2010 Chevrolet Corvette Grand Sport", 10000, true,
-       "Rank 175 Showcase! Drop the top on a Corvette Grand Sport and chase the Horizon Hot-Air Balloon across the valley!",
-       "What a photo finish beneath the balloon! The Corvette Grand Sport Convertible is now in your garage."},
-      {4, 246, "PLANE_RACE_007", "CAVALLINO FLIGHT", "AEROBATIC BIPLANE", 150, 340, "FER_F40_87",
+       "Rank 175 Showcase! Drop the top on a Corvette Grand Sport and outrun the Horizon Helicopter through the canyon!",
+       "What a photo finish under the rotor wash! The Corvette Grand Sport Convertible is now in your garage."},
+      {4, 246, "PLANE_RACE_007", "F40 VS BIPLANE", "BIPLANE", 150, 340, "FER_F40_87",
        "1987 Ferrari F40", 12500, true,
-       "Rank 150 Showcase unlocked! Twin-turbo legend meets wings — drive the 1987 Ferrari F40 against our stunt biplane!",
-       "Pure Ferrari magic! The 1987 Ferrari F40 is yours — the fans are going wild!"},
+       "Rank 150 Showcase unlocked! Twin-turbo legend meets wings — drive the 1987 Ferrari F40 against a barnstorming Biplane!",
+       "Pure Ferrari magic! You beat the Biplane — the 1987 Ferrari F40 is yours and the fans are going wild!"},
       {5, 214, "EXHIBITION_RESE_003", "RESERVOIR RUN", "EXHIBITION FIELD", 125, 1115, "FIA_500AbarthSS_10",
        "2010 Abarth 500 esseesse", 15000, false,
        "Rank 125 Showcase! Carve the dam twisties in an Abarth 500 esseesse against the Festival exhibition grid.",
        "Pocket rocket victory! The Abarth 500 esseesse is waiting in your Horizon Garage."},
-      {6, 172, "PLANE_RACE_003", "RAGING BULL VS JET", "STUNT JET", 100, 1398, "LAM_LP7004_12",
+      {6, 172, "PLANE_RACE_003", "AVENTADOR VS BIPLANE", "BIPLANE", 100, 1398, "LAM_LP7004_12",
        "2012 Lamborghini Aventador LP700-4", 17500, true,
-       "Top 100 Popularity! Take a Lamborghini Aventador LP700-4 flat out against a low-flying Horizon Stunt Jet!",
-       "You outran a jet fighter in Colorado! The Lamborghini Aventador LP700-4 is yours!"},
-      {7, 222, "PLANE_RACE_006", "CHOPPER CHASE", "ATTACK HELICOPTER", 75, 1432, "RUF_RGT8_11",
+       "Top 100 Popularity! Take a Lamborghini Aventador LP700-4 flat out against a low-flying Horizon Biplane!",
+       "V12 thunder beats wings across Colorado! The Lamborghini Aventador LP700-4 is yours!"},
+      {7, 222, "PLANE_RACE_006", "RGT-8 VS MUSTANG", "P-51 MUSTANG", 75, 1432, "RUF_RGT8_11",
        "2011 RUF RGT-8", 20000, true,
-       "Rank 75 Showcase unlocked! Outmanoeuvre an Attack Helicopter through Red Rock canyon in the RUF RGT-8!",
-       "Not even the chopper could track your pace! The 2011 RUF RGT-8 has been added to your garage."},
+       "Rank 75 Showcase unlocked! Push the 2011 RUF RGT-8 through Colorado's mountain roads against a P-51 Mustang!",
+       "Not even the P-51 Mustang could match your pace! The 2011 RUF RGT-8 has been added to your garage."},
       {8, 59, "EXHIBITION_FEST_004", "GROUP B SHOWDOWN", "RALLY LEGENDS", 50, 1533, "PEU_205T16_84",
        "1984 Peugeot 205 T16", 22500, false,
        "Top 50 Popularity! Master the gravel and tarmac in the iconic 1984 Peugeot 205 Turbo 16 Showcase!",
        "Unstoppable! The 1984 Peugeot 205 T16 is now in your Horizon Garage."},
-      {9, 220, "PLANE_RACE_005", "NUMBER ONE SHOWCASE", "AEROBATIC DISPLAY", 1, 1181, "AST_One77_10",
+      {9, 220, "PLANE_RACE_005", "ONE-77 VS HELICOPTER", "HELICOPTER", 1, 1181, "AST_One77_10",
        "2010 Aston Martin One-77", 25000, true,
-       "You hit #1 in Popularity across the entire Festival! Celebrate in the Aston Martin One-77 against the aerobatic plane!",
-       "Festival icon! You won the #1 Popularity Showcase — the Aston Martin One-77 is yours forever!"},
+       "You hit #1 in Popularity across the entire Festival! Celebrate in the Aston Martin One-77 against the Horizon Helicopter!",
+       "Festival icon! You beat the Helicopter in the #1 Popularity Showcase — the Aston Martin One-77 is yours forever!"},
   };
   return kShowcases;
 }
@@ -801,6 +801,7 @@ bool CampaignFlow::is_onboarding() const {
 }
 
 bool CampaignFlow::is_cinematic_active() const {
+  if (stage_ == CampaignStage::kQualifyRace && qualify_retry_pending_) return true;
   switch (stage_) {
     case CampaignStage::kOpeningCutscene:
     case CampaignStage::kFestivalRegistration:
@@ -823,6 +824,7 @@ bool CampaignFlow::is_cinematic_active() const {
 }
 
 bool CampaignFlow::is_blocking_gameplay() const {
+  if (stage_ == CampaignStage::kQualifyRace && qualify_retry_pending_) return true;
   return stage_ == CampaignStage::kOpeningCutscene || stage_ == CampaignStage::kFestivalRegistration ||
          stage_ == CampaignStage::kWristbandCeremony || stage_ == CampaignStage::kShowcaseIntro ||
          stage_ == CampaignStage::kShowcaseOutro || stage_ == CampaignStage::kBossIntro ||
@@ -849,7 +851,9 @@ CampaignAction CampaignFlow::start_new_career(bool skip_movies, std::array<doubl
   skip_movies_ = skip_movies;
   festival_gate_ = festival_gate;
   qualify_launched_ = false;
+  qualify_retry_pending_ = false;
   viper_beat_idx_ = 0;
+  viper_convoy_passed_ = 0;
   reg_beat_idx_ = 0;
   active_wristband_ = 0;
   active_boss_idx_ = -1;
@@ -897,6 +901,8 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
 
     case CampaignStage::kViperIntroDrive:
       viper_beat_idx_ = 0;
+      viper_convoy_passed_ = 0;
+      qualify_retry_pending_ = false;
       act.swap_car = true;
       act.car_media = kViperMedia;
       act.car_id = kViperCarId;
@@ -912,6 +918,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       break;
 
     case CampaignStage::kQualifyRace:
+      qualify_retry_pending_ = false;
       act.swap_car = true;
       act.car_media = kCorradoMedia;
       act.car_id = kCorradoCarId;
@@ -921,7 +928,7 @@ CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind tran
       qualify_launched_ = true;
       dialogs_.enqueue(
           {"m0_corrado_qualify", CharacterId::kAliceHart, "", "", "FirstRaceSignUp", "AliceOpeningInterview2A",
-           "Take the 1995 VW Corrado VR6 onto the qualifying grid — finish the race to claim your Yellow Wristband!",
+           "Take the 1995 VW Corrado VR6 onto the qualifying grid — finish in the top 3 to claim your Yellow Wristband!",
            6.5, 5, true, true},
           &heard_dialogs_);
       act.save_requested = true;
@@ -1241,6 +1248,7 @@ CampaignAction CampaignFlow::update(double dt, std::array<double, 2> player_xz, 
     }
 
     case CampaignStage::kQualifyRace:
+      if (qualify_retry_pending_) break;
       if (race_finished && qualify_launched_) {
         return enter_stage(CampaignStage::kFestivalRegistration, TransitionKind::kBrushWipe);
       }
@@ -1262,7 +1270,7 @@ CampaignAction CampaignFlow::update(double dt, std::array<double, 2> player_xz, 
         out.gps_xz = {festival_gate_[0], festival_gate_[2]};
         dialogs_.enqueue(
             {"m0_autoshow_welcome", CharacterId::kAliceHart, "", "", "", "",
-             "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — pick an affordable starter car with your 15,000 Cr or press B to hit Colorado Free Roam!",
+             "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — browse affordable starter rides with your 15,000 Cr bonus or exit anytime to start your Yellow Wristband events!",
              7.5, 7, true, false},
             &heard_dialogs_);
         return out;
@@ -1331,6 +1339,10 @@ CampaignAction CampaignFlow::advance_or_skip() {
     case CampaignStage::kViperIntroDrive:
       return enter_stage(CampaignStage::kQualifyRace, TransitionKind::kBrushWipe);
     case CampaignStage::kQualifyRace:
+      if (qualify_retry_pending_) {
+        qualify_retry_pending_ = false;
+        return enter_stage(CampaignStage::kQualifyRace, TransitionKind::kBrushWipe);
+      }
       return enter_stage(CampaignStage::kFestivalRegistration, TransitionKind::kBrushWipe);
     case CampaignStage::kFestivalRegistration: {
       mark_cutscene_done(CutsceneKind::kWristbandCeremonyFmv);
@@ -1346,7 +1358,7 @@ CampaignAction CampaignFlow::advance_or_skip() {
       out.gps_xz = {festival_gate_[0], festival_gate_[2]};
       dialogs_.enqueue(
           {"m0_autoshow_welcome", CharacterId::kAliceHart, "", "", "", "",
-           "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — pick an affordable starter car with your 15,000 Cr or press B to hit Colorado Free Roam!",
+           "Welcome to the Horizon Autoshow! Your 1995 VW Corrado VR6 is already in your garage — browse affordable starter rides with your 15,000 Cr bonus or exit anytime to start your Yellow Wristband events!",
            7.5, 7, true, false},
           &heard_dialogs_);
       return out;
@@ -1450,10 +1462,151 @@ CampaignAction CampaignFlow::on_enter_event(const CareerEvent& ev) {
 CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceAward& award, int place, int total_cars,
                                               int old_pop_rank, int new_pop_rank, int64_t balance_before,
                                               int64_t balance_after, int wb_points_after, int collected_wristband,
-                                              const std::string& prize_car_name, const CareerCatalog* catalog) {
-  // Onboarding qualification race jumps cleanly into Festival Registration!
+                                              const std::string& prize_car_name, const CareerCatalog* catalog,
+                                              const std::vector<RaceFinishStanding>& standings) {
+  auto ord = [](int p) -> const char* {
+    if (p % 100 >= 11 && p % 100 <= 13) return "TH";
+    return p % 10 == 1 ? "ST" : p % 10 == 2 ? "ND" : p % 10 == 3 ? "RD" : "TH";
+  };
+
+  auto fill_standings_rows = [&](const ShowcaseMilestoneSpec* matched_sc, const BossRivalSpec* matched_boss) {
+    tally_.results_rows.clear();
+    if (!standings.empty()) {
+      std::vector<RaceFinishStanding> ordered = standings;
+      std::stable_sort(ordered.begin(), ordered.end(),
+                       [](const RaceFinishStanding& a, const RaceFinishStanding& b) { return a.place < b.place; });
+      double winner_time = -1.0;
+      for (const auto& st : ordered) {
+        if (st.place == 1 && st.finish_time_s > 0.0) {
+          winner_time = st.finish_time_s;
+          break;
+        }
+      }
+      for (size_t i = 0; i < ordered.size(); ++i) {
+        const auto& st = ordered[i];
+        RewardTallyRow row;
+        row.place = st.place > 0 ? st.place : int(i) + 1;
+        row.driver = !st.driver_name.empty() ? st.driver_name : (st.is_player ? "YOU" : "HORIZON DRIVER");
+        row.car = st.car_name;
+        row.car_class = st.class_name;
+        row.pi = st.pi;
+        row.time_s = st.finish_time_s;
+        row.best_lap_s = st.best_lap_s;
+        row.player = st.is_player;
+        row.is_boss = st.is_boss;
+        if (row.place == 1) {
+          row.gap_s = 0.0;
+        } else if (st.gap_s >= 0.0) {
+          row.gap_s = st.gap_s;
+        } else if (winner_time > 0.0 && st.finish_time_s > 0.0) {
+          row.gap_s = std::max(0.0, st.finish_time_s - winner_time);
+        } else {
+          row.gap_s = 0.0;
+        }
+        tally_.results_rows.push_back(std::move(row));
+      }
+      return;
+    }
+
+    // Synthetic fallback (used only in headless/unit tests when RaceView standings are absent).
+    if (matched_sc) {
+      RewardTallyRow player_row;
+      player_row.place = tally_.place;
+      player_row.driver = "YOU";
+      player_row.car = matched_sc->loaner_car_display;
+      player_row.gap_s = tally_.place == 1 ? 0.0 : 1.0;
+      player_row.player = true;
+      RewardTallyRow opp_row;
+      opp_row.place = tally_.place == 1 ? 2 : 1;
+      opp_row.driver = matched_sc->opponent_label;
+      opp_row.car = matched_sc->airborne ? "AIRBORNE CHALLENGER" : "SHOWCASE FIELD";
+      opp_row.gap_s = tally_.place == 1 ? 1.0 : 0.0;
+      if (tally_.place == 1) {
+        tally_.results_rows.push_back(std::move(player_row));
+        tally_.results_rows.push_back(std::move(opp_row));
+      } else {
+        tally_.results_rows.push_back(std::move(opp_row));
+        tally_.results_rows.push_back(std::move(player_row));
+      }
+    } else if (matched_boss) {
+      RewardTallyRow player_row;
+      player_row.place = tally_.place;
+      player_row.driver = "YOU";
+      player_row.car = "FESTIVAL CHALLENGER";
+      player_row.gap_s = tally_.place == 1 ? 0.0 : 0.85;
+      player_row.player = true;
+      RewardTallyRow rival_row;
+      rival_row.place = tally_.place == 1 ? 2 : 1;
+      rival_row.driver = matched_boss->rival_name;
+      rival_row.car = matched_boss->car_display;
+      rival_row.gap_s = tally_.place == 1 ? 0.85 : 0.0;
+      rival_row.is_boss = true;
+      if (tally_.place == 1) {
+        tally_.results_rows.push_back(std::move(player_row));
+        tally_.results_rows.push_back(std::move(rival_row));
+      } else {
+        tally_.results_rows.push_back(std::move(rival_row));
+        tally_.results_rows.push_back(std::move(player_row));
+      }
+    } else {
+      const int n = std::clamp(tally_.total_cars, 1, 8);
+      int rival_num = 1;
+      for (int p = 1; p <= n; ++p) {
+        const bool is_me = (p == tally_.place);
+        RewardTallyRow row;
+        row.place = p;
+        row.player = is_me;
+        row.driver = is_me ? "YOU" : ("HORIZON DRIVER " + std::to_string(rival_num++));
+        row.car = is_me ? "YOUR VEHICLE" : tally_.event_category;
+        row.gap_s = p == 1 ? 0.0 : double(p - 1);
+        tally_.results_rows.push_back(std::move(row));
+      }
+    }
+  };
+
+  // R3-CAM-08: Corrado Qualification Race (FESTIVAL_SECOND) enforces a top-3 podium cutoff.
+  // Finishing 1st..3rd advances to Festival Registration; finishing worse than 3rd requires retry
+  // and MUST NOT advance CampaignStage past kQualifyRace.
   if (stage_ == CampaignStage::kQualifyRace) {
-    return enter_stage(CampaignStage::kFestivalRegistration, TransitionKind::kBrushWipe);
+    const int eff_place = std::max(1, place);
+    if (eff_place <= kQualifyCutoffPlace) {
+      qualify_retry_pending_ = false;
+      tally_.qualified = true;
+      tally_.retry_required = false;
+      return enter_stage(CampaignStage::kFestivalRegistration, TransitionKind::kBrushWipe);
+    }
+    qualify_retry_pending_ = true;
+    qualify_launched_ = false;
+    stage_time_ = 0.0;
+    tally_ = RewardTallyState{};
+    tally_.active = true;
+    tally_.stage = PostRaceStage::kRaceResults;
+    tally_.place = eff_place;
+    tally_.total_cars = std::max(eff_place, total_cars);
+    tally_.event_title = "HORIZON QUALIFIER";
+    tally_.event_category = "QUALIFICATION RACE";
+    tally_.qualified = false;
+    tally_.retry_required = true;
+    tally_.qualify_cutoff_place = kQualifyCutoffPlace;
+    tally_.next_unlock_headline = "DID NOT QUALIFY — TOP 3 REQUIRED";
+    tally_.next_unlock_detail = "PRESS CONTINUE TO RETRY THE HORIZON QUALIFICATION RACE";
+    fill_standings_rows(nullptr, nullptr);
+
+    cinematic_ = CinematicBanner{};
+    cinematic_.kind = CutsceneKind::kPostRaceFinishCam;
+    cinematic_.duration_s = 12.0;
+    cinematic_.letterbox_amount = 0.72f;
+    cinematic_.eyebrow = "QUALIFICATION FAILED  •  TOP 3 REQUIRED";
+    cinematic_.headline = std::to_string(eff_place) + ord(eff_place) + " PLACE  —  DID NOT QUALIFY";
+    cinematic_.subheadline = "FINISH IN THE TOP 3 TO EARN YOUR YELLOW WRISTBAND  •  PRESS CONTINUE TO RETRY";
+    cinematic_.detail_line = "Line back up in the 1995 VW Corrado VR6 and finish 3rd or better to qualify.";
+    cinematic_.badge_text = "RETRY QUALIFICATION";
+    cinematic_.accent_rgba = pack_rgba(0xF9, 0x00, 0x64);
+    dialogs_.enqueue(
+        {"m0_qualify_retry", CharacterId::kAliceHart, "", "", "FirstRaceLost", "",
+         "Tough break — you need a top-3 finish to earn your Yellow Wristband! Line back up on the grid and give it another shot.",
+         5.5, 8, false, true});
+    return {};
   }
 
   on_popularity_rank_changed(old_pop_rank, new_pop_rank);
@@ -1528,51 +1681,8 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
     }
   }
 
-  // Populate default podium standings rows for Stage 1 (RACE RESULTS) so every event
-  // (Showcase, Boss Showdown, Festival/Street) shows an authentic leaderboard table.
-  tally_.results_rows.clear();
-  if (matched_sc) {
-    RewardTallyRow player_row{tally_.place, "YOU", matched_sc->loaner_car_display, "S", 0, -1.0,
-                              tally_.place == 1 ? 0.0 : 1.45, true};
-    RewardTallyRow opp_row{tally_.place == 1 ? 2 : 1, matched_sc->opponent_label,
-                           matched_sc->airborne ? "AIRBORNE CHALLENGER" : "SHOWCASE FIELD", "", 0, -1.0,
-                           tally_.place == 1 ? 1.45 : 0.0, false};
-    if (tally_.place == 1) {
-      tally_.results_rows.push_back(std::move(player_row));
-      tally_.results_rows.push_back(std::move(opp_row));
-    } else {
-      tally_.results_rows.push_back(std::move(opp_row));
-      tally_.results_rows.push_back(std::move(player_row));
-    }
-  } else if (matched_boss) {
-    RewardTallyRow player_row{tally_.place, "YOU", "FESTIVAL CHALLENGER", "", 0, -1.0,
-                              tally_.place == 1 ? 0.0 : 0.85, true};
-    RewardTallyRow rival_row{tally_.place == 1 ? 2 : 1, matched_boss->rival_name, matched_boss->car_display, "", 0,
-                             -1.0, tally_.place == 1 ? 0.85 : 0.0, false};
-    if (tally_.place == 1) {
-      tally_.results_rows.push_back(std::move(player_row));
-      tally_.results_rows.push_back(std::move(rival_row));
-    } else {
-      tally_.results_rows.push_back(std::move(rival_row));
-      tally_.results_rows.push_back(std::move(player_row));
-    }
-  } else {
-    static constexpr const char* kFieldDrivers[8] = {"RAMONA CRAVACHE", "ALI HOWARD",   "DUKE MAGUIRE",
-                                                     "MARKO BARAN",     "ZAKI MALIK",   "HAILEY HARPER",
-                                                     "DARIUS FLYNT",    "HORIZON RIVAL"};
-    const int n = std::clamp(tally_.total_cars, 1, 8);
-    int ai_idx = 0;
-    for (int p = 1; p <= n; ++p) {
-      const bool is_me = (p == tally_.place);
-      RewardTallyRow row;
-      row.place = p;
-      row.player = is_me;
-      row.driver = is_me ? "YOU" : kFieldDrivers[ai_idx++ % 8];
-      row.car = is_me ? "YOUR VEHICLE" : tally_.event_category;
-      row.gap_s = p == 1 ? 0.0 : double(p - 1) * 0.92;
-      tally_.results_rows.push_back(std::move(row));
-    }
-  }
+  // Populate Stage 1 (RACE RESULTS) standings from actual RaceView standings when provided.
+  fill_standings_rows(matched_sc, matched_boss);
 
   if (triggered_darius_unlock) {
     tally_.next_unlock_headline = "DARIUS FLYNT SHOWDOWN UNLOCKED!";
@@ -1614,16 +1724,43 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
   }
 
   auto act = enter_stage(CampaignStage::kPostRaceFinish, TransitionKind::kCrossFade);
-  auto ord = [](int p) -> const char* {
-    if (p % 100 >= 11 && p % 100 <= 13) return "TH";
-    return p % 10 == 1 ? "ST" : p % 10 == 2 ? "ND" : p % 10 == 3 ? "RD" : "TH";
-  };
   cinematic_.eyebrow = "RACE RESULTS  •  " + tally_.event_category;
   cinematic_.headline = std::to_string(tally_.place) + ord(tally_.place) + " PLACE";
   cinematic_.subheadline = tally_.event_title;
   cinematic_.badge_text = "STAGE 1 / 3  •  FINISHED";
   act.save_requested = true;
   return act;
+}
+
+bool CampaignFlow::on_viper_convoy_pass(int passed_delta) {
+  if (stage_ != CampaignStage::kViperIntroDrive || passed_delta <= 0 || viper_convoy_passed_ >= kViperConvoyTarget) {
+    return false;
+  }
+  const int prev = viper_convoy_passed_;
+  viper_convoy_passed_ = std::min(kViperConvoyTarget, viper_convoy_passed_ + passed_delta);
+  const int rem = viper_convoy_remaining();
+  if (prev == 0 && viper_convoy_passed_ >= 1) {
+    dialogs_.enqueue(
+        {"m0_viper_convoy_first", CharacterId::kScottTyler, "", "", "FestivalTicketsDepleting9",
+         "FestivalTicketsDepleting9",
+         "Nice pass! Keep weaving through the Festival-bound convoy — " + std::to_string(rem) +
+             " drivers left to overtake!",
+         5.0, 6, true, false},
+        &heard_dialogs_);
+  } else if (rem == 1 && prev < kViperConvoyTarget - 1) {
+    dialogs_.enqueue(
+        {"m0_viper_convoy_last", CharacterId::kAliceHart, "", "", "FestivalTicketsDepleting5", "",
+         "Only one Festival driver left ahead of you — push that SRT Viper GTS to the main gate!", 4.8, 6, true,
+         false},
+        &heard_dialogs_);
+  } else if (viper_convoy_passed_ >= kViperConvoyTarget && prev < kViperConvoyTarget) {
+    dialogs_.enqueue(
+        {"m0_viper_convoy_clear", CharacterId::kScottTyler, "", "", "AliceOpeningInterview3", "AliceOpeningInterview3",
+         "You blew past the entire Festival convoy! Pull into the Horizon Festival entrance to claim your spot!", 5.5,
+         7, true, false},
+        &heard_dialogs_);
+  }
+  return true;
 }
 
 CampaignAction CampaignFlow::on_wristband_collected(int wristband_level, const std::string& bonus_car_name,
@@ -1933,8 +2070,15 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
 
   if (stage_ == CampaignStage::kViperIntroDrive) {
     obj.valid = true;
-    obj.title = "DRIVE TO THE HORIZON FESTIVAL";
-    obj.detail = "2013 SRT VIPER GTS  •  CLAIM YOUR QUALIFYING SPOT";
+    const int rem = viper_convoy_remaining();
+    if (rem > 0) {
+      obj.title = "PASS FESTIVAL DRIVERS  •  " + std::to_string(viper_convoy_passed_) + " / " +
+                  std::to_string(kViperConvoyTarget);
+      obj.detail = "2013 SRT VIPER GTS  •  " + std::to_string(rem) + " FESTIVAL DRIVERS AHEAD";
+    } else {
+      obj.title = "DRIVE TO THE HORIZON FESTIVAL";
+      obj.detail = "2013 SRT VIPER GTS  •  CONVOY PASSED — REACH THE MAIN GATE";
+    }
     obj.gps_label = "HORIZON FESTIVAL MAIN GATE";
     obj.gps_xz = {festival_gate_[0], festival_gate_[2]};
     obj.distance_m = dist_to_festival_;
@@ -1943,8 +2087,10 @@ CampaignObjective CampaignFlow::next_objective(int wristband_points, int collect
   }
   if (stage_ == CampaignStage::kQualifyRace) {
     obj.valid = true;
-    obj.title = "QUALIFICATION RACE";
-    obj.detail = "1995 VOLKSWAGEN CORRADO VR6  •  EARN YELLOW WRISTBAND";
+    obj.title = qualify_retry_pending_ ? "RETRY QUALIFICATION RACE" : "QUALIFICATION RACE";
+    obj.detail = qualify_retry_pending_
+                     ? "TOP 3 FINISH REQUIRED  •  RETRY IN 1995 VW CORRADO VR6"
+                     : "1995 VOLKSWAGEN CORRADO VR6  •  FINISH TOP 3 FOR YELLOW WRISTBAND";
     obj.gps_label = "HORIZON QUALIFIER";
     obj.is_urgent = true;
     return obj;

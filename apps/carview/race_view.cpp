@@ -15,6 +15,7 @@
 #include <thread>
 
 #include "drive/from_physics.h"
+#include "drive/replay.h"
 #include "drive/rewind.h"
 #include "garage/garage.h"
 #include "race/player_pi.h"
@@ -592,6 +593,7 @@ void RaceView::route_near(std::vector<std::array<double, 2>>& out) const {
 
 void RaceView::opponent_positions(std::vector<std::array<double, 2>>& out) const {
   out.clear();
+  if (rivals_solo_) return;
   for (const auto& c : cars_)
     if (c.body) out.push_back({c.body->position().x, c.body->position().z});
 }
@@ -1329,7 +1331,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   contact_options.friction = 0.05;
   player_impulse_ = 0.0;
   player_impulse_local_pos_ = {0.0f, 0.5f, 1.5f};
-  if (session_->collides(n)) {
+  if (!rivals_solo_ && session_->collides(n)) {
     const drive::Quat pq = player.orientation();
     const drive::Quat pq_inv{-pq.x, -pq.y, -pq.z, pq.w};
     const float hw = float(std::max(0.5, 0.5 * player.params().size.x));
@@ -1358,10 +1360,12 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     }
   }
   contacts_.clear();
-  for (size_t k = 0; k < n; ++k)
-    if (session_->collides(k))
-      contacts_.push_back(
-          {cars_[k].body.get(), kRaceCarTorqueScale, 0, drive::ContactRole::kRaceAi, kRaceCarVsTrafficTorqueScale});
+  if (!rivals_solo_) {
+    for (size_t k = 0; k < n; ++k)
+      if (session_->collides(k))
+        contacts_.push_back(
+            {cars_[k].body.get(), kRaceCarTorqueScale, 0, drive::ContactRole::kRaceAi, kRaceCarVsTrafficTorqueScale});
+  }
   if (traffic) traffic->contact_bodies(contacts_, 1);
   contact_count_ += drive::resolve_contacts(contacts_, contact_options);
   // The session: each car's move over the step.
@@ -1547,50 +1551,93 @@ void RaceView::enable_ghost_recording(bool on) {
   record_ghost_ = on;
   if (on) {
     recorded_ghost_.clear();
-    recorded_ghost_.event_id = event_.horizon_id;
+    recorded_ghost_.event_id = !event_.horizon_id.empty() ? event_.horizon_id : ("stage:" + std::to_string(route_.id));
     recorded_ghost_.car_media = o_.player_car;
     if (player_pi_ > 0.0 && !bands_.empty()) recorded_ghost_.shown_pi = garage::shown_index(player_pi_, bands_);
   }
 }
 
+bool RaceView::build_rivals_ghost(double target_time_s, std::string_view rival_name, std::string_view car_media,
+                                  int64_t car_id, int shown_pi, race::GhostRun& out) const {
+  const auto& L = line_.line;
+  if (L.dist.size() < 2) return false;
+  const double start_p = line_.gate_progress;
+  const double end_p = finish_progress_ > start_p + 50.0 ? finish_progress_ : L.length();
+  const double span = std::max(50.0, end_p - start_p);
+  const int laps = circuit_ && session_ ? std::max(1, session_->laps()) : 1;
+  const double total_span = circuit_ ? (L.length() * double(laps)) : span;
+  const int sample_n = std::clamp(int(std::ceil(total_span / 20.0)), 16, 4000);
+  std::vector<race::GhostWaypoint> wps;
+  wps.reserve(size_t(sample_n) + 1);
+  const bool has_y = L.y.size() == L.size();
+  double fallback_y = 0.0;
+  if (!slots_.empty()) fallback_y = slots_.front().y;
+  for (int i = 0; i <= sample_n; ++i) {
+    const double s_rel = total_span * (double(i) / double(sample_n));
+    const double s_line = circuit_ ? std::fmod(start_p + s_rel, std::max(1.0, L.length())) : (start_p + s_rel);
+    auto it = std::lower_bound(L.dist.begin(), L.dist.end(), float(s_line));
+    size_t idx = size_t(it - L.dist.begin());
+    if (idx >= L.size()) idx = L.size() - 1;
+    const size_t i0 = idx > 0 ? idx - 1 : 0;
+    const double seg = double(L.dist[idx]) - double(L.dist[i0]);
+    const double u = seg > 1e-5 ? std::clamp((s_line - double(L.dist[i0])) / seg, 0.0, 1.0) : 0.0;
+    const double wx = L.x[i0] + u * (L.x[idx] - L.x[i0]);
+    double wy = has_y ? (L.y[i0] + u * (L.y[idx] - L.y[i0])) : fallback_y;
+    const double wz = L.z[i0] + u * (L.z[idx] - L.z[i0]);
+    if (!has_y && ribbon_) {
+      drive::Hit hit{};
+      if (ribbon_->raycast({wx, fallback_y + 200.0, wz}, {0.0, -1.0, 0.0}, 400.0, hit)) {
+        wy = (fallback_y + 200.0) - hit.distance;
+        fallback_y = wy;
+      }
+    }
+    wps.push_back({s_rel, wx, wy, wz});
+  }
+  const std::string eid = !event_.horizon_id.empty() ? event_.horizon_id : ("stage:" + std::to_string(route_.id));
+  out = race::synthesize_target_ghost(wps, target_time_s, eid, rival_name, car_media, car_id, shown_pi, 0.1);
+  return !out.empty();
+}
+
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
   std::unordered_set<Showroom*> posed_models;
-  for (size_t k = 0; k < cars_.size(); ++k) {
-    const auto& c = cars_[k];
-    if (!c.model || !c.body) continue;
-    Showroom::Instance in;
-    if (blend_ >= 1) {
-      in = guest_instance(player_info, player, *c.model, *c.body);
-    } else {
-      const drive::Vehicle::Pose now = c.body->pose();
-      c.body->set_pose(drive::Vehicle::blend(c.before, now, blend_));
-      in = guest_instance(player_info, player, *c.model, *c.body);
-      c.body->set_pose(now);
-    }
-    // Drive each opponent's dedicated Showroom wheel spin, steer, and suspension pose.
-    if (posed_models.insert(c.model).second) {
-      WheelPose wposes[4]{};
-      for (int wi = 0; wi < 4; ++wi) {
-        const auto& w = c.body->wheels()[size_t(wi)];
-        wposes[wi].centre[0] = float(w.centre.x);
-        wposes[wi].centre[1] = float(w.centre.y);
-        wposes[wi].centre[2] = float(w.centre.z);
-        wposes[wi].steer = float(w.steer);
-        wposes[wi].spin = float(w.spin);
-        wposes[wi].omega = float(w.omega);
+  if (!rivals_solo_) {
+    for (size_t k = 0; k < cars_.size(); ++k) {
+      const auto& c = cars_[k];
+      if (!c.model || !c.body) continue;
+      Showroom::Instance in;
+      if (blend_ >= 1) {
+        in = guest_instance(player_info, player, *c.model, *c.body);
+      } else {
+        const drive::Vehicle::Pose now = c.body->pose();
+        c.body->set_pose(drive::Vehicle::blend(c.before, now, blend_));
+        in = guest_instance(player_info, player, *c.model, *c.body);
+        c.body->set_pose(now);
       }
-      c.model->set_wheel_poses(wposes);
+      // Drive each opponent's dedicated Showroom wheel spin, steer, and suspension pose.
+      if (posed_models.insert(c.model).second) {
+        WheelPose wposes[4]{};
+        for (int wi = 0; wi < 4; ++wi) {
+          const auto& w = c.body->wheels()[size_t(wi)];
+          wposes[wi].centre[0] = float(w.centre.x);
+          wposes[wi].centre[1] = float(w.centre.y);
+          wposes[wi].centre[2] = float(w.centre.z);
+          wposes[wi].steer = float(w.steer);
+          wposes[wi].spin = float(w.spin);
+          wposes[wi].omega = float(w.omega);
+        }
+        c.model->set_wheel_poses(wposes);
+      }
+      if (c.has_ai_paint) {
+        in.paint_rgb[0] = c.ai_paint_rgb[0];
+        in.paint_rgb[1] = c.ai_paint_rgb[1];
+        in.paint_rgb[2] = c.ai_paint_rgb[2];
+        in.has_paint = true;
+      }
+      in.lamps = c.lamps.vectors();
+      in.has_lamps = true;
+      out.push_back(in);
     }
-    if (c.has_ai_paint) {
-      in.paint_rgb[0] = c.ai_paint_rgb[0];
-      in.paint_rgb[1] = c.ai_paint_rgb[1];
-      in.paint_rgb[2] = c.ai_paint_rgb[2];
-      in.has_paint = true;
-    }
-    in.lamps = c.lamps.vectors();
-    in.has_lamps = true;
-    out.push_back(in);
   }
   // Rivals / Time-Attack translucent ghost car playback.
   race::GhostSample gs;
@@ -2264,7 +2311,7 @@ void RaceView::emit_showcase_vfx(world::ParticleSystem& particles, const world::
 
 void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
   out.clear();
-  if (!session_) return;
+  if (!session_ || rivals_solo_) return;
   const auto ord = session_->order();
   const size_t lead_idx = ord.empty() ? cars_.size() : ord[0];
   out.reserve(cars_.size());
@@ -2273,7 +2320,69 @@ void RaceView::opponent_tags(std::vector<OpponentTag>& out) const {
     const drive::Vec3 p = cars_[i].body->position();
     const drive::Vec3 v = cars_[i].body->velocity();
     out.push_back({p.x, p.y, p.z, cars_[i].body->speed(), cars_[i].cached_driver_name, i == lead_idx, v.x, v.y, v.z,
-                   cars_[i].body->rpm()});
+                   cars_[i].body->rpm(), cars_[i].who.car_id, cars_[i].who.car_media, cars_[i].cached_car_name});
+  }
+}
+
+void RaceView::collect_replay_roster(std::vector<drive::ReplayCarInfo>& out) const {
+  if (rivals_solo_) return;
+  auto lin_to_srgb_u8 = [](float v) -> uint32_t {
+    const float c = std::clamp(v, 0.0f, 1.0f);
+    const float s = c <= 0.0031308f ? c * 12.92f : (1.055f * std::pow(c, 1.0f / 2.4f) - 0.055f);
+    return uint32_t(std::clamp(std::lround(s * 255.0f), 0l, 255l));
+  };
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    const auto& c = cars_[k];
+    drive::ReplayCarInfo ri;
+    ri.slot = uint32_t(k + 1);
+    ri.car_id = int32_t(c.who.car_id);
+    ri.car_media = c.who.car_media;
+    ri.driver_name = !c.cached_driver_name.empty() ? c.cached_driver_name : name_of(k);
+    ri.is_player = false;
+    ri.is_traffic = false;
+    int64_t cseq = c.who.color_sequence;
+    if (cseq <= 0) {
+      if (const auto* col = event_.ai_player_color(c.who); col && col->color_sequence > 0) cseq = col->color_sequence;
+    }
+    ri.paint_index = cseq > 0 ? int32_t(cseq) : -1;
+    if (c.has_ai_paint) {
+      ri.has_body_color = true;
+      ri.body_color = (lin_to_srgb_u8(c.ai_paint_rgb[0]) << 16) | (lin_to_srgb_u8(c.ai_paint_rgb[1]) << 8) |
+                      lin_to_srgb_u8(c.ai_paint_rgb[2]);
+    }
+    out.push_back(std::move(ri));
+  }
+}
+
+void RaceView::collect_replay_samples(std::vector<drive::ReplayCarSample>& out) const {
+  if (rivals_solo_) return;
+  if (replay_prev_gears_.size() != cars_.size()) {
+    replay_prev_gears_.assign(cars_.size(), 1);
+    for (size_t k = 0; k < cars_.size(); ++k) {
+      if (cars_[k].body) replay_prev_gears_[k] = int8_t(std::clamp(cars_[k].body->gear(), -1, 10));
+    }
+  }
+  for (size_t k = 0; k < cars_.size(); ++k) {
+    const auto& c = cars_[k];
+    if (!c.body) continue;
+    const drive::Input inp = k < inputs_.size() ? inputs_[k] : drive::Input{};
+    const uint8_t place = session_ ? uint8_t(std::clamp(session_->car(k).place, 0, 255)) : uint8_t(k + 1);
+    drive::ReplayCarSample sample = drive::ReplayCarSample::from_vehicle(
+        uint32_t(k + 1), *c.body, c.lamps, inp.throttle, inp.brake, inp.handbrake ? 1.0 : 0.0, inp.steer, place);
+    if (sample.gear != replay_prev_gears_[k]) {
+      sample.event_bits |= drive::kReplayEventGearShift;
+      if (sample.gear < replay_prev_gears_[k] && sample.rpm > sample.redline_rpm * 0.65f) {
+        sample.event_bits |= drive::kReplayEventBackfire;
+      }
+      replay_prev_gears_[k] = sample.gear;
+    }
+    const double contact_force = c.body->body_contact_force();
+    if (contact_force > c.body->params().mass * 12.0) {
+      sample.event_bits |= drive::kReplayEventImpact;
+      const float dv = float(contact_force * drive::Vehicle::kStep / std::max(500.0, c.body->params().mass));
+      sample.impact_intensity_u8 = uint8_t(std::clamp(std::lround((dv / 25.0f) * 255.0f), 16l, 255l));
+    }
+    out.push_back(sample);
   }
 }
 

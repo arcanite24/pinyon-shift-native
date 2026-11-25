@@ -3,17 +3,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fstream>
 #include <system_error>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace drive {
 namespace {
 
 constexpr char kReplayMagic[8] = {'S', 'H', 'F', 'T', 'R', 'E', 'P', 'L'};
-constexpr uint32_t kReplayVersion = 3;
+constexpr uint32_t kReplayVersion = 4;
 constexpr uint32_t kMaxFramesFile = 360000;   // 100 minutes at 60 Hz
 constexpr uint32_t kMaxCarsPerFrame = 128;
 constexpr uint32_t kMaxRosterEntries = 256;
@@ -41,6 +44,38 @@ struct ReplayCarSampleLegacyV2 {
   float wheel_y[4];
 };
 static_assert(sizeof(ReplayCarSampleLegacyV2) == 128);
+
+struct ReplayCarSampleLegacyV3 {
+  uint32_t slot;
+  float pos[3];
+  float quat[4];
+  float vel[3];
+  float speed_mps;
+  float rpm;
+  float redline_rpm;
+  int8_t gear;
+  uint8_t throttle_u8;
+  uint8_t brake_u8;
+  uint8_t handbrake_u8;
+  int8_t steer_i8;
+  uint8_t race_place;
+  uint16_t lamp_bits;
+  float wheel_steer[4];
+  float wheel_spin[4];
+  float wheel_omega[4];
+  float wheel_y[4];
+  float wheel_slip[4];
+  float wheel_compression[4];
+  float wheel_temp_c[4];
+  float damage[4];
+  float engine_power_kw;
+  float engine_torque_nm;
+  float boost_psi;
+  float boost_max_psi;
+};
+static_assert(sizeof(ReplayCarSampleLegacyV3) == 208);
+static_assert(sizeof(ReplayCarSample) == 212);
+static_assert(offsetof(ReplayCarSample, event_bits) == sizeof(ReplayCarSampleLegacyV3));
 
 uint32_t crc32_bytes(const uint8_t* data, size_t len) {
   uint32_t crc = 0xFFFFFFFFu;
@@ -126,6 +161,10 @@ ReplayCarSample blend_car(const ReplayCarSample& a, const ReplayCarSample& b, fl
   out.engine_torque_nm = lerpf(a.engine_torque_nm, b.engine_torque_nm);
   out.boost_psi = lerpf(a.boost_psi, b.boost_psi);
   out.boost_max_psi = b.boost_max_psi > 0.0f ? b.boost_max_psi : a.boost_max_psi;
+  out.event_bits = uint16_t(a.event_bits | b.event_bits);
+  out.skid_intensity_u8 =
+      uint8_t(std::clamp(std::lround(lerpf(float(a.skid_intensity_u8), float(b.skid_intensity_u8))), 0l, 255l));
+  out.impact_intensity_u8 = std::max(a.impact_intensity_u8, b.impact_intensity_u8);
   return out;
 }
 
@@ -276,6 +315,11 @@ ReplayCarSample ReplayCarSample::from_vehicle(uint32_t slot, const Vehicle& v, c
   const bool has_fi = v.params().has_turbo || v.params().has_supercharger;
   s.boost_psi = has_fi ? float(std::max(0.0, v.boost_psi())) : 0.0f;
   s.boost_max_psi = has_fi ? float(std::max(1.0, v.params().boost_max_psi)) : 0.0f;
+  float max_slip = 0.0f;
+  for (int i = 0; i < 4; ++i) max_slip = std::max(max_slip, s.wheel_slip[i]);
+  const float skid_norm = std::clamp((max_slip - 0.22f) / 0.85f, 0.0f, 1.0f);
+  s.skid_intensity_u8 = uint8_t(std::clamp(std::lround(skid_norm * 255.0f), 0l, 255l));
+  if (s.skid_intensity_u8 >= 40u) s.event_bits |= kReplayEventSkid;
   return s;
 }
 
@@ -351,6 +395,41 @@ const ReplayCarInfo* ReplayRecording::find_car_info(uint32_t slot) const {
   return nullptr;
 }
 
+void ReplayRecording::collect_events(double t_from_rel, double t_to_rel,
+                                     std::vector<ReplayCarSample>& out_events) const {
+  out_events.clear();
+  if (frames.empty() || t_to_rel <= t_from_rel) return;
+  const double t0 = frames.front().time_s;
+  const double a_abs = t0 + std::max(0.0, t_from_rel);
+  const double b_abs = t0 + std::min(duration(), t_to_rel);
+  if (b_abs < a_abs) return;
+
+  auto it = std::upper_bound(frames.begin(), frames.end(), a_abs,
+                             [](double t, const ReplayFrame& f) { return t < f.time_s; });
+  std::unordered_map<uint32_t, size_t> slot_to_idx;
+  for (; it != frames.end() && it->time_s <= b_abs + 1e-6; ++it) {
+    for (const auto& c : it->cars) {
+      if (c.event_bits == 0u && c.skid_intensity_u8 < 40u && c.impact_intensity_u8 == 0u) continue;
+      auto ins = slot_to_idx.find(c.slot);
+      if (ins == slot_to_idx.end()) {
+        slot_to_idx.emplace(c.slot, out_events.size());
+        out_events.push_back(c);
+      } else {
+        auto& dst = out_events[ins->second];
+        dst.event_bits = uint16_t(dst.event_bits | c.event_bits);
+        dst.skid_intensity_u8 = std::max(dst.skid_intensity_u8, c.skid_intensity_u8);
+        dst.impact_intensity_u8 = std::max(dst.impact_intensity_u8, c.impact_intensity_u8);
+        std::memcpy(dst.pos, c.pos, sizeof(dst.pos));
+        std::memcpy(dst.quat, c.quat, sizeof(dst.quat));
+        std::memcpy(dst.vel, c.vel, sizeof(dst.vel));
+        dst.speed_mps = c.speed_mps;
+        dst.rpm = c.rpm;
+        dst.gear = c.gear;
+      }
+    }
+  }
+}
+
 void ReplayRecorder::begin(const ReplayMetadata& meta, size_t max_frames, bool ring_wrap) {
   meta_ = meta;
   if (meta_.sample_hz <= 1.0) meta_.sample_hz = 60.0;
@@ -384,6 +463,16 @@ void ReplayRecorder::update_summary(int place, int field_size, double best_lap_s
   meta_.field_size = field_size;
   meta_.best_lap_s = best_lap_s;
   meta_.tod_sec = tod_sec;
+}
+
+void ReplayRecorder::upsert_roster(const ReplayCarInfo& info) {
+  for (auto& existing : meta_.roster) {
+    if (existing.slot == info.slot) {
+      existing = info;
+      return;
+    }
+  }
+  meta_.roster.push_back(info);
 }
 
 void ReplayRecorder::add_marker(double sim_time, const std::string& label) {
@@ -436,12 +525,25 @@ ReplayRecording ReplayRecorder::snapshot() const {
   const double t0 = ring_[head_].time_s;
   const double t1 = ring_[(head_ + count_ - 1) % cap_].time_s;
   out.frames.reserve(count_);
+  std::unordered_set<uint32_t> active_slots;
+  active_slots.insert(0u);
   for (size_t i = 0; i < count_; ++i) {
     const ReplayFrame& src = ring_[(head_ + i) % cap_];
     ReplayFrame f;
     f.time_s = std::max(0.0, src.time_s - t0);
     f.cars = src.cars;
+    for (const auto& c : f.cars) active_slots.insert(c.slot);
     out.frames.push_back(std::move(f));
+  }
+  // Keep slot 0 plus every car slot present in the captured window (prevents
+  // long free-roam sessions from exceeding kMaxRosterEntries with old traffic).
+  if (out.meta.roster.size() > active_slots.size()) {
+    std::vector<ReplayCarInfo> pruned;
+    pruned.reserve(active_slots.size());
+    for (const auto& r : out.meta.roster) {
+      if (active_slots.count(r.slot)) pruned.push_back(r);
+    }
+    out.meta.roster = std::move(pruned);
   }
   for (const auto& m : raw_markers_) {
     if (m.time_s >= t0 - 0.05 && m.time_s <= t1 + 0.05) {
@@ -670,6 +772,15 @@ bool load_replay_file(const std::filesystem::path& path, ReplayRecording& out, s
         std::memcpy(dst.wheel_spin, legacy.wheel_spin, sizeof(dst.wheel_spin));
         std::memcpy(dst.wheel_omega, legacy.wheel_omega, sizeof(dst.wheel_omega));
         std::memcpy(dst.wheel_y, legacy.wheel_y, sizeof(dst.wheel_y));
+      } else if (version == 3) {
+        ReplayCarSampleLegacyV3 legacy{};
+        if (!r.pod(legacy)) {
+          if (error) *error = "corrupt replay car sample";
+          return false;
+        }
+        auto& dst = out.frames[fi].cars[ci];
+        dst = ReplayCarSample{};
+        std::memcpy(&dst, &legacy, sizeof(ReplayCarSampleLegacyV3));
       } else if (!r.pod(out.frames[fi].cars[ci])) {
         if (error) *error = "corrupt replay car sample";
         return false;

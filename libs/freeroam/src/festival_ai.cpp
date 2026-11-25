@@ -70,7 +70,7 @@ double estimate_rpm_for_speed(double speed_mps, int pi) {
 
 }  // namespace
 
-int64_t h2h_reward_credits(int player_pi, int opponent_pi) {
+int64_t h2h_reward_credits(int player_pi, int opponent_pi, double difficulty_scale) {
   constexpr int64_t kRewardBaseLevel = 5000;
   constexpr int64_t kRewardPlayerHigherMultiplier = 10;
   constexpr int64_t kRewardPlayerLowerMultiplier = 20;
@@ -81,10 +81,14 @@ int64_t h2h_reward_credits(int player_pi, int opponent_pi) {
   } else if (diff < 0) {
     reward += diff * kRewardPlayerHigherMultiplier;
   }
-  return std::max<int64_t>(500, reward);
+  const double scale = std::clamp(difficulty_scale, 0.5, 2.5);
+  const int64_t scaled = int64_t(std::llround(double(std::max<int64_t>(500, reward)) * scale));
+  return std::max<int64_t>(500, scaled);
 }
 
-int64_t h2h_wager_credits(int pi, int /*wristband_level*/) { return h2h_reward_credits(500, pi); }
+int64_t h2h_wager_credits(int player_pi, int opponent_pi, double difficulty_scale) {
+  return h2h_reward_credits(player_pi, opponent_pi, difficulty_scale);
+}
 
 FestivalManager::FestivalManager(const traffic::NavMap& nav, const traffic::Roads& roads,
                                  const traffic::TrafficConfig& config, uint64_t seed)
@@ -703,7 +707,7 @@ bool FestivalManager::start_head_to_head(const traffic::P3& player_pos, double p
 
   h2h_active_ = true;
   h2h_car_id_ = opp->id;
-  h2h_wager_ = h2h_reward_credits(player_pi_, opp->spec.pi);
+  h2h_wager_ = h2h_wager_credits(player_pi_, opp->spec.pi, difficulty_scale_);
   h2h_elapsed_ = 0.0;
   h2h_player_s_ = project_on_h2h(player_pos.x, player_pos.z, 0.0);
   opp->in_h2h = true;
@@ -1179,7 +1183,7 @@ HeadToHeadHud FestivalManager::hud(double time) const {
         h.prompt_driver = c.spec.driver_name;
         h.prompt_car_class = c.spec.car_class;
         h.prompt_pi = c.spec.pi;
-        h.prompt_wager = h2h_reward_credits(player_pi_, c.spec.pi);
+        h.prompt_wager = h2h_wager_credits(player_pi_, c.spec.pi, difficulty_scale_);
         h.prompt_distance_m = prompt_dist_;
         break;
       }
