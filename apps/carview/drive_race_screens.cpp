@@ -429,6 +429,12 @@ void DriveSession::begin_race_quit() {
   // menu, fades to black as the race's other exits do before the load
   // (post_steps with quit: kBlackOut, kDone).
   grid_menu_open = false;
+  if (app.headless) {
+    // No screens headless (update_race_screens stops them): out at once.
+    app.leave_race = true;
+    running = false;
+    return;
+  }
   race_flow::PostFacts f;
   f.kind = race_kind(app);
   f.quit = true;
