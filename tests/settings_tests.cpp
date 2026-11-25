@@ -625,8 +625,8 @@ int main() {
       CHECK(hs.value("wrong way warning") == "off" && hs.value("popularity and skills") == "off");
       CHECK(hs.value("lap time and position") == "on" && hs.value("names over cars") == "on");
     }
-    // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5, the default) + TCS Off + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
-    CHECK(p6.difficulty_credit_bonus_pct() == 120);
+    // Pro (+25) + ABS Off (+20) + Sim Steering (+20) + TCS Off (+15) + M+C (+20) + Line Off (+20) + Rewind Off (+20) = 140% (the ceiling; STM and damage are not counted)
+    CHECK(p6.difficulty_credit_bonus_pct() == 140);
     const auto base_lay = drive::default_controller_layout(0);
     const auto swap_lay = drive::apply_handbrake_clutch_swap(base_lay, true);
     CHECK(base_lay.control_for("Handbrake") == swap_lay.control_for("Clutch"));
@@ -639,18 +639,18 @@ int main() {
       dp.load({});
       dp.open();
       dp.select_tab(int(carview::SettingsPage::Tab::kGameplay));
-      CHECK(dp.value("difficulty preset") == "MEDIUM (+15% CR)");
+      CHECK(dp.value("difficulty preset") == "MEDIUM (+25% CR)");
       // FEEL-12: a new profile (Medium) has TCS on and STM off.
       CHECK(dp.value("traction control") == "on");
       CHECK(dp.value("stability control") == "off");
-      dp.step(1);  // MEDIUM -> HARD (+50% CR)
-      CHECK(dp.value("difficulty preset") == "HARD (+50% CR)");
-      CHECK(dp.difficulty_credit_bonus_pct() == 50);
+      dp.step(1);  // MEDIUM -> HARD (+75% CR)
+      CHECK(dp.value("difficulty preset") == "HARD (+75% CR)");
+      CHECK(dp.difficulty_credit_bonus_pct() == 75);
       CHECK(dp.value("difficulty") == "hard");
       CHECK(dp.value("shifting") == "manual");
-      dp.step(1);  // HARD -> INSANE (+120% CR)
-      CHECK(dp.value("difficulty preset") == "INSANE (+120% CR)");
-      CHECK(dp.difficulty_credit_bonus_pct() == 120);
+      dp.step(1);  // HARD -> INSANE (+140% CR)
+      CHECK(dp.value("difficulty preset") == "INSANE (+140% CR)");
+      CHECK(dp.difficulty_credit_bonus_pct() == 140);
       CHECK(dp.value("rewind") == "off");
       CHECK(dp.value("damage") == "simulation");
       dp.step(1);  // INSANE -> EASY (+0% CR)

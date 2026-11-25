@@ -727,7 +727,7 @@ int run_headless_menu_dumps(const DriveConfig& cfg, UiFontCache& font_cache) {
       carview::RaceHud r;
       r.phase = carview::RaceHud::kGrid, r.event = "RECARO RED ROCK RAMPAGE", r.event_type = "FESTIVAL RACE";
       r.grid_menu_open = true;
-      r.grid_menu = {"START RACE", "< DIFFICULTY: MED (+15%) >", "QUIT RACE"};
+      r.grid_menu = {"START RACE", "< DIFFICULTY: MED (+5%) >", "QUIT RACE"};
       r.grid_selected = 0;
       r.grid_car_info = "1995 Volkswagen Corrado VR6  [D 285]";
       carview::DriveHud d;

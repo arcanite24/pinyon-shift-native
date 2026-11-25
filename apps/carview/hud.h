@@ -66,7 +66,7 @@ struct PauseMenu {
   bool in_rally_world = false;
   Screen screen = Screen::kList;
   std::string events_label;      // e.g. "COLLECT GREEN WRISTBAND!" or "RACE CENTRAL"
-  std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+15%) >"
+  std::string difficulty_label;  // e.g. "< DIFFICULTY: MED (+5%) >"
   int selected = 0;              // in rows(): the menu's rows or the extras
   int list_selected = 0;         // the menu row kept while the extras are open
   int sponsor_selected = 0;      // Sponsor Challenges' selected sponsor

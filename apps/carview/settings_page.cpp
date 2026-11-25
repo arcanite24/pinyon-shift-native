@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 
+#include "race/rewards.h"
 #include "settings.h"
 
 namespace carview {
@@ -1542,29 +1543,21 @@ LiveSettings SettingsPage::live_settings() const {
 }
 
 int SettingsPage::difficulty_credit_bonus_pct() const {
+  // The race award's own rule (race::total_difficulty_bonus_percent), so the
+  // preview matches what a race pays.
   const LiveSettings ls = live_settings();
-  const int diff_idx = ls.difficulty >= 0 ? ls.difficulty : 1;  // default Medium (+15%)
-  int ai_pct = 0;
-  switch (diff_idx) {
-    case 1: ai_pct = 15; break;
-    case 2: ai_pct = 30; break;
-    case 3: ai_pct = 45; break;
-    case 4: ai_pct = 60; break;
-    default: ai_pct = 0; break;
-  }
+  const int diff_idx = ls.difficulty >= 0 ? ls.difficulty : 1;  // default Medium
   const auto& a = ls.controls.assists;
-  int assist_pct = 0;
-  if (!a.rewind) assist_pct += 20;
-  if (a.braking >= 2) assist_pct += 10;
-  if (a.steering >= 2) assist_pct += 5;
-  if (!a.stability_control) assist_pct += 5;
-  if (a.shifting == 1) assist_pct += 10;
-  else if (a.shifting >= 2) assist_pct += 15;
-  if (a.driving_line == 1) assist_pct += 5;
-  else if (a.driving_line <= 0) assist_pct += 10;
-  if (ls.damage_mode == 2) assist_pct += 10;
-  if (a.traction_control && assist_pct >= 5) assist_pct -= 5;
-  return ai_pct + std::max(0, assist_pct);
+  race::DifficultyAssists d;
+  d.rewind_on = a.rewind;
+  d.braking = a.braking;
+  d.steering = a.steering;
+  d.tcs_on = a.traction_control;
+  d.stm_on = a.stability_control;
+  d.shifting = a.shifting;
+  d.driving_line = a.driving_line;
+  d.damage_mode = ls.damage_mode;
+  return race::total_difficulty_bonus_percent(diff_idx, d);
 }
 
 void SettingsPage::sync_from_live(const LiveSettings& live) {
@@ -1953,7 +1946,7 @@ void SettingsPage::apply_difficulty_preset(size_t preset_pick) {
       set_row_label("rewind", "on");
       set_row_label("damage", "none");
       break;
-    case 1:  // MEDIUM (+15% CR): a new profile's assists (Q71)
+    case 1:  // MEDIUM (+25% CR): a new profile's assists (Q71)
       set_row_label("difficulty", "default");
       set_row_label("braking", "abs on");
       set_row_label("steering", "normal");
@@ -1964,7 +1957,7 @@ void SettingsPage::apply_difficulty_preset(size_t preset_pick) {
       set_row_label("rewind", "on");
       set_row_label("damage", "cosmetic");
       break;
-    case 2:  // HARD (+50% CR)
+    case 2:  // HARD (+75% CR)
       set_row_label("difficulty", "hard");
       set_row_label("braking", "abs on");
       set_row_label("steering", "normal");
@@ -1975,7 +1968,7 @@ void SettingsPage::apply_difficulty_preset(size_t preset_pick) {
       set_row_label("rewind", "on");
       set_row_label("damage", "cosmetic");
       break;
-    case 3:  // INSANE (+120% CR)
+    case 3:  // INSANE (+140% CR)
       set_row_label("difficulty", "pro");
       set_row_label("braking", "abs off");
       set_row_label("steering", "simulation");
