@@ -4027,3 +4027,20 @@ measured on the capture (the scene rests at its intro start), and the
 original's BUY POPULARITY SPIKE prompt is not shown: the engine has no
 tokens or store. Needed: the scene's intro end state, and whether BUY
 POPULARITY SPIKE shows offline.
+
+## Q171 (RACE-22, not blocking): the head-to-head's screens
+
+A free-roam head-to-head now shows the original's screens
+(`race_encounters.xml`): `H_RACE_ENCOUNTER` as the challenge starts, for
+`RandomEncounter_Intro`'s 3.5 s (the rival's name, the car's make, its
+name and class, REWARD and the reward on pink), and on a win
+`H_POST_RACE_FINISHED` (1ST) then `H_POST_RACE_CREDITS_BREAKDOWN` with the
+payout; a loss shows nothing, as the flow does. As interims: no capture
+of either screen exists, so the intro draws at the scene's own rects with
+its tapes cut to their texts and its reward lines (alpha 0 at rest)
+shown; the win's banner has A CONTINUE alone; the flow's cutscenes
+(`RandomEncounter_Intro`, the win's `Cockpit_Cam_Activate`) do not play
+and the player keeps control; and the free-roam HUD hides while the
+screens show. The rival's driving and pace stay the AI branch's
+(WORLD-07). Needed: captures of a head-to-head's intro and of a win's
+banner and earnings.

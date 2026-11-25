@@ -420,6 +420,9 @@ flow files) as plain steps, with the timings measured on the captures;
   count, but their events (sounds, hidden cars, placed cars and people)
   are not acted on, and the menu and count keep the measured timings
   (Q168).
+- **Head to heads.** `H_RACE_ENCOUNTER`'s intro and a win's banner and
+  cash, at the scene's rects without captures, and without the flow's
+  cutscenes (Q171).
 - **Not drawn.** The tombola (no data marks a tombola prize) and the rival
   offer (online only) (Q98); the title and rival tapes' specular sheens
   (Q99).
