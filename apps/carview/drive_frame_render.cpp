@@ -972,6 +972,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
             camp_cam_active = app.campaign.compute_camera({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), camp_cam);
           }
+          // The race's cutscene camera (sync_race_cutscene): the grid, the
+          // count's first cut and the rewards.
+          drive::CameraView race_cut_cam{};
+          const bool race_cut_active = !app.show_title && !photo_mode.active() && !trainer_freecam_active &&
+                                       !replay_viewer.active() && !camp_cam_active && race_cutscene_camera(race_cut_cam);
           const bool pause_freeze = menu_paused && !app.show_title && !app.fmv_player.active() && !photo_mode.active() &&
                                     !replay_viewer.active() && !trainer_freecam_active && !(app.race && grid_menu_open);
           // Smooth pre-race grid-to-drive camera swoop (CAMERAS.md:85, UI_LAYOUTS.md:121-125).
@@ -1220,6 +1225,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                              5.8f, 1.48f, host.renderer.reverse_z(), host.ground, &host.cam_proj)
                         : camp_cam_active
                         ? camera_view_frame(camp_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
+                        : race_cut_active
+                        ? camera_view_frame(race_cut_cam, info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
                         : (app.race && grid_menu_open)
                               ? scenic_orbit_frame(info, vehicle, aspect,
                                                    std::atan2(drive::rotate(vehicle.orientation(), {0, 0, 1}).x,
@@ -1252,7 +1259,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             w_jitter_uv_y = j[1] / float(std::max(1u, rex.h));
           }
           if (photo_mode.active() || replay_viewer.active() || active_hub_room != HubRoom::kNone || app.show_title ||
-              camp_cam_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view) {
+              camp_cam_active || race_cut_active || (app.race && grid_menu_open) || ceremony.active || rewind_scrub_view) {
             const bool hide_for_replay =
                 replay_viewer.active() && replay_viewer.focus_slot() == 0u &&
                 replay_viewer.camera_mode() == carview::ReplayCameraMode::kBumper;

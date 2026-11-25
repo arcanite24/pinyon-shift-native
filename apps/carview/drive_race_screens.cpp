@@ -206,6 +206,8 @@ void DriveSession::update_race_screens(double dt) {
   app.campaign.flow().dialogs().set_held(app.race && !app.headless && app.race->player_finished());
   if (!app.race || app.headless) {
     race_screens.stop();
+    if (race_cuts.active()) race_cuts.stop();
+    race_cut_name.clear();
     // Headless runs have no screens to step through: the campaign's outro
     // (finale, boss, showcase) follows the finish at once.
     if (app.race && app.headless && app.race->player_finished())
@@ -223,6 +225,49 @@ void DriveSession::update_race_screens(double dt) {
   if (!grid_menu_open && !race_screens.active() && results_page == 0 && app.race->player_finished())
     race_screens.start({S::kFinishBanner});
   if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
+  sync_race_cutscene();
+  (void)race_cuts.update(dt, false);
+}
+
+void DriveSession::sync_race_cutscene() {
+  // The cutscene each step of the flow plays (game_festival_race_flow.xml,
+  // game_race_flow_states.xml); steps without one keep the last.
+  const char* want = nullptr;
+  switch (race_screens.screen()) {
+    case S::kTitleCard: want = "prerace_intro"; break;
+    case S::kGridMenu: want = "prerace_looping_01"; break;
+    case S::kRivalIntro: want = "nemesis_show"; break;
+    case S::kFinishBanner: want = "postrace_finishline"; break;
+    case S::kCashReward: want = "postrace_transition_01"; break;
+    case S::kPoints: want = "postrace_transition_02"; break;
+    case S::kRewardCar: want = "postrace_rewardcar_transition_01"; break;
+    default: break;
+  }
+  // START RACE: the count runs over prerace_countdown (its Follow cut hands
+  // the view back to the driving camera).
+  const bool pre = race_cut_name == "prerace_intro" || race_cut_name == "prerace_looping_01" ||
+                   race_cut_name == "nemesis_show";
+  if (!want && pre && !grid_menu_open && !race_screens.active() && !app.race->player_finished())
+    want = "prerace_countdown";
+  if (!want || race_cut_name == want) return;
+  race_cut_name = want;
+  const auto* cev = app.have_career_catalog ? app.career_catalog.find_event(app.race_event) : nullptr;
+  if (!race_cuts.load_race(app.game_root_of(), cev ? cev->track_dev_name : std::string{})) return;
+  // The route's frames the cams target (start_location_00, ...): headings
+  // from their facings.
+  std::vector<std::pair<std::string, cutscene::Frame>> nodes;
+  for (const auto& t : app.race->route().transforms)
+    nodes.push_back({t.name, {{t.x, t.y, t.z}, std::atan2(t.fx, t.fz) * 180.0 / 3.14159265358979323846}});
+  race_cuts.set_scene_nodes(std::move(nodes));
+  race_cuts.set_car_parts(car_parts(vehicle, host.showroom.bounds_min(), host.showroom.bounds_max()));
+  if (!race_cuts.play_race(want)) race_cuts.stop();
+}
+
+bool DriveSession::race_cutscene_camera(drive::CameraView& out) const {
+  if (!app.race || !race_cuts.active()) return false;
+  const drive::Vec3 vp = vehicle.position();
+  const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
+  return race_cuts.camera({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), out);
 }
 
 void DriveSession::grid_menu_accept() {

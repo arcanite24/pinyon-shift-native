@@ -68,6 +68,7 @@ struct CareerEvent {
   // surface, and the ticket texture's number.
   std::string track_name_ref;  // Tracks.DisplayName (`_&...`)
   int track_surface = 0;       // Tracks.SurfaceTypeRibbonConfiguration
+  std::string track_dev_name;  // Tracks.DevName: the track's race cutscenes (FESTIVAL_FEST_001)
   std::string ticket;          // Events.EventTicket ("043": EventTickets/<style>/043)
   bool has_trigger = false;
   std::array<double, 3> trigger_pos{};

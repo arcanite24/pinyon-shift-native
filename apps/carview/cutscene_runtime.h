@@ -17,6 +17,10 @@
 #include "drive/cameras.h"
 #include "race/first_time_career.h"
 
+namespace drive {
+class Vehicle;
+}
+
 namespace carview {
 
 class CutsceneRuntime {
@@ -25,6 +29,16 @@ class CutsceneRuntime {
   bool ensure_loaded(const std::filesystem::path& game_root);
   const std::string& error() const { return error_; }
   const cutscene::Library& library() const { return lib_; }
+  // The race cutscenes instead (a race's own runtime): the default set and
+  // the track's (Tracks.DevName); reloads when the track changes. Stops
+  // what is playing first (the player points into the library).
+  bool load_race(const std::filesystem::path& game_root, const std::string& dev_name);
+  // Plays a race_specific cutscene: the track's <name>_<DevName>, else the default.
+  bool play_race(std::string_view name);
+  // The route's named frames the cams can target (start_location_00, ...).
+  void set_scene_nodes(std::vector<std::pair<std::string, cutscene::Frame>> nodes) {
+    player_.set_scene_nodes(std::move(nodes));
+  }
 
   // Starts a cutscene by name (false when it is not on the disc). `hold`
   // honours the cutscene's exit-on-finish voice-over.
@@ -62,6 +76,7 @@ class CutsceneRuntime {
   cutscene::Library lib_;
   bool tried_ = false, loaded_ = false;
   std::string error_;
+  std::string race_dev_;  // the track whose race set is loaded
   cutscene::Player player_;
   bool frozen_ = false;
   cutscene::CarParts parts_;
@@ -70,6 +85,10 @@ class CutsceneRuntime {
   bool fade_on_ = false;
   double fade_t_ = 0.0;
 };
+
+// The player car's parts for the PartSpace cams (drive_first_time_career.cpp).
+cutscene::CarParts car_parts(const drive::Vehicle& v, const std::array<float, 3>& bmin,
+                             const std::array<float, 3>& bmax);
 
 // CWhiteFlash's length: about 6 frames (UI_LAYOUTS; interim, Q61 e).
 inline constexpr double kWhiteFlashSeconds = 0.1;

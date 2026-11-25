@@ -37,6 +37,8 @@ std::string achievement_name(std::string_view id) {
   return n;
 }
 
+}  // namespace
+
 // The player car's parts a PartSpace cutscene cam can follow, in body axes
 // (+X right, +Y up, +Z forward, origin on the ground). The wheels are the
 // physics model's; the lamps sit at the car's corners at the front and rear
@@ -66,8 +68,6 @@ cutscene::CarParts car_parts(const drive::Vehicle& v, const std::array<float, 3>
   parts.push_back({"taillightR", {-left * half_track_r, lamp_y + 0.1, rear_z - overhang}});
   return parts;
 }
-
-}  // namespace
 
 struct DriveSession::FtcAutopilot {
   drive::RacingLine line;

@@ -108,6 +108,8 @@ class RaceView {
   // Where the player stands after the race (the route's
   // post_race_location_00, SPEC-EVENTS); false when the route has none.
   bool post_race_spawn(double out[4]) const;
+  // The route's named transforms (start_location_00, post_race_location_00, ...).
+  const race::Route& route() const { return route_; }
   // Loads the opponents' cars (models and physics) and stands them on their
   // slots on `ground`.
   bool load_cars(Renderer& renderer, const drive::Ground& ground, std::string& error);

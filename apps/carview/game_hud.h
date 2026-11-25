@@ -293,6 +293,9 @@ struct RaceHud {
   int64_t rival_reward = 0;
   std::string stay_car;     // STAY IN CAR's car name
   int stay_selected = 0;    // 0 YES, 1 NO
+  // The race cutscene's own fade (its cams' FadeInOptions / FadeOutOptions):
+  // rgb and coverage, under the race's screens.
+  std::array<float, 4> cut_fade{};
 };
 
 // The front end (120_P_PRE_SPLASH, title_menu.h): the model's state for

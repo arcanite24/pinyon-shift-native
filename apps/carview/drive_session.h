@@ -455,6 +455,12 @@ struct DriveSession {
   // driver (AIPlayers.Nemesis) and its BEAT THE STAR reward.
   std::string race_rival_name;
   int64_t race_rival_reward = 0;
+  // The race's cutscenes (the flows' CPrepareCutscene: prerace_intro under
+  // the title card, prerace_looping_01 under the grid menu, nemesis_show,
+  // prerace_countdown, then postrace_finishline and the transitions under
+  // the rewards): their own runtime, the track's set (Tracks.DevName).
+  CutsceneRuntime race_cuts;
+  std::string race_cut_name;  // the cutscene the flow asked for last
   const race::CareerEvent* summary_event = nullptr;
   bool summary_restrictions = false;
   EventSummaryHud event_summary_hud;
@@ -717,6 +723,10 @@ struct DriveSession {
   bool popup_backdrop() const;
   // Advances the race screens (timed steps, the grid's start, the finish).
   void update_race_screens(double dt);
+  // Plays the race cutscene the flow's step asks for (update_race_screens).
+  void sync_race_cutscene();
+  // The race cutscene's camera this frame (false: the game's own camera).
+  bool race_cutscene_camera(drive::CameraView& out) const;
   void grid_menu_accept();
   void race_back();
   void finish_race_screens();

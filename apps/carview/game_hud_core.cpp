@@ -1033,6 +1033,10 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     if (st.race) {
       const RaceHud& r = *st.race;
       if (r.phase != RaceHud::kFinished) reset_post_race_page_timer();
+      if (r.cut_fade[3] > 0.0f)
+        l.rect(0.0f, 0.0f, w, h,
+               ui::rgba(uint8_t(r.cut_fade[0] * 255.0f), uint8_t(r.cut_fade[1] * 255.0f),
+                        uint8_t(r.cut_fade[2] * 255.0f), uint8_t(std::clamp(r.cut_fade[3], 0.0f, 1.0f) * 255.0f)));
       // The original's screens around the race from their scenes (race_screens.h);
       // the results table (X on the banner) keeps its own page.
       const bool table = r.screen == race_flow::Screen::kFinishBanner && r.results_table;

@@ -289,9 +289,57 @@ void test_parts_and_nodes() {
   check(near(cutscene::place_speed_mps(e), 44.704, 1e-9), "initialSpeed 100 mph is 44.704 m/s");
 }
 
+// The race's cutscenes: a Follow cut hands the view to the game's camera,
+// a node the cutscene does not place comes from the scene (the route), and
+// race_specific names resolve to the track's own copy first.
+void test_race_cutscenes() {
+  const char* doc = R"(<?xml version="1.0"?>
+<CutsceneManager>
+  <Cutscene name="prerace_countdown" PlaybackMode="Normal" Duration="8.0" MirrorForRightHandDrive="0" LoopFrom="0.0">
+    <Cams CutQueueType="Cutscene" NumCams="2">
+      <Cam Version="3" Group="0" Type="Animateable" StartCut="0.0" TargetName="start_location_00" duration="3.0">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" TimeAnimType="AffectsPath" IsInCockpit="0" NumKeys="1">
+          <Key Time="0.0" PosX="0" PosY="1" PosZ="-5" Yaw="0" Pitch="0" Roll="0" FOV="40" TimeC0="0"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Group="0" Type="Follow" StartCut="3.0" TargetName="" duration="5.0"/>
+    </Cams>
+  </Cutscene>
+  <Cutscene name="prerace_countdown_TRACK_A" PlaybackMode="Normal" Duration="10.0" MirrorForRightHandDrive="0" LoopFrom="0.0"/>
+</CutsceneManager>)";
+  cutscene::Library lib;
+  std::string err;
+  check(cutscene::parse_cutscenes(doc, lib, &err) && lib.cutscenes.size() == 2, "race doc parses");
+  const auto* cs = cutscene::find_race_cutscene(lib, "prerace_countdown", "");
+  check(cs && cs->name == "prerace_countdown" && cs->cams.size() == 2 && !cs->cams[0].follow && cs->cams[1].follow,
+        "Type=\"Follow\" is kept");
+  check(cutscene::find_race_cutscene(lib, "prerace_countdown", "TRACK_A") &&
+            cutscene::find_race_cutscene(lib, "prerace_countdown", "TRACK_A")->duration == 10.0,
+        "race_specific: the track's <name>_<DevName> first");
+  check(cutscene::find_race_cutscene(lib, "prerace_countdown", "TRACK_B") == cs, "race_specific: else the default");
+  check(cutscene::track_cutscenes_member("FESTIVAL_FEST_001") ==
+            "Colorado/Cutscenes/Tracks/cutscenes_FESTIVAL_FEST_001.xml",
+        "the track's member");
+
+  cutscene::Player pl;
+  pl.set_scene_nodes({{"start_location_00", {{100, 0, 200}, 0}}});
+  pl.start(cs);
+  pl.step(0.0);
+  const cutscene::Frame car{{0, 0, 0}, 0};
+  cutscene::WorldCamera w;
+  check(pl.world_camera(car, w) && near(w.eye[0], 100.0, 1e-9) && near(w.eye[2], 195.0, 1e-9),
+        "a node the cutscene does not place: the scene's");
+  pl.step(3.5);
+  check(pl.active() && !pl.world_camera(car, w), "the Follow cut: the game's own camera");
+  pl.start(cs);
+  pl.step(0.0);
+  check(pl.world_camera(car, w) && near(w.eye[0], 100.0, 1e-9), "the scene's nodes stay across start()");
+}
+
 }  // namespace
 
 int main() {
+  test_race_cutscenes();
   test_parse();
   test_interpolation();
   test_post_and_fades();
