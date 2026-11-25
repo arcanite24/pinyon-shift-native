@@ -827,12 +827,12 @@ void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool
     rw_title = base_rewind + " PAUSED";
     if (at_oldest_slot) {
       rw_prompts = {{"A", str("HelpButtons", "IDS_Resume", "RESUME")},
-                    {"X", "VIEW REPLAY"},
+                    {"X", str("InGame", "IDS_ViewReplay", "VIEW REPLAY")},
                     {"B", str("HelpButtons", "IDS_Cancel", "CANCEL")}};
     } else {
       rw_prompts = {{"A", str("HelpButtons", "IDS_Resume", "RESUME")},
-                    {"Y", "REWIND FURTHER"},
-                    {"X", "VIEW REPLAY"},
+                    {"Y", str("HelpButtons", "IDS_Rewind_Further", "REWIND FURTHER")},
+                    {"X", str("InGame", "IDS_ViewReplay", "VIEW REPLAY")},
                     {"B", str("HelpButtons", "IDS_Cancel", "CANCEL")}};
     }
   } else if (settling) {

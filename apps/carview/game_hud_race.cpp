@@ -602,6 +602,8 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g) {
       l.arc(icx, icy, 31.0f * s, 4.0f * s, 0.0f, 6.28318f, ui::fade(ui4::kWhite, pulse));
       l.rect(icx - 19.0f * s, icy - 5.5f * s, icx + 19.0f * s, icy + 5.5f * s, ui::fade(ui4::kWhite, pulse));
     }
+    // No string table holds a WRONG WAY label: the game's indicator is the
+    // I_HUD_WrongWaySign texture (ui/Textures.zip), so this text is ours.
     const std::string ww_txt = std::string("WRONG WAY");
     const TextStyle ws = font(ui::Font::kE, 26.0f * s, ui::fade(kText, 0.85f + 0.15f * pulse), Align::kCenter);
     const float ww = std::max(220.0f * s, ui::List::measure(ww_txt, ws) + 54.0f * s);
@@ -1042,9 +1044,9 @@ void points_page(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout
   // Final-stage action bar when no separate won-car page follows, else CONTINUE.
   if (r.won_car_name.empty()) {
     ui4::button_bar(l,
-                    {{"A", "CONTINUE TO FREE ROAM"},
-                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
-                     {"X", "WATCH REPLAY"},
+                    {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")},
+                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART")},
+                     {"X", str("InGame", "IDS_ViewReplay", "VIEW REPLAY")},
                      {"BACK", "MAP / GPS"}},
                     g.w, g.h);
   } else {
@@ -1089,9 +1091,9 @@ void won_car_page(ui::List& l, const RaceHud& r, const Layout& g) {
     l.text(g.L(122), g.T(389), "DELIVERED TO YOUR HORIZON GARAGE", font(ui::Font::kB, 17 * s, kDark));
   }
   ui4::button_bar(l,
-                  {{"A", "CONTINUE TO FREE ROAM"},
-                   {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
-                   {"X", "WATCH REPLAY"},
+                  {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")},
+                   {"Y", str("InGame", "IDS_RestartMenu", "RESTART")},
+                   {"X", str("InGame", "IDS_ViewReplay", "VIEW REPLAY")},
                    {"BACK", "MAP / GPS"}},
                   g.w, g.h);
 }
@@ -1106,7 +1108,7 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
     ui4::subtle_vignette(l, g.w, g.h, 0.28f);
     draw_race_post_stage_pills(l, g, 2);
     career_affinity_panel(l, r, st, g, g.C(330), g.T(148), g.C(950), page_elapsed, true);
-    ui4::button_bar(l, {{"A", "CONTINUE TO FREE ROAM"}}, g.w, g.h);
+    ui4::button_bar(l, {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")}}, g.w, g.h);
     return;
   }
   if (r.results_page == 3 && !r.won_car_name.empty()) {
@@ -1200,9 +1202,9 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
     }
     ui4::button_bar(l,
                     {{"A", str("InGame", "IDS_ContinueMenu", "CONTINUE")},
-                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART RACE")},
+                     {"Y", str("InGame", "IDS_RestartMenu", "RESTART")},
                      {"X", str("InGame", "IDS_RaceResultsMenu", "RACE RESULTS")},
-                     {"B", "WATCH REPLAY"}},
+                     {"B", str("InGame", "IDS_ViewReplay", "VIEW REPLAY")}},
                     g.w, g.h);
     return;
   }
