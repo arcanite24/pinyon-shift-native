@@ -284,12 +284,15 @@ destinations, and an outpost must be discovered (Q90).
 
 ## What is not decoded
 
-- The BGF state blocks (`SELECTED`, `UNSELECTED`, `FOCUSED`, ...) and their
-  timelines are not mapped to node properties yet, so the selection look and
-  its timing are measured from captures (open and close in one frame, the
-  selection cross-fade about three frames, the new row already at its larger
-  size). Replace `kPauseFocusScale`, `kPauseFadeSeconds` and the tints when the
-  states are decoded.
+- The BGF timelines (the slides such as `SELECTED`, `UNSELECTED` and
+  `FOCUSED`, their curves and the events' actions) are decoded and play
+  through `SceneTimeline` (docs/UI_SCENE_ANIMATION.md). Only the front end
+  (FE-02) and the HUD notifications (HUD-11) are hooked up so far. The pause
+  menu still uses its measured look: open and close in one frame, a
+  selection cross-fade of about three frames, the new row already at its
+  larger size. Its slides give 150 ms, scale 1.2 and a 7 / 6 px spread
+  instead (Q187). Replace `kPauseFocusScale`, `kPauseFadeSeconds` and the
+  tints when it is hooked.
 - Stackers are not run: a scene's packed rows keep their laid-out places. The
   pause list's offset (`kListDx`, `kListDy`) and the player bar's packing
   (`kObjectiveRight`, `kPillPad`, `fit_pill`) are measured on
@@ -404,7 +407,8 @@ flow files) as plain steps, with the timings measured on the captures;
   results, so the campaign's call-ins and objective tracker wait from the
   finish until free roam (`DialogQueue::set_held`).
 - **Measured placements.** Every scene here rests at its intro start (the
-  stackers and timelines are not run), so the drawn positions are offsets
+  stackers are not run, and these screens do not play their timelines yet),
+  so the drawn positions are offsets
   measured on `10_`..`18_*_orig.png`: the ticket's value tapes, the rival
   callout's lines, the cash lines and total, and the popup's panel (cut
   to the message's lines) and line pitch.
@@ -492,12 +496,15 @@ their 0.75 s hold (Q155).
 
 ## Interims in the front end
 
-- **Profile step.** A fixed 0.35 s with a fade: the `START_OUTRO` and
-  `MENU_INTRO` slides are not decoded; no profile picker or storage device
-  (Q137).
-- **Menu states.** The selected row's size step and offset, the unselected
-  row's indent and grey are measured, not read from the scene's states;
-  `menu_shadow` is hidden (Q138).
+- **Profile step.** Press Start plays the scene's `Menu_Intro`: the logo
+  fades out over 0.299 s and the menu fades in from 0.493 s. The step's
+  length is that 0.493 s, not the original's profile read. There is no
+  profile picker or storage device (Q137, Q185).
+- **Menu states.** The rows play their `Focus` / `Focused` / `Blur` /
+  `Blurred` slides (FE-02). The selected row's 8 px offset and the
+  unselected row's 28 px indent are still measured, and `menu_shadow` is
+  hidden (Q138, Q185). Without a timeline (`scene_timelines_enabled()`
+  off), the measured 1.03 step and grey 195 return.
 - **Popups.** NO NETWORK ACCESS and INVALID PROFILE draw on
   `H_MESSAGE_POPUP` as STAY IN CAR does; the original's exact popup for
   MULTIPLAYER offline on PC is not recorded (Q138).

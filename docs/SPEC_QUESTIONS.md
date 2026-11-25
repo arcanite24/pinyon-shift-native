@@ -3066,6 +3066,13 @@ the original does next (new profile, retry) is not known.
 Needed: the slides' timelines, and the original's flow for a damaged
 profile.
 
+Update (2026-11-25): the slides are decoded (docs/UI_SCENE_ANIMATION.md).
+The front end now plays `Menu_Intro` on Press Start: the logo fades out
+over 0..0.299 s and the menu fades in over 0.493..1.013 s. The profile
+step is the part before the menu shows, so `kProfileSeconds` is now 0.493
+s. The original's profile read could hold it longer; that is inferred
+(Q185). The damaged-profile flow is still open.
+
 ## Q138 (BOOT-02, BOOT-03, not blocking): the front-end menu's states and its offline popup
 
 The selected row's size step (1.03) and offset, and the unselected row's
@@ -3090,6 +3097,15 @@ the 1000 Club but nothing on the title row).
 Needed: the decoded `SPLASH_MENU_BUTTON` states, what switches
 `SPLASH_MENU_BUTTON_SPECIAL` to `SpecialMode` (a 1000 Club medal?), and a capture of
 MULTIPLAYER chosen offline.
+
+Update (2026-11-25): the row states are decoded (docs/UI_SCENE_ANIMATION.md)
+and the engine plays them (FE-02). `Blurred`: text 200, tape grey 33 on
+every row, so the grey tape is the scene's own unfocused look. `Focus`
+(0.1 s): text 233 on a pink (250, 0, 100) tape. `Focused`: a 2.5 s loop
+whose Group pulses from 0.7 to 0.722. The capture's 1.03 is that pulse's
+peak (Q185). `SpecialMode` turns the tape yellow (255, 221, 62) with dark
+text. The offsets (8 and 28 px) are still measured; what selects
+`SpecialMode` is still open.
 
 ## Q139 (LOAD-01, LOAD-02, not blocking): which tips a load shows
 
@@ -4218,6 +4234,14 @@ Still open:
   the later cards never show. The cutscenes' length was not checked, and
   the change has not been seen in a run.
 
+Update (2026-11-25): the BGF timeline is decoded (docs/UI_SCENE_ANIMATION.md),
+and three of the times above were misread. The curves give Playground's
+last key as 22.621 s (not 22.633), and the logo's second and last keys as
+28.665 and 32.165 s (not 28.657 and 32.157). The attribute 0x1991C315 is
+`opacity` (27-bit hash 0x191C315). The engine now reads the keys from the
+scene's `PLAY` slide, with the corrected table as the fallback. Why the
+values are 0 is Q186.
+
 ## Q167 (UI, not blocking): the pause menu's popups
 
 MESSAGE CENTER offline opens the NO NETWORK ACCESS popup (LiveStrings'
@@ -4351,3 +4375,115 @@ race's or a showcase's ticket can name points the race does not pay. No
 capture shows such a ticket. Needed: a capture of a street race's,
 showcase's or rivals ticket, to see whether its POINTS AVAILABLE tape
 shows, and with what.
+
+## Q183 (UI, not blocking): the slide flags and the time policy
+
+Each BGF slide has a flags byte (docs/UI_SCENE_ANIMATION.md). 82F2B230
+packs it and 82F2B408 hands it to the time manager: +0x38 gets the
+duration, `flags & 3`, bit 3 and bit 4; +0x3C gets bit 2. The routine that
+reads +0x38 was not found, so the engine reads the bits from the corpus:
+- `flags & 3`: 0 loops, 1 plays once. 9 (play once + bit 3) is on 19,707
+  slides.
+- bit 2: starts paused. These are the slides the game scrubs, such as the
+  progress bars and the pause menu's `SIZE` steps.
+- bit 4: plays through to the next slide (`Focus` 17 into `Focused`).
+- bit 3 is unknown. It is on nearly every play-once slide, and also on
+  `CombinedNotification`'s `ON` / `OFF` (13).
+
+The engine also assumes a slide's time starts at its `start` and that a
+play-once slide holds its last frame.
+
+Needed: the time manager's reader of +0x38 and +0x3C, or what bit 3
+changes.
+
+## Q184 (UI, not blocking): which elements a slide shows
+
+The engine's rule for an element being on is inferred:
+- A slide that lists it with `active` 0 hides it.
+- A component's slide that omits it hides it, if another of the
+  component's slides lists it.
+- `starttime` / `endtime` bound it within the slide.
+
+Values set by one slide persist into the next unless that slide sets them
+again (the Master Slide's values are applied on every entry). A curve's
+last value is baked when its slide is left. Both rules fit the front end
+and the HUD notification, but neither has been checked against the title's
+slide enter path, which was not located.
+
+Needed: the enter path's handling of the `active` byte and of elements a
+slide does not list.
+
+## Q185 (FE-02, BOOT-02, BOOT-04, not blocking): the front end against its capture
+
+The front end now plays `120_P_PRE_SPLASH`'s slides. Three things are
+still fitted rather than read:
+- The selected row in `02_title_menu_orig.png` is 1.031 times its rest
+  size (text 865..1139 against 870..1136). The `Focused` slide's Group
+  rests at 0.7 and pulses to 0.722 (x1.031) at 1.04..1.27 s of its 2.5 s
+  loop, so the capture was taken during a pulse. Without a timeline the
+  engine keeps the 1.03 step; with one it plays the pulse.
+- The rows' x offsets (selected 8 px, unselected 28 px) are not in any
+  slide. They come from the capture.
+- The input timing. Press Start plays `Menu_Intro`, where the menu
+  appears at 0.493 s. The engine takes that as the profile step's length
+  (`kProfileSeconds`), but the original may wait on its profile read
+  instead. The scene's `START_OUTRO` (the logo out over 0.299 s) is not
+  used, because `Menu_Intro` already contains it.
+
+Needed: a capture series of the menu (to see the pulse), the code that
+places the rows, and which of `START_OUTRO` / `MENU_INTRO` the original
+sends on Press Start.
+
+## Q186 (INTRO-07, not blocking): the opening titles' zero-valued curves
+
+`H_OPENING_TITLES`' `PLAY` slide (33 s) gives each card and shadow layer
+one `opacity` curve with four keys (Q164). All the values are 0, and the
+slide sets each layer's opacity to 0. Read literally, the cards never
+show. The keys' controls are 0 too, except c1 = c2 = -1.0 on each last
+key. The engine reads the key times from the scene and ramps the alpha
+0 → 1 → 1 → 0 over them, as before.
+
+Possible readings: the game's code sets the card values (no action in the
+scene does), or the curves were baked from an authoring tool with values
+the export lost.
+
+WP6's table (parity/wp6) misread three times, now corrected:
+- Playground's last key: 22.621 s, not 22.633.
+- The logo's second key: 28.665 s, not 28.657.
+- The logo's last key: 32.165 s, not 32.157.
+
+Needed: a capture of the opening titles, or the code that drives
+`H_OPENING_TITLES`.
+
+## Q187 (MENU-17, MAP-05, ACT-01, ACT-02, not blocking): the scenes decoded but not played
+
+The timelines of these are read, but the engine does not play them yet:
+- **`925_PAUSE_MENU` (MENU-17).** The root's `INTRO` / `OUTRO` (300 ms)
+  change nothing visible. Each row's `FOCUSABOVE` / `FOCUSBELOW` (150 ms)
+  scales it to 1.2, turns its tapes pink and brings in its clip-on, from
+  7 px above or 6 px below. `BLURREDABOVE` / `BLURREDBELOW` leave the rows
+  above the focus 7 px up and the rows below 6 px down. The engine keeps
+  its measured 0.1 s fade and 1.21 step, and does not draw the spread;
+  whether the captures show it was not checked.
+- **`H_MAP` (MAP-05).** The event hubs' `AVAILABLE` / `UNAVAILABLE` /
+  `BRONZE` / `SILVER` / `GOLD` slides, and each activity's `Upright` /
+  `UprightWarning`. The engine's map does not draw its icons from the
+  scene.
+- **The activity popups (ACT-01, ACT-02).** Not drawn from their scenes.
+
+Also open: the time a contract event is sent relative to the frame it
+takes effect on (the engine fires and advances in the same frame).
+
+Needed: pause menu captures mid-move, and the map's icon layer and the
+activity popups drawn from their scenes.
+
+## Q188 (UI, not blocking): the contracts' `initial_state`
+
+`UiContract::initial_state` reads item property 0x083BF5F8. Decoded, that
+is `endtime` (27-bit 0x3BF5F8) with an int tag, so `083bf5f8 000007d0` is
+2000 ms, not a state name. The engine puts each component on its first
+slide after the Master Slide, and screens choose their own starting
+slides. What the title starts each component on is not confirmed.
+
+Needed: the scene loader's first-slide choice, and a rename of
+`initial_state` once that is known.
