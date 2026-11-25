@@ -40,6 +40,7 @@
 #include "car_model.h"
 #include "drive_cli.h"
 #include "fh1data/archive.h"
+#include "fh1data/ui_overlay.h"
 #include "fh1data/ui_scene.h"
 #include "fh1data/xds.h"
 #include "gamepad_db.h"
@@ -171,22 +172,35 @@ int xds_png(int argc, char** argv) {
              : 1;
 }
 
-// carview --ui-scene <UI.zip> <scene>: the scene's objects and nodes
+// carview --ui-scene <UI.zip or game root> <scene>: the scene's objects and nodes
+// (a game root mounts v4's media.zip from SHIFT_STATE_ROOT over the disc)
 // (FORMAT-UISCENES), one line each, for checking the reader.
 int ui_scene_dump(int argc, char** argv) {
   std::string error;
-  auto zip = fh1::Archive::open(argv[2], &error);
-  if (!zip) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
-  const std::string base = std::string("Scenes/ui4/") + argv[3];
-  auto fbf = zip->read(base + ".fbf");
-  auto bsg = zip->read(base + ".bsg");
-  if (!fbf.ok() || !bsg.ok()) return std::fprintf(stderr, "carview: %s%s\n", fbf.error.c_str(), bsg.error.c_str()), 1;
-  std::printf("bsg header:");
-  for (size_t i = 0; i < 48 && i < bsg.data.size(); ++i) std::printf("%s%02x", i % 4 ? "" : " ", bsg.data[i]);
-  std::printf("\n");
   fh1::UiScene sc;
-  if (!fh1::parse_ui_fbf(fbf.data, sc, &error) || !fh1::parse_ui_bsg(bsg.data, sc, &error))
-    return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+  std::error_code ec;
+  if (std::filesystem::is_directory(argv[2], ec)) {
+    // A game root: the scene as the game mounts it, the title update's
+    // media.zip (under SHIFT_STATE_ROOT) over the disc's UI.zip.
+    const char* state = std::getenv("SHIFT_STATE_ROOT");
+    fh1::UiOverlay ov(argv[2], fh1::UiOverlay::v4_media_zip_of(state ? state : ""));
+    fh1::UiOverlay::Origin fo{}, bo{};
+    if (!ov.load_scene(argv[3], sc, &error, &fo, &bo)) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+    std::printf("fbf from %s, bsg from %s\n", fo == fh1::UiOverlay::Origin::kV4 ? "v4" : "disc",
+                bo == fh1::UiOverlay::Origin::kV4 ? "v4" : "disc");
+  } else {
+    auto zip = fh1::Archive::open(argv[2], &error);
+    if (!zip) return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+    const std::string base = std::string("Scenes/ui4/") + argv[3];
+    auto fbf = zip->read(base + ".fbf");
+    auto bsg = zip->read(base + ".bsg");
+    if (!fbf.ok() || !bsg.ok()) return std::fprintf(stderr, "carview: %s%s\n", fbf.error.c_str(), bsg.error.c_str()), 1;
+    std::printf("bsg header:");
+    for (size_t i = 0; i < 48 && i < bsg.data.size(); ++i) std::printf("%s%02x", i % 4 ? "" : " ", bsg.data[i]);
+    std::printf("\n");
+    if (!fh1::parse_ui_fbf(fbf.data, sc, &error) || !fh1::parse_ui_bsg(bsg.data, sc, &error))
+      return std::fprintf(stderr, "carview: %s\n", error.c_str()), 1;
+  }
   std::printf("version %u, %zu objects, %zu nodes, %zu pool\n", sc.version, sc.objects.size(), sc.nodes.size(), sc.pool.size());
   const bool all = argc > 4;
   for (size_t i = 0; i < sc.objects.size() && (all || i < 400); ++i) {
