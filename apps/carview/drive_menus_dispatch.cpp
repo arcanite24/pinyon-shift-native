@@ -67,21 +67,18 @@ void DriveSession::put_back() {
 void DriveSession::open_garage_browser(bool barn_finds) {
           garage_barn_finds = barn_finds;
           sync_pick();
-          // The garage's Barn Finds: a restored (ready) barn is collected
-          // here, "This Barn Find will now be added to your garage."
-          // (interim: the title asks on its own Barn Finds screen).
-          for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi) {
-            if (app.progress.barns[bi].status != freeroam::kBarnReady) continue;
-            const auto& b = app.collectibles.barns[bi];
-            const bool collected = host.free_roam ? host.free_roam->collect_barn(bi)
-                                                  : freeroam::collect_barn(app.collectibles, app.progress, bi);
-            if (!collected) continue;
-            const std::string named = app.award_garage_car(b.car_id, 0, false, /*is_prize=*/true);
-            notice = "COLLECT CAR — " + (named.empty() ? b.name : named) + " ADDED TO YOUR GARAGE";
-            notice_until = vehicle.time() + 4.0;
-            app.audio_host.trigger_ui(audio::UiCue::kCarAdded);
-            std::printf("barn finds: %s collected at the garage (Data_Car %d)\n", b.name.c_str(), b.car_id);
-            save_now("barn find collected");
+          // A ready barn is collected on the Barn Finds list, with its
+          // COLLECT CAR popup (fill_garage_list, garage_popup_accept).
+          garage_popup = GaragePopup::kNone;
+          garage_show_specs = true;
+          if (barn_finds) {
+            // The cursor on the first barn ready to collect, else the first.
+            barn_pick = 0;
+            for (size_t bi = 0; bi < app.collectibles.barns.size() && bi < app.progress.barns.size(); ++bi)
+              if (app.progress.barns[bi].status == freeroam::kBarnReady) {
+                barn_pick = bi;
+                break;
+              }
           }
           garage_sell_confirm_id = -1;
           if (app.have_garage && !app.career_garage.cars.empty()) {

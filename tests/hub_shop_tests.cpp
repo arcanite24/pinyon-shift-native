@@ -442,7 +442,18 @@ void test_disc_hub_shops_and_garage() {
   gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kValue);
   gb.cycle_sort(1);
+  CHECK(gb.sort_mode() == carview::GarageSort::kDrivetrain);
+  gb.cycle_sort(1);
+  CHECK(gb.sort_mode() == carview::GarageSort::kPi);
+  gb.cycle_sort(1);
   CHECK(gb.sort_mode() == carview::GarageSort::kYear);
+  // Back to the original order (class, then PI).
+  gb.set_sort(carview::GarageSort::kClass);
+  for (size_t i = 1; i < gb.visible().size(); ++i) {
+    const auto& a = gb.visible()[i - 1];
+    const auto& b = gb.visible()[i];
+    CHECK(a.class_id < b.class_id || (a.class_id == b.class_id && a.raw_pi <= b.raw_pi));
+  }
   // Class F (0) & Class X (10) filters supported cleanly.
   gb.set_class_filter(0);
   CHECK(gb.class_filter() == 0);

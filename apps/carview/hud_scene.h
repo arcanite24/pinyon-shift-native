@@ -98,6 +98,8 @@ class SceneDraw {
   int find_path(std::string_view slash_path, int under = -1) const;
   // Direct child node indices of `parent`.
   std::vector<int> children_of(int parent) const;
+  // A model node's first texture as a ui_texture key; empty: none.
+  std::string texture_key_of(int node) const;
   // Object name for a node index (empty if none).
   std::string_view object_name(int node) const;
   // A node's centre and bounds on the canvas (y down).

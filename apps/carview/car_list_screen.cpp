@@ -8,6 +8,7 @@
 #include "fh1data/ui_scene.h"
 #include "game_hud.h"
 #include "pause_screen.h"
+#include "race_screens.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -135,6 +136,8 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     float cx, cy, hw, hh;
     int64_t car;
     bool selected;
+    std::string icon;  // the state's icon (a scene texture key), over the car
+    float icon_half = 0.0f;
   };
   std::vector<Shown> shown_tiles;
   for (int k = 0; k < kCarListSlots; ++k) {
@@ -155,12 +158,22 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     for (const char* icon : {"Undiscovered_Icon", "Not_Ready_Icon", "Ready_Icon", "Icon_1", "Icon_2", "Icon_3",
                              "Car_Lock_LG", "COMMON_LOADING_ICON_B"})
       sc.hide(child(sd, icons, icon));
+    // The state's icon: its material is clear until the list shows it, and
+    // it sits under the car, so it is drawn after the thumbnails.
+    const char* icon = nullptr;
     switch (t.state) {
-      case CarTileState::kLocked: sc.show(child(sd, icons, "Car_Lock_LG")); break;
-      case CarTileState::kUndiscovered: sc.show(child(sd, icons, "Undiscovered_Icon")); break;
-      case CarTileState::kNotReady: sc.show(child(sd, icons, "Not_Ready_Icon")); break;
-      case CarTileState::kReady: sc.show(child(sd, icons, "Ready_Icon")); break;
+      case CarTileState::kLocked: icon = "Car_Lock_LG"; break;
+      case CarTileState::kUndiscovered: icon = "Undiscovered_Icon"; break;
+      case CarTileState::kNotReady: icon = "Not_Ready_Icon"; break;
+      case CarTileState::kReady: icon = "Ready_Icon"; break;
       case CarTileState::kNormal: break;
+    }
+    std::string icon_key;
+    float icon_half = 0.0f;
+    if (const int in = icon ? child(sd, icons, icon) : -1; in >= 0) {
+      icon_key = sd.texture_key_of(in);
+      const auto r = sd.rect(in);
+      icon_half = 0.5f * std::fabs(r[2] - r[0]);
     }
     // The studio sweep behind the car, dimmer off the cursor.
     const int bg = child(sd, item, "BG");
@@ -175,13 +188,19 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
       const float hw = 0.5f * std::fabs(r[2] - r[0]) - 4.0f, hh = 0.5f * std::fabs(r[3] - r[1]) - 4.0f;
       // An undiscovered barn shows no car.
       const int64_t shown = t.state == CarTileState::kUndiscovered ? 0 : t.car_id;
-      shown_tiles.push_back({cx, cy, hw, hh, shown, ti == c.selected});
+      shown_tiles.push_back({cx, cy, hw, hh, shown, ti == c.selected, icon_key, icon_half});
       l.add_hit(f.x(cx - hw), f.y(cy - hh), f.x(cx + hw), f.y(cy + hh), ui::kHitRow, ti);
     }
   }
   const int cursor = sc.node("CAR_LIST/HIGHLIGHT/TEXT_CURSOR");
   if (n > 0 && c.selected >= 0 && c.selected < n) {
-    sc.text(cursor, c.tiles[size_t(c.selected)].cursor);
+    const std::string& line = c.tiles[size_t(c.selected)].cursor;
+    sc.text(cursor, line);
+    // No line (the garage's own cars): the frame alone.
+    if (line.empty()) {
+      sc.hide(cursor);
+      sc.hide(sc.node("CAR_LIST/HIGHLIGHT/Pill01"));
+    }
   } else {
     sc.hide(sc.node("CAR_LIST/HIGHLIGHT"));
   }
@@ -265,7 +284,13 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     }
   }
   sc.draw(l, f);
-  for (const Shown& s : shown_tiles) draw_tile(l, f, s.cx, s.cy, s.hw, s.hh, -0.052f, s.car, s.selected);
+  for (const Shown& s : shown_tiles) {
+    draw_tile(l, f, s.cx, s.cy, s.hw, s.hh, -0.052f, s.car, s.selected);
+    std::array<float, 4> uv{};
+    if (!s.icon.empty() && ui4::texture(s.icon, uv))
+      l.image_rotated(f.x(s.cx), f.y(s.cy), s.icon_half * f.s, s.icon_half * f.s, -0.052f, uv,
+                      s.selected ? ui::rgba(255, 255, 255) : kTileDim);
+  }
 
   // The panel's photo: interim (SPEC_QUESTIONS Q128), the car's thumbnail
   // where the title shows its photo.
@@ -301,6 +326,13 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
   }
   std::vector<ui4::Prompt> prompts;
   for (const auto& [b, label] : c.prompts) prompts.push_back({b.c_str(), label});
+  if (c.popup.open) {
+    // The popup takes the help bar.
+    std::vector<ui4::Prompt> pp;
+    for (const auto& [b, label] : c.popup.prompts) pp.push_back({b.c_str(), label});
+    draw_message_popup(l, c.popup.title, c.popup.message, pp, w, h);
+    return true;
+  }
   ui4::button_bar(l, prompts, w, h);
   return true;
 }

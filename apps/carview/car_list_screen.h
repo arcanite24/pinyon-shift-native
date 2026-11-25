@@ -87,7 +87,16 @@ struct CarListDetails {
   std::array<double, 5> stats{};  // SPEED, HANDLING, ACCELERATION, LAUNCH, BRAKING (0..10)
 };
 
+// A message popup over the list (H_MESSAGE_POPUP): Barn Finds' COLLECT CAR,
+// NOT READY, NOT DISCOVERED and the garage's CAN'T SELL BARN FIND.
+struct CarListPopup {
+  bool open = false;
+  std::string title, message;
+  std::vector<std::pair<std::string, std::string>> prompts;  // (button, label)
+};
+
 struct CarListHud {
+  CarListPopup popup;
   std::string title;
   std::vector<CarTile> tiles;
   int selected = 0;

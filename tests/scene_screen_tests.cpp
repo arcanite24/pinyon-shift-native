@@ -726,6 +726,48 @@ int main() {
       const auto p = out_dir / "car_list_recommends.png";
       check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write car list");
     }
+    // The garage's lists on 108: MY GARAGE (no cursor line) and BARN FINDS
+    // with a ready barn's COLLECT CAR popup.
+    {
+      using namespace carview::car_list_text;
+      carview::CarListHud cl;
+      cl.title = carview::text_of(kMyGarage);
+      cl.tiles = {{1009, ""}, {1105, ""}, {1040, ""}, {251, ""}};
+      cl.selected = 1;
+      cl.details.valid = true;
+      cl.details.car_id = 1105;
+      cl.details.model = "DB5 Vantage";
+      cl.details.year_make = "1964 Aston Martin";
+      cl.details.car_class = "C";
+      cl.details.pi = 446;
+      cl.details.drive_type = 2;
+      cl.details.stats = {5.6, 4.9, 4.4, 4.6, 3.9};
+      cl.prompts = {{"A", carview::text_of(kSelect)}, {"B", carview::text_of(kBack)}, {"Y", carview::text_of(kToggle)}};
+      std::vector<uint8_t> fb = backdrop;
+      carview::ui::List l;
+      check(carview::draw_car_list(l, d, cl, float(W), float(H)), "draw my garage");
+      carview::ui::rasterize(l.items(), fb, W, H);
+      const auto p = out_dir / "car_list_garage.png";
+      check(stbi_write_png(p.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write my garage");
+
+      cl.title = carview::text_of(kBarnFinds);
+      cl.tiles = {{1105, carview::text_of(kBarnReady), carview::CarTileState::kReady},
+                  {1040, carview::text_of(kBarnWrecked), carview::CarTileState::kNotReady},
+                  {251, carview::text_of(kBarnLocked), carview::CarTileState::kUndiscovered},
+                  {1154, carview::text_of(kBarnCollected), carview::CarTileState::kNormal}};
+      cl.selected = 0;
+      cl.popup = {true, carview::text_of(kCollectTitle), carview::text_of(kCollectMessage),
+                  {{"A", carview::text_of(kOk)}, {"B", carview::text_of(kBack)}}};
+      check(cl.popup.title == "COLLECT CAR" && cl.popup.prompts[0].second == "OK", "COLLECT CAR popup's strings");
+      std::vector<uint8_t> fb2 = backdrop;
+      carview::ui::List l2;
+      check(carview::draw_car_list(l2, d, cl, float(W), float(H)), "draw barn finds");
+      check(l2.items().size() > l.items().size(), "the popup draws over the list");
+      carview::ui::rasterize(l2.items(), fb2, W, H);
+      const auto p2 = out_dir / "car_list_barn_finds.png";
+      check(stbi_write_png(p2.string().c_str(), int(W), int(H), 4, fb2.data(), int(W * 4)) != 0,
+            "write barn finds");
+    }
   }
 
   if (g_failures > 0) {

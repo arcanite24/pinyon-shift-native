@@ -563,12 +563,34 @@ struct DriveSession {
   std::map<int, std::string> country_flags;  // List_Country.CountryID -> flag texture key
   bool country_flags_built = false;
   const std::string& country_flag(int country_id);
-  // Data_Car.ModelShort ("XKR-S"), the 108 panel's title; empty when the
-  // table has no text for it.
-  std::map<int64_t, std::string> car_models;
-  bool car_models_built = false;
-  std::string car_model(int64_t car_id);
+  // Data_Car's rows as the 108 panel shows them: ModelShort ("XKR-S"), the
+  // year, the make's name, the country, the engine's place, the drive type
+  // and the ratings.
+  struct CarListInfo {
+    std::string model, make;
+    int year = 0, country = 0, placement = 1, drive_type = 0;
+    double raw_pi = 0;
+    std::array<double, 5> stats{};
+  };
+  std::map<int64_t, CarListInfo> car_list_infos;
+  bool car_list_infos_built = false;
+  const CarListInfo* car_list_info(int64_t car_id);
+  // The panel for a car; `raw_pi` < 0: the car's stock index.
+  carview::CarListDetails car_list_details(int64_t car_id, double raw_pi = -1);
   void fill_autoshow_list(carview::CarListHud& out);
+  // MY GARAGE and BARN FINDS on 108 (garage_barn_finds picks the list).
+  void fill_garage_list(carview::CarListHud& out);
+  bool garage_show_specs = true;  // Y TOGGLE
+  size_t barn_pick = 0;           // the Barn Finds list's cursor (Collectibles::barns index)
+  // The open popup over the garage's lists.
+  enum class GaragePopup : uint8_t { kNone, kCollect, kNotReady, kNotDiscovered, kCantSell };
+  GaragePopup garage_popup = GaragePopup::kNone;
+  // Whether a Data_Car id is a barn find's car (it cannot be sold).
+  bool is_barn_car(int64_t car_id) const;
+  // Barn Finds: A on the selected barn, the popup's answers.
+  void barn_select();
+  void garage_popup_accept();
+  void garage_popup_view_map();
   carview::HubMenuStack hub_menu;
   bool hub_menu_from_pause = false;  // B on its last list returns to the pause menu
   void open_hub_menu(carview::HubMenu m);

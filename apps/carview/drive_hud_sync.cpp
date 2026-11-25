@@ -1107,7 +1107,15 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           list.clear();
           carview::draw_livery_editor_hud(list, float(width), float(height), livery_editor, carview::car_name(app.car),
                                           vehicle.time() < notice_until ? notice : std::string());
+        } else if (garage_open && garage_barn_finds) {
+          // BARN FINDS on 108.
+          list.clear();
+          carview::CarListHud cl;
+          fill_garage_list(cl);
+          if (vehicle.time() < notice_until) cl.notice = notice;
+          car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
         } else if (garage_open && app.have_garage && !app.career_garage.cars.empty()) {
+          car_list_drawn = false;
           if (garage_browser.visible().empty()) {
             const cars::PartsDb* gdb =
                 (app.parts_db.valid() && app.parts_db.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
@@ -1116,9 +1124,16 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             garage_browser.refresh(app.career_garage, gdb, app.class_bands);
           }
           if (!garage_browser.visible().empty()) {
+            // MY GARAGE on 108; the engine's page without the scene.
             list.clear();
-            carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands, app.career.credits,
-                                     vehicle.time() < notice_until ? notice : std::string(), app.metric_units);
+            carview::CarListHud cl;
+            fill_garage_list(cl);
+            if (vehicle.time() < notice_until) cl.notice = notice;
+            car_list_drawn = carview::draw_car_list(list, d, cl, float(width), float(height));
+            if (!car_list_drawn)
+              carview::draw_garage_hud(list, float(width), float(height), garage_browser, app.class_bands,
+                                       app.career.credits, vehicle.time() < notice_until ? notice : std::string(),
+                                       app.metric_units);
           }
         } else if (hub_menu.open() && !career_page.is_open() && !achievements.screen_open() && !paint_open &&
                    !garage_open && !photo_mode.active()) {

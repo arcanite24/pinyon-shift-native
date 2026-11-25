@@ -129,6 +129,21 @@ std::vector<int> SceneDraw::children_of(int parent) const {
   return out;
 }
 
+std::string SceneDraw::texture_key_of(int node) const {
+  if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return {};
+  const int oi = sc_->nodes[size_t(node)].object_index;
+  if (oi < 0 || sc_->objects[size_t(oi)].kind != fh1::UiObjectKind::kModel) return {};
+  // The material and its textures follow the model.
+  const fh1::UiObject* mat = nullptr;
+  for (size_t k = size_t(oi) + 1; k < sc_->objects.size(); ++k) {
+    const auto& q = sc_->objects[k];
+    if (q.kind == fh1::UiObjectKind::kMaterial && !mat) mat = &q;
+    else if (q.kind == fh1::UiObjectKind::kTexture && mat && q.owner == mat->id) return texture_key(q.path);
+    else break;
+  }
+  return {};
+}
+
 std::string_view SceneDraw::object_name(int node) const {
   if (!sc_ || node < 0 || size_t(node) >= sc_->nodes.size()) return {};
   const int oi = sc_->nodes[size_t(node)].object_index;

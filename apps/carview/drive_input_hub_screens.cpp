@@ -177,6 +177,95 @@ bool any_pad_trigger_held(const std::vector<SDL_Gamepad*>& pads, SDL_GamepadAxis
 }  // namespace
 
 bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
+            if (garage_open && garage_popup != GaragePopup::kNone) {
+              // A popup over the list (H_MESSAGE_POPUP): A its answer, B
+              // away, X VIEW ON MAP where it offers it.
+              enum class Ans { kNone, kAccept, kBack, kMap } ans = Ans::kNone;
+              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) ans = Ans::kAccept;
+                else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) ans = Ans::kBack;
+                else if (k == SDLK_X || k == SDLK_M) ans = Ans::kMap;
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_SOUTH) ans = Ans::kAccept;
+                else if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) ans = Ans::kBack;
+                else if (b == SDL_GAMEPAD_BUTTON_WEST) ans = Ans::kMap;
+              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  ans = Ans::kBack;
+                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                  carview::ui::HitZone hz{};
+                  if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton)
+                    ans = hz.index == 0 ? Ans::kAccept : (garage_popup == GaragePopup::kCollect ? Ans::kBack : Ans::kMap);
+                }
+              }
+              if (ans == Ans::kAccept) {
+                garage_popup_accept();
+              } else if (ans == Ans::kBack) {
+                garage_popup = GaragePopup::kNone;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              } else if (ans == Ans::kMap &&
+                         (garage_popup == GaragePopup::kNotReady || garage_popup == GaragePopup::kNotDiscovered)) {
+                garage_popup_view_map();
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                      e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
+            if (garage_open && garage_barn_finds) {
+              // BARN FINDS: every barn on 108; A on one opens its popup.
+              const size_t n = app.collectibles.barns.size();
+              auto close = [&]() {
+                garage_open = false;
+                garage_barn_finds = false;
+                app.hub_orbit_dragging = false;
+                app.hub_orbit_dragged = false;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              };
+              auto move = [&](int by) {
+                if (!n) return;
+                barn_pick = size_t(((int(barn_pick) + by) % int(n) + int(n)) % int(n));
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              auto toggle = [&]() {
+                garage_show_specs = !garage_show_specs;
+                app.audio_host.trigger_ui(audio::UiCue::kMove);
+              };
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_ESCAPE && !e.key.repeat) close();
+                else if (k == SDLK_LEFT || k == SDLK_A || k == SDLK_UP || k == SDLK_W) move(-1);
+                else if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) move(1);
+                else if (k == SDLK_Y && !e.key.repeat) toggle();
+                else if ((k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) && !e.key.repeat) barn_select();
+              } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) close();
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT || b == SDL_GAMEPAD_BUTTON_DPAD_UP) move(-1);
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) move(1);
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH) toggle();
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) barn_select();
+              } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                carview::ui::HitZone hz{};
+                if (e.button.button == SDL_BUTTON_RIGHT) {
+                  close();
+                } else if (e.button.button == SDL_BUTTON_LEFT && ui_mouse_hit(e.button.x, e.button.y, hz)) {
+                  if (hz.group == carview::ui::kHitRow && hz.index >= 0 && size_t(hz.index) < n) {
+                    barn_pick = size_t(hz.index);
+                    barn_select();
+                  } else if (hz.group == carview::ui4::kHitButton) {
+                    if (hz.index == 0) barn_select();
+                    else if (hz.index == 1) close();
+                    else if (hz.index == 2) toggle();
+                  }
+                }
+              } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                if (e.wheel.y > 0) move(-1);
+                else if (e.wheel.y < 0) move(1);
+              }
+              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                      e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+            }
             if (garage_open) {
               const bool use_browser = app.have_garage && !app.career_garage.cars.empty();
               const size_t n = use_browser ? garage_browser.visible().size() : app.baked_cars.size();
@@ -223,6 +312,13 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 if (!use_browser) return;
                 const auto* se = garage_browser.selected_entry();
                 if (!se) return;
+                if (is_barn_car(se->car_id)) {
+                  // CAN'T SELL BARN FIND: "You cannot sell Barn finds."
+                  garage_sell_confirm_id = -1;
+                  garage_popup = GaragePopup::kCantSell;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  return;
+                }
                 if (se->is_current) {
                   notice = "SWITCH CARS BEFORE SELLING YOUR ACTIVE CAR";
                   notice_until = vehicle.time() + 3.0;
@@ -292,9 +388,16 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (k == SDLK_RIGHT || k == SDLK_D || k == SDLK_DOWN || k == SDLK_S) {
                   move_garage(1);
                 } else if (k == SDLK_Y && !e.key.repeat && use_browser) {
+                  // Y TOGGLE: the car's details on and off (108's help bar).
+                  garage_show_specs = !garage_show_specs;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (k == SDLK_O && !e.key.repeat && use_browser) {
+                  // Engine extra: the sorts.
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_sort(1);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
+                  notice_until = vehicle.time() + 2.5;
                 } else if (k == SDLK_X && !e.key.repeat && use_browser) {
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_class_filter(1);
@@ -322,9 +425,14 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 } else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT || b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) {
                   move_garage(1);
                 } else if (b == SDL_GAMEPAD_BUTTON_NORTH && use_browser) {
+                  garage_show_specs = !garage_show_specs;
+                  app.audio_host.trigger_ui(audio::UiCue::kMove);
+                } else if (b == SDL_GAMEPAD_BUTTON_LEFT_STICK && use_browser) {
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_sort(1);
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  notice = std::string("SORT: ") + carview::garage_sort_name(garage_browser.sort_mode());
+                  notice_until = vehicle.time() + 2.5;
                 } else if (b == SDL_GAMEPAD_BUTTON_WEST && use_browser) {
                   garage_sell_confirm_id = -1;
                   garage_browser.cycle_class_filter(1);
@@ -375,6 +483,20 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                       if (use_browser) garage_browser.select_index(size_t(hz.index));
                       else garage_pick = size_t(hz.index);
                       drive_selected();
+                    } else if (hz.group == carview::ui4::kHitButton && car_list_drawn) {
+                      // 108's help bar: SELECT, BACK, TOGGLE.
+                      if (hz.index == 0) {
+                        drive_selected();
+                      } else if (hz.index == 1) {
+                        garage_open = false;
+                        garage_sell_confirm_id = -1;
+                        app.hub_orbit_dragging = false;
+                        app.hub_orbit_dragged = false;
+                        app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                      } else if (hz.index == 2) {
+                        garage_show_specs = !garage_show_specs;
+                        app.audio_host.trigger_ui(audio::UiCue::kMove);
+                      }
                     } else if (hz.group == carview::ui4::kHitButton) {
                       if (hz.index == 0) drive_selected();
                       else if (hz.index == 1 && use_browser) {
