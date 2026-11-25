@@ -15,7 +15,8 @@
 
 namespace drive {
 
-// Profile Main/SuggestedLine: 0 = Off, 1 = Braking Only, 2 = Full.
+// The engine's driving-line modes. Profile Main/SuggestedLine runs the other
+// way (0 = Full, 1 = Braking Only, 2 = Off; SPEC_QUESTIONS Q71).
 enum class DrivingLineMode : int {
   kOff = 0,
   kBrakingOnly = 1,

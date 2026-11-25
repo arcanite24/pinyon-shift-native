@@ -36,7 +36,7 @@ int main() {
   page.load({"--size", "1280x720", "--preset", "low", "--no-traffic", "--difficulty", "hard", "--hour", "18",
              "--language", "FR", "--no-rumble", "--rumble-scale", "0.50", "--controller-layout", "2",
              "--steer-dz-in", "0.10", "--no-camera-effects", "--assist-braking", "2", "--assist-steering", "2",
-             "--assist-tcs", "1", "--assist-stm", "0", "--assist-shifting", "2", "--assist-line", "1",
+             "--assist-tcs", "0", "--assist-stm", "1", "--assist-shifting", "2", "--assist-line", "1",
              "--assist-rewind", "0", "--keys", "throttle=I,camera=F1"});
   CHECK(page.value("preset") == "low");
   CHECK(page.value("traffic") == "off");
@@ -50,8 +50,8 @@ int main() {
   CHECK(page.value("steer deadzone in") == "10%");
   CHECK(page.value("braking") == "abs off");
   CHECK(page.value("steering") == "simulation");
-  CHECK(page.value("traction control") == "on");
-  CHECK(page.value("stability control") == "off");
+  CHECK(page.value("traction control") == "off");
+  CHECK(page.value("stability control") == "on");
   CHECK(page.value("shifting") == "manual+clutch");
   CHECK(page.value("driving line") == "braking");
   CHECK(page.value("rewind") == "off");
@@ -72,8 +72,8 @@ int main() {
     CHECK(ls.controls.keys.matches(drive::ControlAction::kSwitchCamera, "F1"));
     CHECK(ls.controls.assists.braking == 2);
     CHECK(ls.controls.assists.steering == 2);
-    CHECK(ls.controls.assists.traction_control);
-    CHECK(!ls.controls.assists.stability_control);
+    CHECK(!ls.controls.assists.traction_control);
+    CHECK(ls.controls.assists.stability_control);
     CHECK(ls.controls.assists.shifting == 2);
     CHECK(ls.controls.assists.driving_line == 1);
     CHECK(!ls.controls.assists.rewind);
@@ -603,13 +603,13 @@ int main() {
     // Phase 6A: Speedometer mode, North-Up minimap, Switch Handbrake/Clutch, and cumulative Difficulty CR % bonus.
     carview::SettingsPage p6;
     p6.load({"--hud-speedo", "digital", "--minimap-mode", "north-up", "--switch-handbrake-clutch",
-             "--difficulty", "pro", "--assist-braking", "2", "--assist-steering", "2", "--assist-stm", "0",
+             "--difficulty", "pro", "--assist-braking", "2", "--assist-steering", "2", "--assist-tcs", "0",
              "--assist-shifting", "2", "--assist-line", "0", "--assist-rewind", "0", "--damage", "simulation"});
     const auto p6_ls = p6.live_settings();
     CHECK(p6_ls.hud_speedo_mode == 1);
     CHECK(p6_ls.minimap_mode == 1);
     CHECK(p6_ls.controls.switch_handbrake_clutch == true);
-    // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5) + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
+    // Pro (+45) + ABS Off (+10) + Sim Steering (+5) + STM Off (+5, the default) + TCS Off + M+C (+15) + Line Off (+10) + Sim Damage (+10) + Rewind Off (+20) = 120%
     CHECK(p6.difficulty_credit_bonus_pct() == 120);
     const auto base_lay = drive::default_controller_layout(0);
     const auto swap_lay = drive::apply_handbrake_clutch_swap(base_lay, true);
@@ -624,6 +624,9 @@ int main() {
       dp.open();
       dp.select_tab(int(carview::SettingsPage::Tab::kGameplay));
       CHECK(dp.value("difficulty preset") == "MEDIUM (+15% CR)");
+      // FEEL-12: a new profile (Medium) has TCS on and STM off.
+      CHECK(dp.value("traction control") == "on");
+      CHECK(dp.value("stability control") == "off");
       dp.step(1);  // MEDIUM -> HARD (+50% CR)
       CHECK(dp.value("difficulty preset") == "HARD (+50% CR)");
       CHECK(dp.difficulty_credit_bonus_pct() == 50);

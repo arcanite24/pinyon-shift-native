@@ -1958,3 +1958,43 @@ SteerMaxAngle) with no rate limit, as before. Needed: the WheelMapping
 law and its default values from a decode of the settings constructor,
 or a wheel trace. The values would then come from the executable rather
 than from data.
+
+## Q71 (FEEL-12, not blocking): new-profile assists and the presets
+
+ForzaProfile.sch's career assists have these defaults: MetaDiff 1,
+SuggestedLine 0, Braking 1, Steering 1, StabilityControl 1,
+TractionControl 0, Shifting 0 and Rewind 0. The game's assist label
+functions give the polarity:
+
+| Field | 0 | 1 | 2 |
+|---|---|---|---|
+| TractionControl | On | Off | |
+| StabilityControl | On | Off | |
+| SuggestedLine | Full | Braking | Off |
+
+A new profile is therefore Medium: ABS On, Normal steering, TCS On,
+STM Off, Automatic, the full line and Rewind On. The engine now has the
+same defaults in each of these places:
+
+- AssistSettings and `retail_defaults`;
+- the settings rows ("traction control" defaults on and is turned off
+  with `--assist-tcs 0`; "stability control" defaults off and is turned
+  on with `--assist-stm 1`);
+- the MEDIUM preset and its detection;
+- race::DifficultyAssists.
+
+The engine's own driving-line enum (0 Off, 2 Full) runs the opposite
+way to the profile's. That only matters to a profile importer, and the
+engine has none.
+
+Still interim:
+
+- **Preset list.** MetaDifficulty has six presets: Easy, Medium, Hard,
+  Extreme, Insane and Custom. The engine has Easy, Medium, Hard, Insane
+  and Custom.
+- **Preset assists.** Only Medium is backed by data. The assists of the
+  other presets are the engine's.
+- **Values in code.** The defaults are written in code rather than read
+  from the schema at run time.
+
+Needed: the table that maps MetaDifficulty to assists.

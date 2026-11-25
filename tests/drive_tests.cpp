@@ -1543,7 +1543,7 @@ int main() {
       CHECK(def.braking == 1 && retail.braking == 1);          // ABS ON
       CHECK(def.steering == 1 && retail.steering == 1);        // Normal
       CHECK(def.traction_control && retail.traction_control);  // TCS ON
-      CHECK(def.stability_control && retail.stability_control);  // STM ON
+      CHECK(!def.stability_control && !retail.stability_control);  // STM OFF (FEEL-12)
       CHECK(def.shifting == 0 && retail.shifting == 0);        // Automatic
       CHECK(def.driving_line == 2 && retail.driving_line == 2);  // Full
       CHECK(def.rewind && retail.rewind);                      // Rewind ON

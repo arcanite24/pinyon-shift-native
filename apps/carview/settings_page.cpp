@@ -535,8 +535,9 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
        {{"abs on", {}}, {"assisted", {"--assist-braking", "0"}}, {"abs off", {"--assist-braking", "2"}}}},
       {"steering",
        {{"normal", {}}, {"assisted", {"--assist-steering", "0"}}, {"simulation", {"--assist-steering", "2"}}}},
-      {"traction control", {{"off", {}}, {"on", {"--assist-tcs", "1"}}}},
-      {"stability control", {{"on", {}}, {"off", {"--assist-stm", "0"}}}},
+      // A new profile's defaults (FEEL-12, SPEC_QUESTIONS Q71): TCS on, STM off.
+      {"traction control", {{"on", {}}, {"off", {"--assist-tcs", "0"}}}},
+      {"stability control", {{"off", {}}, {"on", {"--assist-stm", "1"}}}},
       {"shifting",
        {{"automatic", {}},
         {"manual", {"--assist-shifting", "1"}},
@@ -1403,7 +1404,7 @@ LiveSettings SettingsPage::live_settings() const {
   const std::string str = pick_val("steering");
   c.assists.steering = str.empty() ? 1 : std::atoi(str.c_str());
   c.assists.traction_control = pick_label("traction control") == "on";
-  c.assists.stability_control = pick_label("stability control") != "off";
+  c.assists.stability_control = pick_label("stability control") == "on";
   const std::string shf = pick_val("shifting");
   c.assists.shifting = shf.empty() ? 0 : std::atoi(shf.c_str());
   const std::string ln = pick_val("driving line");
@@ -1925,12 +1926,12 @@ void SettingsPage::apply_difficulty_preset(size_t preset_pick) {
       set_row_label("rewind", "on");
       set_row_label("damage", "none");
       break;
-    case 1:  // MEDIUM (+15% CR)
+    case 1:  // MEDIUM (+15% CR): a new profile's assists (Q71)
       set_row_label("difficulty", "default");
       set_row_label("braking", "abs on");
       set_row_label("steering", "normal");
-      set_row_label("traction control", "off");
-      set_row_label("stability control", "on");
+      set_row_label("traction control", "on");
+      set_row_label("stability control", "off");
       set_row_label("shifting", "automatic");
       set_row_label("driving line", "full");
       set_row_label("rewind", "on");
@@ -1970,7 +1971,7 @@ void SettingsPage::sync_difficulty_preset() {
   if (diff == 0 && a.braking == 0 && a.steering == 0 && a.traction_control && a.stability_control && a.shifting == 0 &&
       a.driving_line == 2 && a.rewind && ls.damage_mode == 0) {
     detected = 0;  // EASY
-  } else if (diff == 1 && a.braking == 1 && a.steering == 1 && !a.traction_control && a.stability_control &&
+  } else if (diff == 1 && a.braking == 1 && a.steering == 1 && a.traction_control && !a.stability_control &&
              a.shifting == 0 && a.driving_line == 2 && a.rewind && ls.damage_mode == 1) {
     detected = 1;  // MEDIUM
   } else if (diff == 2 && a.braking == 1 && a.steering == 1 && !a.traction_control && !a.stability_control &&

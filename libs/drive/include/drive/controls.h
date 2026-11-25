@@ -109,20 +109,26 @@ struct KeyBindings {
 
 // Driving assist toggles matching retail FH1 Medium defaults
 // (SPEC-CAR-PHYSICS, Assists and input shaping).
+// The defaults are a new profile's (FEEL-12, SPEC_QUESTIONS Q71):
+// ForzaProfile.sch's career assists (MetaDiff 1 Medium, Braking 1,
+// Steering 1, TractionControl 0, StabilityControl 1, Shifting 0,
+// SuggestedLine 0, Rewind 0), read with the game's own labels, where
+// TractionControl, StabilityControl and Rewind 0 are On and SuggestedLine
+// 0 is Full.
 struct AssistSettings {
-  int braking = 1;               // 0 Assisted (auto-brake), 1 ABS On, 2 ABS Off
-  int steering = 1;              // 0 Assisted, 1 Normal, 2 Simulation
-  bool traction_control = true;  // Retail FH1 default: TCS ON
-  bool stability_control = true; // Retail FH1 default: STM ON
-  int shifting = 0;              // 0 Automatic, 1 Manual, 2 Manual + Clutch
-  int driving_line = 2;          // 0 Off, 1 Braking Only, 2 Full
-  bool rewind = true;            // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
+  int braking = 1;                 // 0 Assisted (auto-brake), 1 ABS On, 2 ABS Off
+  int steering = 1;                // 0 Assisted, 1 Normal, 2 Simulation
+  bool traction_control = true;    // new profile: TCS On
+  bool stability_control = false;  // new profile: STM Off
+  int shifting = 0;                // 0 Automatic, 1 Manual, 2 Manual + Clutch
+  int driving_line = 2;            // ours: 0 Off, 1 Braking Only, 2 Full (the profile's is reversed)
+  bool rewind = true;              // Rewind ON/OFF (REWIND.md: OFF adds +20% bonus)
   // Engine extra, not an original assist: the steering helpers (lane
   // centring, countersteer bias, front peak-slip pull). Off by default.
   bool engine_steer_assist = false;
 
   static constexpr AssistSettings retail_defaults() {
-    return AssistSettings{1, 1, true, true, 0, 2, true};
+    return AssistSettings{1, 1, true, false, 0, 2, true};
   }
 };
 

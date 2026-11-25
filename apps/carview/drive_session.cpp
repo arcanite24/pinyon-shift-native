@@ -711,7 +711,7 @@ void DriveSession::init_session() {
         const bool is_fresh_profile = !app.have_saved || !app.saved.has_controls;
         if (save_due) {
           // New Campaign (start_new_career): initialize exact retail FH1 Medium defaults
-          // (ABS ON, TCS ON, STM ON, Automatic, Normal steering, Rewind ON, Full line, Cosmetic damage).
+          // (ABS ON, TCS ON, STM OFF, Automatic, Normal steering, Rewind ON, Full line, Cosmetic damage).
           live_controls = init_ls.controls;
           live_controls.assists = drive::AssistSettings::retail_defaults();
           car_damage.mode = drive::DamageMode::kCosmetic;
