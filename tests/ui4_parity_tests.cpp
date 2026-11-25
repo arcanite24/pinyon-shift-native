@@ -2366,6 +2366,10 @@ void test_round2_phase6_ui4_parity() {
               carview::ui4::controller_button_from_texture("CONTROLLER/LBUMPER") == "LB" &&
               carview::ui4::controller_button_from_texture("CONTROLLER/RTRIGGER") == "RT",
           "controller_button_from_texture extracts logical button names");
+    check(carview::ui4::controller_button_from_texture("CONTROLLER/ACTIVATE") == "ACTIVATE" &&
+              carview::ui4::glyph_label_for("ACTIVATE", carview::ui4::GlyphSet::kKeyboard) == "E" &&
+              carview::ui4::glyph_label_for("ACTIVATE", carview::ui4::GlyphSet::kXbox) == "X",
+          "the Activate prompt glyph is E on a keyboard and X on an Xbox pad");
 
     const auto prev_gs = carview::ui4::glyph_set();
     carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kPlayStation);

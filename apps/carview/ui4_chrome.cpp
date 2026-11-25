@@ -655,6 +655,7 @@ std::string controller_button_from_texture(std::string_view texture_key) {
   if (u == "A_BUTTON" || u == "BUTTON_A" || u == "A") return "A";
   if (u == "B_BUTTON" || u == "BUTTON_B" || u == "B") return "B";
   if (u == "X_BUTTON" || u == "BUTTON_X" || u == "X") return "X";
+  if (u == "ACTIVATE") return "ACTIVATE";  // the binding, drawn per glyph set
   if (u == "Y_BUTTON" || u == "BUTTON_Y" || u == "Y") return "Y";
   if (u == "LBUMPER" || u == "LB" || u == "L_BUMPER") return "LB";
   if (u == "RBUMPER" || u == "RB" || u == "R_BUMPER") return "RB";

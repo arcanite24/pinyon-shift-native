@@ -701,7 +701,11 @@ bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, fl
     sc.at(bar).visible_width = sd.at(cta_text)[0] + kPromptPillTail - left;
   }
   if (wm.eligible) {
-    if (const int glyph = child_path(sd, def, "Icon/States/Icon"); glyph >= 0) sc.at(glyph).texture = "CONTROLLER/X_BUTTON";
+    // The Activate binding: the pad's X button art, else its own glyph (the
+    // E key on a keyboard, Square on a PlayStation pad), not a bare "X".
+    if (const int glyph = child_path(sd, def, "Icon/States/Icon"); glyph >= 0)
+      sc.at(glyph).texture =
+          ui4::glyph_set() == ui4::GlyphSet::kXbox ? "CONTROLLER/X_BUTTON" : "CONTROLLER/ACTIVATE";
     sc.hide(child_path(sd, def, "Icon/Rectangle"));
   }
   return sc.draw(l, hud_frame(HudAnchor::kTop, w, h, s), prompt) > 0;

@@ -368,7 +368,9 @@ void render_world_labels_and_nameplates(ui::List& l, const std::vector<NameTagHu
       const float sy1 = sy0 + 25.0f * s;
       ui4::brush(l, sx0 - 4.0f * s, sy0, sx0 + strip_w, sy1, wm.eligible ? ui4::kPink : ui::rgba(110, 110, 118, 230));
       l.text(sx0 + 8.0f * s, sy0 + 4.5f * s, ptxt, ps);
-      ui4::button_glyph(l, sx0 + pw + 25.0f * s, 0.5f * (sy0 + sy1), 9.5f * s, "X");
+      // The Activate binding's glyph: X on a pad, the E key on a keyboard
+      // (the key that enters; a bare "X" read as the keyboard's X).
+      ui4::button_glyph(l, sx0 + pw + 25.0f * s, 0.5f * (sy0 + sy1), 9.5f * s, "ACTIVATE");
     } else if (wm.distance_m > 0.0) {
       const std::string db = format_distance_unit(wm.distance_m, metric_units);
       ui::TextStyle dts = hud_detail::font(ui::Font::kB, 11.2f * s * sc, ui::fade(ui4::kOffWhite, a));
@@ -1321,7 +1323,7 @@ float h2h_hud(ui::List& l, const freeroam::HeadToHeadHud& hh, const Layout& g, b
     const float row_w = tw + 30.0f * s;
     const float tx = cx - 0.5f * row_w;
     l.text(tx, y0 + 5.5f * s, h2h_lbl, hts);
-    ui4::button_glyph(l, tx + tw + 16.0f * s, y0 + 13.0f * s, 9.5f * s, "X");
+    ui4::button_glyph(l, tx + tw + 16.0f * s, y0 + 13.0f * s, 9.5f * s, "ACTIVATE");
     ui4::pill(l, x0, y0 + 28 * s, x1, y0 + 54 * s, ui4::kPillGrey, ui4::PillKind::kHud01);
     char sub[128];
     std::snprintf(sub, sizeof sub, "VS %s [%s %d]  •  WAGER %s CR", hh.prompt_driver.c_str(),
