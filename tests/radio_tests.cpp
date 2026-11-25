@@ -262,6 +262,14 @@ void disc(const char* root) {
   CHECK(d.unresolved == 0);
   CHECK(d.cycle.size() == 4);
   CHECK(d.stations[size_t(d.cycle[3])].off);
+  {
+    // The opening's CSetRadioPlaylist: both tracks on Radio1, Everyday first.
+    audio::Radio opening(d, 1, false);
+    CHECK(opening.set_playlist({"R1_Everyday", "R1_ThePower"}, true));
+    CHECK(opening.selected_name() == "Radio1");
+    const audio::RadioEvent* t = opening.schedule(opening.selected())->track_at(opening.clock());
+    CHECK(t && r1->tracks[size_t(t->track)].name == "R1_Everyday");
+  }
   // Decoded lengths (the spec's check): the first track and the first
   // ident of each player station, each within one frame of its header.
   auto headers = [](const std::filesystem::path& p, std::vector<audio::FsbSample>& out) {
@@ -511,6 +519,87 @@ void viper_intro_lock_and_emitters(const audio::RadioData& d) {
   CHECK(audio::default_colorado_location_emitters(r).empty());
 }
 
+// The first-time career's radio states: CSetRadioPlaylist by fmodname (the
+// list from its first track's start, then the station's own picks), station
+// switching off, silent idents and cutting the DJ line playing.
+void flow_radio_states(const audio::RadioData& d) {
+  audio::Radio r(d, 31, true);
+  r.select(0);
+  CHECK(!r.set_playlist({"T_Nope"}, true));
+  CHECK(r.selected() == 0);
+  CHECK(r.set_playlist({"T_Three", "T_Two"}, true));
+  CHECK(r.selected() == 1);  // Beta carries T_Three
+  auto* beta = r.schedule(1);
+  double off = -1;
+  const audio::RadioEvent* first = beta->track_at(r.clock(), &off);
+  CHECK(first && first->track == 1 && near(off, 0));
+  std::vector<audio::RadioEvent> ev;
+  beta->audible(0.0, 130.0, ev);
+  const audio::RadioEvent* second = nullptr;
+  for (const auto& e : ev)
+    if (e.kind == audio::RadioKind::kTrack && e.start > 1.0 && !second) second = &e;
+  // T_Three: 120 s, ident at 118 s, the ident's next track 6 s in.
+  CHECK(second && second->track == 0 && near(second->start, 124));
+  ev.clear();
+  beta->audible(130.0, 400.0, ev);
+  CHECK(!beta->has_locked_playlist());  // played once, then the station's own
+  r.cancel_playlist();
+
+  // A looping list stays locked.
+  audio::StationSchedule loop(d, 1, 3, 0.0, false);
+  loop.set_locked_playlist({1}, 0.0);
+  ev.clear();
+  loop.audible(0.0, 600.0, ev);
+  for (const auto& e : ev)
+    if (e.kind == audio::RadioKind::kTrack) CHECK(e.track == 1);
+  CHECK(loop.has_locked_playlist());
+
+  // Silent idents keep the next track's start but play nothing.
+  audio::StationSchedule quiet(d, 1, 3, 0.0, false);
+  quiet.set_silent_idents(true);
+  quiet.set_locked_playlist({1, 0}, 0.0);
+  ev.clear();
+  quiet.audible(0.0, 200.0, ev);
+  bool ident = false;
+  const audio::RadioEvent* next = nullptr;
+  for (const auto& e : ev) {
+    if (e.kind == audio::RadioKind::kIdent) ident = true;
+    if (e.kind == audio::RadioKind::kTrack && e.start > 1.0 && !next) next = &e;
+  }
+  CHECK(!ident);
+  CHECK(next && near(next->start, 124));
+
+  // Switching off: presses do nothing until it is back on.
+  r.set_switching_enabled(false);
+  r.press(1);
+  CHECK(r.selected() == 1);
+  r.set_switching_enabled(true);
+  r.press(1);
+  CHECK(r.selected() != 1);
+
+  // stop_dj cuts the line sounding and nothing else of the DJ's plays.
+  audio::StationSchedule dj(d, 1, 9, 0.0, true);
+  ev.clear();
+  dj.audible(0.0, 400.0, ev);
+  double dj_at = -1;
+  for (const auto& e : ev)
+    if (e.kind == audio::RadioKind::kDj && e.start > 0.0) {
+      dj_at = e.start;
+      break;
+    }
+  CHECK(dj_at > 0);
+  dj.stop_dj(dj_at + 1.0);
+  ev.clear();
+  dj.audible(dj_at, dj_at + 1.0, ev);
+  bool cut = false;
+  for (const auto& e : ev)
+    if (e.kind == audio::RadioKind::kDj && near(e.start, dj_at)) cut = near(e.end, dj_at + 1.0);
+  CHECK(cut);
+  ev.clear();
+  dj.audible(dj_at + 1.5, dj_at + 9.0, ev);
+  for (const auto& e : ev) CHECK(e.kind != audio::RadioKind::kDj);
+}
+
 void weighted_track_picker_and_user_select() {
   const char* kWeightedXml = R"(<?xml version="1.0"?>
 <RadioSystem>
@@ -602,6 +691,7 @@ int main() {
   mods_and_language();
   stream_pool_wav();
   viper_intro_lock_and_emitters(d);
+  flow_radio_states(d);
   weighted_track_picker_and_user_select();
   shared_station_pa_and_location_clock(d);
   if (const char* root = std::getenv("SHIFT_GAME_ROOT")) disc(root);

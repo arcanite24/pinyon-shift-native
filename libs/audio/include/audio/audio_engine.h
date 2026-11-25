@@ -206,6 +206,13 @@ class AudioEngine {
   void radio_trigger_festival_update(std::string_view gameplay_event);
   void radio_cancel_festival_updates();
   void radio_lock_viper_intro(bool lock);
+  // The flows' radio states (see Radio::set_playlist and friends). Track
+  // names are RadioSystem.xml fmodnames; the list fits Command::text.
+  void radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal);
+  void radio_set_switching(bool on);
+  void radio_set_silent_idents(bool on);
+  void radio_stop_dj();
+  void radio_cancel_playlist();
 
   // Runtime custom radio commands.
   void runtime_radio_select(int station);
@@ -283,6 +290,7 @@ class AudioEngine {
       kDialogDuck,
       kRadioViperLock,
       kAmbienceState,
+      kRadioFlow,
     };
     Kind kind = kBusLevel;
     int i0 = 0;

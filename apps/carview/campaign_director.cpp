@@ -393,6 +393,13 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
     }
   }
   if (audio) {
+    // The flow's radio states in its order: DJ, playlist, switching, idents.
+    if (c.set_radio_dj) audio->radio_set_flow_dj(c.radio_dj);
+    // CSetRadioPlaylist normalBehaviourAfterListPlayed="true".
+    if (!c.radio_playlist.empty()) audio->radio_set_playlist(c.radio_playlist, true);
+    if (c.set_radio_switching) audio->radio_set_switching(c.radio_switching);
+    if (c.set_silent_idents) audio->radio_set_silent_idents(c.silent_idents);
+    if (c.stop_dj) audio->radio_stop_dj();
     for (const auto& m : c.mix_snapshots) audio->activate_mix_snapshot(m);
     for (const auto& v : c.vo) audio->trigger_vo(v, false);
     for (const auto& d : c.dj_lines) audio->radio_trigger_immediate(d);
@@ -479,6 +486,13 @@ bool CampaignDirector::apply_cli_stage(std::string_view cli_stage, FmvPlayer& fm
     return true;
   }
   if (!flow_.jump_to_cli_stage(cli_stage, out_action)) return false;
+  if (audio && ftc_.active()) {
+    // Out of the opening: the radio as the opening found it.
+    audio->radio_set_flow_dj(true);
+    audio->radio_set_switching(true);
+    audio->radio_set_silent_idents(false);
+    audio->radio_cancel_playlist();
+  }
   ftc_ = race::FirstTimeCareer{};
   ftc_resume_pending_ = false;
   cutscenes_.stop();

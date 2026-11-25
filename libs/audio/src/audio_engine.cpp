@@ -677,6 +677,56 @@ void AudioEngine::radio_lock_viper_intro(bool lock) {
   enqueue(c);
 }
 
+namespace {
+enum RadioFlowOp { kFlowPlaylist, kFlowSwitching, kFlowSilentIdents, kFlowStopDj, kFlowCancelPlaylist };
+}  // namespace
+
+void AudioEngine::radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal) {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowPlaylist;
+  c.b0 = then_normal;
+  std::string joined;
+  for (const auto& n : fmodnames) {
+    if (!joined.empty()) joined += '|';
+    joined += n;
+  }
+  if (joined.size() >= c.text.size()) return;  // never a truncated name
+  std::memcpy(c.text.data(), joined.data(), joined.size());
+  c.text[joined.size()] = '\0';
+  enqueue(c);
+}
+
+void AudioEngine::radio_set_switching(bool on) {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowSwitching;
+  c.b0 = on;
+  enqueue(c);
+}
+
+void AudioEngine::radio_set_silent_idents(bool on) {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowSilentIdents;
+  c.b0 = on;
+  enqueue(c);
+}
+
+void AudioEngine::radio_stop_dj() {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowStopDj;
+  enqueue(c);
+}
+
+void AudioEngine::radio_cancel_playlist() {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowCancelPlaylist;
+  enqueue(c);
+}
+
 void AudioEngine::set_bus_level(Bus b, float level) {
   const float clamped = std::clamp(level, 0.0f, 2.0f);
   if (int(b) >= 0 && int(b) < kBuses) {
@@ -1047,6 +1097,28 @@ void AudioEngine::drain_commands() {
         if (radio_) {
           if (c.b0) radio_->lock_viper_intro_playlist();
           else radio_->unlock_viper_intro_playlist();
+        }
+        break;
+      case Command::kRadioFlow:
+        if (!radio_) break;
+        switch (c.i0) {
+          case kFlowPlaylist: {
+            std::vector<std::string> names;
+            std::string_view all(c.text.data());
+            while (!all.empty()) {
+              const size_t bar = all.find('|');
+              names.emplace_back(all.substr(0, bar));
+              if (bar == std::string_view::npos) break;
+              all.remove_prefix(bar + 1);
+            }
+            radio_->set_playlist(names, c.b0);
+            break;
+          }
+          case kFlowSwitching: radio_->set_switching_enabled(c.b0); break;
+          case kFlowSilentIdents: radio_->set_silent_idents(c.b0); break;
+          case kFlowStopDj: radio_->stop_dj(); break;
+          case kFlowCancelPlaylist: radio_->cancel_playlist(); break;
+          default: break;
         }
         break;
       case Command::kUiMusicMode:

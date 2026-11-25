@@ -208,6 +208,15 @@ class AudioHost {
   void radio_cancel_scheduled(std::string_view gameplay_event);
   const audio::RadioDjRules& radio_dj_rules() const { return radio_dj_rules_; }
   void radio_lock_viper_intro(bool lock);
+  // The first-time career flow's radio states: the playlist (by RadioSystem.xml
+  // fmodname), station switching, the DJ (on only when the DJ option is on too),
+  // silent idents and cutting the DJ line playing.
+  bool radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal);
+  void radio_set_switching(bool on);
+  void radio_set_flow_dj(bool on);
+  void radio_set_silent_idents(bool on);
+  void radio_stop_dj();
+  void radio_cancel_playlist();
   bool radio_select_station_by_name(std::string_view substr);
   void update_world_acoustics(float x, float y, float z, float heading_rad);
   void radio_press(int dir);
@@ -384,6 +393,8 @@ class AudioHost {
   bool barnfind_active_ = false;
   bool race_encounter_active_ = false;
   bool viper_intro_locked_ = false;
+  bool switching_enabled_ = true;
+  bool flow_dj_off_ = false;
 
   bool have_acoustics_sent_ = false;
   bool last_in_tunnel_ = false;

@@ -159,9 +159,18 @@ class StationSchedule {
   // (radiodj.xml CancelPreviousTier).
   void cancel_festival_updates() { pending_festival_.clear(); }
   // Locks playback to an explicit ordered track list (e.g. Viper intro 2-track drive).
-  void set_locked_playlist(std::vector<int> track_indices, double now_clock);
+  // The first track starts from its beginning at `now_clock`; with
+  // `then_normal` the station's own picks resume once the list has played
+  // (CSetRadioPlaylist normalBehaviourAfterListPlayed), else the list loops.
+  void set_locked_playlist(std::vector<int> track_indices, double now_clock, bool then_normal = false);
   void clear_locked_playlist();
   bool has_locked_playlist() const { return !locked_tracks_.empty(); }
+  // Silent idents (Audio.enable_radio_silent_idents): an ident keeps its
+  // place between tracks but plays nothing.
+  void set_silent_idents(bool on) { silent_idents_ = on; }
+  // Cuts the DJ line sounding at `now_clock` and drops the DJ lines queued
+  // after it (the race to the festival's last stretch).
+  void stop_dj(double now_clock);
 
  private:
   void ensure_extended(double t0, double t1);
@@ -176,6 +185,8 @@ class StationSchedule {
   int tracks_since_dj_ = 0;
   std::vector<int> locked_tracks_;
   size_t locked_cursor_ = 0;
+  bool locked_then_normal_ = false;
+  bool silent_idents_ = false;
   std::deque<int> pending_special_;   // vo clip indices
   std::deque<int> pending_festival_;  // vo clip indices
   std::deque<RadioEvent> events_;
@@ -220,6 +231,17 @@ class Radio {
   bool lock_viper_intro_playlist(int station, std::vector<int> track_indices);
   void unlock_viper_intro_playlist();
   bool viper_intro_locked() const { return viper_intro_locked_; }
+  // CSetRadioPlaylist: tunes to the station holding the first track (by
+  // RadioSystem.xml fmodname) and plays the named tracks in order from the
+  // first one's beginning; see StationSchedule::set_locked_playlist.
+  bool set_playlist(const std::vector<std::string>& fmodnames, bool then_normal);
+  void cancel_playlist();
+  // Station switching (Audio.disable/enable_radio_station_switching): while
+  // off the D-pad changes nothing.
+  void set_switching_enabled(bool on) { switching_enabled_ = on; }
+  bool switching_enabled() const { return switching_enabled_; }
+  void set_silent_idents(bool on);
+  void stop_dj();
   double location_clock() const { return location_clock_; }
   void advance_location_clock(double dt) {
     if (dt > 0.0) location_clock_ += dt;
@@ -244,6 +266,8 @@ class Radio {
   int pos_ = 0;
   bool dj_enabled_ = true;
   bool viper_intro_locked_ = false;
+  bool switching_enabled_ = true;
+  bool silent_idents_ = false;
   double clock_ = 0;
   double location_clock_ = 0;
   double since_festival_update_s_ = 0;

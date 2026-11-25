@@ -45,6 +45,9 @@ struct FakeHost {
   double tod = 0;
   int64_t pending_event = 0;
   std::array<double, 2> dest{};
+  // The radio as the flow leaves it, and whether the DJ was ever on while
+  // the radio was still broken.
+  bool radio_dj = true, silent_idents = false, radio_switching = true, dj_on_while_broken = false;
 
   void apply(const race::FtcCommands& c) {
     if (!c.play_cutscene.empty()) {
@@ -86,6 +89,10 @@ struct FakeHost {
     if (!c.achievement.empty()) achievements.push_back(c.achievement);
     if (c.collect_yellow_wristband) wristband = true;
     if (c.intro_completed) intro_done = true;
+    if (c.set_radio_dj) radio_dj = c.radio_dj;
+    if (c.set_silent_idents) silent_idents = c.silent_idents;
+    if (c.set_radio_switching) radio_switching = c.radio_switching;
+    if (radio_dj && !radio_switching) dj_on_while_broken = true;
   }
 };
 
@@ -214,6 +221,8 @@ void test_order() {
   check(has(host.mixes, "OpeningCutscene") && has(host.mixes, "VOPlayingInstant"), "mixer snapshots");
   check(host.saves >= 5, "save checkpoints");
   check(ftc.controls_enabled() && ftc.hud_visible() && !ftc.ai_driving(), "free roam handed back");
+  check(!host.dj_on_while_broken, "no DJ links until Dak fixes the radio");
+  check(host.radio_dj && !host.silent_idents && host.radio_switching, "the radio's own after Radio_Unlock");
 }
 
 void test_opening_commands() {
@@ -222,6 +231,9 @@ void test_opening_commands() {
   check(c.swap_car && c.car_media == "VIP_Viper_13" && c.load_route == 170 && c.place_car, "Viper and route 170 under the controls screen");
   check(c.set_time_of_day && c.time_of_day_s == 33300.0 && c.time_locked, "time locked at 09:15");
   check(c.radio_playlist == std::vector<std::string>({"R1_Everyday", "R1_ThePower"}), "radio playlist");
+  check(c.set_radio_dj && !c.radio_dj && c.set_silent_idents && c.silent_idents && c.set_radio_switching &&
+            !c.radio_switching,
+        "the opening: DJ off, silent idents, no station switching");
   check(c.preload_cutscene == "Opening_Cutscene", "the opening's area preloaded");
   check(c.set_destination && c.destination_xz[0] == FirstTimeCareer::kInitialDrivePoints[0][0],
         "sat-nav to the diner, through CSetDestForInitialDrive's first point");
@@ -473,6 +485,10 @@ void test_stage_names_and_resume() {
   check(ftc.checkpoint() == FtcStage::kOpeningCutscene, "no checkpoint before the diner");
   c = ftc.resume(FtcStage::kRaceToFestival);
   check(ftc.checkpoint() == FtcStage::kDinerCutscenes, "the race resumes at the diner (save 1)");
+  check(c.set_radio_dj && !c.radio_dj && c.silent_idents && !c.radio_switching, "resumed before Dak: the radio still broken");
+  c = ftc.resume(FtcStage::kHeats);
+  check(c.set_radio_dj && c.radio_dj && c.set_silent_idents && !c.silent_idents && c.radio_switching,
+        "resumed at the heats: the radio's own");
   c = ftc.resume(FtcStage::kRadioUnlock);
   check(ftc.checkpoint() == FtcStage::kHeats, "the festival arrival resumes at the heats (save 7)");
   c = ftc.resume(FtcStage::kWristbandIntro);

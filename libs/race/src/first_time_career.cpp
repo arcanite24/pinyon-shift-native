@@ -237,6 +237,15 @@ FtcCommands FirstTimeCareer::resume(FtcStage stage) {
         c.pos = kStartPosition;
         c.heading_deg = kStartHeading;
       }
+      // Before Dak fixes it the radio stays as the opening set it; after, the
+      // station's own.
+      const bool broken = stage < FtcStage::kHeats;
+      c.set_radio_dj = true;
+      c.radio_dj = !broken;
+      c.set_silent_idents = true;
+      c.silent_idents = broken;
+      c.set_radio_switching = true;
+      c.radio_switching = !broken || stage == FtcStage::kRadioUnlock;
       return c;
     }
   }
@@ -246,9 +255,13 @@ void FirstTimeCareer::opening_setup(FtcCommands& c) {
   // intro_flow, under the controller loading screen: radio playlist, the
   // time locked at 09:15, route 170, the Viper placed and given to the AI,
   // the sat-nav to the diner, no traffic.
+  c.set_radio_dj = true;
+  c.radio_dj = false;
   c.radio_playlist = {"R1_Everyday", "R1_ThePower"};
   c.set_radio_switching = true;
   c.radio_switching = false;
+  c.set_silent_idents = true;
+  c.silent_idents = true;
   c.set_time_of_day = true;
   c.time_of_day_s = kIntroTimeOfDay;
   c.set_time_locked = true;
@@ -722,6 +735,11 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
         // The festival arrival flow ends: stage 6, then 7.
         FtcCommands n = go(FtcStage::kHeats);
         n.dj_lines.push_back("CycleRadioLogos");
+        // The HUD back, then the DJ on and the idents audible.
+        n.set_radio_dj = true;
+        n.radio_dj = true;
+        n.set_silent_idents = true;
+        n.silent_idents = false;
         n.achievement = "ACHIEVEMENT_WELCOME_TO_HORIZON";
         return n;
       }

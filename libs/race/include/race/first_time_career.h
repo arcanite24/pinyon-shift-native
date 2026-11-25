@@ -110,6 +110,12 @@ struct FtcCommands {
   std::vector<std::string> mix_snapshots;   // AudioMixerSnapshots.xml names, applied in order
   bool set_radio_switching = false;
   bool radio_switching = false;
+  // Audio.disable/enable_radio_dj and Audio.enable/disable_radio_silent_idents:
+  // until Dak fixes the radio the station plays no DJ links and no idents.
+  bool set_radio_dj = false;
+  bool radio_dj = false;
+  bool set_silent_idents = false;
+  bool silent_idents = false;
 
   // Screens and rewards.
   bool activate_tutor = false;   // CActivateDrivingTutor

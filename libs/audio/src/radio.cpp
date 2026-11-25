@@ -324,12 +324,27 @@ bool StationSchedule::queue_festival_update(std::string_view gameplay_event) {
   return true;
 }
 
-void StationSchedule::set_locked_playlist(std::vector<int> track_indices, double now_clock) {
+void StationSchedule::stop_dj(double now_clock) {
+  for (auto it = events_.begin(); it != events_.end();) {
+    const bool dj = it->kind == RadioKind::kDj || it->kind == RadioKind::kFestivalUpdate;
+    if (dj && it->start > now_clock) {
+      it = events_.erase(it);
+      continue;
+    }
+    if (dj && it->end > now_clock) it->end = now_clock;
+    ++it;
+  }
+  pending_special_.clear();
+  pending_festival_.clear();
+}
+
+void StationSchedule::set_locked_playlist(std::vector<int> track_indices, double now_clock, bool then_normal) {
   locked_tracks_.clear();
   for (int idx : track_indices) {
     if (idx >= 0 && size_t(idx) < st_.tracks.size()) locked_tracks_.push_back(idx);
   }
   locked_cursor_ = 0;
+  locked_then_normal_ = then_normal;
   if (locked_tracks_.empty()) return;
   events_.clear();
   const int first_t = locked_tracks_[0];
@@ -360,10 +375,15 @@ void StationSchedule::extend() {
   if (i >= 0) {
     const int clip = st_.idents[size_t(i)];
     const RadioClip& ic = data_.vo[size_t(clip)];
-    events_.push_back({RadioKind::kIdent, clip, -1, ident_at, ident_at + ic.length, next_id_++});
+    if (!silent_idents_) events_.push_back({RadioKind::kIdent, clip, -1, ident_at, ident_at + ic.length, next_id_++});
     next_at = ident_at + (ic.next_track > 0 ? ic.next_track : ic.length);
   }
   int t = -1;
+  if (!locked_tracks_.empty() && locked_then_normal_ && locked_cursor_ >= locked_tracks_.size()) {
+    // The list has played: the station's own picks from here.
+    locked_tracks_.clear();
+    locked_cursor_ = 0;
+  }
   if (!locked_tracks_.empty()) {
     t = locked_tracks_[locked_cursor_ % locked_tracks_.size()];
     ++locked_cursor_;
@@ -605,8 +625,49 @@ void Radio::unlock_viper_intro_playlist() {
   }
 }
 
+bool Radio::set_playlist(const std::vector<std::string>& fmodnames, bool then_normal) {
+  if (fmodnames.empty()) return false;
+  // The station that carries the first name; the rest must be its tracks too.
+  for (int s : data_.cycle) {
+    if (s < 0 || size_t(s) >= data_.stations.size() || data_.stations[size_t(s)].off) continue;
+    const auto& st = data_.stations[size_t(s)];
+    std::vector<int> idx;
+    for (const std::string& want : fmodnames) {
+      for (size_t i = 0; i < st.tracks.size(); ++i)
+        if (iequals(st.tracks[i].name, want)) {
+          idx.push_back(int(i));
+          break;
+        }
+    }
+    if (idx.empty()) continue;
+    select(s);
+    if (auto* sc = schedule(s)) {
+      sc->set_locked_playlist(std::move(idx), clock_, then_normal);
+      if (const RadioEvent* t = sc->track_at(clock_)) seen_track_ = t->id;
+    }
+    return true;
+  }
+  return false;
+}
+
+void Radio::cancel_playlist() {
+  for (auto& sc : schedules_)
+    if (sc) sc->clear_locked_playlist();
+}
+
+void Radio::set_silent_idents(bool on) {
+  silent_idents_ = on;
+  for (auto& sc : schedules_)
+    if (sc) sc->set_silent_idents(on);
+}
+
+void Radio::stop_dj() {
+  for (auto& sc : schedules_)
+    if (sc) sc->stop_dj(clock_);
+}
+
 void Radio::press(int dir) {
-  if (viper_intro_locked_) return;
+  if (viper_intro_locked_ || !switching_enabled_) return;
   const int n = int(data_.cycle.size());
   if (n == 0) return;
   select(data_.cycle[size_t(((pos_ + dir) % n + n) % n)]);
