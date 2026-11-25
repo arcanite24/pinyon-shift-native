@@ -189,7 +189,7 @@ void DriveSession::update_race_screens(double dt) {
   // The finish: the banner when the player crosses the line.
   if (!grid_menu_open && !race_screens.active() && results_page == 0 && app.race->player_finished())
     race_screens.start({S::kFinishBanner});
-  if (race_screens.screen() == S::kDone) finish_race_screens();
+  if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
 }
 
 void DriveSession::grid_menu_accept() {
@@ -292,7 +292,9 @@ void DriveSession::race_back() {
 }
 
 void DriveSession::finish_race_screens() {
-  race_screens.stop();
+  // The flow stays on kDone (drawn black) until the session ends: stopped
+  // here, the last frames before the load fell back to the engine's own
+  // results page.
   results_page = 0;
   app.event_car_name.clear();
   apply_campaign_action(app.campaign.flow().on_post_race_done());

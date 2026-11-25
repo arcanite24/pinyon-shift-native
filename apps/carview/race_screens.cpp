@@ -622,7 +622,8 @@ bool draw_stay_in_car(ui::List& l, const RaceHud& r, float w, float h) {
 
 // The black-out before the load: a darken, then black.
 void draw_black_out(ui::List& l, const RaceHud& r, float w, float h) {
-  const float a = ease(r.screen_t, race_flow::timing::kBlackFade);
+  // kDone holds the black the fade reached until free roam loads.
+  const float a = r.screen == Screen::kDone ? 1.0f : ease(r.screen_t, race_flow::timing::kBlackFade);
   l.rect(0, 0, w, h, ui::rgba(0, 0, 0, uint8_t(std::lround(255.0f * a))));
 }
 
