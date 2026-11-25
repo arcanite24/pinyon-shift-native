@@ -1211,6 +1211,8 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                                                              app.rally_hub_selected, app.rally_notice);
               const int tickets = hst.tickets;
               const int extras = int(hst.items.size()) - tickets;
+              // No ticket yet (the intro heats quit): the EXTRAS stay open.
+              if (tickets == 0) app.rally_hub_extras = true;
               auto activate_item = [&](const carview::RallyHubItem& it) {
                 if (it.kind == carview::RallyHubItem::kHeats) {
                   if (const std::string id = app.start_rally_heats(); !id.empty()) {
@@ -1313,7 +1315,10 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                 const int n = std::max(1, extras);
                 if (p == Press::kPrev) app.rally_hub_extra_selected = (app.rally_hub_extra_selected + n - 1) % n;
                 else if (p == Press::kNext) app.rally_hub_extra_selected = (app.rally_hub_extra_selected + 1) % n;
-                else if (p == Press::kBack || p == Press::kExtras) app.rally_hub_extras = false;
+                else if ((p == Press::kBack || p == Press::kExtras) && tickets == 0) {
+                  if (p == Press::kBack) rally_entry = carview::RallyEntryPopup::kQuit;
+                  p = Press::kNone;
+                } else if (p == Press::kBack || p == Press::kExtras) app.rally_hub_extras = false;
                 else if (p == Press::kAccept && extras > 0) {
                   app.audio_host.trigger_ui(audio::UiCue::kAccept);
                   activate_item(hst.items[size_t(tickets + std::clamp(app.rally_hub_extra_selected, 0, extras - 1))]);

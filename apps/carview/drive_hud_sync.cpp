@@ -801,7 +801,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                                           db_ptr.get(), app.class_bands, app.car, clid, d.car_pi, disc,
                                                           app.rally_hub_selected, app.rally_notice);
           rally_hub_state.track_layout = app.rally_hub_track_layout;
-          rally_hub_state.extras_open = app.rally_hub_extras;
+          // No ticket yet (the intro heats quit): the EXTRAS, whose first row
+          // runs the heats again.
+          rally_hub_state.extras_open = app.rally_hub_extras || rally_hub_state.tickets == 0;
           rally_hub_state.extras_selected = app.rally_hub_extra_selected;
           rally_hub_state.help_hidden = app.rally_hub_tutorial != 0;
           d.rally_hub = &rally_hub_state;
