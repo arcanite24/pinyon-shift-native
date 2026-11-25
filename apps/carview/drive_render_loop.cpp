@@ -239,7 +239,7 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                 app.audio_host.radio_select_station_by_name("Bass");
               }
               app.audio_host.radio_lock_viper_intro(true);
-              app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
+              app.audio_host.radio_trigger_immediate(audio::kViperOpeningRadioEvent);
             } else if (ca.intro_completed || ca.enter_free_roam || ca.launch_event || ca.open_autoshow) {
               app.audio_host.radio_lock_viper_intro(false);
             }
@@ -361,7 +361,7 @@ void DriveSession::run_window_loop() {
                 app.audio_host.radio_select_station_by_name("Bass");
               }
               app.audio_host.radio_lock_viper_intro(true);
-              app.audio_host.radio_trigger_immediate("AliceOpeningInterview1");
+              app.audio_host.radio_trigger_immediate(audio::kViperOpeningRadioEvent);
             } else {
               app.audio_host.radio_lock_viper_intro(false);
             }

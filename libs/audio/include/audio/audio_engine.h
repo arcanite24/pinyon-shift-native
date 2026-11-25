@@ -189,6 +189,7 @@ class AudioEngine {
   void radio_trigger_special(std::string_view gameplay_event);
   void radio_trigger_immediate(std::string_view gameplay_event);
   void radio_trigger_festival_update(std::string_view gameplay_event);
+  void radio_cancel_festival_updates();
   void radio_lock_viper_intro(bool lock);
 
   // Runtime custom radio commands.
@@ -226,6 +227,7 @@ class AudioEngine {
       kRadioSpecial,
       kRadioImmediate,
       kRadioFestivalUpdate,
+      kRadioCancelFestivalUpdates,
       kRuntimeRadioSelect,
       kRuntimeRadioVolume,
       kRuntimeRadioNext,

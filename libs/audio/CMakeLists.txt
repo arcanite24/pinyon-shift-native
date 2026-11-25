@@ -6,6 +6,7 @@ add_library(shift_audio STATIC
   src/engine_player.cpp
   src/bake.cpp
   src/radio.cpp
+  src/radio_dj.cpp
   src/runtime_radio.cpp
   src/stream.cpp
   src/user_music.cpp

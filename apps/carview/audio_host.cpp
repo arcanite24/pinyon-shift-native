@@ -430,6 +430,9 @@ bool AudioHost::init_radio(const std::filesystem::path& game_root, std::string_v
     } else {
       std::fprintf(stderr, "carview: note: no radio: %s\n", why.c_str());
     }
+    std::string dj_why;
+    if (!audio::load_radio_dj_rules(game_root, radio_dj_rules_, &dj_why))
+      std::fprintf(stderr, "carview: note: no radio DJ wristband lines: %s\n", dj_why.c_str());
   }
   sync_runtime_radio(false);
   if (!custom_stations_.empty()) {
@@ -840,16 +843,71 @@ void AudioHost::radio_set_time_of_day(double hour) {
   engine_.radio_set_time_of_day(hour);
 }
 
+void AudioHost::note_radio_miss(audio::RadioChannel channel, std::string_view gameplay_event) {
+  if (!radio_ || gameplay_event.empty() || audio::radio_has_event(stock_radio_data_, channel, gameplay_event)) return;
+  for (const auto& m : radio_missed_)
+    if (audio::iequals(m, gameplay_event)) return;
+  radio_missed_.emplace_back(gameplay_event);
+  std::fprintf(stderr, "carview: note: RadioSystem.xml has no %s line for gameplayEvent %.*s\n",
+               channel == audio::RadioChannel::kSpecial     ? "special"
+               : channel == audio::RadioChannel::kImmediate ? "immediate"
+                                                            : "festival update",
+               int(gameplay_event.size()), gameplay_event.data());
+}
+
 void AudioHost::radio_trigger_special(std::string_view gameplay_event) {
+  note_radio_miss(audio::RadioChannel::kSpecial, gameplay_event);
   if (radio_) engine_.radio_trigger_special(gameplay_event);
 }
 
 void AudioHost::radio_trigger_immediate(std::string_view gameplay_event) {
+  note_radio_miss(audio::RadioChannel::kImmediate, gameplay_event);
   if (radio_) engine_.radio_trigger_immediate(gameplay_event);
 }
 
 void AudioHost::radio_trigger_festival_update(std::string_view gameplay_event) {
+  note_radio_miss(audio::RadioChannel::kFestivalUpdate, gameplay_event);
   if (radio_) engine_.radio_trigger_festival_update(gameplay_event);
+}
+
+void AudioHost::radio_cue(const audio::RadioDjCue& cue) {
+  switch (cue.channel) {
+    case audio::RadioChannel::kSpecial: radio_trigger_special(cue.event); break;
+    case audio::RadioChannel::kImmediate: radio_trigger_immediate(cue.event); break;
+    case audio::RadioChannel::kFestivalUpdate: radio_trigger_festival_update(cue.event); break;
+  }
+}
+
+void AudioHost::radio_wristband_awarded(int level) {
+  bool cancel = false;
+  const auto cues = radio_dj_wristbands_.on_awarded(level, &cancel);
+  if (cancel && radio_) engine_.radio_cancel_festival_updates();
+  for (const auto& c : cues) radio_cue(c);
+}
+
+void AudioHost::radio_wristband_ready(int level) {
+  for (const auto& c : radio_dj_wristbands_.on_ready(level)) radio_cue(c);
+}
+
+void AudioHost::radio_festival_event_finished(int event_level, int position) {
+  for (const auto& c : radio_dj_wristbands_.on_event_finished(event_level, position)) radio_cue(c);
+}
+
+void AudioHost::radio_schedule_special(std::string_view gameplay_event, double delay_s) {
+  if (gameplay_event.empty()) return;
+  if (delay_s <= 0.0) {
+    radio_trigger_special(gameplay_event);
+    return;
+  }
+  radio_cancel_scheduled(gameplay_event);
+  radio_scheduled_.push_back({std::string(gameplay_event),
+                              std::chrono::steady_clock::now() +
+                                  std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                      std::chrono::duration<double>(delay_s))});
+}
+
+void AudioHost::radio_cancel_scheduled(std::string_view gameplay_event) {
+  std::erase_if(radio_scheduled_, [&](const ScheduledRadioLine& l) { return audio::iequals(l.event, gameplay_event); });
 }
 
 void AudioHost::radio_lock_viper_intro(bool lock) {
@@ -1053,6 +1111,16 @@ void AudioHost::update_frame(const audio::EnginePlayer::Update& u, bool paused, 
   // Ensure the SDL playback stream and audio render thread are running during interactive sessions
   // (no-op when already started, in benchmark mode, or when SDL_INIT_AUDIO is not active).
   ensure_device_started();
+  if (!radio_scheduled_.empty()) {
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> due;
+    std::erase_if(radio_scheduled_, [&](const ScheduledRadioLine& l) {
+      if (l.due > now) return false;
+      due.push_back(l.event);
+      return true;
+    });
+    for (const auto& ev : due) radio_trigger_special(ev);
+  }
   audio::EnginePlayer::Update clean_u = u;
   if (!std::isfinite(clean_u.rpm)) clean_u.rpm = 0.0;
   if (!std::isfinite(clean_u.throttle)) clean_u.throttle = 0.0;

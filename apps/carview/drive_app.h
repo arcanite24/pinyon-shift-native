@@ -172,6 +172,9 @@ struct DriveApp : DriveConfig {
   freeroam::SpeedActivitiesData speed_data;
   std::unique_ptr<freeroam::SpeedActivityTracker> speed_tracker;
   int collected_wristband = 0;
+  // Street race hubs' unlock state as last seen, for their RadioDJRequests lines.
+  std::map<int, bool> street_hub_radio_unlocked;
+  double street_hub_radio_check_at = -1e9;
   std::unique_ptr<freeroam::SkillTracker> skill_tracker;
   int64_t max_skills_car = 0;
   std::string sponsor_banner_title, sponsor_banner_detail;

@@ -314,6 +314,20 @@ if(SHIFT_BUILD_CARVIEW)
   target_link_libraries(fmv_story_tests PRIVATE carview_render shift_audio shift_drive)
   add_test(NAME fmv_story_tests COMMAND fmv_story_tests)
 
+  # The radio DJ's gameplay triggers (audio/radio_dj.h); the corpus run checks
+  # every name against the player's RadioSystem.xml (skipped, exit 77,
+  # without SHIFT_GAME_ROOT).
+  add_executable(radio_dj_tests radio_dj_tests.cpp
+    ../apps/carview/fmv_player.cpp
+    ../apps/carview/story_intro.cpp
+    ../apps/carview/settings.cpp
+    ../apps/carview/settings_page.cpp)
+  target_include_directories(radio_dj_tests PRIVATE ../apps/carview)
+  target_link_libraries(radio_dj_tests PRIVATE carview_render shift_audio shift_drive shift_race shift_freeroam)
+  add_test(NAME radio_dj_tests COMMAND radio_dj_tests)
+  add_test(NAME radio_dj_corpus COMMAND radio_dj_tests --corpus)
+  set_tests_properties(radio_dj_corpus PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300 LABELS corpus)
+
   add_executable(campaign_flow_tests campaign_flow_tests.cpp
     ../apps/carview/campaign_director.cpp
     ../apps/carview/campaign_ui.cpp

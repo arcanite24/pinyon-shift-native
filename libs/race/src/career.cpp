@@ -10,6 +10,7 @@
 #include <set>
 #include <sstream>
 
+#include "audio/radio_dj.h"
 #include "audio/xml.h"
 #include "db_util.h"
 #include "fh1data/archive.h"
@@ -729,6 +730,9 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                 h.has_trigger = true;
                 h.trigger_pos = it->second;
                 h.trigger_radius = std::max(22.0, tz->number("radius", 24.0));
+                if (const auto* dj = act.child("RadioDJRequests"))
+                  for (const auto& r : audio::parse_radio_dj_requests(*dj))
+                    if (r.channel == audio::RadioChannel::kSpecial && r.enabled) h.radio_specials.push_back(r.event);
               }
           }
         }
