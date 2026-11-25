@@ -1129,6 +1129,27 @@ int main() {
       hud_shot("race_won_car.png", "16b_finish_banner_orig.png", rd);
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
+
+      // A free-roam head-to-head (race_encounters.xml): the intro on
+      // H_RACE_ENCOUNTER, then a win's banner with A CONTINUE alone.
+      carview::RaceHud hh;
+      hh.head_to_head = true;
+      hh.phase = carview::RaceHud::kRacing;
+      hh.screen = S::kEncounterIntro;
+      hh.rival_name = "Peter Houston", hh.rival_reward = 5000;
+      hh.encounter_make = "Nissan", hh.encounter_car = "Skyline GT-R V-Spec II";
+      hh.encounter_class = "A", hh.encounter_pi = 560;
+      carview::DriveHud hd = roam;
+      hd.race = &hh;
+      {
+        carview::ui::List l;
+        check(carview::draw_race_screen(l, hd, hh, float(W), float(H)) && !l.items().empty(),
+              "the head-to-head's intro draws on H_RACE_ENCOUNTER");
+      }
+      hud_shot("h2h_intro.png", "05_roam_hud_day_drive_orig.png", hd);
+      hh.phase = carview::RaceHud::kFinished;
+      hh.screen = S::kFinishBanner, hh.screen_t = 5.0, hh.place = 1;
+      hud_shot("h2h_won.png", "16b_finish_banner_orig.png", hd);
     }
 
     // The pause map over the original's captures (the popups at the icons

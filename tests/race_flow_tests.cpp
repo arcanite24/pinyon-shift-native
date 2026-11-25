@@ -172,6 +172,19 @@ void timed() {
   CHECK(!fl.skip_to(S::kCarSelect));
   CHECK(fl.update(timing::kEntryFade));
   CHECK(!fl.active());
+
+  // The rival callout runs on nemesis_show's UI trigger (0.8 s, 10 s), then
+  // half a second; a head-to-head's intro on RandomEncounter_Intro (3.5 s).
+  CHECK(timing::kRivalIntro > 11.29 && timing::kRivalIntro < 11.31);
+  fl.start({S::kRivalIntro, S::kCountdown});
+  CHECK(!fl.update(11.0));
+  CHECK(fl.update(0.31));
+  CHECK(fl.screen() == S::kCountdown);
+  fl.start({S::kEncounterIntro});
+  CHECK(!fl.update(3.4));
+  CHECK(fl.update(0.11));
+  CHECK(!fl.active());
+  CHECK(screen_name(S::kEncounterIntro) == "encounter_intro");
 }
 
 }  // namespace

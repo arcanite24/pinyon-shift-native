@@ -461,6 +461,14 @@ struct DriveSession {
   // the rewards): their own runtime, the track's set (Tracks.DevName).
   CutsceneRuntime race_cuts;
   std::string race_cut_name;  // the cutscene the flow asked for last
+  // A free-roam head-to-head's screens (race_encounters.xml): the intro as
+  // it starts (H_RACE_ENCOUNTER), the banner and the cash on a win.
+  race_flow::Flow h2h_screens;
+  std::string h2h_name, h2h_make, h2h_car, h2h_class;
+  int h2h_pi = 0;
+  int64_t h2h_reward = 0;
+  bool h2h_was_active = false;
+  double h2h_finish_seen = -1e9;
   const race::CareerEvent* summary_event = nullptr;
   bool summary_restrictions = false;
   EventSummaryHud event_summary_hud;
@@ -725,6 +733,8 @@ struct DriveSession {
   void update_race_screens(double dt);
   // Plays the race cutscene the flow's step asks for (update_race_screens).
   void sync_race_cutscene();
+  // The head-to-head's screens, from the festival racers' state.
+  void sync_h2h_screens(double dt);
   // The race cutscene's camera this frame (false: the game's own camera).
   bool race_cutscene_camera(drive::CameraView& out) const;
   void grid_menu_accept();

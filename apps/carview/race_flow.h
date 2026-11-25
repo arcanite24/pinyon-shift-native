@@ -17,6 +17,7 @@ enum class Screen : uint8_t {
   kEventSummary,  // H_EVENT_SUMMARY: the event, its restrictions; A enters
   kCarSelect,     // 108_C_BUY_CARSELECT: an eligible car for the event
   kEntryFade,     // the 0.5 s fade out before the load (prepare_to_load_from_ticket)
+  kEncounterIntro,  // H_RACE_ENCOUNTER: a head-to-head's rival, car and reward
   // On the grid (prerace_intro / prerace_menu / prerace_nemesis).
   kTitleCard,   // PRE_AND_POST_RACE's event title over the intro
   kGridMenu,    // H_GENERIC_TITLE: START RACE / DIFFICULTY / OPTIONS / QUIT RACE
@@ -102,6 +103,9 @@ inline constexpr double kBlackHold = 30.0 / 60;  // 30 frames of black before th
 inline constexpr double kRivalUiAt = 0.8;
 inline constexpr double kRivalUiFor = 10.0;
 inline constexpr double kRivalIntro = kRivalUiAt + kRivalUiFor + 0.5;
+// race_encounters.xml: the encounter's intro screen stays while
+// RandomEncounter_Intro (3.5 s) plays, then the empty screen.
+inline constexpr double kEncounterIntro = 3.5;
 }  // namespace timing
 
 // One run of steps: the current screen, how long it has shown, and the

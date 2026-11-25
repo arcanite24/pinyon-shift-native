@@ -292,6 +292,12 @@ struct RaceHud {
   std::string rival_name;   // the callout's rival (Beat {0})
   int64_t rival_reward = 0;
   std::string stay_car;     // STAY IN CAR's car name
+  // A free-roam head-to-head (race_encounters.xml): its intro names the
+  // rival (rival_name), the rival's car and the reward (rival_reward); its
+  // win shows the banner and the cash without the race's options.
+  bool head_to_head = false;
+  std::string encounter_make, encounter_car, encounter_class;
+  int encounter_pi = 0;
   int stay_selected = 0;    // 0 YES, 1 NO
   // The race cutscene's own fade (its cams' FadeInOptions / FadeOutOptions):
   // rgb and coverage, under the race's screens.

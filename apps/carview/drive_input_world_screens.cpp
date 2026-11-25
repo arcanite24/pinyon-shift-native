@@ -316,6 +316,17 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
 }
 
 bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
+            // A head-to-head's win banner: A continues to the cash.
+            if (!app.race && !menu.open && h2h_screens.screen() == race_flow::Screen::kFinishBanner) {
+              const bool a = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat &&
+                              (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER)) ||
+                             (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH);
+              if (a) {
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                h2h_screens.next();
+                return true;
+              }
+            }
             // The original's pre-race menu (H_GENERIC_TITLE): START RACE /
             // DIFFICULTY / OPTIONS / QUIT RACE, its help bar SELECT alone.
             if (app.race && grid_menu_open && !menu.open && !settings_page.is_open()) {

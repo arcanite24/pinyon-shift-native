@@ -217,7 +217,12 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   }
   fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
   sc.draw(l, SceneScreen::frame(w, h));
-  if (opacity >= 1.0f) {
+  // A head-to-head's win (race_encounters.xml PlayWinCutScene): no restart,
+  // results or replay in free roam.
+  // interim (SPEC_QUESTIONS Q171): its help bar is not captured.
+  if (opacity >= 1.0f && r.head_to_head) {
+    ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
+  } else if (opacity >= 1.0f) {
     ui4::button_bar(l,
                     {{"A", text_of(race_text::kContinue)},
                      {"Y", text_of(race_text::kRestart)},
@@ -467,6 +472,50 @@ bool draw_rival_intro(ui::List& l, const RaceHud& r, float w, float h) {
   return true;
 }
 
+// --- H_RACE_ENCOUNTER ------------------------------------------------------
+
+// A head-to-head's intro (CShowRaceEncounterIntroScreen): the rival's name,
+// the car's make, its name and class, then REWARD and the reward on pink.
+// interim (SPEC_QUESTIONS Q171): no capture; the scene's own rects, the
+// tapes cut to their texts, and the reward lines (alpha 0 at rest, brought
+// in by the intro) shown at their rects.
+bool draw_encounter_intro(ui::List& l, const RaceHud& r, float w, float h) {
+  SceneScreen sc(kEncounterScene);
+  if (!sc.ok()) return false;
+  const SceneDraw& sd = sc.scene();
+  sc.bindings().fit_text = false;
+  auto line = [&](const char* group, const char* text, const std::string& s, uint32_t tint) {
+    const int g = sc.node(group), t = sc.node(text);
+    if (s.empty() || g < 0 || t < 0) {
+      sc.hide(g);
+      return;
+    }
+    show_tree(sc, g);
+    sc.text(t, s);
+    fit_tapes(sc, g, sd.measure(t, s) + kTitleTapePad, tint);
+  };
+  line("Name", "TEXT_NAME", r.rival_name, kTapeBlack);
+  line("Manufacturer", "TEXT_CARMAKE", upper(r.encounter_make), kTapeBlack);
+  if (const int car = sc.node("TEXT_CAR_NAME"); car >= 0) sc.text(car, r.encounter_car);
+  if (!r.encounter_class.empty()) {
+    const int pi = sc.node("TEXT_PI");
+    sc.text(pi, std::to_string(r.encounter_pi));
+    if (pi >= 0) sc.at(pi).tint = kInk;
+    if (const int cls = sc.node("CLASS_A"); cls >= 0) sc.at(cls).texture = "PICLASS/CLASS_" + upper(r.encounter_class);
+  } else {
+    sc.hide(sc.node("CLASS_SM"));
+  }
+  if (r.rival_reward > 0) {
+    line("Reward", "TEXT_REWARD", text_of(race_text::kReward), kTapeBlack);
+    line("Credits", "TEXT_CREDITS", credits_text(r.rival_reward), kTapePink);
+  } else {
+    sc.hide(sc.node("Reward"));
+    sc.hide(sc.node("Credits"));
+  }
+  sc.draw(l, SceneScreen::frame(w, h));
+  return true;
+}
+
 // --- H_POST_RACE_CAREER_POINTS ----------------------------------------------
 
 // interim (SPEC_QUESTIONS Q96): the points screen's scene rests fully
@@ -666,6 +715,9 @@ const std::vector<std::pair<std::string_view, std::vector<const char*>>>& race_s
         "NextReward/Wristband", "HeadlineEvent", "GlowMover"}},
       {kWonCarScene, {"ButtonBar", "ScreenTitle/TEXT_TITLE", "TEXT_POSITION", "Tape2", "CarName", "ScreenTitle"}},
       {kPopupScene, {"SpinnerBox", "Background", "Title", "Message"}},
+      {kEncounterScene,
+       {"Name", "TEXT_NAME", "Manufacturer", "TEXT_CARMAKE", "TEXT_CAR_NAME", "CLASS_SM", "TEXT_PI", "CLASS_A", "Reward",
+        "TEXT_REWARD", "Credits", "TEXT_CREDITS"}},
   };
   return k;
 }
@@ -856,6 +908,7 @@ bool draw_race_screen(ui::List& l, const DriveHud&, const RaceHud& r, float w, f
     case Screen::kTitleCard: return draw_title_card(l, r, w, h);
     case Screen::kGridMenu: return draw_grid_menu(l, r, w, h);
     case Screen::kRivalIntro: return draw_rival_intro(l, r, w, h);
+    case Screen::kEncounterIntro: return draw_encounter_intro(l, r, w, h);
     case Screen::kFinishBanner: return draw_finished(l, r, w, h, 1.0f);
     case Screen::kCashReward: return draw_cash(l, r, w, h);
     case Screen::kPoints: return draw_points(l, r, w, h);

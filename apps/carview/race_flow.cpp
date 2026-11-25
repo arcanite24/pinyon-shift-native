@@ -10,6 +10,7 @@ std::string_view screen_name(Screen s) {
     case Screen::kEventSummary: return "event_summary";
     case Screen::kCarSelect: return "car_select";
     case Screen::kEntryFade: return "entry_fade";
+    case Screen::kEncounterIntro: return "encounter_intro";
     case Screen::kTitleCard: return "title_card";
     case Screen::kGridMenu: return "grid_menu";
     case Screen::kRivalIntro: return "rival_intro";
@@ -102,6 +103,7 @@ double auto_advance(Screen s) {
     case Screen::kEntryFade: return timing::kEntryFade;
     case Screen::kTitleCard: return timing::kMenuDelay;
     case Screen::kRivalIntro: return timing::kRivalIntro;
+    case Screen::kEncounterIntro: return timing::kEncounterIntro;
     case Screen::kCashReward: return timing::kBannerOut + timing::kCashAuto;
     case Screen::kBlackOut: return timing::kBlackFade + timing::kBlackHold;
     default: return -1;

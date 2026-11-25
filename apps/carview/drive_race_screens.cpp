@@ -204,6 +204,7 @@ void DriveSession::update_race_screens(double dt) {
   // results, then nothing over the rewards: the campaign's post-race call-in
   // waits from the finish until free roam.
   app.campaign.flow().dialogs().set_held(app.race && !app.headless && app.race->player_finished());
+  sync_h2h_screens(dt);
   if (!app.race || app.headless) {
     race_screens.stop();
     if (race_cuts.active()) race_cuts.stop();
@@ -227,6 +228,50 @@ void DriveSession::update_race_screens(double dt) {
   if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
   sync_race_cutscene();
   (void)race_cuts.update(dt, false);
+}
+
+void DriveSession::sync_h2h_screens(double dt) {
+  if (app.race || app.headless || !festival_mgr) {
+    h2h_screens.stop();
+    h2h_was_active = false;
+    return;
+  }
+  const freeroam::HeadToHeadHud hh = festival_mgr->hud(vehicle.time());
+  // The challenge starts: the intro names the rival, the car and the reward.
+  if (hh.active && !h2h_was_active) {
+    h2h_name = hh.opponent_name, h2h_class = hh.opponent_class, h2h_pi = hh.opponent_pi;
+    h2h_reward = hh.wager_credits;
+    h2h_make.clear(), h2h_car.clear();
+    for (const auto& c : festival_mgr->cars()) {
+      if (!c.in_h2h) continue;
+      if (c.spec.car_id > 0) {
+        const CarListDetails d = car_list_details(c.spec.car_id);
+        h2h_car = d.model;
+        // "2012 Jaguar": the make after the year.
+        const size_t sp = d.year_make.find(' ');
+        h2h_make = sp == std::string::npos ? d.year_make : d.year_make.substr(sp + 1);
+      }
+      if (h2h_car.empty()) h2h_car = carview::car_name(c.spec.car_media);
+      break;
+    }
+    h2h_screens.start({S::kEncounterIntro});
+  }
+  h2h_was_active = hh.active;
+  // The finish: a win shows the banner and the cash; a loss nothing.
+  if (hh.finish_banner && hh.finish_at > h2h_finish_seen) {
+    h2h_finish_seen = hh.finish_at;
+    race_flow::PostFacts f;
+    f.kind = race_flow::Kind::kHeadToHead;
+    f.won = hh.finish_won;
+    f.credits = hh.finish_credits;
+    auto steps = race_flow::post_steps(f);
+    if (steps.size() > 1) {
+      h2h_reward = hh.finish_credits;
+      h2h_screens.start(std::move(steps));
+    }
+  }
+  h2h_screens.update(dt);
+  if (h2h_screens.screen() == S::kDone) h2h_screens.stop();
 }
 
 void DriveSession::sync_race_cutscene() {

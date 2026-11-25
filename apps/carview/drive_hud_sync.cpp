@@ -474,6 +474,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         freeroam::HeadToHeadHud h2h_hud_state;
         if (!app.race && festival_mgr) {
           h2h_hud_state = festival_mgr->hud(vehicle.time());
+          // A win shows the original's banner and cash (h2h_screens), not the engine's.
+          if (h2h_hud_state.finish_won && h2h_hud_state.finish_at <= h2h_finish_seen) h2h_hud_state.finish_banner = false;
           d.h2h = &h2h_hud_state;
         }
         d.driver_level = std::max(1, app.career.driver_level);
@@ -556,6 +558,22 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             if (race_hud.band_hi > 0) race_hud.band_next = carview::game_text(app.wristbands.levels[size_t(cur_i + 1)].second);
             race_hud.band_up = pending >= 0;
           }
+        }
+        // A head-to-head's screens over free roam (race_encounters.xml).
+        if (!app.race && h2h_screens.active()) {
+          const bool intro = h2h_screens.screen() == race_flow::Screen::kEncounterIntro;
+          race_hud.phase = intro ? carview::RaceHud::kRacing : carview::RaceHud::kFinished;
+          race_hud.head_to_head = true;
+          race_hud.screen = h2h_screens.screen();
+          race_hud.screen_t = h2h_screens.elapsed();
+          race_hud.place = 1;
+          race_hud.rival_name = h2h_name;
+          race_hud.rival_reward = h2h_reward;
+          race_hud.encounter_make = h2h_make, race_hud.encounter_car = h2h_car;
+          race_hud.encounter_class = h2h_class, race_hud.encounter_pi = h2h_pi;
+          race_hud.base_credits = race_hud.credits = h2h_reward;
+          race_hud.balance = app.career.credits;
+          d.race = &race_hud;
         }
         // Populate exact world distance and class/PI metadata on projected car nameplates
         // for smooth FH1 distance scaling/fading and compact class+PI micro-badges (PT-37).

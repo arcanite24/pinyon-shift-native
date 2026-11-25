@@ -29,6 +29,7 @@ inline constexpr std::string_view kCashScene = "H_POST_RACE_CREDITS_BREAKDOWN";
 inline constexpr std::string_view kPointsScene = "H_POST_RACE_CAREER_POINTS";
 inline constexpr std::string_view kWonCarScene = "H_POST_RACE_WON_CAR";
 inline constexpr std::string_view kPopupScene = "H_MESSAGE_POPUP";
+inline constexpr std::string_view kEncounterScene = "H_RACE_ENCOUNTER";
 
 // The strings the race screens bind; every one is checked against the
 // tables by the corpus test (scene_screen_tests).
