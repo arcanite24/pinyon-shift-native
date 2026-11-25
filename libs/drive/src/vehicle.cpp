@@ -11,6 +11,15 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kKgf = 9.80665;  // N per kilogram-force (the curves' load unit)
 constexpr double kRpm = 60 / (2 * kPi);
+// The wheel query's fixed limits (Q101): the least normal . up a wheel
+// stands on, and how far the tyre sphere at the top of its sweep may be
+// into a face that still carries it.
+constexpr double kWheelMinNormalUp = 0.17;
+constexpr double kWheelMaxStepInto = 0.3;
+// Interim (Q101): the engine has no tyre spring, so the sweep's top takes
+// the tyre's largest allowed compression, TireSpringMaxCompression's
+// built-in 0.06 m; the title's per-car value is at most that.
+constexpr double kTyreMaxCompression = 0.06;
 
 double length(const Vec3& a) { return std::sqrt(dot(a, a)); }
 Vec3 normalized(const Vec3& a) {
@@ -721,13 +730,55 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   shaped_.input_is_keyboard = raw.input_is_keyboard;
   handbrake_shaped_ = approach(handbrake_shaped_, raw.handbrake ? 1.0 : 0.0, p_.handbrake_rate, dt);
   if (raw.linear_steer) {
-    // 900-degree racing wheel: direct linear steering to full road-wheel lock,
-    // bypassing gamepad speed-sensitive narrowing and stick shaping.
+    // A racing wheel skips the pad filter and goes through the WheelMapping
+    // step (FEEL-15, Q70). The table is picked by the steering mode
+    // (Simulation or not) and the 900-degree option. Its values are the
+    // executable's built-in defaults; the shipped ini sets none of them.
     kb_steer_hold_time_ = 0.0;
     kb_steer_dir_ = 0.0;
     kb_steer_filtered_ = shaped_.steer;
-    steer_angle_ = shaped_.steer * p_.max_steer;
-    steer_ang_vel_ = 0.0;
+    struct WheelMap {
+      double speed0, speed1, scale0, scale1, input1, output1, countersteer_scale;
+    };
+    static constexpr WheelMap kMaps[4] = {
+        {0, 30, 1.0, 0.35, 0.14, 0.07, 1.0},  // WheelMapping
+        {0, 30, 1.0, 1.00, 0.14, 0.14, 1.5},  // WheelMapping900Degree
+        {0, 30, 1.0, 0.35, 0.14, 0.07, 1.0},  // WheelMappingSimSteer
+        {0, 30, 1.0, 1.00, 0.14, 0.14, 1.0},  // WheelMapping900DegreeSimSteer
+    };
+    const WheelMap& m = kMaps[(assists_.steering == 2 ? 2 : 0) + (raw.wheel_900 ? 1 : 0)];
+    // The input's magnitude maps piecewise-linearly through (0, 0),
+    // (NormSteerInput1, NormSteerOutput1) and (1, 1); the sign is kept.
+    const double in = shaped_.steer;
+    const double a = std::min(std::fabs(in), 1.0);
+    const double mapped = a < m.input1 ? a * m.output1 / m.input1
+                                       : lerp(m.output1, 1.0, (a - m.input1) / (1.0 - m.input1));
+    // The scale: 1 below 2 m/s forward, and while the wheel is turned back
+    // through centre; CounterSteerScale while countersteering; otherwise
+    // SteerScale0 to SteerScale1 over |velocity| from SteerSpeed0 to 1.
+    // Interim: the countersteer state stays off. The original tests the
+    // road wheels' angle against a front-wheel field that is not decoded,
+    // and a guess would switch the 900-degree table's 1.5 scale on.
+    const double forward = rotate_inverse(rot_, vel_).z;
+    constexpr bool countersteer = false;
+    const bool back_through_centre = (steer_angle_ > 0 && in <= 0) || (steer_angle_ < 0 && in >= 0) ||
+                                     (steer_angle_ == 0 && in == 0);
+    double scale = 1.0;
+    if (countersteer) {
+      if (forward > 2.0) scale = m.countersteer_scale;
+    } else if (forward >= 2.0 && !back_through_centre) {
+      const double lo = std::min(m.speed0, m.speed1), hi = std::max(m.speed0, m.speed1);
+      scale = lerp(m.scale0, m.scale1, std::clamp((length(vel_) - lo) / std::max(hi - lo, 1e-9), 0.0, 1.0));
+    }
+    // The lock is SteerMaxAngle, capped by the mean steering-lock cap of
+    // the surfaces under the wheels in contact (no speed narrowing here).
+    const double lock = std::min(p_.max_steer, surf_steer_lock_cap_rad_);
+    const double target = std::clamp(lock * scale * (in < 0 ? -mapped : mapped), -lock, lock);
+    // The road wheels slew to the target at up to 4 pi rad/s.
+    constexpr double kWheelSlew = 4 * kPi;
+    const double delta = target - steer_angle_;
+    steer_ang_vel_ = dt > 0 ? std::clamp(delta / dt, -kWheelSlew, kWheelSlew) : 0.0;
+    steer_angle_ = dt > 0 ? steer_angle_ + steer_ang_vel_ * dt : target;
     return;
   }
   // The pad steering filter (SPEC-CAR-PHYSICS, Steering-at-speed filter and
@@ -1393,6 +1444,24 @@ void Vehicle::substep(double dt, const Ground& ground) {
     const Vec3 probe = hard - down * p.probe_height;
     double compression = -droop_[i];
     w.contact = up.y > 0.2 && ground.raycast(probe, down, reach, hit);
+    // The original's wheel query (SPEC_QUESTIONS Q101): the wheel sweeps
+    // its tyre sphere from the top of its travel (the bump stop plus the
+    // tyre's own maximum compression) down to where it is. A face whose
+    // normal is within 0.17 of perpendicular to the car's up axis does not
+    // carry a wheel, and neither does a face the sphere at the top of the
+    // sweep is already more than 0.3 m into: such a step is the body
+    // spheres' to meet. The ray looks past a face it skips.
+    for (int pass = 0; w.contact && pass < 4; ++pass) {
+      const double c = axle_rest - (hit.distance - p.probe_height - radius);
+      const double nu = dot(hit.normal, up);
+      const double top = p.bump_travel[a] + kTyreMaxCompression;
+      const double into = radius - (radius - c + top) * std::max(0.0, nu);
+      if (nu >= kWheelMinNormalUp && into <= kWheelMaxStepInto) break;
+      const double skip = hit.distance + 1e-3;
+      Hit next;
+      w.contact = ground.raycast(probe + down * skip, down, reach - skip, next);
+      if (w.contact) next.distance += skip, hit = next;
+    }
     w.surface = w.contact ? hit.surface : -1;
     if (w.contact) {
       compression = axle_rest - (hit.distance - p.probe_height - radius);
@@ -1460,24 +1529,24 @@ void Vehicle::substep(double dt, const Ground& ground) {
     if (w.contact) {
       const double susp_s = damage_.suspension_scale[size_t(i)];
       double damper = rate[i] * (rate[i] > 0 ? p.bump_rate[a] : p.rebound_rate[a]) * susp_s;
-      damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
-      load = preload_[i] + p.spring_rate[a] * susp_s * compression + damper;
+      // The bump stop as the original's suspension force has it (Q101): a
+      // wheel the ground pushes past its travel stops there, and the
+      // overflow drives BumpstopStiffness. BumpstopDamping acts on the
+      // contact point's closing speed along the ground's normal (not on the
+      // differentiated compression, which a step turns into a spike) and
+      // joins the damper before the damper's clamp. Nothing else caps it:
+      // the query's 0.3 m step rule above bounds the overflow.
+      double bump_spring = 0;
       if (compression > p.bump_travel[a]) {
-        // Interim (ours, SPEC_QUESTIONS Q101): the bump stop takes at most
-        // 0.14 m, and a wheel more than 5 cm into it at most max(4 x
-        // preload, 1.1 m g). A raycast wheel meeting a step higher than its
-        // axle jumps onto it in one substep; without these a 0.35 m kerb at
-        // 90 km/h still throws the car 2 m up (the body's contacts no longer
-        // do). Driving loads stay uncapped: the oracle lap's bump-stop hits
-        // reach 1.4 cm, and capping them spun the AI under
-        // FrictionTorqueMod (Q68). The original's wheel query on such steps
-        // is not decoded.
-        const double over_comp = std::min(compression - p.bump_travel[a], 0.14);
-        const double bs_damp = std::min(p.bumpstop_damping[a] * std::max(0.0, rate[i]), p.damper_clamp[a]);
-        load += p.bumpstop_rate[a] * over_comp + bs_damp;
-        if (compression - p.bump_travel[a] > 0.05)
-          load = std::min(load, std::max(4.0 * preload_[i], 1.1 * p.mass * p.gravity));
+        bump_spring = p.bumpstop_rate[a] * (compression - p.bump_travel[a]);
+        const Vec3 v_contact = vel_ + cross(ang_, contact[i] - pos_);
+        damper += p.bumpstop_damping[a] * std::max(0.0, -dot(v_contact, normal[i]));
       }
+      damper = std::clamp(damper, -p.rebound_damper_clamp[a], p.damper_clamp[a]);
+      // The suspension itself stops at its travel; only the overflow goes
+      // to the bump stop.
+      const double travel = std::min(compression, p.bump_travel[a]);
+      load = preload_[i] + p.spring_rate[a] * susp_s * travel + bump_spring + damper;
     }
     w.load = load;
     w.centre = {p.wheel_centres[i].x,

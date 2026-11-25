@@ -538,7 +538,8 @@ struct Input {
   bool handbrake = false;
   double clutch = 0;
   int shift = 0;
-  bool linear_steer = false;  // true for 900-deg steering wheel: bypass gamepad speed narrowing
+  bool linear_steer = false;  // true for a racing wheel: the WheelMapping step, not the pad filter
+  bool wheel_900 = true;      // the wheel's 900-degree option (picks the 900Degree tables)
   // Optional road/lane guidance for Assisted steering mode (assists_.steering == 0):
   // when has_assist_lane is true and the engine's steering helpers are on
   // (VehicleAssists::engine_steer_assist), Assisted steering adds a gentle centering bias

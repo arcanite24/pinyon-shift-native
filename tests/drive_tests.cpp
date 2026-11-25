@@ -1499,6 +1499,33 @@ int main() {
     }
     CHECK(std::fabs(v_wheel.wheels()[0].steer) > std::fabs(v_pad.wheels()[0].steer) + 0.02);
 
+    // WheelMapping (Q70): the 900-degree table is linear to lock; the
+    // default table maps 0.5 to 0.07 + 0.36 x 0.93 / 0.86 and narrows to 0.35
+    // by 30 m/s; the road wheels slew at up to 4 pi rad/s.
+    {
+      drive::Vehicle v900(p), v_def(p), v_slow(p);
+      v900.launch({0, 0, 0}, 0.0, 45.0);
+      v_def.launch({0, 0, 0}, 0.0, 45.0);
+      drive::Input w900{0.5, 0.0, 0.0, false};
+      w900.linear_steer = true;
+      drive::Input wdef = w900;
+      wdef.wheel_900 = false;
+      v900.step(w900, flat_g);
+      v_def.step(wdef, flat_g);
+      const double first = v900.steer_angle();
+      CHECK(first > 0 && first <= 4 * 3.14159265358979 / 120.0 + 1e-6);  // one 120 Hz frame of slew
+      for (int i = 0; i < 30; ++i) {
+        v900.step(w900, flat_g);
+        v_def.step(wdef, flat_g);
+      }
+      const double mapped = 0.07 + (0.5 - 0.14) * 0.93 / 0.86;
+      CHECK(std::fabs(v900.steer_angle() - 0.5 * p.max_steer) < 0.01);
+      CHECK(std::fabs(v_def.steer_angle() - 0.35 * mapped * p.max_steer) < 0.01);
+      // Standing still, the default table does not narrow.
+      for (int i = 0; i < 60; ++i) v_slow.step(wdef, flat_g);
+      CHECK(std::fabs(v_slow.steer_angle() - mapped * p.max_steer) < 0.01);
+    }
+
     // Handbrake on RWD disconnects clutch so the engine does not fight locked rear wheels.
     drive::Vehicle v_hb(p);
     v_hb.launch({0, 0, 0}, 0.0, 20.0);
@@ -1715,28 +1742,54 @@ int main() {
       CHECK(max_vy < 3.2);
     }
 
-    // PT-27b: Hitting an abrupt 0.35 m vertical curb/step must not inject a bumpstop
-    // damping spike that launches the car skyward.
+    // PT-27b, now the original's wheel query (Q101): a vertical step.
+    // - The step's face does not carry a wheel (normal . up < 0.17).
+    // - A 0.35 m step is within the wheel's reach (the tyre sphere at the
+    //   top of its sweep is at most 0.3 m into it), so the car rides up on
+    //   its bump stops. Their damping acts on the contact's closing speed,
+    //   so the step itself adds no damping spike: the launch is the bump
+    //   stop's spring alone.
+    // - A 0.7 m step is out of reach: the wheels stay on the road and the
+    //   body's spheres meet the face, with no launch.
     {
-      drive::MeshGround curb({
-          {-h, 0, -h}, {h, 0, 12}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, 12}, {h, 0, 12},
-          {-30, 0, 12}, {30, 0.35f, 12}, {30, 0, 12},
-          {-30, 0, 12}, {-30, 0.35f, 12}, {30, 0.35f, 12},
-          {-h, 0.35f, 12}, {h, 0.35f, h}, {h, 0.35f, 12},
-          {-h, 0.35f, 12}, {-h, 0.35f, h}, {h, 0.35f, h},
-      }, {}, {0, 0, 0, 0, 0, 0});
-      curb.set_surface_tyres({hard_world()});
-      drive::Vehicle v(p);
-      v.launch({0, 0, 4.0}, 0.0, 25.0);
-      double max_y = 0.0, max_vy = 0.0;
-      for (int i = 0; i < 120; ++i) {
-        v.step({0, 0.4, 0, false}, curb);
-        max_y = std::max(max_y, v.position().y);
-        max_vy = std::max(max_vy, v.velocity().y);
-      }
-      std::printf("pt27b curb: max_y=%.3f m, max_vy=%.3f m/s\n", max_y, max_vy);
-      CHECK(max_y < 1.15);
-      CHECK(max_vy < 4.0);
+      auto step_ground = [&](float top) {
+        drive::MeshGround g({
+            {-h, 0, -h}, {h, 0, 12}, {h, 0, -h}, {-h, 0, -h}, {-h, 0, 12}, {h, 0, 12},
+            {-30, 0, 12}, {30, top, 12}, {30, 0, 12},
+            {-30, 0, 12}, {-30, top, 12}, {30, top, 12},
+            {-h, top, 12}, {h, top, h}, {h, top, 12},
+            {-h, top, 12}, {-h, top, h}, {h, top, h},
+        }, {}, {0, 0, 0, 0, 0, 0});
+        g.set_surface_tyres({hard_world()});
+        return g;
+      };
+      auto run = [&](const drive::MeshGround& g, const drive::CarParams& cp, double& max_y, double& max_vy) {
+        drive::Vehicle v(cp);
+        v.launch({0, 0, 4.0}, 0.0, 25.0);
+        max_y = 0.0, max_vy = 0.0;
+        for (int i = 0; i < 120; ++i) {
+          v.step({0, 0.4, 0, false}, g);
+          max_y = std::max(max_y, v.position().y);
+          max_vy = std::max(max_vy, v.velocity().y);
+        }
+      };
+      const drive::MeshGround curb = step_ground(0.35f);
+      double max_y = 0, max_vy = 0, undamped_y = 0, undamped_vy = 0;
+      run(curb, p, max_y, max_vy);
+      drive::CarParams no_damp = p;
+      no_damp.bumpstop_damping = {0, 0};
+      run(curb, no_damp, undamped_y, undamped_vy);
+      std::printf("pt27b curb 0.35 m: max_y=%.3f m, max_vy=%.3f m/s (bump-stop damping off: %.3f m, %.3f m/s)\n", max_y,
+                  max_vy, undamped_y, undamped_vy);
+      CHECK(max_y > 0.35);                    // it rides up the step
+      CHECK(max_vy < undamped_vy * 1.05);     // no damping spike from the step
+      CHECK(max_y < 3.0);
+      const drive::MeshGround wall = step_ground(0.7f);
+      double wall_y = 0, wall_vy = 0;
+      run(wall, p, wall_y, wall_vy);
+      std::printf("pt27b step 0.7 m: max_y=%.3f m, max_vy=%.3f m/s\n", wall_y, wall_vy);
+      CHECK(wall_y < 0.3);
+      CHECK(wall_vy < 1.0);
     }
 
     // PT-27c: Natural 18-degree ramp (normal.y ~ 0.95 >= 0.65) still climbs and launches cleanly.
@@ -1821,7 +1874,9 @@ int main() {
         std::printf("wall 150 km/h: max_y %.3f m, max_vy %.3f m/s, nose at most %.3f m past the wall, rebound %.2f m/s, "
                     "min up.y %.3f, closing %.2f m/s\n",
                     max_y, max_vy, max_z + front - 40.0, -min_vz, min_up, first);
-        CHECK(max_vy < 1.5);
+        // 1.1 m/s with the old bump-stop caps; the uncapped bump stop
+        // (Q101) lifts the nose a little more as the front dives.
+        CHECK(max_vy < 2.0);
         CHECK(max_y < 0.5);
         CHECK(max_z + front < 40.0 + 0.5);
         CHECK(-min_vz < 5.0);
