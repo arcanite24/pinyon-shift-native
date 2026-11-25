@@ -737,13 +737,17 @@ void DriveSession::open_settings(int tab) {
 }
 
 void DriveSession::open_options_page(carview::OptionsPage p) {
-          open_settings(int(SettingsPage::Tab::kGameplay));
+          // The engine's page for the same rows when the scene is missing.
+          using T = SettingsPage::Tab;
+          open_settings(int(p == carview::OptionsPage::kAudio      ? T::kAudio
+                            : p == carview::OptionsPage::kControls ? T::kControls
+                                                                   : T::kGameplay));
           options_page = p;
           options_row = 0;
           // CANCEL puts these back.
           options_snapshot = settings_page.tokens();
           const auto& rows = carview::options_rows(p);
-          if (!rows.empty()) settings_page.select_id(rows[0].id);
+          if (!rows.empty() && *rows[0].id) settings_page.select_id(rows[0].id);
 }
 
 void DriveSession::open_stats() {
@@ -794,17 +798,43 @@ void DriveSession::open_stats() {
 void DriveSession::fill_options(carview::OptionsHud& out) {
           namespace t = carview::options_text;
           out = {};
-          out.title = carview::text_of(options_page == carview::OptionsPage::kDifficulty ? t::kDifficulty : t::kHud);
+          out.page = options_page;
+          out.title = carview::options_title(options_page);
           const auto& rows = carview::options_rows(options_page);
-          for (const auto& r : rows)
-            out.rows.push_back({carview::text_of(r.label), carview::options_value_text(r.id, settings_page.value(r.id))});
+          for (const auto& r : rows) {
+            std::string v;
+            if (!*r.id) {
+              v = carview::options_value_text("", "off");  // no engine row (Q135)
+            } else if (std::string_view(r.id) == "radio" && settings_page.value(r.id) != "off") {
+              // RADIO STATION: the station playing.
+              drive::DriveSave now;
+              app.audio_host.save_radio_state(now);
+              v = now.radio_station.empty() ? carview::options_value_text(r.id, "on") : now.radio_station;
+              for (char& c : v) c = char(std::toupper(static_cast<unsigned char>(c)));
+            } else {
+              v = carview::options_value_text(r.id, settings_page.value(r.id));
+            }
+            out.rows.push_back({carview::text_of(r.label), v});
+          }
           out.selected = std::clamp(options_row, 0, std::max(0, int(rows.size()) - 1));
           if (!rows.empty()) {
-            out.description_title = carview::text_of(t::kDescription);
             out.description = carview::text_of(rows[size_t(out.selected)].description);
+            if (!out.description.empty()) out.description_title = carview::text_of(t::kDescription);
           }
           if (options_page == carview::OptionsPage::kDifficulty)
             out.bonus = "+" + std::to_string(settings_page.difficulty_credit_bonus_pct()) + "%";
+          if (options_page == carview::OptionsPage::kControls) {
+            const auto ls = settings_page.live_settings();
+            out.pad = carview::controls_pad_labels(ls.controls.layout_id, ls.controls.switch_handbrake_clutch,
+                                                   ls.controls.assists.shifting);
+            // 23_options_controls_orig.png: X ADVANCED opens the engine's
+            // CONTROLS page (deadzones, rebinds).
+            out.prompts = {{"A", carview::text_of(t::kSave)},
+                           {"B", carview::text_of(t::kCancel)},
+                           {"X", carview::text_of(t::kAdvanced)},
+                           {"Y", carview::text_of(t::kResetDefault)}};
+            return;
+          }
           out.prompts = {{"A", carview::text_of(t::kSave)},
                          {"B", carview::text_of(t::kCancel)},
                          {"Y", carview::text_of(t::kResetDefault)}};
@@ -851,10 +881,10 @@ void DriveSession::hub_menu_choose(bool extra) {
               achievements.open_screen();
               break;
             case A::kTeamCredits: later("TEAM CREDITS"); break;  // interim (SPEC_QUESTIONS Q134)
-            case A::kControls: open_settings(int(T::kControls)); break;
+            case A::kControls: open_options_page(carview::OptionsPage::kControls); break;
             case A::kDifficulty: open_options_page(carview::OptionsPage::kDifficulty); break;
             case A::kHud: open_options_page(carview::OptionsPage::kHud); break;
-            case A::kAudio: open_settings(int(T::kAudio)); break;
+            case A::kAudio: open_options_page(carview::OptionsPage::kAudio); break;
             case A::kVideo: open_settings(int(T::kDisplay)); break;
             case A::kEngineSettings: open_settings(int(T::kPinyon)); break;
             case A::kPaintCar:

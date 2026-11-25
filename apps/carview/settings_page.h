@@ -126,6 +126,9 @@ class SettingsPage {
   void fill(std::string& title, std::vector<std::string>& lines, int& selected) const;
   // A row's shown choice, by its name ("difficulty", "key throttle"), for tests.
   std::string value(const std::string& name) const;
+  // A row's choices' labels in their order ("100%", "0%", ...); empty when
+  // there is no such row.
+  std::vector<std::string> choice_labels(const std::string& name) const;
   void set_available_luts(const std::vector<std::string>& names);
 
   // Optional localization resolver (e.g. bound to carview::game_text at runtime;

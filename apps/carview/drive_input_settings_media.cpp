@@ -260,15 +260,17 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   settings_live_overlay = false;
                 }
               };
-              // OPTIONS's DIFFICULTY and HUD on the original's page: up and down
-              // its rows, left and right their values, A SAVE, B CANCEL (the
-              // rows as they were), Y RESET TO DEFAULT.
+              // OPTIONS's DIFFICULTY, HUD, AUDIO and CONTROLS on the original's
+              // pages: up and down its rows, left and right their values, A
+              // SAVE, B CANCEL (the rows as they were), Y RESET TO DEFAULT;
+              // CONTROLS's X ADVANCED opens the engine's CONTROLS page.
               if (options_page != carview::OptionsPage::kNone && !settings_page.capturing_key()) {
                 const auto& orows = carview::options_rows(options_page);
                 const int on = int(orows.size());
+                const bool controls = options_page == carview::OptionsPage::kControls;
                 auto pick = [&](int r) {
                   options_row = std::clamp(r, 0, std::max(0, on - 1));
-                  if (on > 0) settings_page.select_id(orows[size_t(options_row)].id);
+                  if (on > 0 && *orows[size_t(options_row)].id) settings_page.select_id(orows[size_t(options_row)].id);
                 };
                 auto move_row = [&](int by) {
                   if (on <= 0) return;
@@ -277,7 +279,20 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 };
                 auto step_row = [&](int by) {
                   pick(options_row);
-                  settings_page.step(by);
+                  if (on <= 0) return;
+                  const carview::OptionsRowSpec& spec = orows[size_t(options_row)];
+                  if (!*spec.id) return;  // SWITCH GEAR UP/DOWN: no engine row (Q135)
+                  if (spec.slider) {
+                    // A slider stops at 0% and 100%; the row's choices are
+                    // not in value order, so step to the next value's choice.
+                    const std::string now = settings_page.value(spec.id);
+                    const std::string to =
+                        carview::options_slider_step(settings_page.choice_labels(spec.id), now, by);
+                    if (to == now) return;
+                    for (int i = 0; i < 16 && settings_page.value(spec.id) != to; ++i) settings_page.step(1);
+                  } else {
+                    settings_page.step(by);
+                  }
                   apply_live();
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 };
@@ -304,9 +319,16 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   leave();
                   app.audio_host.trigger_ui(audio::UiCue::kCancel);
                 };
+                auto advanced = [&]() {
+                  if (!controls) return;
+                  options_page = carview::OptionsPage::kNone;
+                  settings_page.select_tab(int(SettingsPage::Tab::kControls));
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                };
                 auto reset = [&]() {
                   std::vector<std::string> ids;
-                  for (const auto& r : orows) ids.emplace_back(r.id);
+                  for (const auto& r : orows)
+                    if (*r.id) ids.emplace_back(r.id);
                   settings_page.reset_rows(ids);
                   apply_live();
                   app.audio_host.trigger_ui(audio::UiCue::kAccept);
@@ -321,6 +343,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   } else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) save();
                   else if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE || k == SDLK_F6) cancel();
                   else if (k == SDLK_Y) reset();
+                  else if (k == SDLK_X) advanced();
                 }
                 if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                   const auto b = e.gbutton.button;
@@ -331,6 +354,7 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   else if (b == SDL_GAMEPAD_BUTTON_SOUTH) save();
                   else if (b == SDL_GAMEPAD_BUTTON_EAST || b == SDL_GAMEPAD_BUTTON_START) cancel();
                   else if (b == SDL_GAMEPAD_BUTTON_NORTH) reset();
+                  else if (b == SDL_GAMEPAD_BUTTON_WEST) advanced();
                 }
                 if (e.type == SDL_EVENT_MOUSE_MOTION) {
                   carview::ui::HitZone hz{};
@@ -350,9 +374,11 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     pick(hz.index);
                     step_row(1);
                   } else if (e.button.button == SDL_BUTTON_LEFT && hit && hz.group == carview::ui4::kHitButton) {
+                    // A SAVE, B CANCEL, (X ADVANCED,) Y RESET TO DEFAULT.
                     if (hz.index == 0) save();
                     else if (hz.index == 1) cancel();
-                    else if (hz.index == 2) reset();
+                    else if (hz.index == 2 && controls) advanced();
+                    else if (hz.index == (controls ? 3 : 2)) reset();
                   }
                 }
                 if (e.type == SDL_EVENT_MOUSE_WHEEL) move_row(e.wheel.y > 0 ? -1 : 1);

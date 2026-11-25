@@ -567,6 +567,23 @@ not run yet (Q145).
   rows only; GAME DIFFICULTY then follows the assists it reset). The
   engine's other rows (STABILITY CONTROL, its HUD extras) stay on its own
   pages, behind OPTIONS's X ENGINE SETTINGS.
+- **AUDIO on `837_I_AUDIO_OPTIONS`.** The same page with 837's two slider
+  rows on top: SFX VOLUME and RADIO VOLUME (the bar, the percentage, the
+  arrows dimmed at 0% and 100%, where the steps stop), then RADIO STATION
+  (the station playing, or OFF), RADIO DJ, GPS VOICE and PLAYBACK SYSTEM
+  (HOME THEATER or TV), with MyProfile.str's names and descriptions.
+- **CONTROLS on `831_C_OPT_CONTROLLER`** (`23_*_orig.png`). LAYOUT
+  (DEFAULT LAYOUT 1..5), VIBRATION, SWITCH GEAR UP/DOWN and SWITCH
+  HANDBRAKE/CLUTCH over the controller's diagram, each button labelled with
+  the layout's action (`controls_pad_labels`: the handbrake and clutch
+  swapped or not; with automatic shifting the gear and clutch buttons read
+  NOT USED and shift down ACTIVATE), and A SAVE, B CANCEL, X ADVANCED (the
+  engine's CONTROLS page: deadzones, key bindings), Y RESET TO DEFAULT. The
+  disc's layout is the screen's before its entry animation, which is not
+  run: the body moves up 66 px, the labels go to their places on the
+  capture (the face buttons' in their colours), the lines are drawn from
+  label to button and the panel is a measured dark quad. The speed wheel's
+  diagram (`Group_BRISTOL`, shown on the disc) is hidden.
 - **STATS on `H_STATISTICS`** (`stats_screen.h`; the title update's scene
   replaces the disc's). MY PROFILE's STATS (`26_*_orig.png`): the STATS
   tape, the tab between LB and RB (GENERAL, RECORDS, TIME: the three
@@ -599,13 +616,17 @@ not run yet (Q145).
   (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
-  CONTROLS, AUDIO and VIDEO open the engine's pages.
+  VIDEO opens the engine's DISPLAY page (Q135).
 - **STATS.** RECORDS and TIME's rows, GAME PROGRESS's measure, and the
   ultimate skills and menu and shop times the engine does not count (zero)
   (Q134).
 - **Option pages.** GAME DIFFICULTY's values and RESET TO DEFAULT's
   defaults are the engine's, OPPONENT DIFFICULTY's MEDIUM (Q135). The description panel's dirt is a
-  measured dark panel (its crop is not decoded).
+  measured dark panel (its crop is not decoded). AUDIO has no capture: its
+  rows, the slider's length and SFX VOLUME on the engine's master volume
+  are guesses; SWITCH GEAR UP/DOWN shows OFF and does not step (no engine
+  row); the d-pad's photo mode and telemetry (engine extras) read NOT USED
+  (Q135).
 - **Barn Finds.** Which popups offer VIEW ON MAP, and the undiscovered and
   collected tiles (Q133).
 - **Engine extras kept.** The garage's sorts (O, left stick), favourites

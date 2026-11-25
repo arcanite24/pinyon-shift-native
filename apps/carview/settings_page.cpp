@@ -2068,6 +2068,16 @@ std::string SettingsPage::value(const std::string& name) const {
   return {};
 }
 
+std::vector<std::string> SettingsPage::choice_labels(const std::string& name) const {
+  std::vector<std::string> out;
+  for (const Row& r : rows_)
+    if (name == r.name) {
+      for (const auto& c : r.choices) out.emplace_back(c.label);
+      break;
+    }
+  return out;
+}
+
 SettingsPage::ControllerDiagramSpec SettingsPage::controller_diagram_spec() const {
   ControllerDiagramSpec spec;
   const LiveSettings ls = live_settings();

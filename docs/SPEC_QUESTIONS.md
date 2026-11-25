@@ -3231,7 +3231,7 @@ and zones). The engine does not count the ultimate skills or the menu and
 shop times, which show zero. Needed: each tab's rows and order, GAME
 PROGRESS's formula, and whether the tabs wrap.
 
-## Q135 (UI, not blocking): GAME DIFFICULTY in OPTIONS (rows answered by capture 24)
+## Q135 (UI, not blocking): OPTIONS's pages (DIFFICULTY answered by capture 24)
 
 `24_options_difficulty_orig.png` answers the rows: the original's
 DIFFICULTY page (`300_I_OPT_ASSISTS_DIFFICULTY`) lists GAME DIFFICULTY
@@ -3254,3 +3254,30 @@ Still open:
 - OPPONENT DIFFICULTY's values (the capture shows MEDIUM; AIDiff.str has
   EASY, NORMAL, HARD). RESET TO DEFAULT sets it to MEDIUM, a new profile's
   level (Q71), not the engine's "default".
+
+AUDIO and CONTROLS are on their scenes too (`837_I_AUDIO_OPTIONS`,
+`831_C_OPT_CONTROLLER`). Open there:
+
+- AUDIO has no capture. The rows are the engine's reading of MyProfile.str
+  (`IDS_AudioOption_*_Desc`, `IDS_SatNav_Desc`): SFX VOLUME, RADIO VOLUME
+  (837's two sliders), RADIO STATION, RADIO DJ, GPS VOICE, PLAYBACK
+  SYSTEM. The engine has no effects-only volume, so SFX VOLUME sets its
+  master volume (which the radio also follows). RADIO STATION shows the
+  station playing or OFF, and steps the radio on and off, not through
+  MyProfile.str's three stations. PLAYBACK SYSTEM's HOME THEATER is the
+  engine's full dynamic range. Needed: a capture of the page, its rows and
+  the slider's length and step.
+- CONTROLS: SWITCH GEAR UP/DOWN (`IDS_Option_InvertGearUpDown`) has no
+  engine setting; it shows OFF and does not step. The capture pins layout 1
+  with automatic shifting only; the labels for manual shifting (SHIFT UP,
+  SHIFT DOWN, CLUTCH with the clutch) and for the other layouts are the
+  engine's bindings by MyProfile.str's names. The engine's d-pad up and
+  down (photo mode, telemetry) are its extras and read NOT USED, as on the
+  capture. The diagram's places are measured on the capture (the disc's
+  are the entry animation's start). Needed: captures of the other layouts
+  and of manual shifting, and what X ADVANCED lists (831's
+  `Group_ADVANCED`, the deadzones; the engine opens its CONTROLS page).
+- VIDEO: no scene carries its name. MyProfile.str's VIDEO options are
+  BRIGHTNESS (`IDS_VideoOption_Brightness_Desc`, the gamma screen
+  `830_GAMMA_ADJUST`) and SUBTITLES; the engine has neither row, so VIDEO
+  opens its DISPLAY page. Needed: the VIDEO page's scene and rows.

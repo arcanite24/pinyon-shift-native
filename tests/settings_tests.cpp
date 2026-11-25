@@ -792,6 +792,9 @@ int main() {
     // OPPONENT DIFFICULTY resets to MEDIUM, a level the original names.
     op.reset_rows({"difficulty"});
     CHECK(op.value("difficulty") == "medium");
+    // AUDIO's sliders read the volume rows' choices.
+    CHECK((op.choice_labels("master volume") == std::vector<std::string>{"100%", "0%", "25%", "50%", "75%"}));
+    CHECK(op.choice_labels("no such row").empty());
     // GAME DIFFICULTY follows the reset rows, as a fresh load shows it.
     {
       carview::SettingsPage fresh;
