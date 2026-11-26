@@ -153,7 +153,7 @@ class ReplayViewer {
   ReplayTelemetryPage telemetry_page_ = ReplayTelemetryPage::kGeneral;
   bool repeat_loop_ = true;
   bool ui_hidden_ = false;
-  bool metric_units_ = true;
+  bool metric_units_ = false;  // miles by default (Q277)
 
   // Orbit & track-side camera state.
   double orbit_yaw_ = 0.55;

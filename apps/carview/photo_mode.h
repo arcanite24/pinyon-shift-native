@@ -314,7 +314,7 @@ class PhotoModeController {
   bool active_ = false;
   bool effects_open_ = true;
   bool ui_hidden_ = false;
-  bool metric_units_ = true;
+  bool metric_units_ = false;  // miles by default (Q277)
   int selected_row_ = kAperture;
   mutable int scroll_top_ = 0;
   double time_ = 0.0;

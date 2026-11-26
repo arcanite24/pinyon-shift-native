@@ -25,7 +25,7 @@ struct DrawContext {
   int collected_wristband = 0;
   int popularity_rank = 250;
   bool skip_vo_with_a = true;
-  bool metric_units = true;
+  bool metric_units = false;  // miles by default, as the original (Q277)
   bool suppress_subtitle = false;
   bool suppress_callin = false;
   // The race's own screens (race_flow.h) are up: the objective tracker and
