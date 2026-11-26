@@ -246,9 +246,9 @@ void draw_post_race_results_stage(ui::List& l, const race::RewardTallyState& tal
 }  // namespace
 
 void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
-  // Free roam has no objective banner: the original's HUD shows none (the
-  // whole first30b free-roam run with a wristband to collect, 95 frames);
-  // the next wristband is named in the pause menu's header only.
+  // Free roam has no objective banner: the original's HUD shows none in the
+  // first30b free-roam run (one save, a wristband to collect, 95 frames over
+  // about 90 s). Whether some other state shows one is not captured.
   if (flow.stage() != race::CampaignStage::kViperIntroDrive) return;
   const auto obj = flow.next_objective(ctx.wristband_points, ctx.collected_wristband, ctx.popularity_rank, ctx.catalog);
   if (!obj.valid) return;

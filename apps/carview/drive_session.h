@@ -262,10 +262,6 @@ struct DriveSession {
   std::string notice;
   double notice_until = -1;
   Popup popup;
-  // The wristband last announced as ready to collect (-1: none; -2: not yet
-  // seeded, so a wristband already pending when the session loads is not
-  // announced again: the original shows no toast on load).
-  int notified_wristband = -2;
   bool save_due = false;
   bool skip_end_save = false;
   bool ui_atlas_synced = false;
