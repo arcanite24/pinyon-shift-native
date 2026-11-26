@@ -547,6 +547,7 @@ struct DriveSession {
   bool show_hud = true;
   PauseMenu menu;
   double next_save = 30;
+  double saving_shown_at = -1e9;  // wall seconds of the last save (the HUD's SAVING notice)
   bool map_open = false, map_dirty = false, map_dragging = false, map_drag_moved = false;
   float map_drag_start_x = 0.0f, map_drag_start_y = 0.0f;
   double map_zoom = 2, map_cx = 0, map_cz = 0;

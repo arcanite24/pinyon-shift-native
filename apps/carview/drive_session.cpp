@@ -1358,6 +1358,7 @@ void DriveSession::reload_mod_textures() {
 
 void DriveSession::save_now(const char* why) {
         if (app.save_path.empty() || app.status != 0 || save_page.reload_pending()) return;
+        saving_shown_at = double(SDL_GetTicksNS()) * 1e-9;
         drive::DriveSave s;
         s.car = !app.pre_loaner_car.empty() ? app.pre_loaner_car : app.car;
         const drive::Vec3 at = vehicle.position();

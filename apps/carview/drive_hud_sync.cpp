@@ -1104,6 +1104,14 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         }
         if (!app.show_title && !app.headless)
           carview::ftc_ui::draw_overlay(list, app.campaign.screen_overlay(), float(width), float(height));
+        {
+          // The HUD's SAVING notice, from a save's start for kSavingMinSeconds.
+          const double now_s = double(SDL_GetTicksNS()) * 1e-9;
+          if (now_s - saving_shown_at < carview::kSavingMinSeconds && !app.show_title && !app.headless &&
+              !app.fmv_player.active() && !map_open && !app.story_intro.disclaimer_active() &&
+              (!app.campaign.ftc_active() || app.campaign.ftc().hud_visible()))
+            carview::draw_saving_indicator(list, float(width), float(height), now_s - saving_shown_at);
+        }
         static double s_loading_fade_last_t = -1.0;
         if (std::exchange(app.loading_hand_off, false) && !loading_screen.active())
           loading_screen.fade_in_from_black();
