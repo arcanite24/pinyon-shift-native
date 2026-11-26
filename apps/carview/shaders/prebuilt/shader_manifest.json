@@ -494,9 +494,9 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 12816,
+      "spirv_bytes": 14208,
       "local_size": null,
-      "push_constant_bytes": 48,
+      "push_constant_bytes": 64,
       "spec_constants": [],
       "bindings": [
         {
@@ -885,7 +885,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 76772,
+      "spirv_bytes": 76928,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -3856,7 +3856,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 130680,
+      "spirv_bytes": 130800,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3980,7 +3980,6 @@
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "DemoteToHelperInvocation",
         "Shader"
       ],
       "uses_point_size": false,
@@ -4155,7 +4154,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 138364,
+      "spirv_bytes": 138472,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4238,7 +4237,6 @@
       ],
       "vertex_inputs": [],
       "capabilities": [
-        "DemoteToHelperInvocation",
         "RuntimeDescriptorArray",
         "Shader",
         "ShaderNonUniform"
@@ -4348,7 +4346,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 133056,
+      "spirv_bytes": 133212,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4456,7 +4454,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 125516,
+      "spirv_bytes": 125684,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

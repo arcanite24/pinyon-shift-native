@@ -293,7 +293,7 @@ struct ModernTargetPlan {
 ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
                                      HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
                                      bool inspector_needs_motion, const UpscalerChoice& up_choice,
-                                     bool post_motion_blur = false);
+                                     bool post_motion_blur = false, bool need_brightness = false);
 
 // ---- Dynamic cubemap & 3-band cockpit mirror scheduling ------------------------------------
 struct ReflectionStep {

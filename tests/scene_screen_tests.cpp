@@ -1912,6 +1912,27 @@ int main() {
       check(carview::draw_make_list(l3, d, ml, float(W), float(H)), "draw make list with NONE AFFORDABLE");
       check(l3.items().size() > l2.items().size(), "115: the popup draws over the strip");
     }
+    // 830_GAMMA_ADJUST (VIDEO screen, Q363): scene-bound brightness slider, subtitles spinner, calibration boxes.
+    {
+      carview::TitleScreenHud ts;
+      ts.menu.first_profile = true;
+      ts.menu.confirm();
+      ts.menu.update(carview::TitleMenu::kProfileSeconds + 0.01);
+      ts.menu.brightness = 60;
+      ts.menu.subtitles = false;
+      carview::ui::List lv0;
+      check(carview::draw_title_screen(lv0, ts, float(W), float(H)), "830_GAMMA_ADJUST draws via draw_title_screen");
+      int row_hits = 0;
+      for (const auto& z : lv0.hits())
+        if (z.group == carview::ui::kHitRow) ++row_hits;
+      check(!lv0.items().empty(), "830_GAMMA_ADJUST draws items");
+      check(row_hits >= 2, "830_GAMMA_ADJUST registers BRIGHTNESS and SUBTITLES hit rows");
+      ts.menu.move(1);
+      ts.menu.adjust(1);
+      carview::ui::List lv1;
+      check(carview::draw_title_screen(lv1, ts, float(W), float(H)), "830_GAMMA_ADJUST draws with SUBTITLES focused/enabled");
+      check(!lv1.items().empty(), "830_GAMMA_ADJUST draws items on row 1");
+    }
   }
 
   if (g_failures > 0) {

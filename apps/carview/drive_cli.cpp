@@ -163,6 +163,21 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       metric_units = !(u == "imperial" || u == "mph" || u == "IMP" || u == "MPH");
       continue;
     }
+    if (a == "--brightness") {
+      display_brightness = std::clamp(std::atoi(next()), 0, 100);
+      display_brightness_explicit = true;
+      continue;
+    }
+    if (a == "--subtitles") {
+      subtitles_enabled = true;
+      subtitles_explicit = true;
+      continue;
+    }
+    if (a == "--no-subtitles") {
+      subtitles_enabled = false;
+      subtitles_explicit = true;
+      continue;
+    }
     if (a == "--race-auto-skill") { race_options.autopilot_skill = std::clamp(std::atoi(next()), 1, 80); continue; }
     if (a == "--race-ai-skill") { race_options.opponent_skill = std::clamp(std::atoi(next()), 1, 80); continue; }
     if (a == "--story-intro") { story_intro_cli = true; continue; }

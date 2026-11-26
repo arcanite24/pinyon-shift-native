@@ -206,6 +206,20 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.speed_traps = p.speed_traps;
   out.speed_zones = p.speed_zones;
   out.satnav_enabled = p.satnav_on;
+  if (const Field* gf = find(p.body.fields, "Main/Gamma")) {
+    const double g = std::clamp(gf->value.as_double(), 0.0, 1.0);
+    out.brightness = std::clamp(int(std::floor(g * 20.0 + 0.5)) * 5, 0, 100);
+  }
+  if (const Field* sf = find(p.body.fields, "Main/Subtitles")) {
+    out.subtitles = sf->value.as_int() != 0;
+    out.has_subtitles = true;
+  }
+  if (const Field* ff = find(p.body.fields, "Main/Flags")) {
+    out.video_seen = ((uint64_t(ff->value.as_int()) & 0x40000ull) != 0ull) ||
+                     (out.credits > 0 || out.num_races > 0 || !p.garage.empty());
+  } else {
+    out.video_seen = true;
+  }
   // Carried as is: the level, unlocks, Rally counters and the 1000 Club.
   // Main/Level is the zero-based PlayerLevelDef.Id; the engine's level is one-based.
   out.level = engine_driver_level_from_profile(p.level);
@@ -297,6 +311,18 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
   set_field_double(out.body.fields, "Main/TimeInStreetRaces", save.time_street, Value::kFloat);
   set_field_double(out.body.fields, "Main/TimeInExhibitionRaces", save.time_exhibition, Value::kFloat);
   set_field_bool(out.body.fields, "Main/SatNav", save.satnav_enabled);
+  if (find(out.body.fields, "Main/Gamma") != nullptr || save.brightness != 60) {
+    set_field_double(out.body.fields, "Main/Gamma", double(std::clamp(save.brightness, 0, 100)) / 100.0, Value::kFloat);
+  }
+  if (find(out.body.fields, "Main/Subtitles") != nullptr || save.has_subtitles) {
+    set_field_int(out.body.fields, "Main/Subtitles", save.subtitles ? 1 : 0, Value::kU8);
+  }
+  if (save.video_seen) {
+    if (const Field* ff = find(out.body.fields, "Main/Flags")) {
+      const uint64_t flags = uint64_t(ff->value.as_int()) | 0x40000ull;
+      set_field_int(out.body.fields, "Main/Flags", int64_t(flags), ff->value.type);
+    }
+  }
 
   if (need_v4 || find(out.body.fields, "Main/FastTravelAnywhere") != nullptr) {
     set_field_bool(out.body.fields, "Main/FastTravelAnywhere", save.fast_travel_anywhere);

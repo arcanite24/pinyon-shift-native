@@ -835,6 +835,31 @@ int main() {
     CHECK(op.tokens() == before);
   }
 
+  // Brightness (0..100 step 5, default 60) and subtitles (off/on) settings persistence (Q363).
+  {
+    carview::SettingsPage vp;
+    vp.load({});
+    CHECK(vp.value("brightness") == "60");
+    CHECK(vp.value("subtitles") == "off");
+    CHECK(vp.live_settings().brightness == 60);
+    CHECK(!vp.live_settings().subtitles);
+
+    vp.load({"--brightness", "85", "--subtitles"});
+    CHECK(vp.value("brightness") == "85");
+    CHECK(vp.value("subtitles") == "on");
+    CHECK(vp.live_settings().brightness == 85);
+    CHECK(vp.live_settings().subtitles);
+    CHECK(has(vp.tokens(), {"--brightness", "85"}));
+    CHECK(has(vp.tokens(), {"--subtitles"}));
+
+    carview::LiveSettings live_v;
+    live_v.brightness = 25;
+    live_v.subtitles = false;
+    vp.sync_from_live(live_v);
+    CHECK(vp.value("brightness") == "25");
+    CHECK(vp.value("subtitles") == "off");
+  }
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

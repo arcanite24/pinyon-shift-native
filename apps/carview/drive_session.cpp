@@ -1529,6 +1529,10 @@ void DriveSession::save_now(const char* why) {
         s.car_club_shared = app.saved.car_club_shared;
         s.has_controls = true;
         s.controls = live_controls;
+        s.video_seen = app.saved.video_seen || !app.title.first_profile;
+        s.brightness = app.display_brightness;
+        s.has_subtitles = true;
+        s.subtitles = app.subtitles_enabled;
         std::string e;
         if (!drive::write_save(app.save_path, s, &e)) {
           std::fprintf(stderr, "carview: %s\n", e.c_str());

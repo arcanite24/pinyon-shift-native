@@ -230,7 +230,7 @@ bool Renderer::create_modern_passes(std::string& error) {
       !make_layout(single_tex_set_layout_, 16, mblur_tile_layout_, "mblur tile layout") ||
       !make_layout(single_tex_set_layout_, 16, fxaa_layout_, "fxaa layout") ||
       !make_layout(single_tex_set_layout_, 48, upscale_layout_, "upscale layout") ||
-      !make_layout(single_tex_set_layout_, 48, hdr_layout_, "hdr layout") ||
+      !make_layout(single_tex_set_layout_, 64, hdr_layout_, "hdr layout") ||
       !make_layout(single_tex_set_layout_, 80, motion_layout_, "motion layout") ||
       !make_layout(temporal_set_layout_, 48, temporal_layout_, "temporal layout") ||
       !make_layout(single_tex_set_layout_, 16, inspector_layout_, "inspector layout"))

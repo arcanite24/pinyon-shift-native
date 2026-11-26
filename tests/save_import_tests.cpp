@@ -484,6 +484,52 @@ void test_engine_career_not_seeded() {
   CHECK(!race::imported_campaign_needs_seed(drive::DriveSave{}));
 }
 
+// ---- 10. VIDEO screen settings (brightness, subtitles, video_seen / Main/Flags 0x40000) round-trip.
+void test_video_settings_round_trip() {
+  const auto dir = std::filesystem::temp_directory_path() / "shift_save_import_video_settings";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir, ec);
+  const auto save_path = dir / "save.txt";
+  drive::DriveSave out;
+  out.car = "VIP_Viper_13";
+  out.video_seen = true;
+  out.brightness = 75;
+  out.has_subtitles = true;
+  out.subtitles = true;
+  std::string err;
+  CHECK(drive::write_save(save_path, out, &err));
+  drive::DriveSave back;
+  CHECK(drive::read_save(save_path, back, &err));
+  CHECK(back.video_seen);
+  CHECK(back.brightness == 75);
+  CHECK(back.has_subtitles && back.subtitles);
+
+  // Profile import/export: Main/Gamma (snapped to 5%), Main/Subtitles, Main/Flags bit 0x40000.
+  profile::Imported p;
+  profile::set_field_double(p.body.fields, "Main/Gamma", 0.76, profile::Value::kFloat);
+  profile::set_field_int(p.body.fields, "Main/Subtitles", 1, profile::Value::kU8);
+  profile::set_field_int(p.body.fields, "Main/Flags", 0x40000, profile::Value::kU32);
+  drive::DriveSave imported;
+  profile::to_drive_save(p, [](int64_t) { return std::string{}; }, imported, nullptr);
+  CHECK(imported.video_seen);
+  CHECK(imported.brightness == 75);
+  CHECK(imported.has_subtitles && imported.subtitles);
+
+  imported.brightness = 40;
+  imported.subtitles = false;
+  profile::Imported exported;
+  profile::from_drive_save(imported, garage::Garage{}, exported, &p);
+  const auto* gf = profile::find(exported.body.fields, "Main/Gamma");
+  const auto* sf = profile::find(exported.body.fields, "Main/Subtitles");
+  const auto* ff = profile::find(exported.body.fields, "Main/Flags");
+  CHECK(gf && std::fabs(gf->value.as_double() - 0.40) < 1e-4);
+  CHECK(sf && sf->value.as_int() == 0);
+  CHECK(ff && (uint64_t(ff->value.as_int()) & 0x40000ull) != 0);
+
+  std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace
 
 int main() {
@@ -496,6 +542,7 @@ int main() {
   test_rank_from_points();
   test_import_run_then_reload();
   test_engine_career_not_seeded();
+  test_video_settings_round_trip();
   if (g_failures) {
     std::printf("save_import_tests: %d failure(s)\n", g_failures);
     return 1;

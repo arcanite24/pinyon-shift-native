@@ -92,6 +92,9 @@ constexpr Kept kKept[] = {
     {"mods", true, "mods"},
     {"language", true, "language"},
     {"units", true, "units"},
+    {"brightness", true, "brightness"},
+    {"subtitles", false, "subtitles"},
+    {"no-subtitles", false, "subtitles"},
     {"skip-intro-movies", false, "skip-intro-movies"},
     {"no-skip-intro-movies", false, "skip-intro-movies"},
     {"start-in-single-player", false, "start-in-single-player"},
@@ -454,6 +457,16 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"shadows",
        {{"default", {}}, {"off", {"--shadows", "off"}}, {"low", {"--shadows", "low"}}, {"high", {"--shadows", "high"}}}},
       {"bloom", {{"default", {}}, {"on", {"--bloom"}}, {"off", {"--no-bloom"}}}},
+      {"brightness",
+       {{"0", {"--brightness", "0"}},     {"5", {"--brightness", "5"}},     {"10", {"--brightness", "10"}},
+        {"15", {"--brightness", "15"}},   {"20", {"--brightness", "20"}},   {"25", {"--brightness", "25"}},
+        {"30", {"--brightness", "30"}},   {"35", {"--brightness", "35"}},   {"40", {"--brightness", "40"}},
+        {"45", {"--brightness", "45"}},   {"50", {"--brightness", "50"}},   {"55", {"--brightness", "55"}},
+        {"60", {}},                       {"65", {"--brightness", "65"}},   {"70", {"--brightness", "70"}},
+        {"75", {"--brightness", "75"}},   {"80", {"--brightness", "80"}},   {"85", {"--brightness", "85"}},
+        {"90", {"--brightness", "90"}},   {"95", {"--brightness", "95"}},   {"100", {"--brightness", "100"}}},
+       12},
+      {"subtitles", {{"off", {}}, {"on", {"--subtitles"}}}},
       {"difficulty preset",
        {{"easy", {}}, {"medium", {}}, {"hard", {}}, {"insane", {}}, {"custom", {}}},
        1},
@@ -968,6 +981,25 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       ++i;
       continue;
     }
+    if (t == "--brightness" && has_value) {
+      const int b = std::clamp(std::atoi(tokens[i + 1].c_str()), 0, 100);
+      const size_t pick = size_t(std::clamp((b + 2) / 5, 0, 20));
+      for (Row& r : rows_)
+        if (std::string(r.name) == "brightness" && pick < r.choices.size()) {
+          r.pick = pick;
+          break;
+        }
+      ++i;
+      continue;
+    }
+    if (t == "--no-subtitles") {
+      for (Row& r : rows_)
+        if (std::string(r.name) == "subtitles") {
+          r.pick = 0;
+          break;
+        }
+      continue;
+    }
     if (t == "--scene-540p") {
       seen_540p = true;
       for (Row& r : rows_) {
@@ -1098,7 +1130,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
 
 namespace {
 SettingsPage::Tab classify_setting_row(const std::string& name) {
-  if (name == "preset" || name == "shadows" || name == "bloom" || name == "camera" || name == "camera effects" ||
+  if (name == "preset" || name == "shadows" || name == "bloom" || name == "brightness" || name == "subtitles" ||
+      name == "camera" || name == "camera effects" ||
       name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
       name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera" ||
       name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
@@ -1421,6 +1454,11 @@ LiveSettings SettingsPage::live_settings() const {
   ls.skip_intro_movies = pick_label("skip intro movies") == "on";
   ls.start_in_single_player = pick_label("start in single player") == "on";
   ls.skip_vo_with_a = pick_label("skip vo with a") != "off";
+  {
+    const std::string bl = pick_label("brightness");
+    ls.brightness = bl.empty() ? 60 : std::clamp(std::atoi(bl.c_str()), 0, 100);
+  }
+  ls.subtitles = pick_label("subtitles") == "on";
   ls.metric_units = pick_val("units") == "metric";
   {
     const std::string sp = pick_val("speedometer");
@@ -1689,6 +1727,8 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("skip intro movies", live.skip_intro_movies ? "on" : "off");
   set_by_label("start in single player", live.start_in_single_player ? "on" : "off");
   set_by_label("skip vo with a", live.skip_vo_with_a ? "on" : "off");
+  set_by_label("brightness", std::to_string(std::clamp(((live.brightness + 2) / 5) * 5, 0, 100)));
+  set_by_label("subtitles", live.subtitles ? "on" : "off");
   set_by_val("units", live.metric_units ? "metric" : "");
   set_by_val("speedometer", live.hud_speedo_mode == 1 ? "digital" : live.hud_speedo_mode == 2 ? "off" : "");
   set_by_val("minimap", live.minimap_mode == 1 ? "north-up" : live.minimap_mode == 2 ? "off" : "");

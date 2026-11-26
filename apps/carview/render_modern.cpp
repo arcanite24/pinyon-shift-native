@@ -893,7 +893,7 @@ bool split_bindless_supported(const SplitBindlessLimits& limits, uint32_t textur
 ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, Extent output, bool post_bloom,
                                      HdrMode hdr_mode, uint32_t hdr_pattern, bool inspector_active,
                                      bool inspector_needs_motion, const UpscalerChoice& up_choice,
-                                     bool post_motion_blur) {
+                                     bool post_motion_blur, bool need_brightness) {
   ModernTargetPlan p{};
   p.bloom = post_bloom;
   p.ssao = (g.ssao != SsaoQuality::kOff);
@@ -903,7 +903,7 @@ ModernTargetPlan plan_modern_targets(const GraphicsSettings& g, Extent render, E
   p.mblur_tiles = post_motion_blur && (g.velocity_blur != VelocityBlur::kOff);
   const bool need_scale = (render.w != output.w || render.h != output.h);
   const bool need_upscaler = need_scale || g.upscaler != Upscaler::kBilinear;
-  const bool need_hdr_stage = (hdr_mode != HdrMode::kOff) || g.hdr_compare || (hdr_pattern != 0);
+  const bool need_hdr_stage = (hdr_mode != HdrMode::kOff) || g.hdr_compare || (hdr_pattern != 0) || need_brightness;
   p.fxaa_scene = (g.aa == AaMode::kFxaaWorld);
   p.fxaa_standin = (g.aa == AaMode::kFxaaAll);
   p.modern_chain = need_upscaler || need_hdr_stage || p.fxaa_scene || p.fxaa_standin || inspector_active;

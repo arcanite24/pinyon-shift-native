@@ -179,40 +179,86 @@ std::vector<std::string> wrap_words(std::string_view text, const ui::TextStyle& 
 
 }  // namespace
 
-// A new profile's VIDEO screen (830_GAMMA_ADJUST) as orig1 f00030 shows it
-// (1280x720 canvas, measured): the VIDEO tape top left, the black test panel
-// with its three boxes (NOT / BARELY / EASILY VISIBLE, dark text on darker
-// fills), BRIGHTNESS's slider and SUBTITLES's spinner under it on the pink
-// and dark bars, the DESCRIPTION panel right, A SAVE and Y RESET TO DEFAULT.
-// The whole block is turned 3 degrees as the scene's is. Interim: drawn by
-// hand at the capture's places. The scene's text nodes rest where the
-// capture has them (Text_Label 231,551, TEXT_DESCRIPTION 820,179), so the
-// follow-up is to bind 830 through SceneScreen as 837's sliders are.
-bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
+// 830_GAMMA_ADJUST timeline state: root FEEDBACK slide + GAMMA_SLIDER and
+// SUBTITLE_SPINNER focus/blur transitions (100 ms in the BGF).
+struct VideoAnim {
+  SceneTimeline tl;
+  bool init = false;
+  double phase_t = 0.0;
+  int row = -1;
+  uint32_t slider_comp = 0;
+  uint32_t spinner_comp = 0;
+};
+VideoAnim& video_anim() {
+  static VideoAnim a;
+  return a;
+}
+
+bool video_timeline(SceneScreen& sc, const TitleMenu& m) {
+  VideoAnim& a = video_anim();
+  const bool fresh = a.tl.scene() != sc.scene().scene();
+  a.tl.bind(sc.scene().scene());
+  if (!a.tl.ok()) return false;
+  const int slider_node = sc.node("Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/GAMMA_SLIDER");
+  const int spinner_node = sc.node("Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER");
+  const bool same = a.init && !fresh && m.phase_t >= a.phase_t;
+  double dt = m.phase_t;
+  if (!same) {
+    a.tl.reset();
+    const int si = a.tl.item_of_node(slider_node);
+    const int spi = a.tl.item_of_node(spinner_node);
+    a.slider_comp = si >= 0 ? uint32_t(si) : 0u;
+    a.spinner_comp = spi >= 0 ? uint32_t(spi) : 0u;
+    a.tl.go_to(0, "FEEDBACK");
+    if (a.slider_comp) {
+      if (m.video_row == 0) {
+        a.tl.go_to(a.slider_comp, "Focused");
+      } else {
+        // GAMMA_SLIDER's Blurred slide keeps Material3054 pink; Blur ends on (33,33,33).
+        a.tl.go_to(a.slider_comp, "Blur");
+        a.tl.set_time(a.slider_comp, 100.0f);
+      }
+    }
+    if (a.spinner_comp) a.tl.go_to(a.spinner_comp, m.video_row == 1 ? "Focused" : "Blurred");
+    a.row = m.video_row;
+  } else {
+    dt = m.phase_t - a.phase_t;
+    if (m.video_row != a.row) {
+      if (a.slider_comp) a.tl.go_to(a.slider_comp, m.video_row == 0 ? "Focus" : "Blur");
+      if (a.spinner_comp) a.tl.go_to(a.spinner_comp, m.video_row == 1 ? "Focus" : "Blur");
+      a.row = m.video_row;
+    }
+  }
+  a.tl.advance(float(dt));
+  a.init = true;
+  a.phase_t = m.phase_t;
+  return sc.play(a.tl);
+}
+
+// Hand-drawn fallback for VIDEO when 830_GAMMA_ADJUST is unavailable.
+bool draw_video_screen_fallback(ui::List& l, const TitleMenu& m, float w, float h) {
   namespace t = title_text;
   const SceneFrame f = SceneScreen::frame(w, h);
   const float s = f.s;
   constexpr float kTurn = -0.052f;
   ui4::title_tape(l, s, f.x(150.0f), f.y(110.0f), text_of(t::kVideo), ui4::kBrushBlack, 46.0f, 300.0f);
 
-  // The test panel and its boxes.
   l.turn(f.x(504.0f), f.y(343.0f), kTurn);
-  l.rect(f.x(214.0f), f.y(168.0f), f.x(794.0f), f.y(518.0f), ui::rgba(3, 3, 3, 250));
+  l.rect(f.x(214.0f), f.y(168.0f), f.x(794.0f), f.y(518.0f), ui::rgba(0, 0, 0, 250));
   struct Box {
     float y0, y1;
     uint32_t fill;
     StringRef text;
   };
   const Box boxes[] = {{188.0f, 282.0f, ui::rgba(5, 5, 5), t::kNotVisible},
-                       {282.0f, 380.0f, ui::rgba(9, 9, 9), t::kBarelyVisible},
-                       {380.0f, 494.0f, ui::rgba(20, 20, 20), t::kEasilyVisible}};
-  const ui::TextStyle box_ts = ui4::style(ui::Font::kD, 38.0f * s, ui::rgba(3, 3, 3), ui::Align::kCenter);
+                       {282.0f, 380.0f, ui::rgba(13, 13, 13), t::kBarelyVisible},
+                       {380.0f, 494.0f, ui::rgba(26, 26, 26), t::kEasilyVisible}};
+  const ui::TextStyle box_ts = ui4::style(ui::Font::kD, 38.0f * s, ui::rgba(0, 0, 0), ui::Align::kCenter);
   for (const Box& b : boxes) {
     l.rect(f.x(236.0f), f.y(b.y0), f.x(772.0f), f.y(b.y1), b.fill);
     l.text(f.x(504.0f), f.y(0.5f * (b.y0 + b.y1) - 18.0f), text_of(b.text), box_ts);
   }
 
-  // The rows: the selected on pink, the other on a dark bar.
   const ui::TextStyle label_ts = ui4::style(ui::Font::kD, 17.0f * s, kWhite);
   const ui::TextStyle value_ts = ui4::style(ui::Font::kB, 17.0f * s, kWhite, ui::Align::kCenter);
   for (int row = 0; row < 2; ++row) {
@@ -233,7 +279,6 @@ bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
   }
   l.unturn();
 
-  // DESCRIPTION: its title on an off-white strip, the row's text under it.
   l.turn(f.x(945.0f), f.y(250.0f), kTurn);
   l.rect(f.x(806.0f), f.y(170.0f), f.x(1084.0f), f.y(362.0f), ui::rgba(14, 14, 16, 205));
   ui4::offwhite_strip(l, f.x(812.0f), f.y(140.0f), f.x(1068.0f), f.y(170.0f), s);
@@ -247,6 +292,207 @@ bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
     y += 27.0f;
   }
   l.unturn();
+
+  ui4::button_bar(l, {{"A", text_of(t::kSave)}, {"Y", text_of(t::kResetDefault)}}, w, h);
+  return true;
+}
+
+// VIDEO screen bound through 830_GAMMA_ADJUST (SceneScreen + SceneTimeline).
+bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
+  namespace t = title_text;
+  SceneScreen sc(kVideoScene);
+  if (!sc.ok()) return draw_video_screen_fallback(l, m, w, h);
+  const SceneDraw& sd = sc.scene();
+  const SceneFrame f = SceneScreen::frame(w, h);
+  const float s = f.s;
+  sc.bindings().fit_text = false;
+
+  const bool timeline = video_timeline(sc, m);
+
+  // Hide unused / duplicate scene nodes, unclipped nine-grid/dirt panels whose
+  // pivots are not decoded by SceneDraw, and the scene's own ButtonBar.
+  for (const char* p : {
+           "Black",
+           "Group_FOOTER/ButtonBar",
+           "Group_BLADE/TitleTape/Group/Clipon",
+           "Group_BLADE/BG_Noise",
+           "Group_BLADE/BG_Noise2",
+           "Group_BLADE/Group_MENU/Old",
+           "Group_BLADE/Group_MENU/Group_NINE_GRID_GAMMA",
+           "Group_BLADE/Group_MENU/Group_NINE_GRID_GAMMA2",
+           "Group_BLADE/Group_MENU/BigPane01",
+           "Group_BLADE/Group_MENU/BigPane1",
+           "Group_BLADE/Group_MENU/SELECTION_BAR2",
+           "Group_BLADE/Group_MENU/SELECTION_BAR3",
+           "Group_BLADE/Group_MENU/New_Boxes/Group_NINE_GRID_1",
+           "Group_BLADE/Group_MENU/New_Boxes/Group_NINE_GRID_2",
+           "Group_BLADE/Group_MENU/New_Boxes/Group_NINE_GRID_3",
+           "Group_BLADE/Group_MENU/New_Boxes/Text_1",
+           "Group_BLADE/Group_MENU/New_Boxes/Text_2",
+           "Group_BLADE/Group_MENU/New_Boxes/Text_3",
+           "Group_BLADE/Group_DESCRIPTION/Group_NINE_GRID_DESCRIPTION/Panel01",
+           "Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/GAMMA_SLIDER/Group/TUNING_SLIDER/Slider_History",
+           "Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER/EMPTY_BAR",
+           "Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER/Group/Text_Prev",
+           "Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER/Group/Text_Next",
+           "Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER/Group/Text_Percent",
+       }) {
+    sc.hide(sc.node(p));
+  }
+
+  // Title tape.
+  sc.text(sc.node("Group_BLADE/TitleTape/Group/TitleTapeText"), text_of(t::kVideo));
+
+  // BRIGHTNESS slider row (GAMMA_SLIDER) and SUBTITLES spinner row (SUBTITLE_SPINNER).
+  constexpr float kSliderLength = 121.0f;
+  constexpr float kRowSlope = 0.052f;
+  constexpr float kArrowHalf[2] = {5.0f, 7.5f};
+  struct Arrow {
+    float x, y;
+    bool next;
+    float alpha;
+  };
+  std::vector<Arrow> arrows_at;
+  std::string arrow_key;
+
+  const float fill = std::clamp(float(m.brightness) / 100.0f, 0.0f, 1.0f);
+  const int slider_g = sc.node("Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/GAMMA_SLIDER/Group");
+  if (slider_g >= 0) {
+    const int label = sc.node("Text_Label", slider_g);
+    const int setting = sc.node("Text_Setting", slider_g);
+    const int sel_bar = sc.node("SELECTION_BAR", slider_g);
+    const int arrows = sc.node("TUNING_SLIDER/Slider_Fill/ARROWS", slider_g);
+    sc.text(label, text_of(t::kBrightness));
+    sc.text(setting, std::to_string(m.brightness));
+    const int track = sc.node("TUNING_SLIDER/PROGRESS_BAR_STATIC_BKG/StatBarEmpty", slider_g);
+    const int full = sc.node("TUNING_SLIDER/Slider_Fill/Group/StatBarFill", slider_g);
+    if (track >= 0) sc.at(track).visible_width = kSliderLength;
+    if (full >= 0) sc.at(full).visible_width = std::max(0.5f, kSliderLength * fill);
+    if (full >= 0 && fill <= 0.0f) sc.hide(full);
+    sc.hide(arrows);
+    for (const char* name : {"BUTTON_ARROW_PREV", "BUTTON_ARROW_NEXT"}) {
+      const int b = sc.node(name, arrows);
+      if (b < 0) continue;
+      const auto a = sd.at(b);
+      const bool next = name[13] == 'N';
+      const bool end = next ? (fill >= 1.0f) : (fill <= 0.0f);
+      arrows_at.push_back({a[0], a[1], next, end ? 0.5f : 1.0f});
+      if (arrow_key.empty()) arrow_key = sd.texture_key_of(sc.node("Front_Body", b));
+    }
+    if (!timeline) {
+      const uint32_t bar_tint = m.video_row == 0 ? ui4::kPink : ui::rgba(33, 33, 33);
+      for (int p : {sc.node("Pill_left", sel_bar), sc.node("Pill_right", sel_bar)})
+        if (p >= 0) sc.at(p).tint = bar_tint;
+    }
+    if (label >= 0) {
+      const auto a = sd.at(label);
+      constexpr int kPieces = 6;
+      constexpr float kX0 = -12.0f, kLen = 592.0f, kHalf = 12.0f;
+      for (int p = 0; p < kPieces; ++p) {
+        const float x0 = a[0] + kX0 + kLen * float(p) / kPieces;
+        const float x1 = a[0] + kX0 + kLen * float(p + 1) / kPieces;
+        const float cy = a[1] - 4.0f - kRowSlope * (0.5f * (x0 + x1) - a[0]);
+        l.add_hit(f.x(x0), f.y(cy - kHalf), f.x(x1), f.y(cy + kHalf), ui::kHitRow, 0);
+      }
+    }
+  }
+
+  const int sub_g = sc.node("Group_BLADE/Group_MENU/SCROLLING_LIST/Group_ITEMS/SUBTITLE_SPINNER/Group");
+  if (sub_g >= 0) {
+    const int label = sc.node("Text_Label", sub_g);
+    const int current = sc.node("Text_Current", sub_g);
+    const int sel_bar = sc.node("SELECTION_BAR", sub_g);
+    const int arrows = sc.node("ARROWS", sub_g);
+    sc.text(label, text_of(t::kSubtitles));
+    sc.text(current, text_of(m.subtitles ? t::kEnable : t::kDisable));
+    sc.hide(arrows);
+    for (const char* name : {"BUTTON_ARROW_PREV", "BUTTON_ARROW_NEXT"}) {
+      const int b = sc.node(name, arrows);
+      if (b < 0) continue;
+      const auto a = sd.at(b);
+      const bool next = name[13] == 'N';
+      arrows_at.push_back({a[0], a[1], next, 1.0f});
+      if (arrow_key.empty()) arrow_key = sd.texture_key_of(sc.node("Front_Body", b));
+    }
+    if (!timeline) {
+      const uint32_t bar_tint = m.video_row == 1 ? ui4::kPink : ui::rgba(33, 33, 33);
+      for (int p : {sc.node("Pill_left", sel_bar), sc.node("Pill_right", sel_bar)})
+        if (p >= 0) sc.at(p).tint = bar_tint;
+    }
+    if (label >= 0) {
+      const auto a = sd.at(label);
+      constexpr int kPieces = 6;
+      constexpr float kX0 = -12.0f, kLen = 592.0f, kHalf = 12.0f;
+      for (int p = 0; p < kPieces; ++p) {
+        const float x0 = a[0] + kX0 + kLen * float(p) / kPieces;
+        const float x1 = a[0] + kX0 + kLen * float(p + 1) / kPieces;
+        const float cy = a[1] - 4.0f - kRowSlope * (0.5f * (x0 + x1) - a[0]);
+        l.add_hit(f.x(x0), f.y(cy - kHalf), f.x(x1), f.y(cy + kHalf), ui::kHitRow, 1);
+      }
+    }
+  }
+
+  // DESCRIPTION panel: title, wrapped text, and dark panel behind it (anchored on
+  // Group_DESCRIPTION so it follows scene animations, matching options_screen.cpp).
+  constexpr float kTurn = -0.052f;
+  const int desc_group = sc.node("Group_BLADE/Group_DESCRIPTION");
+  if (desc_group >= 0) {
+    const int title_node = sc.node("TEXT_TITLE", desc_group);
+    sc.text(title_node, text_of(t::kDescription));
+    if (title_node >= 0) sc.at(title_node).tint = ui::rgba(20, 20, 22);
+    const int desc_node = sc.node("TEXT_DESCRIPTION", desc_group);
+    const std::string desc = text_of(m.video_row == 0 ? t::kBrightnessDesc : t::kSubtitlesDesc);
+    sc.text(desc_node, sc.wrap(desc_node, desc, 240.0f));
+    if (desc_node >= 0) sc.at(desc_node).dy = 12.0f;
+    const auto ga = sd.at(desc_group);
+    const float dp[4] = {ga[0] - 4.0f, ga[1] + 10.0f, ga[0] + 272.0f, ga[1] + 224.0f};
+    l.turn(f.x(0.5f * (dp[0] + dp[2])), f.y(0.5f * (dp[1] + dp[3])), kTurn);
+    l.rect(f.x(dp[0]), f.y(dp[1]), f.x(dp[2]), f.y(dp[3]), ui::rgba(14, 14, 16, 205));
+    l.unturn();
+  }
+
+  // Draw the black calibration panel (BigPane1 replacement) and the three calibration
+  // boxes (Material788 rgba 0.02, 0.05, 0.10 = 5, 13, 26) BEFORE sc.draw so TitleTape
+  // and the BRIGHTNESS/SUBTITLES rows sit cleanly above its top and bottom edges.
+  {
+    const int t2 = sc.node("Group_BLADE/Group_MENU/New_Boxes/Text_2");
+    const auto c2 = t2 >= 0 ? sd.at(t2) : std::array<float, 2>{498.0f, 337.0f};
+    const float px = c2[0] + 4.0f;
+    const float py = c2[1] + 6.0f;
+    l.turn(f.x(px), f.y(py), kTurn);
+    // Solid black frame measured on v0520.png (x 214..794, y 168..518).
+    l.rect(f.x(px - 290.0f), f.y(py - 175.0f), f.x(px + 290.0f), f.y(py + 175.0f), ui::rgba(0, 0, 0));
+    struct CalBox {
+      float dy;
+      uint32_t fill;
+      StringRef label;
+    };
+    const CalBox cal[3] = {
+        {-100.0f, ui::rgba(5, 5, 5), t::kNotVisible},
+        {0.0f, ui::rgba(13, 13, 13), t::kBarelyVisible},
+        {100.0f, ui::rgba(26, 26, 26), t::kEasilyVisible},
+    };
+    const ui::TextStyle bts = ui4::style(ui::Font::kD, 38.0f * s, ui::rgba(0, 0, 0), ui::Align::kCenter);
+    for (int i = 0; i < 3; ++i) {
+      const float by = py + cal[i].dy;
+      l.rect(f.x(px - 266.0f), f.y(by - 47.0f), f.x(px + 266.0f), f.y(by + 47.0f), cal[i].fill);
+      l.text(f.x(px), f.y(by - 19.0f), text_of(cal[i].label), bts);
+    }
+    l.unturn();
+  }
+
+  sc.draw(l, f);
+
+  // Draw the slider/spinner prev & next arrows at the scene's BUTTON_ARROW_* positions.
+  std::array<float, 4> uv{};
+  if (!arrow_key.empty() && ui4::texture(arrow_key, uv)) {
+    for (const Arrow& a : arrows_at) {
+      std::array<float, 4> u = uv;
+      if (a.next) std::swap(u[0], u[2]);
+      const uint32_t tint = a.alpha < 1.0f ? ui::rgba(255, 255, 255, 128) : kWhite;
+      l.image_rotated(f.x(a.x), f.y(a.y), kArrowHalf[0] * s, kArrowHalf[1] * s, -0.052f, u, tint);
+    }
+  }
 
   ui4::button_bar(l, {{"A", text_of(t::kSave)}, {"Y", text_of(t::kResetDefault)}}, w, h);
   return true;

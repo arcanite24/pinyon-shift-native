@@ -811,8 +811,22 @@ bool DriveApp::init(int& exit_code) {
   title.reset();
   if (cli_title_menu) title.show_menu();
   title.profile_error = save_read_error;
-  // No save yet: a new profile, whose Press Start leads to VIDEO (Q363).
-  title.first_profile = !have_saved && !save_read_error;
+  // Default Subtitles: DISABLE when UI language matches audio language, ENABLE otherwise.
+  const bool default_subs = false;
+  if (have_saved) {
+    if (!display_brightness_explicit) display_brightness = carview::TitleMenu::snap_brightness(saved.brightness);
+    if (!subtitles_explicit) subtitles_enabled = saved.has_subtitles ? saved.subtitles : default_subs;
+  } else {
+    display_brightness = carview::TitleMenu::snap_brightness(display_brightness);
+    if (!subtitles_explicit) subtitles_enabled = default_subs;
+  }
+  title.brightness = display_brightness;
+  title.default_subtitles = default_subs;
+  title.subtitles = subtitles_enabled;
+  fmv_player.set_subtitles_enabled(subtitles_enabled);
+  // Boot gate (Main/Flags bit 0x40000; Q276, Q363, first30l vid1/vid2): show VIDEO
+  // only when the profile has not yet saved past VIDEO.
+  title.first_profile = (!have_saved || !saved.video_seen) && !save_read_error;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");

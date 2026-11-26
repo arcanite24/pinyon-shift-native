@@ -155,6 +155,8 @@ class FmvPlayer {
   int current_subtitle_index() const;
   std::string current_subtitle_text() const;
   void set_subtitles(std::vector<FmvSubtitleCue> cues);
+  void set_subtitles_enabled(bool enabled) { subtitles_enabled_ = enabled; }
+  bool subtitles_enabled() const { return subtitles_enabled_; }
   const std::vector<uint8_t>& current_frame() const { return current_frame_; }
 
 
@@ -202,6 +204,7 @@ class FmvPlayer {
   FmvMovieId movie_id_ = FmvMovieId::kFmv01Opening;
   std::string title_;
   std::vector<FmvSubtitleCue> subtitles_;
+  bool subtitles_enabled_ = true;
   std::vector<uint8_t> current_frame_;
   mutable uint64_t frame_serial_ = 0;
   mutable uint64_t uploaded_serial_ = 0;

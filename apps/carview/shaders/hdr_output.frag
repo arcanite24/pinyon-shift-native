@@ -8,6 +8,7 @@ layout(push_constant) uniform HdrPush {
   vec4 p0;    // x = paper_white_scale (nits/80), y = highlight_scale, z = knee, w = knee_range_inv
   vec4 p1;    // x = gamma (0=sRGB), y = max_channel_weight, z = compare_x (<0 off), w = pattern_value (nits/80)
   uvec4 p2;   // x = output_mode (0=SDR preview, 1=scRGB, 2=HDR10 PQ), y = pattern (0..3), z = width, w = height
+  vec4 p3;    // x = display_brightness_offset ((2*g - 1) * 0.2), yzw unused
 } pc;
 
 layout(location = 0) in vec2 v_uv;
@@ -110,6 +111,13 @@ void main() {
   vec2 size = vec2(max(pc.p2.z, 1u), max(pc.p2.w, 1u));
   vec2 frag = vec2(pixel) + 0.5;
   vec4 sdr = texelFetch(stand_in, pixel, 0);
+  if (abs(pc.p3.x) > 1e-5) {
+    sdr.rgb = clamp(sdr.rgb + vec3(pc.p3.x), 0.0, 1.0);
+  }
+  if (pc.p2.x == kOutputSdrPreview && pc.p2.y == kPatternNone && pc.p1.z < 0.0 && pc.p0.y <= 0.0 && pc.p1.x <= 0.0) {
+    output_color = vec4(sdr.rgb, 1.0);
+    return;
+  }
   float ui = clamp(sdr.a, 0.0, 1.0);
   vec3 linear = srgb_to_linear(sdr.rgb);
 

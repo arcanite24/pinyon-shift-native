@@ -19,6 +19,7 @@ namespace carview {
 struct TitleScreenHud;
 
 inline constexpr std::string_view kPreSplashScene = "120_P_PRE_SPLASH";
+inline constexpr std::string_view kVideoScene = "830_GAMMA_ADJUST";
 inline constexpr std::string_view kLoadingScene = "2_C_INI_LOADING";
 
 // The strings the front end binds; the corpus test checks every table one.

@@ -168,7 +168,12 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               if (car_damage.zone_roof >= 0.45f || car_damage.glass_crack >= 0.85f) gmask |= (1u << 4);
               vst.glass_broken_mask = gmask;
             }
-            vst.hub_ambience = autoshow.is_open() ? 1 : (paint_open ? 2 : ((shop.is_open() || garage_open) ? 3 : 0));
+            const bool garage_in_workshop =
+                garage_open && hub_menu.open() && hub_menu.top() == carview::HubMenu::kWorkshop;
+            const bool garage_in_paint =
+                garage_open && hub_menu.open() && hub_menu.top() == carview::HubMenu::kPaintBooth;
+            vst.hub_ambience =
+                autoshow.is_open() ? 1 : ((paint_open || garage_in_paint) ? 2 : ((shop.is_open() || garage_in_workshop) ? 3 : 0));
             {
               // The Autoshow is the homespace showroom scene, whose ui4audio
               // override silences Accept. Other screens set their own scene.
@@ -962,7 +967,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             if (autoshow.is_open()) active_hub_room = HubRoom::kAutoshow;
             else if (shop.is_open()) active_hub_room = HubRoom::kWorkshop;
             else if (paint_open) active_hub_room = HubRoom::kPaintShop;
-            else if (garage_open) active_hub_room = HubRoom::kGarage;
+            else if (garage_open || outpost_hub_open) active_hub_room = HubRoom::kGarage;
             // The paint booth's and the workshop's lists are shown in their
             // rooms (20_paint_shop_orig.png).
             else if (hub_menu.open() && hub_menu.top() == carview::HubMenu::kPaintBooth)
@@ -990,7 +995,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   preview_sr = it->second.get();
                 }
               }
-            } else if (active_hub_room == HubRoom::kGarage) {
+            } else if (active_hub_room == HubRoom::kGarage && garage_open) {
               if (app.have_garage && !app.career_garage.cars.empty()) {
                 if (const auto* ge = garage_browser.selected_entry()) {
                   if (!ge->media_name.empty()) cur_preview_car = ge->media_name;
@@ -1027,6 +1032,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   inst.model[0] = 1.0f;
                   inst.model[5] = 1.0f;
                   inst.model[10] = 1.0f;
+                  inst.model[13] = host.showroom.bounds_min()[1] - it->second->bounds_min()[1];
                   inst.model[15] = 1.0f;
                   host.showroom.set_instances({inst});
                 } else {
@@ -1035,24 +1041,42 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               } else {
                 host.showroom.set_instances({});
               }
-            } else {
+            } else if (active_hub_room != HubRoom::kGarage) {
               host.showroom.set_instances({});
             }
 
+            // MENU-02 / Q262 / Q365: Autoshow, Workshop and Paint Shop load their
+            // own interior room tracks (uiautoshow, uiworkshop, uipaintshop).
+            // MY GARAGE opened inside the workshop or paint booth keeps that room;
+            // opened from an Outpost or free roam it stays over the live Colorado
+            // world with the close low orbit camera (first30l outpost-garage2,
+            // mode=21, fov=48.14 deg) rather than a synthetic dark studio stage.
+            const HubRoom scene_room =
+                (active_hub_room == HubRoom::kGarage && hub_menu.open() &&
+                 hub_menu.top() == carview::HubMenu::kWorkshop)
+                    ? HubRoom::kWorkshop
+                : (active_hub_room == HubRoom::kGarage && hub_menu.open() &&
+                   hub_menu.top() == carview::HubMenu::kPaintBooth)
+                    ? HubRoom::kPaintShop
+                    : active_hub_room;
+            const bool room_track = carview::hub_room_track(scene_room) != nullptr && !app.cli_hub_studio &&
+                                    host.enter_room_world(scene_room);
+            const bool live_world_garage =
+                active_hub_room == HubRoom::kGarage && !room_track && !app.cli_hub_studio;
+            if (!room_track) host.leave_room_world();
+
             const HubCameraFocus desired_focus =
-                (active_hub_room == HubRoom::kWorkshop)
+                (scene_room == HubRoom::kWorkshop)
                     ? carview::focus_for_part_enum(shop.active_part_enum())
-                    : (active_hub_room == HubRoom::kPaintShop)
+                    : (scene_room == HubRoom::kPaintShop)
                           ? (livery_editor.is_open() ? HubCameraFocus::kSide : HubCameraFocus::kTurntable)
                           : HubCameraFocus::kTurntable;
-            // The disc's camera preset for the screen (UICarTargetCameraPresets.xml),
-            // else the engine's focus.
             // MENU-03: the disc's camera for the screen (a camera.zip sequence
             // or a UICarTargetCameraPresets.xml preset), else the engine's focus.
             const bool colour_select =
-                active_hub_room == HubRoom::kAutoshow && autoshow.step() == carview::AutoshowStep::kColorSelect;
+                scene_room == HubRoom::kAutoshow && autoshow.step() == carview::AutoshowStep::kColorSelect;
             const carview::HubCameraShot shot = carview::hub_camera_shot(
-                active_hub_room, active_hub_room == HubRoom::kWorkshop && shop.is_open() ? shop.active_part_enum() : -1,
+                scene_room, scene_room == HubRoom::kWorkshop && shop.is_open() ? shop.active_part_enum() : -1,
                 livery_editor.is_open(), int(livery_editor.region()), colour_select);
             const cutscene::Cutscene* sequence =
                 shot.sequence_member.empty() ? nullptr : hub_sequence(shot.sequence_member, shot.sequence);
@@ -1074,14 +1098,30 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             }
             // Only reset the camera when the hub screen, the shot or the
             // highlighted car changes, keeping the orbit and the stick's look.
-            // A new car in the Autoshow's browse keeps the sequence running.
-            if (room_changed || desired_focus != s_last_hub_focus || cur_preview_car != s_last_hub_car ||
+            // A new car in the Autoshow's or MY GARAGE's browse keeps the orbit running.
+            if (room_changed || desired_focus != s_last_hub_focus ||
+                (!live_world_garage && cur_preview_car != s_last_hub_car) ||
                 want_preset != s_last_hub_preset || sequence != s_last_hub_sequence) {
               if (sequence)
                 hub_cam.play(sequence);
               else if (preset)
                 hub_cam.set_preset(*preset);
-              else {
+              else if (live_world_garage) {
+                // Close low orbit around the parked car in Colorado matching
+                // first30l outpost-garage2 (mode=21, fov=48.14 deg).
+                hub_cam.play(nullptr);
+                hub_cam.set_focus(HubCameraFocus::kTurntable);
+                hub_cam.yaw = hub_cam.target_yaw = -0.82f;
+                hub_cam.pitch = hub_cam.target_pitch = 0.13f;
+                hub_cam.distance = hub_cam.target_dist = 3.65f;
+                const float cy = host.showroom.bounds_min()[1] + 0.56f;
+                hub_cam.target[0] = hub_cam.target_pos[0] = 0.30f;
+                hub_cam.target[1] = hub_cam.target_pos[1] = cy;
+                hub_cam.target[2] = hub_cam.target_pos[2] = 0.0f;
+                hub_cam.fov_deg = hub_cam.target_fov_deg = 48.14f;
+                hub_cam.auto_orbit = true;
+                hub_cam.orbit_speed = 0.14f;
+              } else {
                 hub_cam.play(nullptr);
                 hub_cam.set_focus(desired_focus);
               }
@@ -1099,6 +1139,16 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
             }
             hub_cam.step(hub_dt);
+
+            if (live_world_garage) {
+              const auto cv = hub_cam.view();
+              const V3 eye{cv.eye[0], cv.eye[1], cv.eye[2]};
+              const V3 at{cv.eye[0] + cv.forward[0], cv.eye[1] + cv.forward[1], cv.eye[2] + cv.forward[2]};
+              const V3 up{cv.up[0], cv.up[1], cv.up[2]};
+              const float fov = cv.fov_deg > 1.0f ? cv.fov_deg : 48.14f;
+              hub_cam_frame = look_frame(eye, at, up, aspect, false, host.renderer.reverse_z(), fov, 0.1f, &host.cam_proj);
+              s_cached_stage_room = HubRoom::kNone;
+            } else {
             carview::build_hub_frame(active_hub_room, hub_cam, uint32_t(std::max(1, w)), uint32_t(std::max(1, h)),
                                      hub_cam_frame, host.renderer.reverse_z());
 
@@ -1111,18 +1161,6 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const float hw = std::clamp(0.5f * (bmax[0] - bmin[0]), 0.70f, 1.45f);
             const float hl = std::clamp(0.5f * (bmax[2] - bmin[2]), 1.60f, 3.00f);
             const float fy = bmin[1];
-            // MENU-02: the room's own track in Colorado's place, the car at its
-            // origin with its wheels on the room's floor; the studio stage
-            // stays for the rooms without a track and when one does not read.
-            // MY GARAGE opened by the workshop's CHANGE CAR or BARN FINDS
-            // (the workshop's list still under it) stays in the workshop.
-            const HubRoom scene_room = (active_hub_room == HubRoom::kGarage && hub_menu.open() &&
-                                        hub_menu.top() == carview::HubMenu::kWorkshop)
-                                           ? HubRoom::kWorkshop
-                                           : active_hub_room;
-            const bool room_track = carview::hub_room_track(scene_room) != nullptr && !app.cli_hub_studio &&
-                                    host.enter_room_world(scene_room);
-            if (!room_track) host.leave_room_world();
             if (room_track) {
               const carview::HubRoomScenery* rs = host.room_world_scenery();
               const float lift = fy - (rs ? rs->floor_y : 0.0f);
@@ -1236,6 +1274,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             host.showroom.set_particles({}, {}, {}, 0.25f, false);
             host.showroom.set_showcase_mesh({});
             host.showroom.set_world_overlay({});
+            }
             }
           } else if (last_hub_room != HubRoom::kNone) {
             host.showroom.set_background(0.42f, 0.55f, 0.72f);
@@ -1471,7 +1510,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 at = vehicle.position();
             for (const auto& fc : festival_mgr->cars()) {
               const double d = std::hypot(fc.position.x - at.x, fc.position.z - at.z);
-              if (d > 105.0) continue;
+              if (d > carview::kNameTagMaxM) continue;
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, fc.position.x, fc.position.y + 1.85, fc.position.z,
                                       float(w), float(h), sx, sy) &&
@@ -1653,6 +1692,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           vehicle.set_pose(stepped);
           host.renderer.set_camera_projection(host.cam_proj.near_z, host.cam_proj.far_z, host.cam_proj.proj00, host.cam_proj.proj11);
           host.renderer.set_camera_vp(host.cam_proj.vp_unjittered, w_jitter_uv_x, w_jitter_uv_y);
+          const int active_brightness =
+              (app.show_title && app.title.phase == carview::TitleMenu::Phase::kVideo) ? app.title.brightness
+                                                                                       : app.display_brightness;
+          host.renderer.set_display_brightness_offset(carview::Renderer::brightness_offset_for(active_brightness));
+          app.fmv_player.set_subtitles_enabled(app.subtitles_enabled);
           host.renderer.set_skip_scene(map_overlay.active || app.fmv_player.active());
           const auto wf_t0 = std::chrono::steady_clock::now();
           if (!host.renderer.draw_frame(FrameConstants{}, app.error)) {

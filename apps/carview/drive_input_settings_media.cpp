@@ -83,6 +83,13 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.skip_intro_movies = ls.skip_intro_movies;
                 app.start_in_single_player = ls.start_in_single_player;
                 app.skip_vo_with_a = ls.skip_vo_with_a;
+                app.display_brightness = carview::TitleMenu::snap_brightness(ls.brightness);
+                app.subtitles_enabled = ls.subtitles;
+                app.title.brightness = app.display_brightness;
+                app.title.subtitles = app.subtitles_enabled;
+                app.fmv_player.set_subtitles_enabled(app.subtitles_enabled);
+                host.renderer.set_display_brightness_offset(
+                    carview::Renderer::brightness_offset_for(app.display_brightness));
                 const bool prev_metric = app.metric_units;
                 const std::string prev_lang = app.language;
                 app.metric_units = ls.metric_units;
