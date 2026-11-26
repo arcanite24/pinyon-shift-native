@@ -115,7 +115,31 @@ void DriveSession::autoplay_frame() {
     const bool driving = ap.drive_auto() && !app.race && !app.show_title && !app.fmv_player.active() &&
                          !app.campaign.is_blocking_gameplay() &&
                          (!app.campaign.ftc_active() || app.campaign.ftc().controls_enabled());
-    if (!driving || vehicle.speed() > 1.0 || !route.valid || route.points.size() < 2) {
+    // The career's event to sign up for, and where: with the sat-nav's
+    // DESTINATION REACHED short of the sign-up sphere the route is gone, so
+    // a car stuck near it is put on the sign-up place (a harness nudge).
+    std::array<double, 3> sign_pos{};
+    const auto ftc_stage = app.campaign.ftc().stage();
+    const int64_t sign_id = ftc_stage == race::FtcStage::kHeats      ? race::FirstTimeCareer::kAllComerFinal
+                            : ftc_stage == race::FtcStage::kShowcase ? race::FirstTimeCareer::kMustangRace
+                                                                     : 0;
+    const drive::Vec3 vp = vehicle.position();
+    const bool near_sign_up = app.campaign.ftc_active() && sign_id && app.campaign.ftc_sign_up_event() == 0 &&
+                              app.campaign.ftc().event_trigger(sign_id, sign_pos) &&
+                              std::hypot(sign_pos[0] - vp.x, sign_pos[2] - vp.z) < 400.0;
+    const bool sign_up_stuck = ap.drive_auto() && !app.race && !app.fmv_player.active() && near_sign_up &&
+                               app.campaign.ftc().controls_enabled() && std::abs(vehicle.speed()) <= 1.0;
+    if (sign_up_stuck) {
+      if (stuck_since < 0.0) {
+        stuck_since = now;
+      } else if (now - stuck_since > 6.0) {
+        stuck_since = -1.0;
+        const double h = std::atan2(sign_pos[0] - vp.x, sign_pos[2] - vp.z);
+        vehicle.reset({sign_pos[0], sign_pos[1] + 1.0, sign_pos[2]}, h);
+        ap.note("autoplay unstuck onto the sign-up place");
+        std::printf("autoplay: unstuck onto the sign-up place of event %lld\n", (long long)sign_id);
+      }
+    } else if (!driving || vehicle.speed() > 1.0 || !route.valid || route.points.size() < 2) {
       stuck_since = -1.0;
     } else if (stuck_since < 0.0) {
       stuck_since = now;
