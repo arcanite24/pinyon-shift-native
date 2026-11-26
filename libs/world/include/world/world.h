@@ -50,6 +50,36 @@ bool skipped_material(const std::string& material);
 // H_BLND1_SPEC, the UberLOD patches' effect, is an UberLOD patch.
 uint8_t far_level(const std::string& object, const std::vector<std::string>& effects = {});
 
+// Spatial LOD deduplication for world-space render objects: an object at a
+// higher LOD number is suppressed only when another object of the same
+// lod_family with a lower LOD number has a bounding box within `max_gap` m.
+struct WorldLodEntry {
+  int lod = -1;
+  std::array<float, 3> box_min{};
+  std::array<float, 3> box_max{};
+};
+
+class WorldLodFilter {
+ public:
+  static constexpr float kDefaultColocateGap = 25.0f;
+
+  void clear() { by_family_.clear(); }
+  void add(const std::string& family, int lod, const std::array<float, 3>& box_min,
+           const std::array<float, 3>& box_max);
+  bool suppressed(const std::string& family, int lod, const std::array<float, 3>& box_min,
+                  const std::array<float, 3>& box_max, float max_gap = kDefaultColocateGap) const;
+
+ private:
+  std::map<std::string, std::vector<WorldLodEntry>> by_family_;
+};
+
+// Local-space building/prop LOD classification helpers shared by World::gather()
+// and unit tests.
+inline constexpr float kLargeBuildingExtent = 25.0f;
+bool prop_lod_degraded(const std::array<float, 3>& near_min, const std::array<float, 3>& near_max,
+                       size_t near_objects, const std::array<float, 3>& cand_min,
+                       const std::array<float, 3>& cand_max, size_t cand_objects);
+
 // The near ground's footprint on an x-z grid round a point (ours; the far
 // ring's hole filling, GatherOptions::far_inner): a cell is covered when a
 // triangle added holds its centre, or the cell holds the centroid of a

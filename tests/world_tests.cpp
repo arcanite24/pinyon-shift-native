@@ -399,12 +399,27 @@ int main() {
     for (const auto& mm : fest_mesh.materials) {
       if (mm.effect == "H_DIFF_SPEC_REFL_AO_4_LM" && mm.decal_noise_c4[1] < -0.1f) ++refl_arch_mats;
     }
-    std::printf("festival gather: %zu props placed, %zu physics-only (.fiz), %zu unresolved, %zu reflective arch materials\n",
-                fest_st.props, fest_st.props_physics_only, fest_st.prop_unresolved, refl_arch_mats);
+    // Large festival buildings (>= 25 m) are promoted to fade == 0, so no fade == 1/2
+    // triangle exceeds the 40 m prop reach threshold.
+    float max_fade_lod_reach = 0.0f;
+    for (size_t t = 0; t < fest_mesh.triangles(); ++t) {
+      const uint8_t f = fest_mesh.materials[fest_mesh.material[t]].fade;
+      if ((f != 1 && f != 2) || t >= fest_mesh.instance.size()) continue;
+      for (int k = 0; k < 3; ++k) {
+        const auto& p = fest_mesh.positions[t * 3 + size_t(k)];
+        const auto& inst = fest_mesh.instance[t];
+        const float dx = p[0] - inst[0], dy = p[1] - inst[1], dz = p[2] - inst[2];
+        max_fade_lod_reach = std::max(max_fade_lod_reach, std::sqrt(dx * dx + dy * dy + dz * dz));
+      }
+    }
+    std::printf("festival gather: %zu props placed, %zu physics-only (.fiz), %zu unresolved, %zu reflective arch materials, "
+                "max fade1/2 reach %.1f m\n",
+                fest_st.props, fest_st.props_physics_only, fest_st.prop_unresolved, refl_arch_mats, max_fade_lod_reach);
     CHECK(fest_st.props > 3500);
     CHECK(fest_st.props_physics_only == 327);
     CHECK(fest_st.prop_unresolved == 0);
     CHECK(refl_arch_mats > 0);
+    CHECK(max_fade_lod_reach <= 40.0f);
   }
 
   if (failures) {

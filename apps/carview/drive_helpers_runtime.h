@@ -169,7 +169,7 @@ inline constexpr float kSunGame[3] = {0.3848f, 0.8754f, 0.2926f};
 inline constexpr double kTreeRadius = 2000;
 inline constexpr double kModelRadius = 900, kPropRadius = 600, kRegather = 200, kSwapLag = 50;
 inline constexpr double kLowModelRadius = 600, kLowPropRadius = 500;
-inline constexpr double kPropLod0 = 80, kPropLodBand = 20, kPropEdgeBand = 40, kSwapFadeSeconds = 0.5;
+inline constexpr double kPropLod0 = 120, kPropLodBand = 25, kPropEdgeBand = 40, kSwapFadeSeconds = 0.5;
 inline constexpr double kPostExposure = 0.8;
 inline constexpr float kPostBalance[3] = {1.10f, 0.88f, 0.88f};
 

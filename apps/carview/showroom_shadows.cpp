@@ -432,14 +432,15 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
                             nullptr);
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
+    const float prop_reach = effective_near_prop_reach();
     for (const auto& d : world_draws_) {
       if (!d.cull || d.blend >= 2) continue;
       const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
       if ((fl & (2u | 32768u)) != 0u) continue;  // skip sky dome & water planes
       if (outside(d) || near_lod_beyond(d, eye)) continue;
       // Skip LOD02 cells wholly inside the LOD00 midpoint radius (complements near_lod_beyond).
-      if ((fl & 256u) != 0u && lod_mid > kPropReach) {
-        const float max_r = lod_mid - kPropReach;
+      if ((fl & 256u) != 0u && lod_mid > prop_reach) {
+        const float max_r = lod_mid - prop_reach;
         float max_d2 = 0.0f;
         for (int k = 0; k < 3; ++k) {
           const float q = std::max(std::fabs(d.box_min[k] - eye[size_t(k)]), std::fabs(d.box_max[k] - eye[size_t(k)]));

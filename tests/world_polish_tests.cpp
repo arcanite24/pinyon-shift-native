@@ -298,6 +298,33 @@ int main() {
     CHECK(go.far_inner_uberlod >= 800.0);
     // Verify subterranean catch planes & shadow-only mountain proxies are excluded from color meshes.
     CHECK(world::skipped_object("ShadowMountainsA3_NOLOD"));
+
+    // Spatial world-space LOD deduplication: distant LOD00 sharing the same
+    // lod_family must NOT suppress a higher-LOD object > 50 m away, while a
+    // co-located LOD00 within 25 m still suppresses duplicate LOD01/LOD02.
+    {
+      world::WorldLodFilter f;
+      f.add("gondola_lod**_009", 0, {0.0f, 0.0f, 0.0f}, {10.0f, 10.0f, 10.0f});
+      // Co-located LOD01/LOD02 at same spot -> suppressed; LOD00 itself -> kept.
+      CHECK(!f.suppressed("gondola_lod**_009", 0, {0.0f, 0.0f, 0.0f}, {10.0f, 10.0f, 10.0f}));
+      CHECK(f.suppressed("gondola_lod**_009", 1, {2.0f, 0.0f, 2.0f}, {12.0f, 10.0f, 12.0f}));
+      CHECK(f.suppressed("gondola_lod**_009", 2, {18.0f, 0.0f, 0.0f}, {28.0f, 10.0f, 10.0f}));
+      // Distant LOD01 200 m away sharing the same family -> NOT suppressed.
+      CHECK(!f.suppressed("gondola_lod**_009", 1, {200.0f, 0.0f, 0.0f}, {210.0f, 10.0f, 10.0f}));
+      // Unrelated family at the exact same spot -> NOT suppressed.
+      CHECK(!f.suppressed("other_lod**_009", 1, {0.0f, 0.0f, 0.0f}, {10.0f, 10.0f, 10.0f}));
+    }
+
+    // Degraded LOD02 detection for placed buildings/props.
+    {
+      // Fewer sub-objects on LOD02 -> degraded.
+      CHECK(world::prop_lod_degraded({-50, 0, -50}, {50, 30, 50}, 2, {-50, 0, -50}, {50, 30, 50}, 1));
+      // Bounding box shrunk by > 15% and > 2 m -> degraded (e.g. missing tent roof).
+      CHECK(world::prop_lod_degraded({-10, 0, -10}, {10, 8, 10}, 1, {-6, 0, -6}, {6, 8, 6}, 1));
+      // Intact LOD02 with same object count and minor (< 15%) shrink -> NOT degraded.
+      CHECK(!world::prop_lod_degraded({-10, 0, -10}, {10, 8, 10}, 1, {-9.5f, 0, -9.5f}, {9.5f, 8, 9.5f}, 1));
+      CHECK(world::kLargeBuildingExtent == 25.0f);
+    }
     CHECK(world::skipped_object("Underground_NOLOD"));
     CHECK(world::skipped_object("World_Cage_01"));
     CHECK(!world::skipped_object("Terrain_Road_LOD00"));

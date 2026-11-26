@@ -819,6 +819,83 @@ void test_lod_part() {
   CHECK(!fh1::rmb_lod_part("TERR_LOD1", family, level));
 }
 
+std::vector<uint8_t> synthetic_named_model(const std::string& obj_name,
+                                           std::array<float, 3> bmin,
+                                           std::array<float, 3> bmax) {
+  BeWriter w;
+  w.u32(6);
+  w.vec3_pad(bmin[0], bmin[1], bmin[2]);
+  w.vec3_pad(bmax[0], bmax[1], bmax[2]);
+  for (int i = 0; i < 16; ++i) w.f32(i % 5 == 0 ? 1.0f : 0.0f);
+  for (uint32_t v : {4u, 4u, 0u, 1u}) w.u32(v);
+  w.u32(1);  // mesh objects
+  w.u32(1);
+  const float cx = 0.5f * (bmin[0] + bmax[0]), cy = 0.5f * (bmin[1] + bmax[1]), cz = 0.5f * (bmin[2] + bmax[2]);
+  const float hx = 0.5f * (bmax[0] - bmin[0]), hy = 0.5f * (bmax[1] - bmin[1]), hz = 0.5f * (bmax[2] - bmin[2]);
+  w.vec3_pad(cx, cy, cz);
+  w.vec3_pad(-hx, -hy, -hz);
+  w.vec3_pad(hx, hy, hz);
+  w.u32(1);
+  w.name(obj_name);
+  for (uint32_t v : {3u, 3u, 12u, 0u}) w.u32(v);
+  w.f32(bmin[0]); w.f32(bmin[1]); w.f32(bmin[2]);
+  w.f32(bmax[0]); w.f32(bmin[1]); w.f32(bmin[2]);
+  w.f32(bmin[0]); w.f32(bmax[1]); w.f32(bmax[2]);
+  w.u32(1);
+  w.u32(1);  // one submesh
+  w.u32(1);
+  w.u32(2);
+  w.name("mat0");
+  for (uint32_t v : {0u, 4u, 0u, 1u}) w.u32(v);
+  for (int i = 0; i < 4; ++i) w.u32(0);
+  for (int i = 0; i < 4; ++i) w.f32(1.0f);
+  for (float f : {cx, cy, cz, 10.0f}) w.f32(f);
+  w.u32(4);
+  w.u32(0);
+  w.u32(3);
+  w.u32(2);
+  w.u16(0); w.u16(1); w.u16(2);
+  w.u32(5);
+  w.u32(0xDEADBEEF);
+  return w.bytes;
+}
+
+void test_prop_lod_set_suffix_matching() {
+  namespace fs = std::filesystem;
+  const fs::path dir = fs::temp_directory_path() / "shift-engine-prop-lod-suffix-test";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  auto write_member = [&](uint32_t id, const std::string& obj_name,
+                          std::array<float, 3> bmin, std::array<float, 3> bmax) {
+    const auto bytes = synthetic_named_model(obj_name, bmin, bmax);
+    std::ofstream f(dir / fh1::PropModels::member_name(id, "coloradoout"), std::ios::binary);
+    f.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+  };
+  // Genuine trailing-suffix mismatch with identical prefix & compatible bounding box.
+  write_member(100, "PLA_SMELTER_BLDG_QuenchTowerEnd_LOD002", {-10.2f, 0.0f, -5.0f}, {0.7f, 28.0f, 5.0f});
+  write_member(101, "PLA_SMELTER_BLDG_QuenchTowerEnd_LOD01", {-10.2f, 0.0f, -5.0f}, {0.7f, 28.2f, 5.0f});
+  // Unrelated sequential world-space chunks whose boxes sit far apart must NOT merge.
+  write_member(102, "Barrier_023_Armco_LOD00_003", {-3431.8f, 0.0f, 0.0f}, {-3288.3f, 2.0f, 10.0f});
+  write_member(103, "Barrier_023_Armco_LOD01_001", {-3711.9f, 0.0f, 0.0f}, {-3524.4f, 2.0f, 10.0f});
+  // Standard exact-match 3-LOD chain still groups cleanly.
+  write_member(110, "House_Test_LOD00", {-5.0f, 0.0f, -5.0f}, {5.0f, 6.0f, 5.0f});
+  write_member(111, "House_Test_LOD01", {-5.0f, 0.0f, -5.0f}, {5.0f, 6.0f, 5.0f});
+  write_member(112, "House_Test_LOD02", {-5.0f, 0.0f, -5.0f}, {5.0f, 6.0f, 5.0f});
+
+  fh1::MemberSource src;
+  std::string err;
+  CHECK(src.open(dir, &err));
+  fh1::PropModels pm(src, "coloradoout");
+  CHECK((pm.lod_set(100) == std::vector<uint32_t>{100, 101}));
+  CHECK((pm.lod_set(101) == std::vector<uint32_t>{100, 101}));
+  CHECK((pm.lod_set(102) == std::vector<uint32_t>{102}));
+  CHECK((pm.lod_set(103) == std::vector<uint32_t>{103}));
+  CHECK((pm.lod_set(110) == std::vector<uint32_t>{110, 111, 112}));
+  CHECK((pm.lod_set(112) == std::vector<uint32_t>{110, 111, 112}));
+  fs::remove_all(dir, ec);
+}
+
 }  // namespace
 
 // Raw deflate streams of two synthetic inputs (made with zlib at level 9):
@@ -1415,6 +1492,7 @@ int main() {
   test_pvsz();
   test_pvsz_tilted();
   test_lod_part();
+  test_prop_lod_set_suffix_matching();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

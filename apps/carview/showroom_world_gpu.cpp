@@ -1244,7 +1244,7 @@ void Showroom::record_world_cull(VkCommandBuffer cmd) {
   }
   const auto eye = eye_in_scenery(world_transform_);
   for (int k = 0; k < 3; ++k) view.eye[k] = eye[size_t(k)];
-  view.lod_reach = world_fade_[1] > 0 ? world_fade_[0] + world_fade_[1] + kPropReach : 0.0f;
+  view.lod_reach = world_fade_[1] > 0 ? world_fade_[0] + world_fade_[1] + effective_near_prop_reach() : 0.0f;
   view.frustum = world_cull_;
   view.hiz = hiz_enabled_ && have_prev_vp_ && gpu_world_->hiz_valid();
   view.reverse_z = r_.reverse_z();
