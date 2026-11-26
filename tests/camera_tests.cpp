@@ -138,12 +138,32 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
   double last_heading = 0, last_v[3] = {0, 0, 0};
   int n = 0;
   bool first = true;
+  // Error along the car's axes (right, up, forward), for the framing.
+  double err_sum[3] = {0, 0, 0};
+  int mode_rows[2] = {0, 0};
+  // SHIFT_CHASE_OUT: one row per frame, the game's and our eye in the car's
+  // axes, the direction error and both FOVs.
+  FILE* out = nullptr;
+  if (const char* o = std::getenv("SHIFT_CHASE_OUT")) {
+    out = std::fopen(o, "w");
+    if (out) std::fprintf(out, "t,mode,speed,game_r,game_u,game_f,ours_r,ours_u,ours_f,dir_deg,game_fov,ours_fov,yaw_rate\n");
+  }
   while (std::getline(f, line)) {
     std::vector<double> r;
     std::stringstream ss(line);
     std::string cell;
     while (std::getline(ss, cell, ',')) r.push_back(std::atof(cell.c_str()));
     auto g = [&](const char* k) { return r[col.at(k)]; };
+    // The trace's own chase camera (0 low, 1 high; chase.py exports only
+    // those two); a switch restarts the springs, as the game's does.
+    const int row_mode = col.count("mode") ? int(g("mode")) : 0;
+    if (row_mode != 0 && row_mode != 1) continue;
+    const auto want = row_mode == 1 ? drive::CameraMode::kFollowHigh : drive::CameraMode::kFollowLow;
+    if (cam.mode() != want) {
+      cam.set_mode(want);
+      first = true;
+    }
+    ++mode_rows[row_mode];
     const double right[3] = {g("car_right_x"), g("car_right_y"), g("car_right_z")};
     const double up[3] = {g("car_up_x"), g("car_up_y"), g("car_up_z")};
     const double fwd[3] = {g("car_fwd_x"), g("car_fwd_y"), g("car_fwd_z")};
@@ -180,6 +200,24 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
     const double d = std::acos(std::clamp(dot, -1.0, 1.0)) * 180 / kPi;
     const double fe = v.fov_degrees - g("fov_deg");
     eye2 += e * e, dir2 += d * d, fov2 += fe * fe, ++n;
+    err_sum[0] += ex * right[0] + ey * right[1] + ez * right[2];
+    err_sum[1] += ex * up[0] + ey * up[1] + ez * up[2];
+    err_sum[2] += ex * fwd[0] + ey * fwd[1] + ez * fwd[2];
+    if (out) {
+      // The eyes from the car's CoM in its own axes (game, ours), for the
+      // framing and the lag.
+      auto car_axes = [&](double x, double y, double z, double* o3) {
+        const double d3[3] = {x - com[0], y - com[1], z - com[2]};
+        o3[0] = d3[0] * right[0] + d3[1] * right[1] + d3[2] * right[2];
+        o3[1] = d3[0] * up[0] + d3[1] * up[1] + d3[2] * up[2];
+        o3[2] = d3[0] * fwd[0] + d3[1] * fwd[1] + d3[2] * fwd[2];
+      };
+      double ge[3], oe[3];
+      car_axes(g("eye_x"), g("eye_y"), g("eye_z"), ge);
+      car_axes(v.eye[0], v.eye[1], v.eye[2], oe);
+      std::fprintf(out, "%.4f,%d,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.3f\n", g("t"), row_mode, g("speed"), ge[0],
+                   ge[1], ge[2], oe[0], oe[1], oe[2], d, g("fov_deg"), v.fov_degrees, in.yaw_rate);
+    }
     if (std::getenv("SHIFT_CHASE_DEBUG") && n % 100 == 0) {
       // The error along the car's axes, and the game's chase eye against
       // its final eye (the layers' offset).
@@ -198,10 +236,13 @@ void replay_chase(const drive::CameraTuning& t, const Built& b, const char* path
     }
     eye_worst = std::max(eye_worst, e), dir_worst = std::max(dir_worst, d);
   }
+  if (out) std::fclose(out);
   if (n == 0) return;
   const double eye_rms = std::sqrt(eye2 / n), dir_rms = std::sqrt(dir2 / n), fov_rms = std::sqrt(fov2 / n);
-  std::printf("  chase replay (%d frames): eye %.3f m rms (worst %.3f), direction %.2f deg rms (worst %.2f), fov %.3f deg rms\n",
-              n, eye_rms, eye_worst, dir_rms, dir_worst, fov_rms);
+  std::printf("  chase replay (%d frames: %d low, %d high): eye %.3f m rms (worst %.3f), direction %.2f deg rms (worst %.2f), "
+              "fov %.3f deg rms; mean eye error right %+.3f up %+.3f forward %+.3f m\n",
+              n, mode_rows[0], mode_rows[1], eye_rms, eye_worst, dir_rms, dir_worst, fov_rms, err_sum[0] / n, err_sum[1] / n,
+              err_sum[2] / n);
   // The spec's checks: final direction within 0.5 deg rms, FOV within
   // 0.1 deg; the eye (ours: the g inputs come from the trace's velocity
   // differences) within 4 cm rms.
@@ -361,7 +402,14 @@ int main() {
     const double cockpit[3] = {0.350, 0.820, -0.205}, hood[3] = {0, 0.797, 0.847}, bumper[3] = {0, 0.895, 1.110};
     check_car(t, crx, "CR-X", low, high, cockpit, hood, bumper);
   }
-  if (const char* chase = std::getenv("SHIFT_CHASE_CSV")) replay_chase(t, r34, chase);
+  if (const char* chase = std::getenv("SHIFT_CHASE_CSV")) {
+    // SHIFT_CHASE_CAR: another car's database id for the trace (the R34's
+    // lap by default), e.g. a free-roam trace of the seed's MX-5.
+    Built other;
+    const char* id = std::getenv("SHIFT_CHASE_CAR");
+    if (id && *id && build(install, db, std::atoll(id), other)) replay_chase(t, other, chase);
+    else replay_chase(t, r34, chase);
+  }
   // Looking, parked: the bumper back and right on the R34, the low chase
   // back and left on the CR-X.
   {
