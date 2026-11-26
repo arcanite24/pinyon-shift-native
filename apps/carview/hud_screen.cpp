@@ -102,7 +102,9 @@ std::string unit_label(const StringRef& ref) {
 }  // namespace
 
 DialScale dial_scale(double redline_rpm) {
-  const int top = int(std::ceil(std::clamp(redline_rpm, 1000.0, 20000.0) / 1000.0 - 1e-6)) + 2;
+  // The whole thousands of the redline plus two (Q73): the MX-5 with its
+  // first camshaft (7,300 rpm) sweeps to 9 in ones, the R34 (8,000) to 10.
+  const int top = int(std::floor(std::clamp(redline_rpm, 1000.0, 20000.0) / 1000.0 + 1e-6)) + 2;
   if (top <= 9) return {top, 1, top - 1};
   const int even = (top + 1) / 2 * 2;
   return {even, 2, even};
@@ -131,9 +133,13 @@ namespace {
 // laid-out rotation, 2.34 rad counter-clockwise from the top) to the mirror
 // angle on the right.
 constexpr float kDialZero = 2.34f;
-// The red half ring's edge relative to its rotation node (calibrated on
-// 05_roam_hud_day_drive_orig.png: the zone starts at the redline).
-constexpr float kRedlineEdge = -0.23f;
+// The red zone's band off the hub (canvas px) and its look, sampled on
+// idle_cam0_first30b_orig.png: translucent at the inside (about 0.27 at
+// 62 px) rising to 0.72 at 80 px, under a solid rim at 82..84 px.
+constexpr float kRedBandInner = 59.0f, kRedBandRim = 82.0f;
+constexpr float kRedBandAlpha0 = 0.27f, kRedBandAlpha1 = 0.74f;
+constexpr int kRedBandSteps = 8;
+constexpr uint32_t kRedZone = ui::rgba(255, 3, 96);
 // The needle's bar sits further out than the scene lays it (the same
 // capture: from 58 to 83 px off the hub).
 constexpr float kNeedleOut = -11.0f;
@@ -209,9 +215,17 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
     sc.at(text).extra_angle = -(sd.angle(text) + turn);
   }
 
-  // The red zone: its half ring turned so it starts at the redline.
-  const int red_rot = child_path(sd, child(sd, elements, "RPM_and_MPH"), "Redline/rotation");
-  if (red_rot >= 0) sc.at(red_rot).turn = dial_angle(st.redline_rpm / 1000.0, ds) + kRedlineEdge - sd.angle(red_rot);
+  // The red zone. The game turns REDLINE.TGA's half ring and wipes it with
+  // the Redline component's PROGRESS slide (a texture angle, 0 to 180
+  // degrees), so only the arc from the redline to the sweep's end shows.
+  // The engine has no texture wipe: the half ring stays hidden and the band
+  // is drawn as arcs in the colours sampled off first30b's idle-cam0 (a
+  // translucent ramp to a solid rim); the whole half ring hung out of the
+  // dial's bottom gap.
+  const int rpm_mph = child(sd, elements, "RPM_and_MPH");
+  const int red_rot = child_path(sd, rpm_mph, "Redline/rotation");
+  if (red_rot >= 0) sc.hide(child(sd, rpm_mph, "Redline"));
+  const float red_a0 = -dial_angle(st.redline_rpm / 1000.0, ds), red_a1 = kDialZero;
 
   // The needle and its trails (the swoosh behind it while the revs climb or
   // fall).
@@ -267,7 +281,34 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
   assist("HUD_STM", st.stm_enabled, st.stm, st.stm_flash_timer);
   sc.hide(child(sd, assists, "HUD_SHIFT_LIGHT"));
   sc.hide(child(sd, gauge, "FUEL_ANALOG"));
-  return sc.draw(l, f, gauge) > 0;
+  if (red_rot < 0) return sc.draw(l, f, gauge) > 0;
+
+  // The dial in two layers: the ring and the readouts, the red zone, then
+  // the hatches, numerals and needle over it (white over the red, as the
+  // original draws them).
+  const std::vector<int> over = {child(sd, elements, "Large_Hatches"), child(sd, elements, "Mid_Hatches"),
+                                 child(sd, elements, "Small_Hatches"), numbers, needle};
+  for (int n : over)
+    if (n >= 0) sc.at(n).visible = false;
+  const int drawn = sc.draw(l, f, gauge);
+  const auto hub = sd.at(rpm_root);
+  const float hx = f.x(hub[0]), hy = f.y(hub[1]), op = sc.bindings().opacity;
+  if (red_a1 > red_a0) {
+    for (int i = 0; i < kRedBandSteps; ++i) {
+      const float k = float(i) / float(kRedBandSteps - 1);
+      const float r = kRedBandInner + (kRedBandRim - kRedBandInner) * (float(i) + 0.5f) / float(kRedBandSteps);
+      const float a = kRedBandAlpha0 + (kRedBandAlpha1 - kRedBandAlpha0) * k;
+      l.arc(hx, hy, r * f.s, (kRedBandRim - kRedBandInner) / float(kRedBandSteps) * f.s + 0.5f, red_a0, red_a1,
+            ui::fade(kRedZone, a * op), true);
+    }
+    l.arc(hx, hy, (kRedBandRim + 1.0f) * f.s, 2.0f * f.s, red_a0, red_a1, ui::fade(kRedZone, op), true);
+  }
+  for (int n : over) {
+    if (n < 0) continue;
+    sc.at(n).visible.reset();
+    sc.draw(l, f, n);
+  }
+  return drawn > 0;
 }
 
 // --- Race blocks ----------------------------------------------------------

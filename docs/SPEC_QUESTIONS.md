@@ -1937,10 +1937,17 @@ Read off two retail captures: the Mazda MX-5 (redline about 7,000 rpm)
 shows 0..8 in ones on a sweep that runs one step past the 8 (0..9, about
 0.52 rad a step from 2.34 rad left of the top); the Nissan Skyline GT-R
 R34 (redline about 8,000 rpm) shows 0..10 in twos over the whole sweep.
-The engine's rule (`dial_scale()` in `apps/carview/hud_screen.cpp`): the
-sweep spans the redline in thousands rounded up plus two; up to 9 it
-counts in ones with numerals to one below the end, above it in twos to an
-even end. Needed, narrow: the code that fills the dial's slots (the rpm
+A third capture (first30b, 2026-11-25): the same MX-5 with its first
+camshaft (`List_UpgradeEngineCamshaft` 558001, redline 7,300 rpm) still
+shows 0..8 in ones, sweep 0..9, the red band from 7.3 to the end
+(`dial_first30b_orig.png`). So the sweep is the whole thousands of the
+redline (rounded down) plus two, not rounded up: the engine had shown
+0..10 in twos for it. The engine's rule (`dial_scale()` in
+`apps/carview/hud_screen.cpp`) now rounds down; up to 9 it counts in ones
+with numerals to one below the end, above it in twos to an even end. The
+red band is drawn as an arc from the redline to the sweep's end, under
+the hatches and numerals (the scene's `Redline` half-ring is the source
+of a texture-angle wipe the engine does not reproduce). Needed, narrow: the code that fills the dial's slots (the rpm
 range it reads per car and how it picks the step and the last numeral),
 or captures of a car with a redline of 6,000 or 9,000 rpm and up.
 
