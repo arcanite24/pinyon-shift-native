@@ -133,6 +133,7 @@ struct FtcCommands {
   // Screens and rewards.
   bool activate_tutor = false;   // CActivateDrivingTutor
   bool open_map = false;         // the map, locked to viewing (no fast travel)
+  bool show_loading = false;     // CShowLoadingScreen resource_package="Loading" (the freeroam tips)
   bool open_autoshow = false;
   // CSetRestrictionsForFirstAutoshow: the Autoshow lists only these cars,
   // previews the first, hides Back and skips the "keep shopping?" prompt.

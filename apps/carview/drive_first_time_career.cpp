@@ -229,6 +229,13 @@ void DriveSession::apply_first_time_career() {
       }
       if (!found) std::fprintf(stderr, "carview: first-time career: no achievement \"%s\"\n", want.c_str());
     }
+    if (cmd.show_loading && !app.headless) {
+      // CShowLoadingScreen: the freeroam group's tip card, held the event
+      // load's minimum (interim: the original's hold is not timed, Q312).
+      loading_screen.load_definitions(app.game_root_of(), "freeroam", app.state_root);
+      loading_screen.start({});
+      loading_min_until = carview::LoadingScreen::kEventMinSeconds;
+    }
     if (cmd.open_map) open_map();
     if (cmd.place_car || cmd.swap_car || cmd.set_destination) ftc_autopilot.reset();
     // show_map_hint: drawn by FirstTimeCareerUi from the career's state.

@@ -428,6 +428,9 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.heading_deg = kWorkshopHeading;
       c.set_civilian_traffic = true;
       c.civilian_traffic = false;
+      // The tip card (the freeroam tips, PLEASE WAIT) comes first, the map
+      // behind it (first30a f01272, first30e r5 g00135-g00190).
+      c.show_loading = true;
       c.open_map = true;
       map_locked_ = true;
       controls_ = false;
