@@ -453,7 +453,8 @@ int main() {
           &kReward, &kCurrentCarEligible, &kGarageCarsEligible, &kNoCarsEligible, &kPts, &kNoRestrictions,
           &kCredits, &kFinished, &kCashReward, &kFinishedPlace, &kMileageBonus, &kBeatTheStar, &kDifficultyBonus, &kTotal,
           &kBalance, &kPlace, &kPointsEarned, &kPointsN, &kCollectIt, &kWristbandUnlocked, &kPointsToNext,
-          &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle})
+          &kPointToNext, &kPleaseWait, &kYouWonACar, &kStayInCar, &kStayInCarQ, &kCarSelectTitle,
+          &kPointsToRallyFinal, &kPointToRallyFinal, &kWinToBeChampion, &kRallyChampion})
       check_ref(*r, "race screen " + std::string(r->fallback));
     for (const carview::StringRef* r :
          {&carview::pause_text::kNoNetworkTitle, &carview::pause_text::kNoNetworkBody, &carview::pause_text::kQuitTitle,

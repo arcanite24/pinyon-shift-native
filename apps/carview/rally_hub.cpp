@@ -914,6 +914,11 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
   st.total_credits = reward.total_credits;
   st.new_balance = new_balance;
   st.standings = session.overall_standings();
+  for (const auto& ch : catalog.championships) st.final_xp_req = std::max(st.final_xp_req, ch.unlock_points_req);
+  for (const auto& wb : catalog.wristbands) {
+    if (wb.level == reward.new_rally_level) st.band_thumb = wb.thumbnail;
+    if (wb.level == reward.new_rally_level + 1) st.band_next_thumb = wb.thumbnail;
+  }
   if (reward.is_heats) {
     st.unlocked_text = "BEAUMONT RALLY CHAMPIONSHIP & ALL 28 STAGES";
   } else if (reward.champion_unlocked) {
@@ -923,6 +928,13 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
       st.unlocked_text = next->name + " (" + race::rally_class_name(next->target_class) + " CLASS)";
   }
   return st;
+}
+
+std::vector<RallyPostStep> rally_post_steps(const RallyChampResultsState& st) {
+  if (st.is_heats) return {RallyPostStep::kTable};
+  std::vector<RallyPostStep> s{RallyPostStep::kBanner, RallyPostStep::kPoints};
+  if (st.champion_unlocked) s.push_back(RallyPostStep::kChampion);
+  return s;
 }
 
 }  // namespace carview

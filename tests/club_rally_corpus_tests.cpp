@@ -40,6 +40,7 @@
 #include "hud_scene.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "race_screens.h"
 #include "rally_hub.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -187,6 +188,28 @@ int main() {
   for (const auto& r : carview::rally_hub_text_refs()) {
     check_ref(r, "rally hub text " + std::string(r.fallback));
     check(carview::text_of(r) == r.fallback, std::string("rally hub text reads ") + std::string(r.fallback));
+  }
+  // The Rally final's points line and its steps.
+  {
+    carview::RallyPostHud p;
+    p.final_req = 310;
+    p.xp_after = 180;
+    check(carview::rally_points_to_final(p) == "130 POINTS TO RALLY FINAL",
+          "points line at 180 of 310: " + carview::rally_points_to_final(p));
+    p.xp_after = 309;
+    check(carview::rally_points_to_final(p) == "1 POINT TO RALLY FINAL", "points line at 309 of 310");
+    p.xp_after = 310;
+    check(carview::rally_points_to_final(p) == "WIN TO BE CHAMPION!", "points line with the final open");
+    p.champion = true;
+    check(carview::rally_points_to_final(p).empty(), "no points line once champion");
+    carview::RallyChampResultsState rs;
+    using PS = carview::RallyPostStep;
+    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kPoints}), "final steps: banner, points");
+    rs.champion_unlocked = true;
+    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kPoints, PS::kChampion}),
+          "final steps: banner, points, champion");
+    rs.is_heats = true;
+    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kTable}), "the heats keep the results page");
   }
   for (const auto& r : {carview::rally_text::kQuitTitle, carview::rally_text::kQuitMsg}) {
     check_ref(r, "rally quit text");
@@ -492,6 +515,28 @@ int main() {
       first.selected = 0;
       first.help_hidden = true;
       hub_shot("rally_hub_first_visit_wp5", first, carview::RallyEntryPopup::kNone);
+      // The Rally final's screens (game_rally_race_flow): the banner, the
+      // Rally points and the champion.
+      auto post_shot = [&](const std::string& name, auto&& draw) {
+        carview::ui::List l;
+        check(draw(l), "draws " + name);
+        std::vector<uint8_t> fb = backdrop(name);
+        carview::ui::rasterize(l.items(), fb, W, H);
+        const auto path = out_dir / (name + ".png");
+        check(stbi_write_png(path.string().c_str(), int(W), int(H), 4, fb.data(), int(W * 4)) != 0, "write " + name);
+      };
+      carview::RallyPostHud ph;
+      ph.xp_before = 120;
+      ph.xp_after = 180;
+      ph.band_hi = rally_cat.next_wristband_xp(0);
+      ph.final_req = 310;
+      if (rally_cat.wristbands.size() > 1) {
+        ph.band = rally_cat.wristbands[0].thumbnail;
+        ph.band_next = rally_cat.wristbands[1].thumbnail;
+      }
+      post_shot("rally_finished_wp5", [&](carview::ui::List& l) { return carview::draw_rally_finished(l, 2, float(W), float(H)); });
+      post_shot("rally_points_wp5", [&](carview::ui::List& l) { return carview::draw_rally_points(l, ph, float(W), float(H)); });
+      post_shot("rally_champion_wp5", [&](carview::ui::List& l) { return carview::draw_rally_champion(l, 1, float(W), float(H)); });
     }
   }
 

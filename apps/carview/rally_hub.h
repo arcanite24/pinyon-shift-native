@@ -145,7 +145,20 @@ struct RallyChampResultsState {
   int64_t new_balance = 0;
   std::string unlocked_text;
   std::vector<race::RallyStandingRow> standings;
+  // The final's screens (rally_post_steps); `step` indexes them, and X on
+  // the banner shows the engine's standings page (`show_table`).
+  int final_xp_req = 0;    // the final's UnlockPointsReq
+  std::string band_thumb, band_next_thumb;  // the Rally levels' WRISTBANDS art
+  bool final_won = false;  // champion already (no points-to-final line)
+  int step = 0;
+  bool show_table = false;
 };
+
+// game_rally_race_flow after the last stage: the banner, the Rally points
+// (CIsRallyXPEvent) and, once, the champion. The intro heats keep the
+// engine's results page (game_rally_intro_flow's own end).
+enum class RallyPostStep : uint8_t { kBanner, kPoints, kChampion, kTable };
+std::vector<RallyPostStep> rally_post_steps(const RallyChampResultsState& st);
 
 // Draws live Co-Driver pace-note icons + split timer strip during a Rally stage.
 void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w, float h);

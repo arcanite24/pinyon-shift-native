@@ -1137,7 +1137,27 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                                      e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST)) ||
                                    (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
                                     (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT));
-              if (confirm) {
+              auto& rs = app.rally_results_state;
+              const auto rsteps = carview::rally_post_steps(rs);
+              const auto rstep = rsteps[size_t(std::clamp(rs.step, 0, int(rsteps.size()) - 1))];
+              // X on the banner: the engine's standings page (RACE RESULTS).
+              const bool results_x = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_X) ||
+                                     (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                      e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST);
+              if (results_x && rstep == carview::RallyPostStep::kBanner) {
+                rs.show_table = !rs.show_table;
+                app.audio_host.trigger_ui(rs.show_table ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
+              } else if (confirm && rs.show_table && rstep != carview::RallyPostStep::kTable) {
+                rs.show_table = false;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              } else if (confirm && rs.step + 1 < int(rsteps.size())) {
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                ++rs.step;
+                // CPlayRallyChampionDialogue with the champion's screen (the
+                // line is inferred, Q147).
+                if (rsteps[size_t(rs.step)] == carview::RallyPostStep::kChampion)
+                  app.audio_host.trigger_vo("HorizonRallyChampion", false);
+              } else if (confirm) {
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 app.rally_results_open = false;
                 // The intro race's end (game_rally_intro_flow): to the first

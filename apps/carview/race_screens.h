@@ -30,6 +30,11 @@ inline constexpr std::string_view kPointsScene = "H_POST_RACE_CAREER_POINTS";
 inline constexpr std::string_view kWonCarScene = "H_POST_RACE_WON_CAR";
 inline constexpr std::string_view kPopupScene = "H_MESSAGE_POPUP";
 inline constexpr std::string_view kEncounterScene = "H_RACE_ENCOUNTER";
+// game_rally_race_flow's final screens (the Rally's own copies of the
+// banner and the points, and the champion's).
+inline constexpr std::string_view kRallyFinishedScene = "H_POST_RACE_RALLY_FINISHED";
+inline constexpr std::string_view kRallyPointsScene = "H_POST_RACE_RALLY_POINTS";
+inline constexpr std::string_view kRallyChampionScene = "H_HORIZON_RALLY_CHAMPION";
 
 // The strings the race screens bind; every one is checked against the
 // tables by the corpus test (scene_screen_tests).
@@ -94,6 +99,11 @@ inline constexpr StringRef kWristbandUnlocked{"PostRaceFlow", {}, 0x8EBF, "WRIST
 inline constexpr StringRef kPointsToNext{"PostRaceFlow", {}, 0x77B3, "{0} POINTS TO NEXT WRISTBAND"};
 inline constexpr StringRef kPointToNext{"PostRaceFlow", {}, 0xFD53, "{0} POINT TO NEXT WRISTBAND"};
 inline constexpr StringRef kPleaseWait{"Main", {}, 0xD8D2, "PLEASE WAIT"};
+// The Rally's points and champion screens.
+inline constexpr StringRef kPointsToRallyFinal{"PostRaceFlow", {}, 0xC2FD, "{0} POINTS TO RALLY FINAL"};
+inline constexpr StringRef kPointToRallyFinal{"PostRaceFlow", {}, 0x481D, "{0} POINT TO RALLY FINAL"};
+inline constexpr StringRef kWinToBeChampion{"PostRaceFlow", {}, 0xC923, "WIN TO BE CHAMPION!"};
+inline constexpr StringRef kRallyChampion{"CareerEventUI", {}, 0x2DD1, "HORIZON RALLY CHAMPION 2012"};
 // The won car and the stay-in-car popup.
 inline constexpr StringRef kYouWonACar{"InGame", {}, 0x921F, "YOU WON A CAR!"};
 inline constexpr StringRef kStayInCar{"carflow", {}, 0x7E32, "STAY IN CAR"};
@@ -164,6 +174,23 @@ bool draw_race_screen(ui::List& l, const DriveHud& st, const RaceHud& r, float w
 bool draw_message_popup(ui::List& l, const std::string& title, const std::string& message,
                         const std::vector<ui4::Prompt>& prompts, float w, float h);
 
+
+// The Rally final's screens (game_rally_race_flow, after the last stage):
+// the banner on H_POST_RACE_RALLY_FINISHED, the Rally XP on
+// H_POST_RACE_RALLY_POINTS and, the first time, H_HORIZON_RALLY_CHAMPION.
+struct RallyPostHud {
+  int xp_before = 0, xp_after = 0;  // Rally XP
+  int band_lo = 0, band_hi = 0;     // the Rally level's span
+  int final_req = 0;                // the final's UnlockPointsReq
+  bool champion = false;            // the final already won
+  std::string band, band_next;      // the levels' WRISTBANDS thumbnails
+};
+// The points screen's line: N POINTS TO RALLY FINAL, WIN TO BE CHAMPION!
+// once the final is open, empty once champion.
+std::string rally_points_to_final(const RallyPostHud& r);
+bool draw_rally_finished(ui::List& l, int place, float w, float h);
+bool draw_rally_points(ui::List& l, const RallyPostHud& r, float w, float h);
+bool draw_rally_champion(ui::List& l, int place, float w, float h);
 
 // Measured placements (1280x720 canvas) of the original's captures.
 namespace race_layout {
