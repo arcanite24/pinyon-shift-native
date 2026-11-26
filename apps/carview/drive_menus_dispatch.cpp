@@ -404,6 +404,7 @@ void DriveSession::start_new_career() {
           // Retail FH1 starts pre-wristband (-1, matching FESTIVAL_SECOND Level = -1);
           // Yellow Wristband (0) and the starter Corrado VR6 are awarded upon Festival registration.
           app.collected_wristband = -1;
+          app.notified_wristband = -2;
           host.free_roam.reset();
           app.progress = freeroam::Progress{};
           app.progress_loaded = false;
