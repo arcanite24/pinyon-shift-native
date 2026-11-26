@@ -87,8 +87,8 @@ NameTagLod compute_name_tag_lod(double distance_m) {
   // are roughly 14 px at 12 m, 11 px at 18 m, 8 px at 40 m and 7 px past
   // 90 m (720 lines; 18 px close in 30_skill_toast_orig.png), so the scale
   // falls about as 0.33 + 5.8 / d, floored at 0.4. Tags still show on the
-  // pack about 100 m ahead; where they fade is not captured (full to 150 m,
-  // gone at 200 m).
+  // pack about 100 m ahead; where they fade is not captured (full to 100 m,
+  // gone at 120 m).
   if (distance_m < 0.0) return {1.0f, 1.0f, true};
   const float scale = std::clamp(float(0.33 + 5.8 / std::max(distance_m, 1.0)), kNameTagMinScale, 1.0f);
   if (distance_m <= kNameTagFullAlphaM) return {scale, 1.0f, true};

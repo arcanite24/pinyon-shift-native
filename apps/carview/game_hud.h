@@ -423,7 +423,7 @@ inline constexpr float kNameTagNotchW = 16.0f, kNameTagNotchH = 6.0f;
 inline constexpr uint32_t kNameTagPill = ui::rgba(33, 33, 33, 96);
 // The tag's size and reach with distance (compute_name_tag_lod, Q361).
 inline constexpr float kNameTagMinScale = 0.4f;
-inline constexpr double kNameTagFullAlphaM = 150.0, kNameTagMaxM = 200.0;
+inline constexpr double kNameTagFullAlphaM = 100.0, kNameTagMaxM = 120.0;
 
 struct NameTagLod {
   float scale = 1.0f;

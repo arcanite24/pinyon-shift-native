@@ -1340,13 +1340,13 @@ int main() {
   //    and high-contrast ROAD DISCOVERED banner with zero stray yellow artifacts.
   {
     // PT-37a (Q361): the name shrinks as 0.33 + 5.8 / d (14 px capitals at
-    // 12.5 m, 8 px at 40 m), floored at 0.4; full alpha to 150 m, gone by 200 m.
+    // 12.5 m, 8 px at 40 m), floored at 0.4; full alpha to 100 m, gone by 120 m.
     const auto lod_close = carview::compute_name_tag_lod(5.0);
     const auto lod_near = carview::compute_name_tag_lod(12.5);
     const auto lod_40 = carview::compute_name_tag_lod(40.0);
     const auto lod_100 = carview::compute_name_tag_lod(100.0);
-    const auto lod_mid = carview::compute_name_tag_lod(175.0);
-    const auto lod_far = carview::compute_name_tag_lod(205.0);
+    const auto lod_mid = carview::compute_name_tag_lod(110.0);
+    const auto lod_far = carview::compute_name_tag_lod(125.0);
     CHECK(lod_close.visible && std::fabs(lod_close.scale - 1.0f) < 1e-3f);
     CHECK(lod_near.visible && std::fabs(lod_near.scale * 18.0f - 14.3f) < 0.5f && lod_near.alpha == 1.0f);
     CHECK(lod_40.visible && std::fabs(lod_40.scale * 18.0f - 8.6f) < 0.5f && lod_40.alpha == 1.0f);
