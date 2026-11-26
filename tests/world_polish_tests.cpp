@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "cars/bake.h"
 #include "drive/vehicle.h"
 #include "settings_page.h"
 #include "world/tod.h"
@@ -627,6 +628,30 @@ int main() {
 
         anim.invalidate_spectator_ground_cache();
         CHECK(anim.cached_spectator_ground_count() == 0);
+      }
+
+      // Verify Shared.zip decodes all 4 shared car interior normal maps used as fallbacks.
+      {
+        const auto shared_zip = media / "cars" / "Shared.zip";
+        if (std::filesystem::exists(shared_zip)) {
+          cars::FolderRef ref;
+          ref.kind = cars::FolderRef::Kind::kArchive;
+          ref.name = "shared";
+          ref.path = shared_zip;
+          ref.origin = "disc";
+          cars::bake::Bake shared_bake;
+          std::string serr;
+          CHECK(cars::bake_shared(ref, shared_bake, &serr));
+          auto has_tex = [&](const char* want) {
+            for (const auto& t : shared_bake.textures)
+              if (t.name == want && !t.levels.empty()) return true;
+            return false;
+          };
+          CHECK(has_tex("plastic_nrm.xds"));
+          CHECK(has_tex("plastic2_nrm.xds"));
+          CHECK(has_tex("leather_nrm.xds"));
+          CHECK(has_tex("stitches_nrm.xds"));
+        }
       }
 
       std::printf("world_polish_tests corpus: %zu zones, %zu blooms, %zu colors, %zu fogs, %zu vignettes, "
