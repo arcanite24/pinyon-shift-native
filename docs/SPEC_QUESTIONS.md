@@ -5989,9 +5989,9 @@ Update (first30e): what releases the lock is settled, from the title's code and 
 - r5 and r6: A on a plain point routes there and leaves the map open, and B then does nothing (`o*` frames).
 - r6 `m0`-`m5`: the map opens zoomed out, then zooms in onto the festival (`g00135`-`g00145`). The cursor moved 12 frames right (LX 20000) snaps onto the heats marker. There it shows the "HORIZON Heats" tooltip with 1,000 Cr, the event's route in red, and A SET ROUTE plus a DETAILS button (`m1`).
 
-- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker at 33 s, then B at 37 s. `m0` (before A) has the help bar A SET ROUTE, DETAILS, LB FILTER, MOVE, ZOOM. From `n0` (35 s, before B) the help bar is gone and a spinner with PLEASE WAIT sits bottom left; the route is drawn and the marker's tooltip reads 3,000 Cr. `o00`-`o05` and `h00042` are the same, and the map is gone by `h00045` (black), so it closed about 10 s after A in hidden mode. Whether A alone closes it (after a load) or B, pressed during PLEASE WAIT, did is not settled: r9 holds B back to 60 s to tell. Then the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
+- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker at 33 s, then B at 37 s. `m0` (before A) has the help bar A SET ROUTE, DETAILS, LB FILTER, MOVE, ZOOM. From `n0` (35 s, before B) the help bar is gone and a spinner with PLEASE WAIT sits bottom left; the route is drawn and the marker's tooltip reads 3,000 Cr. `o00`-`o05` and `h00042` are the same, and the map is gone by `h00045` (black), so it closed about 10 s after A in hidden mode. r9 settles it: A on the heats at 33 s (8-frame hold), no B until 60 s. PLEASE WAIT is up from `n034`, and the map is gone by `n039` (black, 5-6 s after A in hidden mode). So A alone closes it after a load, and B plays no part. Then (r9 `n041`-`n048`) come a cockpit shot and a car shot at the Bose stage with the radio hint, and the HUD returns at `n049`. In r7, the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
 
-The engine now routes to the heats on A over them and releases the lock. It then replaces the help bar with the spinner and PLEASE WAIT, takes no input, and closes the map by itself after 3 s (interim: the closing's cause and delay are open, above). It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
+The engine now routes to the heats on A over them and releases the lock. It then replaces the help bar with the spinner and PLEASE WAIT, takes no input, and closes the map by itself after 3 s. The delay is interim: hidden mode cannot time it. It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
 
 ## Q276 (BOOT-04, BOOT-07, not blocking): the first profile's VIDEO screen and the boot disclaimer
 
@@ -6053,6 +6053,13 @@ Answers Q186's "Needed: a capture of the opening titles". The capture's 20 frame
 Diner timing: the XML durations (6.7 + 59 + 2.5 = 68.2 s) match the original's about 66-69 s. The engine's wall clock ran 79.2 s (`eng2`: 11.8 / 60.4 / 7.1 s), 85.8 s (`eng3`) and 72.7 s (`eng4`: 9.4 / 58.8 / 4.5 s). The overrun sits on the first and third cutscenes each time (3 to 5 s each), with the second near its 59 s. The cutscene player ends at the XML durations, so the likely cause is the blocking world prime at those cuts (the diner's teleport in, and the car placed for the race out) stalling the step. Unverified: the logs carry no wall time for the primes. Not a flow difference.
 
 Needed: whether the title's code sets the cards' opacity (no scene action does).
+
+Update (first30e): the primes now log their wall time (`f6c8e836`). First30e `e8` confirms the stall:
+- The diner's cutscene placements took 1813 ms (1843, -1657) and 1020 ms (1547, -1957). The car's placement for the race out took 2 ms.
+- So about 2.8 s of the first cutscene's overrun is the world prime, on the main thread.
+- The workshop's placement and its cutscene preload, at nearly the same spot, took 3853 ms and 3852 ms. The second waits on a gather the first already did.
+
+e3 (20.8 / 62.5 / 5.3 s) and e5 (12.9 / 60.2 / 5.7 s) ran with other captures on the machine. Not fixed: priming those places before the cut (asynchronously, as the diner's own `preload_cutscene` does for its first place) is the remedy.
 
 ## Q280 (M6/INTRO, not blocking): the first-time career past the workshop map, not captured
 
@@ -6126,10 +6133,28 @@ In the original, after the locked map, the Corrado reaches the Horizon Heats wit
 
 The engine launched the heats final as soon as the car entered its 27 m sign-up sphere. It now waits in the sphere for X (or Enter). It shows the event's banner, in range, with SIGN ME UP!. The showcase (event 101) takes the same rule.
 
-Inferred, not yet observed:
-- X starting the heats. r9 presses X (held 8 frames) every 2 s near the sphere.
-- What X opens: an event ticket first, or the race's loading at once. The engine launches the race directly.
-- The showcase's sign-up: no capture reaches it.
-- Who drives the Corrado to the festival in r7: the route has no throttle or stick, yet the car drives at up to 78 mph.
+Update, first30e r9 (X held 8 frames every 2 s from 62.5 s):
+- The car stops at the RACE SIGN UP stage (`h00069`-`h00075`).
+- X brings up the event's ticket over the car (`h00078`-`h00090`, `r9_h00081.png`), with no buttons and the spinner and PLEASE WAIT bottom left. The ticket reads:
+  - FESTIVAL RACE;
+  - HORIZON presents HEATS;
+  - HORIZON HEATS, ASPHALT POINT-TO-POINT;
+  - FINISH 3RD OR ABOVE TO WIN YELLOW WRISTBAND, 3,000 Cr;
+  - C OPEN, CURRENT CAR ELIGIBLE.
+  The player bar shows Volkswagen Corrado VR6, C 400 and 500 Cr.
+- Then come the loading tips (DRIVING LINE, ASSISTS, with PLEASE WAIT; `h00093`-`h00102`).
+- Then the race's intro shots, titled FESTIVAL RACE / HORIZON HEATS (`h00105`-`h00120`).
+- Then the pre-race menu: START RACE, DIFFICULTY, OPTIONS, QUIT RACE (`h00123`-`h00135`).
+- Then the race (`h00141`-`h00258`). The recomp's Corrado won it, 1st in 1:57.736 against Charger '69 at 2:01.470. The field: Charger '69, Lancia Delta, DS3 R, Integra R, MINI Cooper, CR-X and BMW 2002 Turbo, all C 393-398.
+- An X press after the finish opened RACE RESULTS (B BACK), and the A presses never left it (`h00261` on). So the reward screens after the final are not captured yet.
 
-Needed: r9's frames after the first X in the sphere.
+The engine now shows the event's ticket with PLEASE WAIT in place of its help bar for an interim 3 s. Then it launches the race. Its ticket is the engine's own event ticket: its prize line is not the career's "FINISH 3RD OR ABOVE TO WIN YELLOW WRISTBAND".
+
+Still open:
+- The ticket's career prize line.
+- The loading tips' group: the original's are the race tips.
+- Whether the engine's race intro and pre-race menu match.
+- The showcase's sign-up: no capture reaches it.
+- Who drives the Corrado in r7/r9: the route has no throttle or stick, yet the car drives, and won the race.
+
+Needed: a route that leaves RACE RESULTS with B and goes on through the rewards.
