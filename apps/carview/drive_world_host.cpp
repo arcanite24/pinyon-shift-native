@@ -978,6 +978,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         // Into and out of an event the original holds its load screen
         // kEventMinSeconds (fast travel and the rest: none).
         const bool event_load = app.loading_into_event || app.loading_out_of_event;
+        const bool out_of_event = app.loading_out_of_event;
         app.loading_into_event = app.loading_out_of_event = false;
         const double hot_min_s = event_load ? LoadingScreen::kEventMinSeconds : 0.0;
         const bool hot_live_ui =
@@ -1149,7 +1150,12 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         }
         if (hot_live_ui) app.audio_host.set_blocking_load(false);
         if (hot_cancelled) return false;
-        if (hot_live_ui) app.loading_hand_off = true;
+        if (hot_live_ui) {
+          app.loading_hand_off = true;
+          // Out of an event the card stays until free roam is in (first30i
+          // i3: the tip card, then the map; before, a black hang and fade).
+          if (out_of_event) app.loading_hand_off_card = std::make_shared<LoadingScreen>(hot_loading);
+        }
         const double hot_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
         std::printf("carview: hot swap to %s in %.1f ms (car %s, regather %s, world textures kept: %zu, gpu draws: %u)\n",

@@ -1101,7 +1101,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           if (app.campaign.ftc_active()) {
             if (!(app.headless && app.campaign.ftc().show_controls_screen()))
               carview::ftc_ui::draw(list, app.campaign.ftc(), float(width), float(height), live_controls.layout_id,
-                                    live_controls.switch_handbrake_clutch);
+                                    live_controls.switch_handbrake_clutch, app.race != nullptr);
           } else {
             carview::campaign_ui::draw(list, app.campaign.flow(), cctx);
           }
@@ -1134,22 +1134,39 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               (!app.campaign.ftc_active() || app.campaign.ftc().hud_visible()))
             carview::draw_saving_indicator(list, float(width), float(height), now_s - saving_shown_at);
         }
+        // The hand-off fade runs on the wall clock: the HUD's clock stops
+        // while the map or a paused flow holds the game, and a 1 s fade
+        // stepped at most 0.05 s a frame ran ~8 s at capture frame rates
+        // (first30i e1). The first frame after a blocking load steps 1/60.
         static double s_loading_fade_last_t = -1.0;
-        if (std::exchange(app.loading_hand_off, false) && !loading_screen.active())
-          loading_screen.fade_in_from_black();
+        const double fade_now = double(SDL_GetTicksNS()) * 1e-9;
+        constexpr double kHandOffCardHold = 0.5;
+        if (std::exchange(app.loading_hand_off, false) && !loading_screen.active()) {
+          if (auto card = std::exchange(app.loading_hand_off_card, nullptr)) {
+            // Held until the world is in (the render loop stops it), and
+            // over the session's first placing.
+            loading_screen.resume_from(*card);
+            loading_min_until = loading_screen.elapsed() + kHandOffCardHold;
+          } else {
+            loading_screen.fade_in_from_black();
+          }
+          s_loading_fade_last_t = -1.0;
+        }
+        app.loading_hand_off_card.reset();
         if (loading_screen.active()) {
-          s_loading_fade_last_t = d.time;
+          s_loading_fade_last_t = fade_now;
           list.clear();
           loading_screen.draw(list, float(width), float(height));
         } else if (loading_screen.fading_out()) {
-          const double fdt = (s_loading_fade_last_t >= 0.0 && d.time > s_loading_fade_last_t)
-                                 ? std::clamp(d.time - s_loading_fade_last_t, 0.0, 0.05)
-                                 : (1.0 / 60.0);
-          s_loading_fade_last_t = d.time;
+          const double fdt = s_loading_fade_last_t >= 0.0 ? std::clamp(fade_now - s_loading_fade_last_t, 0.0, 0.1)
+                                                          : (1.0 / 60.0);
+          s_loading_fade_last_t = fade_now;
           loading_screen.update(fdt);
-          if (loading_screen.visible()) loading_screen.draw(list, float(width), float(height));
+          // Not over an open map: the career's map follows the tip card at
+          // full brightness (first30i i3 q028400 card, q028440 map).
+          if (loading_screen.visible() && !map_open) loading_screen.draw(list, float(width), float(height));
         } else {
-          s_loading_fade_last_t = d.time;
+          s_loading_fade_last_t = fade_now;
         }
         if (rewind_buf.active()) {
           const int kf_count = rewind_buf.keyframe_count();

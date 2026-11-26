@@ -122,7 +122,8 @@ void draw_opening_titles(ui::List& l, double t, float w, float h) {
 
 }  // namespace
 
-void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int controller_layout, bool swap) {
+void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int controller_layout, bool swap,
+          bool racing) {
   const float s = h / 720.0f;
   if (ftc.show_controls_screen()) {
     // The controller loading screen (ControllerLoadingBackground and the
@@ -140,7 +141,7 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
     l.text(0.5f * w, 0.30f * h, a, ui4::style(ui::Font::kE, 34.0f * s, ui4::kWhite, ui::Align::kCenter));
     l.text(0.5f * w, 0.30f * h + 40.0f * s, b, ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kCenter));
   }
-  if (!ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
+  if (!racing && !ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
   if (ftc.tickets_remaining() >= 0) {
     // The places counter, top right: GET TO THE FESTIVAL over PLACES LEFT
     // and the count (measured on f00420_first30a_orig.png at 1280x720).

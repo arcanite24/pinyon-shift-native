@@ -111,6 +111,14 @@ class LoadingScreen {
   // The hand-off after a load another screen drew (the boot and world
   // loads): the black fade_in alone.
   void fade_in_from_black();
+  // The hand-off after a load whose card another loop drew (the session's
+  // hot load): the same card carries on, as it is, until stop().
+  void resume_from(const LoadingScreen& card) {
+    *this = card;
+    active_ = true;
+    fading_out_ = false;
+    fresh_pick_ = false;
+  }
   bool active() const { return active_; }
   bool fading_out() const { return fading_out_; }
   bool visible() const { return active_ || fading_out_; }
