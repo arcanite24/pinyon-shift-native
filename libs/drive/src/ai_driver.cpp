@@ -103,6 +103,7 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
   AiCapacity c;
   c.braking_k = p.layout == CarParams::Layout::kAll ? 0.96f : 0.94f;
   c.sat_level_min = p.layout == CarParams::Layout::kAll ? 0.97f : 0.94f;
+  c.is_fwd = p.layout == CarParams::Layout::kFront;
   constexpr double kG = 9.80665;
   const double m = p.mass, W = m * kG;
   const auto& wc = p.wheel_centres;
@@ -486,7 +487,11 @@ double ai_controller_steer(const AiCarState& c, const AiYawGain& G, const AiCapa
   const double cx = 0.896 * lx - 0.128 * D * gx, cz = 0.896 * lz + 0.032 * D - 0.128 * D * gz;
   const double ell = std::max(0.1, std::hypot(cx, cz));
   const double a = std::atan2(hx, hz);
-  double wd = std::fabs(chi_car) < 1.1 ? 2 * v * std::sin(a) / ell : a;
+  // If the car has spun > 90 deg past the aim point (hz < 0), sin(a) shrinks
+  // toward 0 near +-pi and leaves the car steering straight ahead backwards.
+  // Saturate the turning sine to +-1 in the direction of the aim point.
+  const double sin_a = (hz < 0.0) ? (hx >= 0.0 ? 1.0 : -1.0) : std::sin(a);
+  double wd = std::fabs(chi_car) < 1.1 ? 2 * v * sin_a / ell : a;
   // The steering-saturation grip term, open while the driver's grip level
   // is above the car's threshold (0.97 four-wheel drive, else 0.94): the
   // curve's curvature over the lateral limit's (the table without the
@@ -869,12 +874,49 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
     target_[i] = target;
     const float err = target - c.speed;
     if (o_.full_gas) {
-      if (err >= 0) in.throttle = 1.0f;
-      else if (err < -o_.deadband) in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband) + 0.2f, 0.0f, 1.0f);
+      if (err >= 1.0f) in.throttle = 1.0f;
+      else if (err >= 0.0f) {
+        // SPEC-RACE-AI, Throttle hold band: smoothly blend from hold throttle at
+        // target speed up to full gas at 1 m/s below target (continuous at
+        // err == 1.0 so leading cars do not step-drop throttle in front of packs).
+        const double h = std::clamp(double(c.hold), 0.25, 0.85);
+        in.throttle = std::clamp(h + (1.0 - h) * double(err), 0.0, 1.0);
+      } else if (err < -o_.deadband) {
+        in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband) + 0.2f, 0.0f, 1.0f);
+      }
     } else if (err >= 0) in.throttle = std::clamp(0.15f + o_.throttle_gain * err, 0.0f, 1.0f);
     else if (err < -o_.deadband) in.brake = std::clamp(o_.brake_gain * (-err - o_.deadband), 0.0f, 1.0f);
     else in.throttle = 0.1f;
     if (o_.controller) {
+      // Body-slip oversteer guard (under controller + full_gas, race_view skips
+      // ai_traction): on asphalt, RWD/AWD peak rear-tyre slip sits near 7-8 deg,
+      // so feather throttle and blend counter-steer past 7.5 deg to catch spinouts
+      // (e.g. NR02 Challenger); on dirt (grip < 0.9), allow wider 13 deg drifts;
+      // on FWD cars, never cut throttle (which would induce lift-off oversteer)
+      // and only counter-steer severe slides past 14 deg.
+      const double vz_b = c.vel_x * c.fwd_x + c.vel_z * c.fwd_z;
+      const double vx_b = c.vel_x * c.fwd_z - c.vel_z * c.fwd_x;
+      if (std::hypot(vx_b, vz_b) > 5.0 && vz_b > 1.0) {
+        const double beta = std::atan2(vx_b, vz_b);
+        const double ab = std::fabs(beta);
+        constexpr double kDeg = 3.14159265358979323846 / 180.0;
+        const bool is_fwd = capacity_[i] && capacity_[i]->is_fwd;
+        const bool on_dirt = double(L.grip_at(s)) < 0.9;
+        const double onset_deg = is_fwd ? 14.0 : (on_dirt ? 13.0 : 7.5);
+        if (ab > onset_deg * kDeg) {
+          if (!is_fwd) {
+            const double span_t = on_dirt ? 12.0 : 8.5;
+            const double t_keep = std::clamp(1.0 - (ab - onset_deg * kDeg) / (span_t * kDeg), 0.0, 1.0);
+            in.throttle = std::min(in.throttle, t_keep);
+          }
+          const double span_s = on_dirt ? 13.0 : 9.5;
+          const double w = std::clamp((ab - onset_deg * kDeg) / (span_s * kDeg), 0.0, 1.0);
+          const double lock = std::max(0.05, double(c.steer_lock));
+          const double counter = std::clamp((beta - 0.08 * double(c.yaw_rate)) / lock, -1.0, 1.0);
+          in.steer = std::clamp((1.0 - w) * in.steer + w * counter, -1.0, 1.0);
+          prev_steer_[i] = float(in.steer);
+        }
+      }
       // Track-edge avoidance: steering back but still running out, with
       // the edge under 1.25 (half widths per m/s) away, below the plan:
       // ease the gas by 0.016 x d|e|/dt.

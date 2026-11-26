@@ -81,6 +81,7 @@ struct AiCapacity {
   // The steering-saturation grip term's threshold on the grip level: 0.97
   // four-wheel drive, 0.94 otherwise (the same drivetrain test as k_B).
   float sat_level_min = 0.94f;
+  bool is_fwd = false;
   static int index(double v);
 };
 // From the car's own physics (the spec's interim: the engine's tyre model
@@ -99,8 +100,10 @@ struct AiCapacity {
 // R34 14.6 and 17.1 m/s^2 at 20 m/s against the title's measured 16.01
 // and 18.26 (SPEC-RACE-AI, Measured tables), so every car's tables are
 // scaled by that and keep their differences from the car's own physics.
+// Calibration factor for ai_capacity() against SPEC-RACE-AI measured tables
+// after downforce, updated tyre curves, and Q341 rev-limiter parity.
 struct AiCapacityCalibration {
-  double lateral = 16.01 / 14.6, braking = 18.26 / 17.1;
+  double lateral = 1.024, braking = 1.018;
 };
 AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal = {});
 struct AiCarState;

@@ -220,6 +220,30 @@ void test_rest_hold() {
   for (int i = 0; i < 120 * 3; ++i) v.step({0, 1, 0, false}, flat);
   std::printf("then the gas: gear %d, %.2f m/s\n", v.gear(), v.speed());
   CHECK(v.gear() >= 1 && v.speed() > 3);
+  // Steep 10% slope: light brake or handbrake to a stop holds cleanly on release.
+  {
+    const auto steep = plane(0.10);
+    drive::Vehicle sh(p);
+    sh.launch({0, 0, 0}, 0, 4.0);
+    for (int i = 0; i < 120 * 4; ++i) sh.step({0, 0, 0.4, false}, steep);
+    const drive::Vec3 stop_at = sh.position();
+    for (int i = 0; i < 120 * 3; ++i) sh.step({0, 0, 0, false}, steep);
+    const double drift = std::hypot(sh.position().x - stop_at.x, sh.position().z - stop_at.z);
+    CHECK(sh.rest_hold() && std::fabs(sh.speed()) < 0.05 && drift < 0.10);
+
+    // Handbrake stop on 10% slope also engages rest-hold on release.
+    drive::Vehicle hb(p);
+    hb.launch({0, 0, 0}, 0, 4.0);
+    for (int i = 0; i < 120 * 4; ++i) hb.step({0, 0, 0, true}, steep);
+    for (int i = 0; i < 120 * 3; ++i) hb.step({0, 0, 0, false}, steep);
+    CHECK(hb.rest_hold() && std::fabs(hb.speed()) < 0.05);
+
+    // Airborne vehicle must never engage rest-hold while off the ground.
+    drive::Vehicle air(p);
+    air.launch({0, 40.0, 0}, 0, 0.0);
+    for (int i = 0; i < 100; ++i) air.step({0, 0, 0, false}, flat);
+    CHECK(!air.rest_hold());
+  }
 }
 
 void test_script() {
@@ -559,6 +583,56 @@ void test_ai_controller() {
   CHECK(field.progress(0) > 150.0);
   CHECK(worst < 1.0);
   CHECK(worst_change < 1.0);
+
+  // Spun > 90 deg past the aim point (lz < 0): steering saturates toward the aim
+  // side instead of collapsing sin(pi) -> 0 and driving straight backwards.
+  {
+    drive::AiCarState rev;
+    rev.speed = 10.0f;
+    rev.vel_z = 10.0f;
+    drive::AiSteerState ss;
+    const double st_r = drive::ai_controller_steer(rev, g, nullptr, 0.0, 0.0, 0.5, -15.0, 0.0, -1.0, false, ss);
+    const double st_l = drive::ai_controller_steer(rev, g, nullptr, 0.0, 0.0, -0.5, -15.0, 0.0, -1.0, false, ss);
+    CHECK(st_r > 0.5 && st_l < -0.5);
+  }
+  // Oversteer guard: RWD/AWD feathers throttle past 7.5 deg asphalt body slip,
+  // whereas FWD keeps throttle (avoiding lift-off oversteer); continuous hold band
+  // modulates throttle cleanly within 1 m/s below target speed.
+  {
+    std::vector<float> sx{0.0f, 0.0f, 0.0f}, sz{0.0f, 100.0f, 200.0f};
+    const drive::RacingLine straight = drive::RacingLine::from_points(sx, sz, 9.0, 4.0, 8.0, 40.0);
+    drive::AiField::Options o2;
+    o2.controller = true;
+    o2.full_gas = true;
+    drive::AiField f2(straight, 2, o2);
+    drive::CarParams pr = p, pf = p;
+    pr.layout = drive::CarParams::Layout::kRear;
+    pf.layout = drive::CarParams::Layout::kFront;
+    const drive::AiCapacity cap_r = drive::ai_capacity(pr);
+    const drive::AiCapacity cap_f = drive::ai_capacity(pf);
+    CHECK(!cap_r.is_fwd && cap_f.is_fwd);
+    f2.set_planner(0, &cap_r, 1.0f, 1.0f);
+    f2.set_planner(1, &cap_f, 1.0f, 1.0f);
+    f2.place(0, 10.0, 0.0f, 1.0f);
+    f2.place(1, 10.0, 0.0f, 1.0f);
+    std::vector<drive::AiCarState> st2(2);
+    for (auto& s : st2) {
+      s.x = 0.0f;
+      s.z = 10.0f;
+      s.fwd_x = 0.0f;
+      s.fwd_z = 1.0f;
+      s.speed = 20.0f;
+      // ~18 deg body slip (vx/vz = tan(18 deg) ~= 0.325)
+      s.vel_x = 6.5f;
+      s.vel_z = 20.0f;
+      s.steer_lock = 0.6f;
+      s.hold = 0.4f;
+    }
+    std::vector<drive::Input> in2(2);
+    f2.drive(st2, in2);
+    CHECK(in2[0].throttle < 0.3);  // RWD feathers throttle during 18 deg slide
+    CHECK(in2[1].throttle > 0.9);  // FWD keeps throttle during slide
+  }
 }
 
 // SPEC-RACE-AI, Throttle: the title's pedal states, caps and brake filter
