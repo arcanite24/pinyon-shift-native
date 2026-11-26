@@ -53,7 +53,12 @@ void DriveSession::rally_post_enter_step() {
   // under the champion's screen.
   app.audio_host.trigger_vo(rally_champion_vo(app.career_catalog, app.career.event_places), false);
   rs.champion_cutscene = false;
-  if (app.headless || !app.race || app.rally_catalog.package_dir.empty() || rs.stage_dev_name.empty()) return;
+  // interim (SPEC_QUESTIONS Q253): the cutscene loads and runs, but live its
+  // CarSpace cams frame the ground and not the placed car (the place and
+  // target frames are not resolved in the Rally world yet), so the screen
+  // holds its 9.2 s over black instead.
+  constexpr bool kChampionCutsceneLive = false;
+  if (!kChampionCutsceneLive || app.headless || !app.race || app.rally_catalog.package_dir.empty() || rs.stage_dev_name.empty()) return;
   const auto xml = app.rally_catalog.package_dir / "Media" / "DLCZips" / "1600_pri_65" / "Media" / "gamemodes" /
                    "ColoradoDirt" / "Cutscenes" / "Tracks" / ("cutscenes_" + rs.stage_dev_name + ".xml");
   if (!race_cuts.library().find(kChampionCutscene) && !race_cuts.add_file(xml)) {
@@ -90,10 +95,7 @@ void DriveSession::rally_post_finish() {
     race_cut_name.clear();
   }
   // CSetHasSeenRallyEndSequence: the champion's sequence plays once.
-  if (champion_shown && !app.saved.rally_end_seen) {
-    app.saved.rally_end_seen = true;
-    save_due = true;
-  }
+  if (champion_shown && !app.saved.rally_end_seen) app.saved.rally_end_seen = true;
   app.rally_results_open = false;
   // The intro race's end (game_rally_intro_flow): to the first Autoshow,
   // then the hub's first visit.
@@ -109,6 +111,9 @@ void DriveSession::rally_post_finish() {
     // The flow loads into the Rally's free roam: the hub.
     app.rally_hub_open = true;
   }
+  // The championship's results, Rally XP and flags reach the profile before
+  // the load (the session's exit save is skipped when leaving a race).
+  save_now("rally championship");
   app.leave_race = true;
   running = false;
 }
