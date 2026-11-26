@@ -378,9 +378,12 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     double from = line_.gate_progress;
     for (size_t k = 0; k < cps.size(); ++k) {
       if (auto g = race::checkpoint_gate(route_, k)) {
-        checkpoint_gates_.push_back(*g);
         const double win_end = std::min(line_.line.length(), from + 4000.0);
         from = line_.line.nearest(g->x, g->z, from, win_end);
+        double lx = 0.0, ly = 0.0, lz = 0.0, lh = 0.0;
+        line_.line.pose(from, 0.0, lx, ly, lz, lh);
+        race::align_gate_to_heading(*g, lh);
+        checkpoint_gates_.push_back(*g);
         checkpoint_progress_.push_back(from);
       }
     }
@@ -389,8 +392,12 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     if (finish && !checkpoint_gates_.empty()) {
       const auto& last_cp = checkpoint_gates_.back();
       if (std::hypot(finish->x - last_cp.x, finish->z - last_cp.z) > 15.0) {
-        checkpoint_gates_.push_back(*finish);
-        const double fin_p = line_.line.nearest(finish->x, finish->z, from, line_.line.length());
+        race::Gate fin_gate = *finish;
+        const double fin_p = line_.line.nearest(fin_gate.x, fin_gate.z, from, line_.line.length());
+        double lx = 0.0, ly = 0.0, lz = 0.0, lh = 0.0;
+        line_.line.pose(fin_p, 0.0, lx, ly, lz, lh);
+        race::align_gate_to_heading(fin_gate, lh);
+        checkpoint_gates_.push_back(fin_gate);
         checkpoint_progress_.push_back(fin_p);
       }
     }
@@ -1523,7 +1530,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
         const bool racing_now = session_->started() && !session_->finished(n) && k < last;
         if (racing_now) {
           const auto& gate = checkpoint_gates_[k];
-          const double gate_side = gate.side(q.x1, q.z1);
+          const double gate_side = race::checkpoint_plane_side(gate, q.x1, q.z1, q.progress, checkpoint_progress_[k]);
           const double gate_dist = std::hypot(q.x1 - gate.x, q.z1 - gate.z);
           if (missed_cp_.step(drive::Vehicle::kStep, true, gate_passed, k, q.progress, checkpoint_progress_[k],
                               gate_side, gate_dist, gate.reach, q.off_route)) {

@@ -13,6 +13,7 @@
 #include "race/career.h"
 #include "race/event.h"
 #include "race/rewards.h"
+#include "race/route.h"
 
 namespace {
 
@@ -728,6 +729,48 @@ void test_r3_e1_street_hubs_and_buyins() {
   rec.wristband_points = 5000;
 }
 
+void test_showcase_switchback_checkpoint_plane() {
+  // Red Rock Showcase (PLANE_RACE_001, TrackRoute211) route_checkpoint_05:
+  // pos (-6038.58, -3027.89), facing (+0.96296, +0.264934), reach 25 m.
+  race::Gate cp05;
+  cp05.x = -6038.58;
+  cp05.z = -3027.89;
+  const double fl = std::hypot(0.96296, 0.264934);
+  cp05.nx = 0.96296 / fl;
+  cp05.nz = 0.264934 / fl;
+  cp05.reach = 25.0;
+  cp05.both_ways = true;
+
+  // Approaching on the earlier switchback leg before the hairpin (-5873.7, -3150.1)
+  // at 4000 m progress while cp05 sits at 4425 m: raw infinite-plane side is
+  // strongly positive (~+126 m), but checkpoint_plane_side must stay negative
+  // so driving dead-center on the road never triggers MISSED CHECKPOINT.
+  CHECK(cp05.side(-5873.7, -3150.1) > 100.0);
+  const double approach_side = race::checkpoint_plane_side(cp05, -5873.7, -3150.1, 4000.0, 4425.0);
+  CHECK(approach_side < -10.0);
+
+  // Even near the hairpin apex (4380 m, 45 m before cp05), still negative.
+  CHECK(race::checkpoint_plane_side(cp05, -6174.4, -2942.5, 4380.0, 4425.0) < -10.0);
+
+  // Actually driving past the checkpoint plane outside its reach once progress
+  // reaches the gate station (4430 m >= 4425 m - 5 m) returns the positive side.
+  const double bypass_x = cp05.x + 18.0 * cp05.nx - 32.0 * cp05.nz;
+  const double bypass_z = cp05.z + 18.0 * cp05.nz + 32.0 * cp05.nx;
+  const double bypass_side = race::checkpoint_plane_side(cp05, bypass_x, bypass_z, 4430.0, 4425.0);
+  CHECK(bypass_side > 15.0);
+
+  // A checkpoint whose XML facing is reversed 180 deg relative to travel heading
+  // gets aligned so approach side is negative and exit side is positive.
+  race::Gate flipped = cp05;
+  flipped.nx = -cp05.nx;
+  flipped.nz = -cp05.nz;
+  const double travel_heading = std::atan2(cp05.nx, cp05.nz);
+  race::align_gate_to_heading(flipped, travel_heading);
+  CHECK(flipped.nx * cp05.nx + flipped.nz * cp05.nz > 0.99);
+  CHECK(flipped.side(cp05.x - 10.0 * cp05.nx, cp05.z - 10.0 * cp05.nz) < -9.0);
+  CHECK(flipped.side(cp05.x + 10.0 * cp05.nx, cp05.z + 10.0 * cp05.nz) > 9.0);
+}
+
 }  // namespace
 
 // --corpus: the mileage rules from the player's gametunablesettings.zip
@@ -769,6 +812,7 @@ int main(int argc, char** argv) {
   test_skills_reset_session_clock();
   test_r2_5_detailed_restrictions_and_fame_events();
   test_r3_e1_street_hubs_and_buyins();
+  test_showcase_switchback_checkpoint_plane();
   test_real_disc_catalog();
   std::printf("career_tests: %d failures\n", failures);
   return failures ? 1 : 0;

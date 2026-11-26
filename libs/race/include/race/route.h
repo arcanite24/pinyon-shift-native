@@ -32,6 +32,18 @@ struct Gate {
   double crossing(double x0, double z0, double x1, double z1) const;
 };
 
+// Aligns a gate's horizontal normal with a travel heading (radians, +sin/+cos)
+// so Gate::side() is negative before the gate and positive after it.
+void align_gate_to_heading(Gate& gate, double heading);
+
+// Signed distance past a checkpoint gate plane for missed-checkpoint detection.
+// On curved/switchback routes (e.g. Red Rock), an upcoming checkpoint's
+// infinite plane can cut across an earlier switchback leg and yield a positive
+// raw Gate::side() while the car is still behind the checkpoint along the
+// route. Before `gate_progress - approach_window_m`, returns a negative value.
+double checkpoint_plane_side(const Gate& gate, double px, double pz, double car_progress, double gate_progress,
+                             double approach_window_m = 5.0);
+
 struct Route {
   int id = 0;
   std::vector<RouteTransform> transforms;
