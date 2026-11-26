@@ -608,6 +608,12 @@ The original's Rally "free roam" is a menu, not a drive:
 `club_rally_corpus_tests` renders it (`rally_hub_*_wp5.png`); the live
 captures are `rally_hub_*_live_wp5.png`. Interims and guesses are Q211.
 
+A championship's end (`rally_post_steps`) shows the Rally's own banner
+(`H_POST_RACE_RALLY_FINISHED`, drawn as the festival one; X shows the
+engine's standings page), points (`H_POST_RACE_RALLY_POINTS`, the Rally
+bands and the points-to-final line) and, once, `H_HORIZON_RALLY_CHAMPION`
+(`race_screens.cpp`; Q212).
+
 ## The hub's menus and car lists
 
 - **Option lists on `H_GENERIC`** (`hub_menus.h`). MY PROFILE, OPTIONS,
