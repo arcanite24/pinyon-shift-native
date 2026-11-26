@@ -844,6 +844,49 @@ void test_sputter_settings() {
   CHECK(p.sputter_start_damage == 0.45 && p.sputter_max_per_sec == 2.5);
 }
 
+// Q72: the sputter is a 0.08 s throttle cut started at random, at
+// EngineDamageMaxSputtersPerSec x (damage - start) / (1 - start), halved
+// outside Simulation damage.
+void test_engine_sputter() {
+  const drive::FlatGround flat;
+  auto run = [&](double damage, bool full, double seconds, int* cut_steps, bool* throttle_cut) {
+    drive::Vehicle v(test_car());
+    v.reset({0, 0, 0}, 0.0);
+    drive::Vehicle::DamageMods d;
+    d.engine_damage = damage;
+    d.sputter_full_rate = full;
+    v.set_damage_mods(d);
+    drive::Input in{};
+    in.throttle = 1.0;
+    int cut = 0;
+    bool zero = true;
+    for (int i = 0; i < int(seconds / drive::Vehicle::kStep); ++i) {
+      v.step(in, flat);
+      if (v.sputtering()) {
+        ++cut;
+        zero = zero && v.engine_throttle() == 0.0;
+      }
+    }
+    if (cut_steps) *cut_steps = cut;
+    if (throttle_cut) *throttle_cut = zero;
+    return v.sputter_count();
+  };
+  CHECK(run(0.3, true, 60, nullptr, nullptr) == 0);
+  CHECK(run(0.0, true, 60, nullptr, nullptr) == 0);
+  int cut = 0;
+  bool zero = false;
+  const uint32_t full = run(1.0, true, 300, &cut, &zero);
+  const uint32_t half = run(1.0, false, 300, nullptr, nullptr);
+  const uint32_t mid = run(0.65, true, 300, nullptr, nullptr);
+  std::printf("sputter: %u in 300 s at full damage (%u halved, %u at 0.65); %d cut steps (%.3f s each)\n", full, half,
+              mid, cut, full ? cut * drive::Vehicle::kStep / full : 0.0);
+  CHECK(full > 240 && full < 330);  // ~1 a second, less the 0.08 s cuts
+  CHECK(half > 110 && half < 190);
+  CHECK(mid > 110 && mid < 190);
+  CHECK(zero);
+  CHECK(full > 0 && std::fabs(cut * drive::Vehicle::kStep / full - 0.0833) < 0.01);
+}
+
 // Q100/Q101: the body-contact settings and MAXData spheres reach CarParams.
 void test_body_collision_settings() {
   cars::PhysicsSettings ps;
@@ -1296,6 +1339,7 @@ int main() {
   test_per_car_physics();
   test_friction_torque_mod();
   test_sputter_settings();
+  test_engine_sputter();
   test_body_collision_settings();
   test_pad_steering_linear();
   test_pad_rate_law();

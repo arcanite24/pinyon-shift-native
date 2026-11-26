@@ -627,6 +627,8 @@ void Vehicle::reset(const Vec3& position, double heading) {
   steer_angle_ = 0;
   steer_ang_vel_ = 0;
   steer_lock_ext_ = 0;
+  sputter_time_ = 0;
+  sputter_active_ = sputter_cut_ = false;
   kb_steer_hold_time_ = 0;
   kb_steer_dir_ = 0;
   kb_steer_filtered_ = 0;
@@ -1207,7 +1209,8 @@ void Vehicle::update_gearbox(double dt) {
   const double trigger = std::clamp((shifting_mode == 0 && gear_ == -1) ? raw_.brake : raw_.throttle, 0.0, 1.0);
   if (p_.boost_lag > 0 && trigger > spool_) spool_ += (trigger - spool_) * (1 - std::exp(-dt / p_.boost_lag));
   else spool_ = trigger;
-  const double driver = p_.boost_lag > 0 ? std::min(drive_pedal, spool_) : drive_pedal;
+  // A sputter forces the throttle to 0 (Q72).
+  const double driver = sputter_cut_ ? 0.0 : p_.boost_lag > 0 ? std::min(drive_pedal, spool_) : drive_pedal;
   driver_throttle_ = driver;
   const double rpm_now = rpm();
   const double rpm_rate = (rpm_now - prev_rpm_) / dt;
@@ -1514,6 +1517,36 @@ void Vehicle::update_gearbox(double dt) {
   }
 }
 
+void Vehicle::update_sputter(double dt) {
+  // 82D2CD20, each step. The rate is EngineDamageMaxSputtersPerSec (halved
+  // outside Simulation damage) x (damage - start) / (1 - start), with the
+  // damage clamped to 0..1; none at or below the start level. A draw from
+  // the car's generator below rate x dt starts (or restarts) a sputter,
+  // which cuts the throttle until 0.08 s have passed.
+  const double max_rate = p_.sputter_max_per_sec * (damage_.sputter_full_rate ? 1.0 : 0.5);
+  const double start = p_.sputter_start_damage;
+  const double lo = std::min(start, 1.0), hi = std::max(start, 1.0);
+  const double d = std::clamp(damage_.engine_damage, 0.0, 1.0);
+  double rate = 0.0;
+  if (d > lo) rate = d >= hi ? max_rate : (d - lo) / (hi - lo) * max_rate;
+  sputter_rng_ = sputter_rng_ * 1103515245u + 12345u;
+  const double u = double((sputter_rng_ >> 16) & 0x7fffu) * (1.0 / 32767.0);
+  if (u < rate * dt) {
+    sputter_time_ = 0.0;
+    if (!sputter_active_) ++sputter_count_;
+    sputter_active_ = true;
+  }
+  sputter_cut_ = false;
+  if (sputter_active_) {
+    if (sputter_time_ > 0.08) {
+      sputter_active_ = false;
+    } else {
+      sputter_cut_ = true;
+      sputter_time_ += dt;
+    }
+  }
+}
+
 void Vehicle::step(const Input& input, const Ground& ground) {
   Input eff_input = input;
   if (!ai_ && assists_.braking == 0 && eff_input.has_auto_brake_target) {
@@ -1521,6 +1554,7 @@ void Vehicle::step(const Input& input, const Ground& ground) {
   }
   raw_ = eff_input;
   shape_input(eff_input, kStep);
+  update_sputter(kStep);
   update_gearbox(kStep);
   abs_flag_ = false;
   tcs_flag_ = false;

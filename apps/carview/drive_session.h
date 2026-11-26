@@ -401,7 +401,7 @@ struct DriveSession {
   drive::DriveCamera rig;
   bool have_rig = false;
   drive::GamepadRumble gamepad_rumble;
-  drive::EngineSputter engine_sputter;
+  uint32_t prev_sputter_count = 0;  // the vehicle's sputter starts seen by the rumble
   bool rumble_enabled = true;
   double rumble_scale = 1.0;
   int prev_rumble_gear = 1;

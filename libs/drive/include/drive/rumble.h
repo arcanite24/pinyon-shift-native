@@ -67,23 +67,6 @@ double world_collision_rumble_input(double contact_force_n, double step_dt = 1.0
 // transitions into Neutral 0 or Reverse -1).
 bool should_trigger_shift_rumble(int prev_gear, int new_gear);
 
-// OnEngineSputter events from engine damage (FEEL-27): none below
-// start_damage, then a steady rate rising linearly to max_per_sec at full
-// damage (the ramp and the even spacing are ours, SPEC_QUESTIONS Q72).
-class EngineSputter {
- public:
-  double start_damage = 0.3;  // PhysicsSettings.ini EngineDamageLevelStartSputter
-  double max_per_sec = 1.0;   // PhysicsSettings.ini EngineDamageMaxSputtersPerSec
-  // Sputters per second at this engine damage (0 healthy .. 1 severe).
-  double rate(double engine_damage) const;
-  // Advances by dt; true when a sputter fires in this step.
-  bool step(double dt, double engine_damage);
-  void reset() { phase_ = 0; }
-
- private:
-  double phase_ = 0;
-};
-
 struct RumbleInput {
   double engine_norm_rpm = 0;      // (RPM - idle) / (limiter - idle)
   double transmission_rpm = 0;

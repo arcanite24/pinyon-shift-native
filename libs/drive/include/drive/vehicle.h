@@ -703,9 +703,18 @@ class Vehicle {
     double steer_pull_rad = 0.0;
     std::array<double, 2> brake_power_axle{1.0, 1.0};  // per-axle brake effectiveness (0 front, 1 rear)
     double clutch_capacity = 1.0;                      // clutch torque capacity scale from grind wear
+    // The engine part's damage (0..1), which drives the sputter (Q72), and
+    // whether the sputter runs at its full rate (Simulation damage; half
+    // otherwise).
+    double engine_damage = 0.0;
+    bool sputter_full_rate = false;
   };
   void set_damage_mods(const DamageMods& d) { damage_ = d; }
   const DamageMods& damage_mods() const { return damage_; }
+  // The engine sputter (82D2CD20, SPEC_QUESTIONS Q72): a 0.08 s throttle cut
+  // started at random. sputter_count() counts the starts (for the rumble).
+  bool sputtering() const { return sputter_active_; }
+  uint32_t sputter_count() const { return sputter_count_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -859,6 +868,14 @@ class Vehicle {
   double steer_angle_ = 0;
   double steer_ang_vel_ = 0;
   double steer_lock_ext_ = 0;  // the held-stick lock extension (car+2788)
+  // The sputter's state: the car's own generator (car+20496; the seed is
+  // ours), the time into the sputter and whether it cuts the throttle.
+  uint32_t sputter_rng_ = 1;
+  double sputter_time_ = 0;
+  bool sputter_active_ = false;
+  bool sputter_cut_ = false;
+  uint32_t sputter_count_ = 0;
+  void update_sputter(double dt);
   double kb_steer_hold_time_ = 0;
   double kb_steer_dir_ = 0;
   double kb_steer_filtered_ = 0;

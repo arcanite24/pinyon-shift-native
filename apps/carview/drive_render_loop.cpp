@@ -1497,6 +1497,8 @@ void DriveSession::run_window_loop() {
               vdm.tyre_grip = dm.tyre_grip;
               vdm.suspension_scale = dm.suspension_scale;
               vdm.steer_pull_rad = dm.steer_pull_rad;
+              vdm.engine_damage = car_damage.engine_damage;
+              vdm.sputter_full_rate = car_damage.mode == drive::DamageMode::kSimulation;
               vehicle.set_damage_mods(vdm);
               host.showroom.set_damage_state(car_damage);
             }
@@ -1552,10 +1554,9 @@ void DriveSession::run_window_loop() {
             ri.car_to_object_impulse = frame_object_impact;
             ri.on_shift = !sim_paused && (vehicle.gear() != prev_rumble_gear);
             prev_rumble_gear = vehicle.gear();
-            // OnEngineSputter follows engine damage, not the rev limiter (FEEL-27).
-            engine_sputter.start_damage = vp.sputter_start_damage;
-            engine_sputter.max_per_sec = vp.sputter_max_per_sec;
-            ri.on_engine_sputter = engine_sputter.step(sim_paused ? 0.0 : frame_dt, double(car_damage.engine_damage));
+            // OnEngineSputter fires when the vehicle starts a sputter (FEEL-27, Q72).
+            ri.on_engine_sputter = !sim_paused && vehicle.sputter_count() != prev_sputter_count;
+            prev_sputter_count = vehicle.sputter_count();
             const uint32_t cur_bf_rumble = app.audio_host.telemetry().backfire_count;
             ri.on_backfire = !sim_paused && (cur_bf_rumble > prev_rumble_backfire);
             prev_rumble_backfire = cur_bf_rumble;
