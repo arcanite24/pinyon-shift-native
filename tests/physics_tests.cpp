@@ -819,6 +819,18 @@ int main() {
               p.engine_inertia, probe_v.brake_const(0), probe_v.brake_const(0) * 0.81 * unit_f, probe_v.brake_const(1),
               probe_v.brake_const(1) * 0.81 * unit_r, p.brake_friction_scale, p.aero_drag_long);
 
+  {
+    // The pad's lock curve (Q69): the decoded per-car table against the
+    // retail R34 pad measurement of 2,410 / v^2 degrees at 19 to 22 m/s.
+    for (double v : {5.0, 10.0, 19.0, 20.0, 22.0, 30.0, 40.0, 60.0}) {
+      const double lock_deg = probe_v.steer_curve_at(v) * 180.0 / 3.14159265358979;
+      std::printf("R34 pad lock at %4.1f m/s: %6.3f deg (a(v) %.2f m/s^2 = %.3f g; measured fit %.3f deg)\n", v, lock_deg,
+                  probe_v.steer_grip_accel(v), probe_v.steer_grip_accel(v) / 9.80665, 2410.0 / (v * v));
+      if (v >= 19.0 && v <= 22.0) CHECK(std::fabs(lock_deg / (2410.0 / (v * v)) - 1.0) < 0.08);
+    }
+    // Below the curve's floor the lock is MinMaxAngle (5 deg on the R34).
+    CHECK(std::fabs(probe_v.steer_curve_at(40.0) - p.steer_min_lock) < 1e-9);
+  }
   unit_checks(r34, settings, p);
   per_car_assists(install, settings, root, state ? state : "");
   scenario_a(p);

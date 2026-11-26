@@ -461,12 +461,24 @@ struct CarParams {
   double steer_dyn_find_peak_rate = 1.83; // rad/s (Data_Car.SteerAngVelDynFindPeak)
   double steer_accel_time = 0.08;         // s (Data_Car.SteerAccelTimeToMaxRate)
   double steer_max_gees = 1.0;            // SteerSpeedSensitiveMaxGees
+  // The engine's old lock fit (atan(1.61 x MaxGees x g x wheelbase / v^2)),
+  // kept only for the AI's pure-pursuit turn-in cap (ai_driver.cpp); the
+  // pad's lock is the decoded per-car curve (Vehicle::steer_curve, Q69).
   double steer_gees_fit = 1.61;
   double steer_min_lock = 0.087;          // rad, the narrowest lock
   double steer_slow_speed = 13.4112;      // m/s (Data_Car.SteerSpeedSensitiveSlowSpeed, 30 mph)
   double steer_fast_speed = 67.056;       // m/s (Data_Car.SteerSpeedSensitiveFastSpeed, 150 mph)
   double steer_fast_rate_scale = 0.45;    // Data_Car.SteerSpeedSensitiveFastRateScale
-  double steer_rate_min_share = 0.25;
+  // The pad's four rates (turning, straighten, countersteer, DynFindPeak) are
+  // multiplied by pow(2, 2 x SteerSpeed - 1) when the row is set up; the
+  // SteerSpeed override is unset (-1) for every car traced, and unset
+  // normalises its built-in 1.0 to 1, so the factor is 2 (SPEC_QUESTIONS Q231).
+  double steer_speed_scale = 2.0;
+  // PhysicsSettings NormRearSlipAngleToCountersteer, compared raw against the
+  // rear axle's load-weighted normalised slip (built in 3.0, shipped 50).
+  double steer_cs_rear_slip = 50.0;
+  // PhysicsSettings SteerFrictionClamp (built in 1.2, not in the shipped ini).
+  double steer_friction_clamp = 1.2;
   // RWD Launch Assist (PhysicsSettings.ini EnableRWDLaunchAssist).
   bool enable_rwd_launch_assist = true;
 
@@ -691,9 +703,18 @@ class Vehicle {
     double steer_pull_rad = 0.0;
     std::array<double, 2> brake_power_axle{1.0, 1.0};  // per-axle brake effectiveness (0 front, 1 rear)
     double clutch_capacity = 1.0;                      // clutch torque capacity scale from grind wear
+    // The engine part's damage (0..1), which drives the sputter (Q72), and
+    // whether the sputter runs at its full rate (Simulation damage; half
+    // otherwise).
+    double engine_damage = 0.0;
+    bool sputter_full_rate = false;
   };
   void set_damage_mods(const DamageMods& d) { damage_ = d; }
   const DamageMods& damage_mods() const { return damage_; }
+  // The engine sputter (SPEC_QUESTIONS Q72): a 0.08 s throttle cut
+  // started at random. sputter_count() counts the starts (for the rumble).
+  bool sputtering() const { return sputter_active_; }
+  uint32_t sputter_count() const { return sputter_count_; }
 
   const CarParams& params() const { return p_; }
   Vec3 position() const;  // the body frame's origin (on the ground at rest)
@@ -743,6 +764,21 @@ class Vehicle {
   // The road-wheel angle a full stick asks for at the current speed (the
   // lock narrows with speed; see shape_input).
   double steer_lock() const;
+  // The steering mode's full lock: SteerMaxAngle, or SteerMaxAngleFiltered in
+  // Assisted steering when it is smaller (the AI always gets SteerMaxAngle).
+  double steer_full_lock() const;
+  // The pad's speed-sensitive lock curve (SPEC_QUESTIONS Q69, decoded): 32
+  // samples up to 150 mph, sample i at max(0.01, i / 0.4623) m/s, each
+  // atan(MaxGees x wheelbase x a(v) / v^2) clamped to MinMaxAngle..
+  // SteerMaxAngle; read by a four-point cubic at |velocity|.
+  static constexpr int kSteerCurveSamples = 32;
+  static constexpr double kSteerCurvePerMps = 0.4623;
+  const std::array<double, kSteerCurveSamples>& steer_curve() const { return steer_curve_; }
+  double steer_curve_at(double speed_mps) const;
+  // a(v): the car's own lateral grip acceleration (m/s^2) at `speed_mps`,
+  // from its tyres' peak lateral friction under the static and aero loads,
+  // with six passes of lateral load transfer (Q69).
+  double steer_grip_accel(double speed_mps) const;
   double time() const { return time_; }
   // The body contacts' impulse in the last substep over its length (N): 0
   // while only the tyres touch the ground.
@@ -807,6 +843,7 @@ class Vehicle {
   void update_gearbox(double dt);
   void update_boost(double dt, double throttle, double rpm_now);
   void init_brakes();
+  void init_steer_curve();
   double ratio(int gear) const;  // gear x final drive, signed (reverse negative)
   double input_omega() const;    // the gearbox output side's speed in wheel rad/s (diff-weighted)
 
@@ -820,6 +857,7 @@ class Vehicle {
   double handbrake_const_ = 0;
   double brake_a_max_ = 10.0;
   std::array<double, 10> decel_table_{1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+  std::array<double, kSteerCurveSamples> steer_curve_{};
   double handbrake_shaped_ = 0;
   int substeps_ = 3;
   Vec3 pos_{}, vel_{}, ang_{};  // centre of mass (world), its velocity, angular velocity (world)
@@ -829,6 +867,15 @@ class Vehicle {
   Input raw_{}, shaped_{};
   double steer_angle_ = 0;
   double steer_ang_vel_ = 0;
+  double steer_lock_ext_ = 0;  // the held-stick lock extension (car+2788)
+  // The sputter's state: the car's own generator (car+20496; the seed is
+  // ours), the time into the sputter and whether it cuts the throttle.
+  uint32_t sputter_rng_ = 1;
+  double sputter_time_ = 0;
+  bool sputter_active_ = false;
+  bool sputter_cut_ = false;
+  uint32_t sputter_count_ = 0;
+  void update_sputter(double dt);
   double kb_steer_hold_time_ = 0;
   double kb_steer_dir_ = 0;
   double kb_steer_filtered_ = 0;

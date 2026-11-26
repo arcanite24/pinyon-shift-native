@@ -401,7 +401,77 @@ Vehicle::Vehicle(const CarParams& params) : p_(params) {
     peak_power_rpm_ = std::max(std::max(800.0, p_.idle_rpm) + 100.0, std::min(best_rpm, p_.redline_rpm));
   }
   init_brakes();
+  init_steer_curve();
   reset({0, 0, 0});
+}
+
+double Vehicle::steer_grip_accel(double speed_mps) const {
+  // The steering model's lateral grip query (SPEC_QUESTIONS Q69, decoded):
+  // the axle loads from the static weight split and the aero downforce at
+  // this speed (not clamped below zero, then each axle floored at 0), half
+  // to each wheel; six passes in which each wheel's peak lateral friction
+  // at its load gives the axle's lateral force, and that force x the arm
+  // over the track moves load from the inner wheel (at least 0) to the
+  // outer (at most the axle's load). The result is the four wheels' loads
+  // after the last pass x the frictions of that pass, over the mass.
+  const double z_front = 0.5 * (p_.wheel_centres[0].z + p_.wheel_centres[1].z);
+  const double z_rear = 0.5 * (p_.wheel_centres[2].z + p_.wheel_centres[3].z);
+  const double wb = std::max(0.5, std::fabs(z_front - z_rear));
+  const double front_share = std::clamp((com_local_.z - z_rear) / wb, 0.0, 1.0);
+  const double v = std::max(0.0, speed_mps);
+  const double m = std::max(1.0, p_.mass);
+  // The original's weight uses 9.80665 (kgf), not the car's gravity.
+  const double nf = std::max(0.0, m * kKgf * front_share + (p_.aero_df_front + p_.aero_part_df_front) * v * v);
+  const double nr = std::max(0.0, m * kKgf * (1 - front_share) + (p_.aero_df_rear + p_.aero_part_df_rear) * v * v);
+  const double track_f = std::max(0.5, std::fabs(p_.wheel_centres[1].x - p_.wheel_centres[0].x));
+  const double track_r = std::max(0.5, std::fabs(p_.wheel_centres[3].x - p_.wheel_centres[2].x));
+  // The arm: the original reads two fields of each axle's wheel block (not
+  // identified). Interim: the centre of mass's height above the ground
+  // under it, which makes the transfer the whole steady-state moment.
+  const double arm = std::max(0.0, com_local_.y);
+  const double hf = 0.5 * nf, hr = 0.5 * nr;
+  double load[kWheels] = {hf, hf, hr, hr};  // inner front, outer front, inner rear, outer rear
+  double mu[kWheels] = {};
+  for (int pass = 0; pass < 6; ++pass) {
+    for (int i = 0; i < kWheels; ++i) mu[i] = tyre_peak_mu(p_, axle_of(i), TyrePeak::kLateral, load[i], v);
+    const double ff = load[0] * mu[0] + load[1] * mu[1];
+    const double fr = load[2] * mu[2] + load[3] * mu[3];
+    const double dnf = ff * arm / track_f, dnr = fr * arm / track_r;
+    load[0] = std::max(0.0, hf - dnf);
+    load[1] = std::min(nf, hf + dnf);
+    load[2] = std::max(0.0, hr - dnr);
+    load[3] = std::min(nr, hr + dnr);
+  }
+  double f = 0;
+  for (int i = 0; i < kWheels; ++i) f += load[i] * mu[i];
+  return f / m;
+}
+
+void Vehicle::init_steer_curve() {
+  // Built once per car (Q69): sample i at max(0.01, i / 0.4623) m/s (31
+  // steps to 150 mph), atan(MaxGees x L x a(v) / v^2) clamped between
+  // MinMaxAngle and SteerMaxAngle. L is read as the wheelbase (probable).
+  const double wb = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
+                              (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
+  const double lo = std::min(p_.steer_min_lock, p_.max_steer), hi = std::max(p_.steer_min_lock, p_.max_steer);
+  for (int i = 0; i < kSteerCurveSamples; ++i) {
+    const double v = std::max(0.01, double(i) / kSteerCurvePerMps);
+    steer_curve_[size_t(i)] = std::clamp(std::atan(p_.steer_max_gees * wb * steer_grip_accel(v) / (v * v)), lo, hi);
+  }
+}
+
+double Vehicle::steer_curve_at(double speed_mps) const {
+  // A four-point (Catmull-Rom) cubic through the samples around the speed.
+  constexpr int n = kSteerCurveSamples;
+  const double u = std::clamp(std::fabs(speed_mps) * kSteerCurvePerMps, 0.0, double(n - 1));
+  const int i1 = std::min(n - 2, int(std::floor(u)));
+  const double t = u - double(i1);
+  const int i0 = std::max(0, i1 - 1), i2 = std::min(n - 1, i1 + 1), i3 = std::min(n - 1, i1 + 2);
+  const double p0 = steer_curve_[size_t(i0)], p1 = steer_curve_[size_t(i1)];
+  const double p2 = steer_curve_[size_t(i2)], p3 = steer_curve_[size_t(i3)];
+  const double t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
 void Vehicle::init_brakes() {
@@ -556,6 +626,9 @@ void Vehicle::reset(const Vec3& position, double heading) {
   time_ = 0;
   steer_angle_ = 0;
   steer_ang_vel_ = 0;
+  steer_lock_ext_ = 0;
+  sputter_time_ = 0;
+  sputter_active_ = sputter_cut_ = false;
   kb_steer_hold_time_ = 0;
   kb_steer_dir_ = 0;
   kb_steer_filtered_ = 0;
@@ -756,11 +829,12 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     // The scale: 1 below 2 m/s forward, and while the wheel is turned back
     // through centre; CounterSteerScale while countersteering; otherwise
     // SteerScale0 to SteerScale1 over |velocity| from SteerSpeed0 to 1.
-    // Interim: the countersteer state stays off. The original tests the
-    // road wheels' angle against a front-wheel field that is not decoded,
-    // and a guess would switch the 900-degree table's 1.5 scale on.
+    // The countersteer state (the same test as the pad's, Q231):
+    // a front wheel's normalised slip against the road wheels' angle, wheel
+    // 0 when the angle is positive and wheel 1 otherwise. The engine's
+    // slip_angle has the other sign from the original's.
     const double forward = rotate_inverse(rot_, vel_).z;
-    constexpr bool countersteer = false;
+    const bool countersteer = steer_angle_ > 0 ? w_[0].slip_angle > 0 : w_[1].slip_angle < 0;
     const bool back_through_centre = (steer_angle_ > 0 && in <= 0) || (steer_angle_ < 0 && in >= 0) ||
                                      (steer_angle_ == 0 && in == 0);
     double scale = 1.0;
@@ -792,7 +866,12 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // opt-in steering helpers (lane centring, a countersteer bias and a front
   // peak-slip pull), off unless VehicleAssists::engine_steer_assist.
   const double v_abs = std::fabs(speed());
-  const double lock = std::min(steer_lock(), std::max(p_.steer_min_lock, surf_steer_lock_cap_rad_));
+  // The lock (the steering model's vt+148): the mode's full lock capped by
+  // the surfaces' mean lock cap; narrowed by the curve at |velocity| and
+  // clamped between min(MinMaxAngle, lock) and the lock.
+  const double cap = std::min(steer_full_lock(), surf_steer_lock_cap_rad_);
+  const double lock = std::clamp(std::min(cap, steer_curve_at(length(vel_))), std::min(p_.steer_min_lock, cap),
+                                 std::max(p_.steer_min_lock, cap));
   const Vec3 vl_cs = rotate_inverse(rot_, vel_);
   const Vec3 wl_cs = rotate_inverse(rot_, ang_);
   const double z_rear_rel = 0.5 * (p_.wheel_centres[2].z + p_.wheel_centres[3].z) - com_local_.z;
@@ -834,13 +913,92 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     kb_steer_filtered_ = shaped_.steer;
   }
 
-  // FEEL-15: the stick maps linearly onto the lock (the SteeringWheelFilter
-  // block of PhysicsSettings.ini is never read by the original).
+  // The decoded pad filter (SPEC_QUESTIONS Q69 and Q231). The
+  // tyre slips are the load-weighted means of each axle's normalised slip
+  // angle, in the original's sign: positive with the steer angle in an
+  // ordinary turn (the engine's slip_angle has the other sign).
+  double n_front = 0, s_front = 0, n_rear = 0, s_rear = 0;
+  for (int i = 0; i < 4; ++i) {
+    const double n = std::max(0.0, w_[i].load);
+    (i < 2 ? n_front : n_rear) += n;
+    (i < 2 ? s_front : s_rear) -= n * w_[i].slip_angle;
+  }
+  const double front_slip = s_front / std::max(n_front, 1e-7);
+  const double rear_slip = s_rear / std::max(n_rear, 1e-7);
+  // Countersteer states: a front wheel slipping against the steer angle
+  // (wheel 0 when the angle is positive, wheel 1 otherwise), or the rear
+  // mean past NormRearSlipAngleToCountersteer, compared raw (the shipped 50
+  // never fires on a normalised slip).
+  const bool front_cs = steer_angle_ > 0 ? w_[0].slip_angle > 0 : w_[1].slip_angle < 0;
+  const bool rear_cs = std::fabs(rear_slip) > p_.steer_cs_rear_slip;
+  const double stick = eff_stick;
+  const bool back_through_centre = (steer_angle_ > 0 && stick <= 0) || (steer_angle_ < 0 && stick >= 0) ||
+                                   (steer_angle_ == 0 && stick == 0);
+  // The speed-sensitive branch needs 2 m/s forward, the stick on the side
+  // the road wheels already point, and neither countersteer state.
+  // Otherwise the target is the stick times the full lock.
+  const bool narrow = vl_cs.z >= 2.0 && !front_cs && !rear_cs && !back_through_centre;
+  const double surf_rate = std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
+  const double speed_scale = p_.steer_speed_scale;
+  double target = stick * (narrow ? lock : cap);
+  double rate_use = 0.0;
+  bool ramped = true;  // the countersteer rate sets the angular velocity directly
+  const double v_len = length(vel_);
+  const double s_lo = std::min(p_.steer_slow_speed, p_.steer_fast_speed);
+  const double s_hi = std::max(p_.steer_slow_speed, p_.steer_fast_speed);
+  const double speed_rate_scale =
+      v_len >= s_hi ? p_.steer_fast_rate_scale
+                    : (v_len <= s_lo ? 1.0
+                                     : 1.0 + (p_.steer_fast_rate_scale - 1.0) * (v_len - s_lo) / (s_hi - s_lo));
+  if (narrow) {
+    // The turning rate scales with the curve's share of the lock at SlowSpeed
+    // (the speed clamped to [SlowSpeed, FastSpeed]) and toward FastRateScale.
+    const double denom = std::min(cap, steer_curve_at(p_.steer_slow_speed));
+    const double share = denom > 0 ? std::min(cap, steer_curve_at(std::clamp(v_len, s_lo, s_hi))) / denom : 1.0;
+    rate_use = p_.steer_rate * speed_scale * surf_rate * share * speed_rate_scale;
+    // Holding the stick at full (0.976) at the narrowed lock, with the fronts
+    // under 1.05 of their peak slip, lets the target creep past the curve at
+    // up to SteerAngVelDynFindPeak. The extension clears when the stick
+    // drops, and the target never backs off the current angle while held.
+    const bool holding = std::fabs(stick) >= 0.976;
+    if (holding) {
+      if (std::fabs(steer_angle_) >= lock - rate_use * dt && std::fabs(front_slip) < 1.05) {
+        rate_use = std::min(rate_use, p_.steer_dyn_find_peak_rate * speed_scale);
+        steer_lock_ext_ += (target >= 0 ? 1.0 : -1.0) * rate_use * dt;
+      }
+    } else {
+      steer_lock_ext_ = 0.0;
+    }
+    target = std::clamp(steer_lock_ext_ + target, -cap, cap);
+    if (holding) {
+      if (stick > 0 && target < steer_angle_) target = steer_angle_;
+      else if (stick < 0 && target > steer_angle_) target = steer_angle_;
+    }
+    // SteerFrictionClamp: fronts past it on the angle's side hold the target
+    // to the current angle (or MinMaxAngle).
+    if (std::fabs(front_slip) >= p_.steer_friction_clamp && steer_angle_ * front_slip > 0) {
+      const double m = std::max(std::fabs(steer_angle_), p_.steer_min_lock);
+      target = std::clamp(target, -m, m);
+    }
+  } else {
+    steer_lock_ext_ = 0.0;
+    if (rear_cs) {
+      rate_use = p_.steer_countersteer_rate * speed_scale * surf_rate;
+      ramped = false;
+    } else {
+      const bool outward = (steer_angle_ >= 0 && target > steer_angle_) || (steer_angle_ <= 0 && target < steer_angle_);
+      rate_use = (outward ? p_.steer_rate : p_.straighten_rate) * speed_scale * surf_rate;
+      if (!outward && raw.input_is_keyboard) rate_use *= 1.45;  // keyboard filter (engine)
+    }
+  }
+
   const double stick_abs = std::fabs(eff_stick);
-  double target = eff_stick * lock;
   if (kb_countersteering) {
     const double kb_cs_lock = std::min(p_.max_steer, std::max(lock, 0.35));
     target = eff_stick * kb_cs_lock;
+    rate_use = std::max(rate_use, p_.steer_countersteer_rate * 1.25);
+  } else if (raw.input_is_keyboard && narrow) {
+    rate_use *= kb_tap_rate_scale;
   }
   const bool helpers = assists_.engine_steer_assist;
   // Steering helper (engine extra, opt-in): in Assisted steering, a gentle
@@ -878,22 +1036,14 @@ void Vehicle::shape_input(const Input& raw, double dt) {
         const double cs_cap = std::min(p_.max_steer, std::max(lock, std::fabs(cs_bias)));
         target = std::clamp(cs_target, -cs_cap, cs_cap);
         cs_assist_active = true;
+        rate_use = std::max(rate_use, p_.steer_countersteer_rate);
       }
     }
   }
-  const bool centring = std::fabs(target) < std::fabs(steer_angle_) && target * steer_angle_ >= 0;
-  const bool countersteering =
-      (std::fabs(mean_rear_sa) > 0.5 && (eff_stick * mean_rear_sa > 0)) || cs_assist_active || kb_countersteering;
-  const double u_spd = ramp(v_abs, p_.steer_slow_speed, p_.steer_fast_speed);
-  const double speed_rate_scale = lerp(1.0, p_.steer_fast_rate_scale, u_spd);
-  const double share = p_.max_steer > 0 ? std::clamp(lock / p_.max_steer, p_.steer_rate_min_share, 1.0) : 1.0;
-  double rate_use = (centring ? p_.straighten_rate
-                              : p_.steer_rate * lerp(share, share * p_.steer_fast_rate_scale, u_spd) * kb_tap_rate_scale) *
-                    std::clamp(surf_steer_rate_mult_, 0.35, 2.0);
-  if (centring && raw.input_is_keyboard) rate_use = std::max(rate_use, p_.straighten_rate * 1.45);
   // Steering helper (engine extra, opt-in): in Normal/Assisted (and not
   // during handbrake drift initiation), when the fronts wash past peak
   // lateral slip, pull the target toward peak front grip.
+  const bool countersteering = front_cs || rear_cs || cs_assist_active || kb_countersteering;
   if (helpers && assists_.steering != 2 && !countersteering && handbrake_shaped_ < 0.1 && v_abs > 5.0 &&
       stick_abs > 0.05) {
     const double mean_front_sa = 0.5 * (std::fabs(w_[0].slip_angle) + std::fabs(w_[1].slip_angle));
@@ -903,38 +1053,36 @@ void Vehicle::shape_input(const Input& raw, double dt) {
       rate_use = std::max(rate_use, p_.steer_dyn_find_peak_rate * speed_rate_scale);
     }
   }
-  if (countersteering) rate_use = std::max(rate_use, p_.steer_countersteer_rate);
-  if (kb_countersteering) rate_use = std::max(rate_use, p_.steer_countersteer_rate * 1.25);
-  if (assists_.steering == 2) rate_use = std::max(rate_use, p_.steer_rate * std::max(0.5, share));
-  if (p_.steer_accel_time > 1e-4 && dt > 0.0) {
-    const double err = target - steer_angle_;
-    const double desired_vel = std::clamp(err / dt, -rate_use, rate_use);
-    const double accel = rate_use / p_.steer_accel_time;
-    steer_ang_vel_ = approach(steer_ang_vel_, desired_vel, accel, dt);
-    const double next = steer_angle_ + steer_ang_vel_ * dt;
-    if ((err > 0 && next >= target) || (err < 0 && next <= target)) {
-      steer_angle_ = target;
-      steer_ang_vel_ = 0.0;
-    } else {
-      steer_angle_ = next;
-    }
+  if (dt <= 0.0) return;
+  const double err = target - steer_angle_;
+  if (!ramped) {
+    // The countersteer rate: straight to the target, no acceleration ramp.
+    steer_ang_vel_ = rate_use * dt < std::fabs(err) ? (err >= 0 ? rate_use : -rate_use) : err / dt;
   } else {
-    steer_angle_ = approach(steer_angle_, target, rate_use, dt);
-    steer_ang_vel_ = 0.0;
+    // The move: the angular velocity restarts from zero when the
+    // error changes side, gains rate / SteerAccelTimeToMaxRate per second up
+    // to the rate, and lands on the target rather than overshoot.
+    const double accel = p_.steer_accel_time > 1e-6 ? rate_use / p_.steer_accel_time : 1e12;
+    if ((steer_ang_vel_ > 0) != (err > 0)) steer_ang_vel_ = 0.0;
+    steer_ang_vel_ = std::clamp(steer_ang_vel_ + (err >= 0 ? accel : -accel) * dt, -rate_use, rate_use);
+    if (std::fabs(steer_ang_vel_) * dt > std::fabs(err)) steer_ang_vel_ = err / dt;
   }
+  steer_angle_ += steer_ang_vel_ * dt;
+}
+
+double Vehicle::steer_full_lock() const {
+  return (!ai_ && assists_.steering == 0 && p_.max_steer_filtered > 0) ? std::min(p_.max_steer, p_.max_steer_filtered)
+                                                                      : p_.max_steer;
 }
 
 double Vehicle::steer_lock() const {
-  const double wheelbase = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
-                                     (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
-  const double v = std::fabs(speed());
-  const double max_a = (!ai_ && assists_.steering == 0 && p_.max_steer_filtered > 0)
-                           ? std::min(p_.max_steer, p_.max_steer_filtered)
-                           : p_.max_steer;
-  if (ai_ || v <= 0.1) return max_a;
-  // The lock law is ours (interim, FEEL-16 d): the same in every steering mode.
-  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
-                    std::min(p_.steer_min_lock, max_a), max_a);
+  const double max_a = steer_full_lock();
+  if (ai_) return max_a;
+  // The decoded lock law (Q69): the smaller of the lock and the car's curve
+  // at |velocity|, clamped between min(MinMaxAngle, lock) and the lock. The
+  // same in every steering mode.
+  const double curve = steer_curve_at(length(vel_));
+  return std::clamp(std::min(max_a, curve), std::min(p_.steer_min_lock, max_a), max_a);
 }
 
 void Vehicle::update_boost(double dt, double throttle, double rpm_now) {
@@ -1061,7 +1209,8 @@ void Vehicle::update_gearbox(double dt) {
   const double trigger = std::clamp((shifting_mode == 0 && gear_ == -1) ? raw_.brake : raw_.throttle, 0.0, 1.0);
   if (p_.boost_lag > 0 && trigger > spool_) spool_ += (trigger - spool_) * (1 - std::exp(-dt / p_.boost_lag));
   else spool_ = trigger;
-  const double driver = p_.boost_lag > 0 ? std::min(drive_pedal, spool_) : drive_pedal;
+  // A sputter forces the throttle to 0 (Q72).
+  const double driver = sputter_cut_ ? 0.0 : p_.boost_lag > 0 ? std::min(drive_pedal, spool_) : drive_pedal;
   driver_throttle_ = driver;
   const double rpm_now = rpm();
   const double rpm_rate = (rpm_now - prev_rpm_) / dt;
@@ -1368,6 +1517,36 @@ void Vehicle::update_gearbox(double dt) {
   }
 }
 
+void Vehicle::update_sputter(double dt) {
+  // The damage update, each step. The rate is EngineDamageMaxSputtersPerSec (halved
+  // outside Simulation damage) x (damage - start) / (1 - start), with the
+  // damage clamped to 0..1; none at or below the start level. A draw from
+  // the car's generator below rate x dt starts (or restarts) a sputter,
+  // which cuts the throttle until 0.08 s have passed.
+  const double max_rate = p_.sputter_max_per_sec * (damage_.sputter_full_rate ? 1.0 : 0.5);
+  const double start = p_.sputter_start_damage;
+  const double lo = std::min(start, 1.0), hi = std::max(start, 1.0);
+  const double d = std::clamp(damage_.engine_damage, 0.0, 1.0);
+  double rate = 0.0;
+  if (d > lo) rate = d >= hi ? max_rate : (d - lo) / (hi - lo) * max_rate;
+  sputter_rng_ = sputter_rng_ * 1103515245u + 12345u;
+  const double u = double((sputter_rng_ >> 16) & 0x7fffu) * (1.0 / 32767.0);
+  if (u < rate * dt) {
+    sputter_time_ = 0.0;
+    if (!sputter_active_) ++sputter_count_;
+    sputter_active_ = true;
+  }
+  sputter_cut_ = false;
+  if (sputter_active_) {
+    if (sputter_time_ > 0.08) {
+      sputter_active_ = false;
+    } else {
+      sputter_cut_ = true;
+      sputter_time_ += dt;
+    }
+  }
+}
+
 void Vehicle::step(const Input& input, const Ground& ground) {
   Input eff_input = input;
   if (!ai_ && assists_.braking == 0 && eff_input.has_auto_brake_target) {
@@ -1375,6 +1554,7 @@ void Vehicle::step(const Input& input, const Ground& ground) {
   }
   raw_ = eff_input;
   shape_input(eff_input, kStep);
+  update_sputter(kStep);
   update_gearbox(kStep);
   abs_flag_ = false;
   tcs_flag_ = false;

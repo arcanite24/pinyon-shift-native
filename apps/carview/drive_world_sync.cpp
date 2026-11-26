@@ -1367,6 +1367,8 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           vdm.tyre_grip = dm.tyre_grip;
           vdm.suspension_scale = dm.suspension_scale;
           vdm.steer_pull_rad = dm.steer_pull_rad;
+          vdm.engine_damage = car_damage.engine_damage;
+          vdm.sputter_full_rate = car_damage.mode == drive::DamageMode::kSimulation;
           vehicle.set_damage_mods(vdm);
           host.showroom.set_damage_state(car_damage);
           clear_detached_car_parts(this);

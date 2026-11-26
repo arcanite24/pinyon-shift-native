@@ -660,12 +660,13 @@ question Q38)" and "Colour byte order"). Built:
   brake unit is 1,200 N m (4,390 / 1,790 N m full press on the R34), the
   up-shift is at 0.945 x the redline, the braking down-shift at 0.8 x, and
   the part-throttle up-shift is the pad's only.
-- **Placeholder: the pad's lock and rate at speed.** The lock is
+- ~~**Placeholder: the pad's lock and rate at speed.** The lock is
   atan(1.61 x SteerSpeedSensitiveMaxGees x g x wheelbase / v^2), the
   measured 2,410 / v^2 degrees per unit on the R34; the turning rate
   scales with the lock's share of the full lock, down to a quarter (20 to
   38 deg/s measured at speed); centring keeps its rate. Open: the rule
-  behind both.
+  behind both.~~ Superseded by Q69 (the decoded curve) and Q231 (the rate
+  law): the measurements here are kept as the check.
 - **The lap: DNF** (595 of 1,199 m in 77.6 s; 0-100 km/h 6.09 s against
   5.76). Split: +0.26 s at 100 m, +0.28 at 200, +0.27 at 300, +2.04 at
   400, +2.44 at 500. The first braking zone pulls -14.6 m/s^2 at brake
@@ -2085,14 +2086,18 @@ per-mode lock factors (Simulation 1.25, Assisted 0.90) are gone.
 
 Still ours (interim):
 
-- **The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
-  between MinMaxAngle and the mode's cap. The 1.61 is a fit.
-- **The countersteer trigger.** It fires at a mean normalised rear slip
+- ~~**The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
+  between MinMaxAngle and the mode's cap. The 1.61 is a fit.~~ Done
+  (c3bdd78b): the decoded per-car curve below.
+- ~~**The countersteer trigger.** It fires at a mean normalised rear slip
   above 0.5. Settings carry NormRearSlipAngleToCountersteer 50; its unit
-  is not read.
-- **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
-  are on.
-- **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+  is not read.~~ Superseded by Q231: the decoded states replace it.
+- ~~**SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
+  are on.~~ Superseded by Q231: it is the held-stick lock extension's rate.
+- ~~**SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).~~
+  Settled (FEEL-17, 53e1f996): they are mph. The steering model's setup
+  multiplies both by 0.44704 (the constant at 820055FC), so the shipped 1 and 120 are
+  0.447 and 53.6 m/s. The rest of this item is kept for the record.
   Every car ships SlowSpeed 1.0, FastSpeed 120.0 and FastRateScale 1.0.
   In the engine the two speeds only blend the rate toward FastRateScale,
   so with the shipped rows the unit changes nothing today. It matters
@@ -2132,16 +2137,25 @@ MinMaxAngle, SlowSpeed, FastSpeed, FastRateScale.
     third steering factor.
   - The result is clamped between min(MinMaxAngle, lock) and the lock.
     The target is the stick times it.
-- **The rate.** MaxAngVelTurning is scaled from 1 toward FastRateScale
+- ~~**The rate.** MaxAngVelTurning is scaled from 1 toward FastRateScale
   as |velocity| goes from SlowSpeed to FastSpeed. The speed is the same
   m/s field the curve reads, so SlowSpeed and FastSpeed are m/s unless
   the row loader converts them (FEEL-17, probable). The rate is also
   scaled by the surfaces' mean rate factor. A test of |stick| against
-  0.976 is on this path; its use is not decoded.
+  0.976 is on this path; its use is not decoded.~~ Superseded by Q231
+  (the full rate law, the branches and the 0.976 hold).
 
-The engine keeps its interim lock law. Its 1.61 x g stands in for a(v),
+~~The engine keeps its interim lock law. Its 1.61 x g stands in for a(v),
 and the engine has no per-speed table. Porting a(v) needs the steering
-model's load-transfer iteration, which is decoded only in outline.
+model's load-transfer iteration, which is decoded only in outline.~~
+Done (c3bdd78b): the engine builds the 32-sample curve per car. a(v) is
+the six-pass lateral load transfer over each wheel's peak lateral
+friction (`Vehicle::steer_grip_accel`), L is the wheelbase, and the
+moment arm is the centre of mass height (interim: its writer is not
+found). On the R34 the curve gives 6.40, 5.77 and 4.94 deg at 19, 20 and
+22 m/s, against the measured 2,410 / v^2 (6.68, 6.03, 4.98); a(v) is
+1.53 g at 5 m/s, 1.55 g at 20 m/s and 1.71 g at 60 m/s. The 1.61 fit is
+kept only for the AI's pure-pursuit turn-in cap.
 Supersedes, in Q69's Still ours, "The 1.61 is a fit": it is a fit to
 a(v) / g.
 
@@ -2208,7 +2222,7 @@ carview wheel path does not yet pass its 900-degree setting). Interim:
   steering-lock caps (degrees, converted) of the surfaces under the
   wheels in contact, 9999 when none is. The wheel path takes it without
   speed narrowing. The engine now does the same.
-- **The countersteer state.** It is off, so CounterSteerScale never
+- ~~**The countersteer state.** It is off, so CounterSteerScale never
   applies. A guess would switch on the 900-degree table's 1.5 scale,
   which is the only table carview's wheels reach. The original tests
   the sign of the road wheels' angle against the same field of the two
@@ -2217,9 +2231,12 @@ carview wheel path does not yet pass its 900-degree setting). Interim:
   is not positive and the second front wheel's field is positive. The
   field is set at car setup from a car vector. No per-frame writer turns
   up in a search of plain stores, so it may be written by a vector
-  store.
+  store.~~ Decoded (Q231, 129bf3f9): the field is the wheel's normalised
+  lateral slip (wheel block +520), which the pad filter's countersteer
+  test reads too. The engine now runs the test on its own slip_angle,
+  whose sign is the other way round.
 
-Needed: what that front-wheel field is.
+~~Needed: what that front-wheel field is.~~
 
 ## Q71 (FEEL-12, not blocking): new-profile assists and the presets
 
@@ -2293,23 +2310,34 @@ engine damage, not the rev limiter. PhysicsSettings.ini gives
 `EngineDamageMaxSputtersPerSec 1`, and both are read at load. Still
 interim:
 
-- **Rate rule.** Sputters are evenly spaced. Their rate rises linearly
-  from 0 at the start level to the maximum at full damage. ~~The
+- ~~**Rate rule.** Sputters are evenly spaced. Their rate rises linearly
+  from 0 at the start level to the maximum at full damage.~~ Done
+  (0c07982e): the vehicle runs the decoded rule below. ~~The
   original's rule between those two values is not decoded, and it may
   be random.~~ Decoded (2026-11-25), and only the spacing differs:
   - **The rate.** Each frame, the rate is EngineDamageMaxSputtersPerSec
     x clamp((damage - start) / (1 - start), 0, 1), with damage clamped
     to 0..1. It is halved unless a car setting next to the steering mode
     reads 2; that setting is not identified (possibly the damage mode).
+    The function is 82D2CD20, and the test is car+6136 == 2. The same
+    "2 gives 1.0, else 0.5" test on data+11484 scales several row setups
+    (the steering row's +136, 82D27250), which fits a damage mode. The
+    engine takes it as Simulation damage (`DamageMode::kSimulation`,
+    value 2); interim until car+6136's writer is traced.
   - **The trigger.** A sputter starts when a uniform random draw is
     below rate x dt. The draw comes from the car's own linear
     congruential generator (x' = x x 1103515245 + 12345, 15 bits).
+    The draw is (x' >> 16 & 0x7fff) / 32767 (82CFC780), taken every
+    step. A draw that fires during a sputter restarts its 0.08 s. The
+    generator's seed (car+20496) is not traced; the engine seeds 1.
   - **The sputter.** It lasts 0.08 s, and for that time the throttle is
     forced to 0.
 
   So the original sputter is a 0.08 s throttle cut at random (Poisson)
-  times, not only a rumble event. The engine has the even spacing and no
-  throttle cut.
+  times, not only a rumble event. ~~The engine has the even spacing and no
+  throttle cut.~~ The engine now cuts the throttle (car+6672 = 0 while
+  the sputter's time is at most 0.08 s), and OnEngineSputter fires on
+  each start.
 - **Damage level.** The damage level is the engine's own damage model
   (FEEL-19 to FEEL-23, owned by another branch).
 
@@ -2337,8 +2365,9 @@ Still interim:
   mask.
 - **Camera travel.** Camera travel is not part of the Tier-0 vector.
 
-Needed: the stick thresholds and InvertCameraLookBack handling; the
-sputter scheduler; the dynamic motion-blur amount rule and its time
+Needed: the stick thresholds and InvertCameraLookBack handling;
+~~the sputter scheduler~~ (decoded); the writer of car+6136 and the
+generator's seed; the dynamic motion-blur amount rule and its time
 base.
 
 ## Q80 (audio, not blocking): what drives the ambience state
@@ -2805,9 +2834,20 @@ The solid barriers go the same way with the Car/GuardRail row.
 
 Still interim:
 
-- **Solid barriers by name.** Which static models are solid is still
+- ~~**Solid barriers by name.** Which static models are solid is still
   chosen from their names and proportions; the original's rule for
-  static objects' collision is not decoded.
+  static objects' collision is not decoded.~~ Settled (6bb5820b): the
+  original's static collision has two sources, the `.fiz` tiles and the
+  CWorldCollObj objects that `Ribbon_00/CollObjs.xml` places (a static
+  pool of 384, "StaticObjectPool<CWorldCollObj>"), each typed by
+  PhysicsDefinitions.bin and `physics.zip/CollObjects.xml`. The
+  render-only `.pvsz` models have no collision object, and none of the
+  name-picked barrier models (OBJ_FEST_CrowdBarrier, ChainLink_Fence and
+  the like) appears in CollObjs.xml, whose 175,000 entries are CO_ and
+  OBJ_ sign, fence and furniture types. The name pass is now an engine
+  extra, off by default (`SmashableWorld::set_render_model_barriers`).
+  Not measured: how many of those models stand on a `.fiz` wall, so
+  whether the car now meets any of them less firmly than before.
 - **Convex hulls** meet the car as their box in the prop's frame.
 - **Fixed bodies.** An unbroken prop does not move; its Mass is unused
   until it breaks.
@@ -2826,8 +2866,8 @@ Still interim:
   PhysicsDefinitions have no such prop: the five that are unbreakable or
   break above 27 mph all reach 1.06 m or more.
 
-Needed: the static-object collision rule, and whether an unbroken prop
-is fixed or a heavy dynamic body.
+Needed: ~~the static-object collision rule~~ (settled above), and
+whether an unbroken prop is fixed or a heavy dynamic body.
 
 ## Q93 (UI, not blocking): the event ticket's surface line
 
@@ -5555,3 +5595,144 @@ No capture shows MY GARAGE itself.
 Needed: captures of MY GARAGE from the pause menu, from an outpost and
 from the workshop, and the camera the original uses on the current car
 there.
+
+## Q231 (FEEL-15/16, not blocking): the pad filter's branches and rate
+
+Decoded from 82D37598 (each frame), 82D22A30 and 82D22AE8 (the move),
+82D25C38 (the row setup) and 82D347F0 (the tuning overrides). The
+engine runs all of this (8187a655, 129bf3f9).
+
+- **The setup.** The four rates (MaxAngVelTurning, Straighten,
+  Countersteer, DynFindPeak) are multiplied by pow(2, 2 x SteerSpeed -
+  1) and MaxGees by pow(2, 2 x SteerAmount - 1). SteerSpeed and
+  SteerAmount are two of 47 tuning overrides at data+11272 ("Tune
+  default out of range" is the range check's message). The overrides
+  are reset to -1 (unset). Unset normalises the built-in default into
+  [0, 1]: SteerSpeed's 1.0 gives 1, so the rates double; SteerAmount's
+  0.5 gives 0.5, so MaxGees stays. The engine carries the factor as
+  `steer_speed_scale` = 2.
+- **The slips.** Each axle's slip is the load-weighted mean of the
+  wheels' normalised slip angle (block +520; the load is +676 plus +700,
+  floored at 0; the sum floored at 1e-7).
+- **The countersteer states.** One is a front wheel slipping against the
+  steer angle: wheel 0's slip below 0 when the angle is positive,
+  otherwise wheel 1's above 0. The wheel path (82D2FD30) tests the same.
+  The other is |rear slip| above NormRearSlipAngleToCountersteer,
+  compared raw.
+- **The narrowed branch.** It needs 2 m/s forward (velocity along the
+  body's forward axis), neither countersteer state, and the stick on the
+  side the road wheels already point (not stick <= 0 at a positive
+  angle, stick >= 0 at a negative one, or both at 0). Then:
+  - the target is stick x the narrowed lock;
+  - the rate is MaxAngVelTurning x the surfaces' mean rate factor
+    (car+5904) x min(lock, curve(v')) / min(lock, curve(SlowSpeed)),
+    with v' the speed clamped to [SlowSpeed, FastSpeed], x a blend from
+    1 at SlowSpeed to FastRateScale at FastSpeed;
+  - with |stick| >= 0.976, the road wheels within one step of the
+    narrowed lock and the front slip under 1.05, the rate drops to
+    min(rate, DynFindPeak) and an extension grows by it, signed with the
+    target. The extension clears when the stick drops below 0.976 and
+    is kept otherwise;
+  - the target is extension + stick x lock, clamped to the full lock.
+    While held, it never backs off the current angle;
+  - when |front slip| >= SteerFrictionClamp (1.2 built in) on the
+    angle's side, the target is clamped to max(|angle|, MinMaxAngle).
+- **Otherwise.** The target is stick x the full lock and the extension
+  clears. In the rear countersteer state the rate is SteerAngVelCounter-
+  steer x the surface factor and it sets the angular velocity directly.
+  Otherwise the rate is MaxAngVelTurning moving outward (angle >= 0 and
+  target above it, or angle <= 0 and target below it) or Straighten
+  moving in, x the surface factor.
+- **The move.** The angular velocity restarts from 0 when the error
+  changes side, gains rate / SteerAccelTimeToMaxRate per second up to
+  the rate, and is set to error / dt when one more step would pass the
+  target.
+
+On the R34 (MaxAngle 42, 105 deg/s rows) the turning rate at 19 to 22
+m/s comes to 32 to 25 deg/s, inside the measured 20 to 38. Centring is
+210 deg/s; 140 to 190 was measured. Supersedes, in Q40, "the turning
+rate scales with the lock's share of the full lock, down to a quarter":
+there is no floor beyond MinMaxAngle / lock.
+
+Still open:
+
+- **Who sets the overrides.** The 105 deg/s measured at walking pace
+  fits a factor of 1, not 2. The overrides are copied through 82D34AD0,
+  82D38018, 82D38170 and 825CA318. If the MetaDifficulty presets or a
+  profile setting write SteerSpeed (FEEL-12, Q71), the factor differs
+  per mode.
+- **The rear trigger.** It assumes block +520 is normalised, which the
+  1.05 and 1.2 front tests suggest. Then the shipped 50 never fires, and
+  neither does the engine's old 0.5 trigger, which is gone.
+- **The blend at car+20508 / +20512.** Both branches blend the target
+  toward lock x car+20508 by car+20512. The engine assumes a weight of
+  0 for the player; the writer is not traced.
+- **The surfaces' third factor** (car+5908) multiplies the curve. The
+  engine has no such factor.
+- **Dropped engine rules.** The Simulation rate floor
+  (max(rate, MaxAngVelTurning x max(0.5, share))) and the 0.25 share
+  floor are gone. The keyboard filter and the opt-in helpers are kept
+  on top.
+
+Needed: a retail pad trace at walking pace and at speed (rate and
+centring), or the writer of the overrides for the player's car.
+
+## Q232 (WORLD-04/16, not blocking): the AI reset check and the post-reset collision timers
+
+Decoded from 82B84808, the AI driver's per-frame reset check. It copies
+MetaAIDriver/ResetParameters (60 bytes at MetaAIDriver+152) to a global
+(83338980) and keeps a tracker per car. The engine runs the rules
+below (`Session::step_ai_rules`).
+
+- **The cancel.** When the car is more than CancelResetIfMovedThisFar_m
+  (horizontal) from the stuck-distance anchor, every timer and anchor
+  restarts. That anchor moves whenever the car leaves its stuck
+  distance, so only a jump (a reset, a teleport) reaches 20 m. The
+  engine's earlier reading, 20 m of travel from where the timers started,
+  cancelled a crawling car's "too slow" timer; it no longer does.
+- **The waypoints.** One timer and one anchor waypoint, not three. While
+  the car is fewer than N1 waypoints past the anchor the limit is
+  MinTime1, fewer than N2 MinTime2, fewer than N3 MinTime3; at N3 or more
+  the anchor moves to the current waypoint and the timer restarts.
+- **The stuck distance, too slow, upside down.** As the attribute names
+  say. Slow and upside down use the horizontal speed. Upside down also
+  needs vt124 of the car's physics object to be at most 2 (probably the
+  wheels in contact).
+- **Fell.** World Y below ResetIfFellThisLow, at once.
+- Every timer fires once its time is past (>) its limit.
+
+Gate after the port (3-seed AI mean, s): FR22 166.3, FR16 127.4, FR24
+109.7, FR01 102.1, NR02 171.8, EXHIBITION_FEST_003 184.4 (before: 166.1,
+126.9, 109.7, 102.1, 171.7, 184.3). The 18 runs still have 9 AI resets
+in all, but not the same ones: FR16 seed 1 gains a "stuck on the line"
+reset at 78 s (the RX-7 at 1,702 m, before its two falls), EXHIBITION_FEST_003
+seed 1 loses the Mini's second reset at 168 s, and the rest fire up to
+1.6 s apart (3 s for the RX-7's falls after its new reset); one FR22
+reset is now "too slow", not "stuck in place" (the rules' order). The
+oracle recorded none (Q55), so the line points standing in for route
+waypoints may make the waypoint rule fire where the original's would not.
+
+Open:
+
+- A per-car flag (vt116 of the driver) gates two rules: the fell test
+  runs only while it is set, and the cancel (and the cancel of a pending
+  request) only while it is clear. What it means is not known; the engine
+  runs both always.
+- When the car's state (vt204 of car+896) is 8, the tracker restarts
+  (82B84760). The state is not identified.
+- The original counts route waypoints (82E56EA0); the engine counts the
+  AI line's points. The wheels-down condition and the horizontal speed
+  are not modelled (the engine uses the forward speed).
+- **WORLD-16.** HandOfGodReset is bound by 82521200 into the tunables
+  singleton (832E5130, built by 82520970): PostResetNonCollideTime at
+  +0x45C, OptimalSpeedScale +0x460, FadeOutTime +0x464, FadeInTime
+  +0x468, CollisionsOffTime +0x46C, FallYSpeed +0x474, the suction rows
+  from +0x478. No direct float load of +0x45C or +0x46C from that
+  singleton was found in the generated code, so their consumers (and so
+  when CollisionsOffTime runs relative to the fade) are still read from
+  the names: no car contact for CollisionsOffTime leading into the
+  reset, and for PostResetNonCollideTime after it.
+
+Needed: the consumer of the two collision timers (likely through a
+pointer to the singleton kept by the reset code), and the meaning of
+the driver flag and car state above.

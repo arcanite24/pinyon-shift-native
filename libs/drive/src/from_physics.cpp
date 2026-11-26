@@ -585,11 +585,16 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.steer_accel_time = std::max(0.0, get("Data_Car.SteerAccelTimeToMaxRate", p.steer_accel_time));
   p.steer_max_gees = get("Data_Car.SteerSpeedSensitiveMaxGees", 1);
   p.steer_min_lock = get("Data_Car.SteerSpeedSensitiveMinMaxAngle", 5) * kDeg;
-  p.steer_slow_speed = get("Data_Car.SteerSpeedSensitiveSlowSpeed", p.steer_slow_speed);
-  p.steer_fast_speed = get("Data_Car.SteerSpeedSensitiveFastSpeed", p.steer_fast_speed);
+  // SlowSpeed and FastSpeed are mph: the steering model's setup multiplies
+  // both by 0.44704 (FEEL-17, SPEC_QUESTIONS Q69).
+  constexpr double kMph = 0.44704;
+  p.steer_slow_speed = get("Data_Car.SteerSpeedSensitiveSlowSpeed", p.steer_slow_speed / kMph) * kMph;
+  p.steer_fast_speed = get("Data_Car.SteerSpeedSensitiveFastSpeed", p.steer_fast_speed / kMph) * kMph;
   p.steer_fast_rate_scale = std::clamp(get("Data_Car.SteerSpeedSensitiveFastRateScale", p.steer_fast_rate_scale), 0.1, 1.0);
   // PhysicsSettings.ini's SteeringWheelFilter block is not read: the original
   // never binds those keys (FEEL-15, SPEC_QUESTIONS Q70).
+  p.steer_cs_rear_slip = s.get("NormRearSlipAngleToCountersteer", 3.0);
+  p.steer_friction_clamp = s.get("SteerFrictionClamp", 1.2);
   p.enable_rwd_launch_assist = s.get("EnableRWDLaunchAssist", 1.0) >= 0.5;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): DB BodyAero* and
