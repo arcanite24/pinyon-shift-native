@@ -5198,6 +5198,53 @@ keys it by level - 1, the cap at level 2 is 7, not 5.
 
 Needed: the pick screen's flow, and the row the cap is read from.
 
+## Q256 (V4-02, not blocking): the 1000 Club's flow tree beyond the engine's screens
+
+`car_challenge_menus.xml` (v4 gamemodes, `carChallengeMenus`), read end
+to end for WP5b. The home screen (`ShowCarChallengeHomeScreen`) has six
+exits: `exit` (clean up, pause, back to the pause screen), `currentCar`,
+`achievements`, `allChallenges`, `leaderboard` and `recommendation`.
+
+- `currentCar`: `ShowCurrentCarChallengeScreen`, with `fastTravel`
+  (clean up the homespace, empty screen,
+  `fasttravel.perform_fast_travel`, to the game) and `setDestination`
+  (clean up, empty screen, to the game).
+- `achievements`: `ShowCarChallengeAchievementsScreen`; `select` runs
+  the recommendation flow for that achievement.
+- `allChallenges`: `all_car_challenges_flow`: DLC metadata download on,
+  `ShowCarChallengeManufacturerSelectScreen`, then
+  `ShowCarChallengeCarSelectScreen` with `next` (an unowned car: prepare
+  the Autoshow homespace, `CShowCarColorSelectScreen`, buy; `onStay`
+  back to the manufacturers), `multiGarageCar`
+  (`ShowCarChallengeGarageCarSelectScreen`), `singleGarageCar` (reload
+  the car and leave) and `challengeDetails`
+  (`ShowBuyCarChallengeDetailsScreen`, again with `fastTravel` and
+  `setDestination`).
+- `recommendation`: the same flow with the car select replaced by
+  `ShowCarChallengeRecommendedCarSelectScreen` and the manufacturer step
+  skipped (`dummy_manufacturer_select`); a pick runs
+  `CCarChallengeTutorial_CarSelected` and `CCarChallengeTutorialState`.
+- `leaderboard`: `car_challenge_scoreboard_screen`, whose `disconnected`
+  exit returns to the home screen.
+- Leaving through the Autoshow or the workshop places the car with
+  `CPlaceCar` (Autoshow -861.65, -7.38, -138.447, heading -124.362;
+  workshop -1030.189, -9.169, -146.23, heading 105.95) and plays
+  `autoshow_festival_outro` / `workshop_festival_outro`.
+
+The engine builds the home, achievements, car list (garage cars only)
+and details screens and the tutorial (Q143). Not built (WP5b found no
+evidence to build them from without guessing): the manufacturer and
+all-cars select, buying a car for a challenge, the recommendation car
+select, the details screens' fast travel and set destination (which
+button, and the destination: the flow does not name it; the screen's
+behaviour sets it), and the leaderboard offline (the flow only returns
+`disconnected` to the home screen; what the screen shows first is not
+in the flow). The Autoshow's manufacturer select (WP3's code) exists
+but is the Autoshow's screen, not `ShowCarChallengeManufacturerSelectScreen`.
+
+Needed: the six screens' behaviours (their help bars, list sources and
+the fast travel target), from the TU image or captures.
+
 ## Q221 (MENU-03, not blocking): which workshop part plays which camera
 
 The disc has two sources for the upgrade shop's camera, and neither says
