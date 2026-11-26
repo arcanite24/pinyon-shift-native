@@ -1852,6 +1852,8 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
     const float ox = parse_attr_float(pstr, "x", 0.0f);
     const float oy = parse_attr_float(pstr, "y", 0.0f);
     const float oz = parse_attr_float(pstr, "z", 0.0f);
+    // About 170 placeholders (`*_15`, `*_L`) sit at the world origin.
+    if (std::fabs(ox) < 1.0f && std::fabs(oz) < 1.0f) continue;
 
     // Extract horizontal orientation axes (XAxis = lateral off-road, ZAxis = along road/site).
     float xx = 1.0f, xz = 0.0f;
