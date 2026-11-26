@@ -64,6 +64,18 @@ class Streamer {
     pending_hidden_positions_ = std::move(hidden_pos);
     has_pending_hidden_positions_ = true;
   }
+  // Replaces gather options in-place (e.g. route switch on session hot-reload)
+  // without destroying the Streamer on the main thread. Waits for any in-flight
+  // worker gather so World/Collision are idle, then forces the next update to
+  // gather with the new options (freeing the previous mesh asynchronously).
+  void set_options(const GatherOptions& options);
+  // Advisory non-blocking preload around (x, z) for an upcoming cutscene:
+  // deduplicates against both the resident centre and any in-flight async
+  // gather target within regather_distance(), and holds the preloaded area
+  // resident while the car stays safely inside collision. Returns false when
+  // async streaming is off or no initial gather exists yet.
+  bool preload_async(double x, double z);
+  void clear_preload() { preload_active_ = false; }
   void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
   const Prepare& prepare() const { return prepare_; }
   // The Prepare result of the mesh in use (moved out by the caller).
@@ -83,6 +95,9 @@ class Streamer {
   bool uses_collision() const { return collision_ != nullptr; }
   double centre_x() const { return cx_; }
   double centre_z() const { return cz_; }
+  double target_x() const { return job_.valid() ? job_cx_ : cx_; }
+  double target_z() const { return job_.valid() ? job_cz_ : cz_; }
+  double regather_distance() const { return regather_; }
   double collision_radius() const { return collision_radius_; }
   int gathers() const { return gathers_; }
 
@@ -115,6 +130,9 @@ class Streamer {
   CollisionMesh collision_mesh_;
   std::vector<uint32_t> ground_source_;
   double cx_ = 0, cz_ = 0;
+  double job_cx_ = 0, job_cz_ = 0;
+  bool preload_active_ = false;
+  double preload_x_ = 0, preload_z_ = 0;
   int gathers_ = 0;
   Mesh mesh_;
   GatherStats stats_;

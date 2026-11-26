@@ -969,9 +969,16 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         const int want_route = app.gather_route_given ? app.gather_route : (app.race ? app.race->event().route_id : 0);
         const double sx = app.have_spawn ? app.spawn[0] : start.x;
         const double sz = app.have_spawn ? app.spawn[2] : start.z;
-        const double dist_origin = std::hypot(sx - showroom.world_origin_x(), sz - showroom.world_origin_z());
-        const bool need_regather =
-            streamer && !app.world_dir.empty() && (want_route != loaded_world_route || dist_origin > 120.0 || app.fast_travel);
+        // Measure distance against the streamer's resident centre (not showroom.world_origin_x/z,
+        // which is zeroed whenever a hub room such as uiautoshow/uiworkshop is displayed) so
+        // buying or swapping a car inside a hub room never forces a redundant 2+ s world regather.
+        const double ref_x = (streamer && streamer->gathers() > 0) ? streamer->centre_x() : showroom.world_origin_x();
+        const double ref_z = (streamer && streamer->gathers() > 0) ? streamer->centre_z() : showroom.world_origin_z();
+        const double dist_origin = std::hypot(sx - ref_x, sz - ref_z);
+        const double keep_radius = streamer ? std::max(120.0, streamer->regather_distance()) : 120.0;
+        const bool resident_covers = streamer && streamer->gathers() > 0 && !streamer->gathering() &&
+                                     want_route == loaded_world_route && dist_origin <= keep_radius;
+        const bool need_regather = streamer && !app.world_dir.empty() && !resident_covers;
 
         // Pump an animated 60 FPS LoadingScreen in windowed mode whenever heavy car reload or
         // world regather work is required so SDL events stay responsive and the window never freezes.
@@ -1043,70 +1050,35 @@ bool DriveWorldHost::hot_reload_car_and_world() {
           }
           pump_hot_frame(need_regather ? 0.35f : 0.92f);
         }
-        // Re-gather only if the route changed or spawn teleported far from the resident world origin.
+        // Re-gather only if the route changed or spawn moved outside the resident streamer radius.
         if (streamer && !app.world_dir.empty()) {
           if (need_regather) {
+            if (room_world != HubRoom::kNone) {
+              room_world = HubRoom::kNone;
+              showroom.set_sky_hidden(false);
+              deferred_prepared_.reset();
+            }
+            const bool route_changed = (want_route != loaded_world_route);
             loaded_world_route = want_route;
             world_gather_options.route = want_route;
-            if (!app.render_ground) collision.set_active_route(want_route);
-            streamer = std::make_unique<world::Streamer>(colorado, world_gather_options, kRegather,
-                                                         app.render_ground ? nullptr : &collision);
-            streamer->set_async(streamer_async);
-            streamer->set_lead(true);
-            streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
-              const bool async_mid_drive = !prepare_on_main && streamer_async && streamer && streamer->gathers() >= 1;
-              if (async_mid_drive) lower_stream_worker_priority();
-              auto staged = std::make_shared<Showroom::StagedWorld>();
-              std::string e;
-              std::vector<uint32_t> pin_records;
-              WorldTriangles triangles = scenery(mesh, cx, cz);
-              texture_loader.load(colorado, triangles, showroom, pin_records);
-              {
-                std::vector<uint32_t> new_pins;
-                new_pins.reserve(triangles.textures.size());
-                for (const auto& tex : triangles.textures) {
-                  if (tex && tex->record != kNoWorldTexture) new_pins.push_back(tex->record);
-                }
-                if (!new_pins.empty()) {
-                  showroom.pin_prepare_records(new_pins);
-                  pin_records.insert(pin_records.end(), new_pins.begin(), new_pins.end());
-                }
-              }
-              std::shared_ptr<const void> pin_guard(
-                  reinterpret_cast<const void*>(1),
-                  [this, pins = std::move(pin_records)](const void*) { showroom.release_prepare_pins(pins); });
-              WorldGeometry geom = build_world(triangles);
-              const bool defer_textures = async_mid_drive && (!app.headless || app.bench);
-              if (defer_textures && !geom.textures.empty()) {
-                for (auto& tex : geom.textures) {
-                  if (tex) showroom.queue_deferred_world_texture(std::move(tex));
-                }
-                geom.textures.clear();
-              }
-              if (!showroom.stage_world(std::move(geom), *staged, e, cx, cz)) staged.reset();
-              if (staged) {
-                staged->origin_x = cx;
-                staged->origin_z = cz;
-                staged->pin_guard = std::move(pin_guard);
-              }
-              auto prepared = std::make_shared<Prepared>();
-              prepared->staged = std::move(staged);
-              prepared->road = world::RoadFollower::road_points(mesh);
-              prepared->glows.reserve(mesh.world_glows.size());
-              for (const auto& g : mesh.world_glows) {
-                world::WorldGlow sg = g;
-                sg.position[0] = float(double(g.position[0]) - cx);
-                sg.position[2] = float(double(g.position[2]) - cz);
-                prepared->glows.push_back(sg);
-              }
-              return std::any(prepared);
-            });
+            auto run_hot_gather = [&](std::string* err_out) -> bool {
+              // Reuse the resident Streamer so set_options() / update() swaps the old
+              // Mesh and MeshGround into async destruction instead of blocking the main thread.
+              // Keep prepare_on_main = true during the hot-reload gather so the loading screen
+              // runs at full worker priority and uploads all textures before handing off.
+              prepare_on_main = true;
+              streamer->set_options(world_gather_options);
+              if (!app.render_ground && route_changed) collision.set_active_route(want_route);
+              streamer->set_async(false);
+              const bool ok = streamer->update(sx, sz, nullptr, err_out);
+              streamer->set_async(streamer_async);
+              prepare_on_main = false;
+              return ok;
+            };
             bool gather_ok = false;
             if (hot_live_ui) {
               std::string g_err;
-              auto fut_gather = std::async(std::launch::async, [&]() {
-                return streamer->update(sx, sz, nullptr, &g_err);
-              });
+              auto fut_gather = std::async(std::launch::async, [&]() { return run_hot_gather(&g_err); });
               const auto g_t0 = std::chrono::steady_clock::now();
               while (fut_gather.wait_for(std::chrono::milliseconds(16)) != std::future_status::ready) {
                 const float el = float(std::chrono::duration<double>(std::chrono::steady_clock::now() - g_t0).count());
@@ -1116,7 +1088,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               gather_ok = fut_gather.get();
               if (!gather_ok) app.error = g_err;
             } else {
-              gather_ok = streamer->update(sx, sz, nullptr, &app.error);
+              gather_ok = run_hot_gather(&app.error);
             }
             if (hot_cancelled) return false;
             if (!gather_ok) {
@@ -1132,12 +1104,27 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             }
             ground = &streamer->ground();
             follower.set_ground(&streamer->ground());
-            if (!streamer->prepared().has_value() || !set_staged_world()) {
+            const bool saved_async = streamer_async;
+            streamer_async = false;
+            const bool staged_ok = streamer->prepared().has_value() && set_staged_world();
+            streamer_async = saved_async;
+            if (!staged_ok) {
               std::fprintf(stderr, "carview: hot stage world: %s\n", app.error.c_str());
               app.status = 1;
               return false;
             }
             pump_hot_frame(0.98f);
+          } else {
+            streamer->clear_preload();
+            if (app.fast_travel) {
+              app.fast_travel = false;
+              drive::Hit h;
+              if (streamer->ground().raycast({app.spawn[0], 2000.0, app.spawn[2]}, {0, -1, 0}, 4000.0, h))
+                app.spawn[1] = 2000.0 - h.distance;
+            }
+            if (room_world != HubRoom::kNone) {
+              leave_room_world();
+            }
           }
           if (app.have_spawn) {
             start = {app.spawn[0], app.spawn[1], app.spawn[2]};
