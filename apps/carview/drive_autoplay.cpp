@@ -62,9 +62,33 @@ void DriveSession::autoplay_frame() {
       }
       continue;
     }
+    if (name.rfind("launch:", 0) == 0) {
+      app.next_event = name.substr(7);
+      app.next_event_fallback.clear();
+      running = false;
+      ap.note("launch " + app.next_event);
+      continue;
+    }
+    std::string send = name;
+    if (name == "advance") {
+      // Return where a press moves the career on (a race and its results, a
+      // movie, a blocking career beat, controls held by the career), not in
+      // free roam, where it would open the festival's hub.
+      const bool held = app.campaign.ftc_active() && !app.campaign.ftc().controls_enabled();
+      if (!(app.race || app.fmv_player.active() || app.campaign.is_blocking_gameplay() || held || app.show_title))
+        continue;
+      send = "return";
+    }
+    if (name == "mapclose") {
+      // B on an open map that lets the player out (not the career's locked
+      // one); nothing when no map is up.
+      if (!map_open || (app.campaign.ftc_active() && app.campaign.ftc().map_locked())) continue;
+      ap.note("mapclose");
+      send = "escape";
+    }
     SDL_Keycode key = 0;
     SDL_Scancode sc = SDL_SCANCODE_UNKNOWN;
-    if (!autoplay_key(name, key, sc)) {
+    if (!autoplay_key(send, key, sc)) {
       ap.note("unknown key " + name);
       continue;
     }

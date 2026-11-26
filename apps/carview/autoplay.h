@@ -5,11 +5,15 @@
 // Times are wall-clock seconds since the harness started.
 //
 //   # comment
-//   <t> key <return|escape|space|up|down|left|right|backspace|tab|x|y>
+//   <t> key <return|escape|space|up|down|left|right|backspace|tab|x|y|m>
+//   <t> key mapclose              escape on an open map that is not the career's locked one
+//   <t> key advance               return, but only in a race, a movie, a blocking career beat or the title
 //   <t> capture <name>            the next presented frame -> <out>/<name>.png
 //   <t> every <seconds> <prefix>  periodic captures <prefix>_<ttttt>.png from t
 //   <t> drive <auto|off>          the player's input from the sat-nav autopilot
 //   <t> mapto heats               an open map's cursor onto the career's Horizon Heats
+//   <t> launch <event id>         the session restarts into that event, as a menu launch does (an unknown id
+//                                 is the failed launch of Q280)
 //   <t> stop
 //
 // The beat log (<out>/beats.csv: t,field,value) records each observed field
