@@ -224,6 +224,11 @@ audio::EnginePlayer::Update DriveSession::sound_inputs(audio::View audio_view) {
         u.throttle = thr;
         u.pos_torque = torque > 0 && full > 0 ? torque / full : 0;
         u.neg_torque = torque < 0 && closed < 0 ? torque / closed : 0;
+        // At idle the engine holds its rpm and is not braking: the original's
+        // idle shows no NegLoad boost (Q322), so negative load fades in only
+        // above 1.15x to 1.5x the idle rpm.
+        const double idle = std::max(1.0, vehicle.params().idle_rpm);
+        u.neg_torque *= std::clamp((rpm - 1.15 * idle) / (0.35 * idle), 0.0, 1.0);
         u.view = audio_view;
         return u;
 }

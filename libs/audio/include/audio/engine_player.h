@@ -85,8 +85,8 @@ class EnginePlayer {
   // The focus car's level into and out of its DSP chain, against the
   // original's captures (Q322): its voices reach the chain with the snapshot
   // and SFX volumes already on them, so the chain sees a quieter signal.
-  static constexpr double kFocusPreScale = 0.0794;  // -22 dB
-  static constexpr double kFocusPostScale = 2.82;   // +9 dB
+  static constexpr double kFocusPreScale = 0.1;     // -20 dB
+  static constexpr double kFocusPostScale = 2.24;   // +7 dB
   bool intake_chuff_active() const { return chuff_active_; }
 
  private:

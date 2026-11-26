@@ -50,7 +50,9 @@ void EnginePlayer::Biquad::set_peq(double fc, double bw_oct, double linear_gain,
     set_bypass();
     return;
   }
-  const double A = std::sqrt(linear_gain);
+  // FMOD Ex's ParamEQ takes the gain as the RBJ A itself, so the peak is
+  // gain^2 (2.3 is +14.5 dB): the original's captures need it (Q322).
+  const double A = linear_gain;
   const double w0 = 2.0 * kPi * fc / sr;
   const double sin_w0 = std::sin(w0);
   const double cos_w0 = std::cos(w0);
