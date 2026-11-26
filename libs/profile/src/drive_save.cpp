@@ -127,6 +127,15 @@ void to_drive_save(const Imported& p, const std::function<std::string(int64_t)>&
   out.radio_station = prev_radio_station;
   out.radio_dj = prev_radio_dj;
   out.radio_volume = prev_radio_volume;
+  // The profile's radio, as with the co-driver (Q292): a profile saved with the radio off
+  // starts free roam on Radio4_Silent (RADIO OFF), not on the first station.
+  if (p.has_radio) {
+    static const char* const kCycle[] = {"Radio1", "Radio2", "Radio3", "Radio4_Silent"};
+    if (p.radio_station >= 0 && p.radio_station < 4) out.radio_station = kCycle[p.radio_station];
+    out.radio_dj = p.radio_dj;
+    if (std::isfinite(p.radio_volume) && p.radio_volume >= 0.0 && p.radio_volume <= 2.0)
+      out.radio_volume = p.radio_volume;
+  }
   out.tod_sec = prev_tod_sec;
   out.difficulty = prev_difficulty;
   out.ai_skill = prev_ai_skill;
