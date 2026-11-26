@@ -593,6 +593,8 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.steer_fast_rate_scale = std::clamp(get("Data_Car.SteerSpeedSensitiveFastRateScale", p.steer_fast_rate_scale), 0.1, 1.0);
   // PhysicsSettings.ini's SteeringWheelFilter block is not read: the original
   // never binds those keys (FEEL-15, SPEC_QUESTIONS Q70).
+  p.steer_cs_rear_slip = s.get("NormRearSlipAngleToCountersteer", 3.0);
+  p.steer_friction_clamp = s.get("SteerFrictionClamp", 1.2);
   p.enable_rwd_launch_assist = s.get("EnableRWDLaunchAssist", 1.0) >= 0.5;
 
   // Aerodynamics (SPEC-CAR-PHYSICS, Aerodynamics): DB BodyAero* and

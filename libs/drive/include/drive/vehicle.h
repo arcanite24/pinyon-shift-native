@@ -469,7 +469,16 @@ struct CarParams {
   double steer_slow_speed = 13.4112;      // m/s (Data_Car.SteerSpeedSensitiveSlowSpeed, 30 mph)
   double steer_fast_speed = 67.056;       // m/s (Data_Car.SteerSpeedSensitiveFastSpeed, 150 mph)
   double steer_fast_rate_scale = 0.45;    // Data_Car.SteerSpeedSensitiveFastRateScale
-  double steer_rate_min_share = 0.25;
+  // The pad's four rates (turning, straighten, countersteer, DynFindPeak) are
+  // multiplied by pow(2, 2 x SteerSpeed - 1) when the row is set up; the
+  // SteerSpeed override is unset (-1) for every car traced, and unset
+  // normalises its built-in 1.0 to 1, so the factor is 2 (SPEC_QUESTIONS Q231).
+  double steer_speed_scale = 2.0;
+  // PhysicsSettings NormRearSlipAngleToCountersteer, compared raw against the
+  // rear axle's load-weighted normalised slip (built in 3.0, shipped 50).
+  double steer_cs_rear_slip = 50.0;
+  // PhysicsSettings SteerFrictionClamp (built in 1.2, not in the shipped ini).
+  double steer_friction_clamp = 1.2;
   // RWD Launch Assist (PhysicsSettings.ini EnableRWDLaunchAssist).
   bool enable_rwd_launch_assist = true;
 
@@ -746,6 +755,9 @@ class Vehicle {
   // The road-wheel angle a full stick asks for at the current speed (the
   // lock narrows with speed; see shape_input).
   double steer_lock() const;
+  // The steering mode's full lock: SteerMaxAngle, or SteerMaxAngleFiltered in
+  // Assisted steering when it is smaller (the AI always gets SteerMaxAngle).
+  double steer_full_lock() const;
   // The pad's speed-sensitive lock curve (SPEC_QUESTIONS Q69, decoded): 32
   // samples up to 150 mph, sample i at max(0.01, i / 0.4623) m/s, each
   // atan(MaxGees x wheelbase x a(v) / v^2) clamped to MinMaxAngle..
@@ -846,6 +858,7 @@ class Vehicle {
   Input raw_{}, shaped_{};
   double steer_angle_ = 0;
   double steer_ang_vel_ = 0;
+  double steer_lock_ext_ = 0;  // the held-stick lock extension (car+2788)
   double kb_steer_hold_time_ = 0;
   double kb_steer_dir_ = 0;
   double kb_steer_filtered_ = 0;

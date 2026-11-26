@@ -390,6 +390,7 @@ void test_ai_slip_rule() {
     opt.slip_rule = use_slip;
     drive::AiField field(line, 1, opt);
     drive::Vehicle car(test_car());
+    car.set_ai_controls(true);  // as the race puts AI cars (race_view.cpp): no pad filter
     field.place(0, 5.0, 0.0f, 0.95f);
     double x = 0, z = 0, h = 0;
     field.start_pose(0, x, z, h);
@@ -935,9 +936,55 @@ void test_pad_steering_linear() {
     in.steer = 0.5;
     in.throttle = 0.3;
     for (int i = 0; i < 120; ++i) v.step(in, flat);
-    std::printf("pad half stick at %.0f m/s: steer %.4f of lock %.4f\n", speed, v.steer_angle(), v.steer_lock());
+    const auto& w = v.wheels();
+    std::printf("pad half stick at %.0f m/s: steer %.4f of lock %.4f (front slips %.3f %.3f)\n", speed,
+                v.steer_angle(), v.steer_lock(), w[0].slip_angle, w[1].slip_angle);
     CHECK(std::fabs(v.steer_angle() - 0.5 * v.steer_lock()) < 0.02 * v.steer_lock() + 1e-4);
+    // In an ordinary turn the fronts slip against the engine's steer sign,
+    // so the pad's front countersteer state (Q231) stays off.
+    CHECK(v.steer_angle() * w[0].slip_angle < 0 && v.steer_angle() * w[1].slip_angle < 0);
   }
+}
+
+// Q69/Q231: the pad's turning rate at speed is MaxAngVelTurning x the
+// SteerSpeed factor x the curve's share of the lock at SlowSpeed (speed
+// clamped to [SlowSpeed, FastSpeed]) x the FastRateScale blend; across
+// centre the target is the stick times the full lock at the straighten rate.
+void test_pad_rate_law() {
+  auto p = test_car();
+  p.steer_slow_speed = 0.44704;  // the shipped rows: 1 and 120 mph, scale 1
+  p.steer_fast_speed = 53.6448;
+  p.steer_fast_rate_scale = 1.0;
+  p.steer_accel_time = 0.01;  // the shipped SteerAccelTimeToMaxRate
+  const drive::FlatGround flat;
+  drive::Vehicle v(p);
+  v.launch({0, 0, 0}, 0.0, 20.0);
+  drive::Input in{};
+  in.steer = 0.9;  // under the 0.976 hold, so no lock extension
+  in.throttle = 0.3;
+  double rate = 0.0;
+  for (int i = 0; i < 240; ++i) {
+    const double a0 = v.steer_angle();
+    v.step(in, flat);
+    if (i == 3) rate = (v.steer_angle() - a0) / drive::Vehicle::kStep;
+  }
+  const double cap = v.steer_full_lock();
+  const double share = std::min(cap, v.steer_curve_at(std::hypot(v.velocity().x, v.velocity().y, v.velocity().z))) /
+                       std::min(cap, v.steer_curve_at(p.steer_slow_speed));
+  const double want = p.steer_rate * p.steer_speed_scale * share;
+  std::printf("pad rate at 20 m/s: %.3f rad/s (law %.3f, share %.3f); settled %.4f of 0.9 x lock %.4f\n", rate, want,
+              share, v.steer_angle(), 0.9 * v.steer_lock());
+  CHECK(std::fabs(rate - want) < 0.05 * want);
+  CHECK(std::fabs(v.steer_angle() - 0.9 * v.steer_lock()) < 0.02 * v.steer_lock());
+  // Back through centre: the straighten rate, unscaled by the share.
+  in.steer = -0.9;
+  v.step(in, flat);
+  v.step(in, flat);
+  const double a0 = v.steer_angle();
+  v.step(in, flat);
+  const double back = (a0 - v.steer_angle()) / drive::Vehicle::kStep;
+  std::printf("pad straighten at 20 m/s: %.3f rad/s (law %.3f)\n", back, p.straighten_rate * p.steer_speed_scale);
+  CHECK(back > 0.9 * std::min(p.straighten_rate * p.steer_speed_scale, a0 / drive::Vehicle::kStep));
 }
 
 // FEEL-02: no thermal grip factor. The empty curve is 1 at any temperature,
@@ -1251,6 +1298,7 @@ int main() {
   test_sputter_settings();
   test_body_collision_settings();
   test_pad_steering_linear();
+  test_pad_rate_law();
   test_no_thermal_grip();
   test_assists_and_transmission();
   // Pillar 1 deep behavioral parity tests:
