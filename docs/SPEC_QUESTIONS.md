@@ -2310,23 +2310,34 @@ engine damage, not the rev limiter. PhysicsSettings.ini gives
 `EngineDamageMaxSputtersPerSec 1`, and both are read at load. Still
 interim:
 
-- **Rate rule.** Sputters are evenly spaced. Their rate rises linearly
-  from 0 at the start level to the maximum at full damage. ~~The
+- ~~**Rate rule.** Sputters are evenly spaced. Their rate rises linearly
+  from 0 at the start level to the maximum at full damage.~~ Done
+  (0c07982e): the vehicle runs the decoded rule below. ~~The
   original's rule between those two values is not decoded, and it may
   be random.~~ Decoded (2026-11-25), and only the spacing differs:
   - **The rate.** Each frame, the rate is EngineDamageMaxSputtersPerSec
     x clamp((damage - start) / (1 - start), 0, 1), with damage clamped
     to 0..1. It is halved unless a car setting next to the steering mode
     reads 2; that setting is not identified (possibly the damage mode).
+    The function is 82D2CD20, and the test is car+6136 == 2. The same
+    "2 gives 1.0, else 0.5" test on data+11484 scales several row setups
+    (the steering row's +136, 82D27250), which fits a damage mode. The
+    engine takes it as Simulation damage (`DamageMode::kSimulation`,
+    value 2); interim until car+6136's writer is traced.
   - **The trigger.** A sputter starts when a uniform random draw is
     below rate x dt. The draw comes from the car's own linear
     congruential generator (x' = x x 1103515245 + 12345, 15 bits).
+    The draw is (x' >> 16 & 0x7fff) / 32767 (82CFC780), taken every
+    step. A draw that fires during a sputter restarts its 0.08 s. The
+    generator's seed (car+20496) is not traced; the engine seeds 1.
   - **The sputter.** It lasts 0.08 s, and for that time the throttle is
     forced to 0.
 
   So the original sputter is a 0.08 s throttle cut at random (Poisson)
-  times, not only a rumble event. The engine has the even spacing and no
-  throttle cut.
+  times, not only a rumble event. ~~The engine has the even spacing and no
+  throttle cut.~~ The engine now cuts the throttle (car+6672 = 0 while
+  the sputter's time is at most 0.08 s), and OnEngineSputter fires on
+  each start.
 - **Damage level.** The damage level is the engine's own damage model
   (FEEL-19 to FEEL-23, owned by another branch).
 
@@ -2354,8 +2365,9 @@ Still interim:
   mask.
 - **Camera travel.** Camera travel is not part of the Tier-0 vector.
 
-Needed: the stick thresholds and InvertCameraLookBack handling; the
-sputter scheduler; the dynamic motion-blur amount rule and its time
+Needed: the stick thresholds and InvertCameraLookBack handling;
+~~the sputter scheduler~~ (decoded); the writer of car+6136 and the
+generator's seed; the dynamic motion-blur amount rule and its time
 base.
 
 ## Q80 (audio, not blocking): what drives the ambience state
