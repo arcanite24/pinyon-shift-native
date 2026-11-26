@@ -1340,18 +1340,18 @@ int main() {
   //    Popularity badge ring interpolation + rank-up flip/pop/flash animation,
   //    and high-contrast ROAD DISCOVERED banner with zero stray yellow artifacts.
   {
-    // PT-37a (Q361): the name shrinks as 0.33 + 5.8 / d (14 px capitals at
-    // 12.5 m, 8 px at 40 m), floored at 0.4; full alpha to 100 m, gone by 120 m.
+    // PT-37a (Q361): 1280x720 Gauntlet fit 0.46 + 7.5 / (d + 8) (14.2 px at 15 m,
+    // 11.1 px at 40 m, floored at 0.50 = 9 px); full alpha to 100 m, gone by 120 m.
     const auto lod_close = carview::compute_name_tag_lod(5.0);
-    const auto lod_near = carview::compute_name_tag_lod(12.5);
+    const auto lod_near = carview::compute_name_tag_lod(15.0);
     const auto lod_40 = carview::compute_name_tag_lod(40.0);
     const auto lod_100 = carview::compute_name_tag_lod(100.0);
     const auto lod_mid = carview::compute_name_tag_lod(110.0);
     const auto lod_far = carview::compute_name_tag_lod(125.0);
     CHECK(lod_close.visible && std::fabs(lod_close.scale - 1.0f) < 1e-3f);
-    CHECK(lod_near.visible && std::fabs(lod_near.scale * 18.0f - 14.3f) < 0.5f && lod_near.alpha == 1.0f);
-    CHECK(lod_40.visible && std::fabs(lod_40.scale * 18.0f - 8.6f) < 0.5f && lod_40.alpha == 1.0f);
-    CHECK(lod_100.visible && std::fabs(lod_100.scale - 0.4f) < 1e-3f && lod_100.alpha == 1.0f);
+    CHECK(lod_near.visible && std::fabs(lod_near.scale * 18.0f - 14.15f) < 0.5f && lod_near.alpha == 1.0f);
+    CHECK(lod_40.visible && std::fabs(lod_40.scale * 18.0f - 11.10f) < 0.5f && lod_40.alpha == 1.0f);
+    CHECK(lod_100.visible && lod_100.scale >= 0.50f && lod_100.scale <= 0.55f && lod_100.alpha == 1.0f);
     CHECK(lod_mid.visible && lod_mid.alpha > 0.20f && lod_mid.alpha < 0.80f);
     CHECK(!lod_far.visible && lod_far.alpha == 0.0f);
 
@@ -1373,7 +1373,7 @@ int main() {
     }
     std::vector<carview::ResolvedNameTag> resolved_pack;
     carview::layout_world_labels(pack, nullptr, /*in_race=*/true, 1280.0f, 720.0f, resolved_pack);
-    CHECK(!resolved_pack.empty() && resolved_pack.size() <= 5);
+    CHECK(!resolved_pack.empty() && resolved_pack.size() <= 3);
     float min_y0 = 720.0f, max_y1 = 0.0f;
     for (size_t i = 0; i < resolved_pack.size(); ++i) {
       min_y0 = std::min(min_y0, resolved_pack[i].y0);

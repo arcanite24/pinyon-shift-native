@@ -1044,7 +1044,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   // The driving HUD hides under a menu (SPEC-UI-LAYOUTS d).
   if (st.driving && !menu && !st.event_summary) {
     const bool show_tags = st.hud.names_over_cars && !st.name_tags.empty() &&
-                           (!st.race || st.race->phase == RaceHud::kRacing);
+                           (!st.race || st.race->phase == RaceHud::kCountdown || st.race->phase == RaceHud::kRacing);
     const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
     // In an activation zone the event prompt is 947_HUD's ActivationPrompt;
     // the original draws no label over an event out of range.

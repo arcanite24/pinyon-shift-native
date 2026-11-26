@@ -1510,7 +1510,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 at = vehicle.position();
             for (const auto& fc : festival_mgr->cars()) {
               const double d = std::hypot(fc.position.x - at.x, fc.position.z - at.z);
-              if (d > 105.0) continue;
+              if (d > carview::kNameTagMaxM) continue;
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, fc.position.x, fc.position.y + 1.85, fc.position.z,
                                       float(w), float(h), sx, sy) &&

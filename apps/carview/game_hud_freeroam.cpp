@@ -82,15 +82,13 @@ void compute_world_marker_layout(const WorldMarkerHud* wm, const hud_detail::Lay
 }  // namespace
 
 NameTagLod compute_name_tag_lod(double distance_m) {
-  // Interim (Q361): read by eye from the Gauntlet race's 640x360 frames
-  // (first30d c03900..c04425) at estimated distances, the name's capitals
-  // are roughly 14 px at 12 m, 11 px at 18 m, 8 px at 40 m and 7 px past
-  // 90 m (720 lines; 18 px close in 30_skill_toast_orig.png), so the scale
-  // falls about as 0.33 + 5.8 / d, floored at 0.4. Tags still show on the
-  // pack about 100 m ahead; where they fade is not captured (full to 100 m,
-  // gone at 120 m).
+  // Fitted on 1280x720 Gauntlet captures (first30l-race-tags t4120/t4200/t4260
+  // and parity-race race-moving, Q361): capitals measure ~17-19 px at 7 m,
+  // 16-17 px at 8 m, 14 px at 15-19 m, 12-13 px at 22-23 m, 10-12 px at
+  // 36-40 m and 9-11 px at 70-90 m (still full white p90=244), fitting
+  // 0.46 + 7.5 / (d + 8) floored at 0.50 (9 px) within < 0.6 px rms.
   if (distance_m < 0.0) return {1.0f, 1.0f, true};
-  const float scale = std::clamp(float(0.33 + 5.8 / std::max(distance_m, 1.0)), kNameTagMinScale, 1.0f);
+  const float scale = std::clamp(float(0.46 + 7.5 / (std::max(distance_m, 0.0) + 8.0)), kNameTagMinScale, 1.0f);
   if (distance_m <= kNameTagFullAlphaM) return {scale, 1.0f, true};
   if (distance_m >= kNameTagMaxM) return {scale, 0.0f, false};
   const float alpha = 1.0f - smoothstep01(float((distance_m - kNameTagFullAlphaM) / (kNameTagMaxM - kNameTagFullAlphaM)));
@@ -189,7 +187,8 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
     cands.push_back(std::move(c));
   }
 
-  // Closest cars first (in races cap to 5 closest visible cars so a pack never blocks the track).
+  // Closest cars first: original races display at most 3 nearest opponent tags
+  // simultaneously (first30l-race-tags t4120/t4200/t4260, race-moving; Q361).
   std::sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) {
     const bool ha = a.distance_m >= 0.0;
     const bool hb = b.distance_m >= 0.0;
@@ -204,7 +203,7 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
     return a.tag.source_index < b.tag.source_index;
   });
 
-  const size_t max_tags = in_race ? 5u : 6u;
+  const size_t max_tags = in_race ? 3u : 6u;
   if (cands.size() > max_tags) cands.resize(max_tags);
 
   struct Obstacle {
