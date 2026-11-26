@@ -80,6 +80,7 @@ class RaceView {
     // The autopilot's skill row (1-80); 0: the event's own. A capture
     // harness's (--race-auto-skill): the opponents are not changed.
     int autopilot_skill = 0;
+    int opponent_skill = 0;  // > 0: every opponent drives at this AISkills row (a capture harness)
     bool rubberband = true;   // false: the "no rubber-banding" option
     uint64_t seed = 1;
     // The M5 gate's replay (SPEC-RACE-AI Tests): the player's car follows an

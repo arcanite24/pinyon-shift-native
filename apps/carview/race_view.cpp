@@ -526,6 +526,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     c.setup = race::assign_driver_for_mode(event_.event_skill, event_.event_temperament, event_.event_rubberband,
                                            c.who.skill_modifier, c.who.aggro_modifier, c.who.rubberband_modifier,
                                            o.difficulty, o.ai_mode, event_);
+    if (o.opponent_skill > 0) c.setup.skill = o.opponent_skill;  // the capture harness's override
     const race::SkillRow* sk = event_.skill(c.setup.skill);
     // SPEC-RACE-AI, Steering: the line controller's grip level, 1 + 0.025 x
     // the AISkills nominal cheat level (0 on every row of the disc, so 1;
