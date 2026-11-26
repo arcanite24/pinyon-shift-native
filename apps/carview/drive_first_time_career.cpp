@@ -28,7 +28,15 @@ bool iequal(std::string_view a, std::string_view b) {
          });
 }
 
-// ACHIEVEMENT_HORIZON_ROOKIE -> "horizon rookie": the achievement list's name.
+// Known first-time-career achievement tokens -> FH1 SPA achievement IDs
+// (so unlocking works regardless of SPA display title or language).
+uint16_t ftc_achievement_spa_id(std::string_view id) {
+  if (iequal(id, "ACHIEVEMENT_WELCOME_TO_HORIZON")) return 155;  // Welcome to Horizon
+  if (iequal(id, "ACHIEVEMENT_HORIZON_ROOKIE")) return 175;      // A Wristed Development (Yellow Wristband)
+  return 0;
+}
+
+// ACHIEVEMENT_HORIZON_ROOKIE -> "horizon rookie": fallback name match.
 std::string achievement_name(std::string_view id) {
   constexpr std::string_view kPrefix = "ACHIEVEMENT_";
   if (id.substr(0, kPrefix.size()) == kPrefix) id.remove_prefix(kPrefix.size());
@@ -197,7 +205,7 @@ void DriveSession::apply_first_time_career() {
     const drive::Vec3 vp = vehicle.position();
     const drive::Vec3 vf = drive::rotate(vehicle.orientation(), {0, 0, 1});
     if (c.take_stream_anchor({vp.x, vp.y, vp.z}, std::atan2(vf.x, vf.z), pos, heading))
-      prime_world_and_place_vehicle_as_authored(*this, pos, heading);
+      prime_world_at(*this, pos[0], pos[2]);
   }
   for (const auto& car : c.take_cutscene_cars()) {
     // CCutsceneCarTrigger / CCutsceneReleaseCarTrigger: the engine's traffic
@@ -227,17 +235,23 @@ void DriveSession::apply_first_time_career() {
     if (cmd.set_civilian_traffic && traffic) traffic->set_civilian(cmd.civilian_traffic);
     if (cmd.give_money) app.career.credits += cmd.give_money;
     if (!cmd.achievement.empty()) {
-      // ACHIEVEMENT_<NAME>: the achievement list's entry of that name.
-      const std::string want = achievement_name(cmd.achievement);
+      // Resolve known FTC tokens by SPA ID first, then fall back to name match.
       bool found = false;
-      for (uint16_t id = 1; id < 512 && !found; ++id) {
-        const auto* e = achievements.find(id);
-        if (e && iequal(e->name, want)) {
-          achievements.unlock(id);
-          found = true;
-        }
+      if (const uint16_t spa_id = ftc_achievement_spa_id(cmd.achievement); spa_id != 0 && achievements.find(spa_id)) {
+        achievements.unlock(spa_id);
+        found = true;
       }
-      if (!found) std::fprintf(stderr, "carview: first-time career: no achievement \"%s\"\n", want.c_str());
+      if (!found) {
+        const std::string want = achievement_name(cmd.achievement);
+        for (uint16_t id = 1; id < 512 && !found; ++id) {
+          const auto* e = achievements.find(id);
+          if (e && iequal(e->name, want)) {
+            achievements.unlock(id);
+            found = true;
+          }
+        }
+        if (!found) std::fprintf(stderr, "carview: first-time career: no achievement \"%s\"\n", want.c_str());
+      }
     }
     if (cmd.show_loading && !app.headless) {
       // CShowLoadingScreen: the freeroam group's tip card, held the event

@@ -119,8 +119,8 @@ class CampaignDirector {
   // cutscene frozen at t, with the place-car events up to t applied.
   bool start_cutscene_capture(std::string_view name, double t);
   // When a cut frames a spot far from the player car (a camera node), where
-  // to put the car so the world streams around the camera: behind the eye,
-  // out of frame. Once per cut.
+  // to stream the world around the camera without relocating the car: behind
+  // the eye, out of frame. Once per cut.
   bool take_stream_anchor(const std::array<double, 3>& car_pos, double car_heading_rad, std::array<double, 3>& pos,
                           double& heading_rad);
   // The black / white overlay of the cutscene fades, drawn over everything.
