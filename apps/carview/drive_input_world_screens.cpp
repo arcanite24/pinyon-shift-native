@@ -252,6 +252,9 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                     options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                     break;
                   case A::kQuit: running = false; break;
+                  // VIDEO's values stay on the model: the engine has no
+                  // brightness or movie-subtitle setting behind them (Q363).
+                  case A::kSaveVideo: break;
                 }
               };
               carview::TitleMenu& tm = app.title;
@@ -263,6 +266,9 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 else if (k == SDLK_X) run_title(tm.open_extras());
                 else if (k == SDLK_UP || k == SDLK_W) run_title(tm.move(-1));
                 else if (k == SDLK_DOWN || k == SDLK_S) run_title(tm.move(1));
+                else if (k == SDLK_LEFT) run_title(tm.adjust(-1));
+                else if (k == SDLK_RIGHT) run_title(tm.adjust(1));
+                else if (k == SDLK_Y) run_title(tm.reset_video());
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
@@ -271,6 +277,9 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 else if (b == SDL_GAMEPAD_BUTTON_WEST) run_title(tm.open_extras());
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) run_title(tm.move(-1));
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) run_title(tm.move(1));
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) run_title(tm.adjust(-1));
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) run_title(tm.adjust(1));
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH) run_title(tm.reset_video());
               }
               // Raw SDL_Joystick fallback navigation on title screen (for unmapped USB/BT pads).
               if (e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN && !SDL_IsGamepad(e.jbutton.which)) {
@@ -301,6 +310,11 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                       if (hz.index == 0) run_title(tm.confirm());
                       else if (hz.index == 1) run_title(tm.back());
                     }
+                  } else if (tm.phase == carview::TitleMenu::Phase::kVideo) {
+                    // VIDEO: a row selects it; the help bar's A SAVE, Y RESET.
+                    if (hit && hz.group == carview::ui::kHitRow) tm.video_row = hz.index;
+                    else if (hit && hz.group == carview::ui4::kHitButton && hz.index == 0) run_title(tm.confirm());
+                    else if (hit && hz.group == carview::ui4::kHitButton && hz.index == 1) run_title(tm.reset_video());
                   } else if (!tm.menu_visible() || tm.popup != carview::TitleMenu::Popup::kNone) {
                     // Press Start and the one-button popups: a click
                     // anywhere is A.

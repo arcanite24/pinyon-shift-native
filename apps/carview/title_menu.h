@@ -8,6 +8,7 @@
 // can check it.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -17,6 +18,7 @@ struct TitleMenu {
   enum class Phase : uint8_t {
     kPressStart,  // the movie, the logo and PRESS START
     kProfile,     // after Press Start: the profile is read, then the menu shows
+    kVideo,       // a new profile's VIDEO screen (830_GAMMA_ADJUST), before the menu
     kMenu,        // SINGLE PLAYER / MULTIPLAYER
     kExtras,      // the engine's own entries
   };
@@ -37,6 +39,7 @@ struct TitleMenu {
     kFreeRoam,        // EXTRAS > FREE ROAM
     kSettings,        // EXTRAS > SETTINGS
     kQuit,            // EXTRAS > QUIT, or back at Press Start (PC)
+    kSaveVideo,       // VIDEO's A SAVE: keep `brightness` and `subtitles`
   };
   // The sound an input plays (ui4audio.xml play names through UiEvent).
   enum class Cue : uint8_t { kNone, kMove, kAccept, kBack, kDeny };
@@ -50,6 +53,12 @@ struct TitleMenu {
   // input from when the menu starts to show (inferred; no profile picker,
   // Q137).
   static constexpr double kProfileSeconds = 0.493;
+  // VIDEO (Q276, Q363): a new profile only (a profile's boot goes from Press
+  // Start to the menu, first30j boot-profile2). BRIGHTNESS opens at 60 and
+  // SUBTITLES at DISABLE (orig1 f00030); Y resets both.
+  static constexpr int kDefaultBrightness = 60;
+  static constexpr int kBrightnessStep = 1;  // interim: the original's step is not captured
+  enum class VideoRow : uint8_t { kBrightness, kSubtitles };
 
   Phase phase = Phase::kPressStart;
   Popup popup = Popup::kNone;
@@ -58,6 +67,10 @@ struct TitleMenu {
   double phase_t = 0.0;    // seconds in `phase`
   bool has_save = false;       // a played career (SINGLE PLAYER continues it)
   bool profile_error = false;  // the save exists but did not read
+  bool first_profile = false;  // no save yet: Press Start leads to VIDEO
+  int video_row = 0;           // VideoRow
+  int brightness = kDefaultBrightness;  // 0..100
+  bool subtitles = false;
 
   std::vector<Row> rows() const {
     if (phase == Phase::kMenu) return {Row::kSinglePlayer, Row::kMultiplayer};
@@ -87,11 +100,41 @@ struct TitleMenu {
   void update(double dt) {
     phase_t += dt > 0.0 ? dt : 0.0;
     if (phase == Phase::kProfile && phase_t >= kProfileSeconds) {
+      if (first_profile && !profile_error) {
+        phase = Phase::kVideo;
+        phase_t = 0.0;
+        video_row = 0;
+        return;
+      }
       show_menu();
       if (profile_error) popup = Popup::kProfileCorrupt;
     }
   }
+  // VIDEO's left and right: BRIGHTNESS by a step, SUBTITLES between ENABLE
+  // and DISABLE.
+  Step adjust(int dir) {
+    if (phase != Phase::kVideo || dir == 0) return {};
+    if (video_row == int(VideoRow::kBrightness)) {
+      const int b = std::clamp(brightness + (dir > 0 ? kBrightnessStep : -kBrightnessStep), 0, 100);
+      if (b == brightness) return {};
+      brightness = b;
+    } else {
+      subtitles = !subtitles;
+    }
+    return {Action::kNone, Cue::kMove};
+  }
+  // VIDEO's Y RESET TO DEFAULT.
+  Step reset_video() {
+    if (phase != Phase::kVideo) return {};
+    brightness = kDefaultBrightness;
+    subtitles = false;
+    return {Action::kNone, Cue::kAccept};
+  }
   Step move(int by) {
+    if (phase == Phase::kVideo) {
+      video_row = ((video_row + by) % 2 + 2) % 2;
+      return {Action::kNone, Cue::kMove};
+    }
     if (popup != Popup::kNone) return {};
     const int n = int(rows().size());
     if (n <= 1) return {};
@@ -128,6 +171,10 @@ struct TitleMenu {
         phase_t = 0.0;
         return {Action::kNone, Cue::kAccept};
       case Phase::kProfile: return {};
+      case Phase::kVideo:  // A SAVE: on to the menu, VIDEO not again
+        first_profile = false;
+        show_menu();
+        return {Action::kSaveVideo, Cue::kAccept};
       case Phase::kMenu:
         if (selected_row() == Row::kMultiplayer) {
           popup = Popup::kNoNetwork;
@@ -157,7 +204,8 @@ struct TitleMenu {
     }
     switch (phase) {
       case Phase::kPressStart: return {Action::kQuit, Cue::kNone};
-      case Phase::kProfile: return {};
+      case Phase::kProfile:
+      case Phase::kVideo: return {};  // VIDEO's help bar has no B
       case Phase::kMenu:
         reset();
         return {Action::kNone, Cue::kBack};

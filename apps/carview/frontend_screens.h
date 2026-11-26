@@ -43,6 +43,23 @@ inline constexpr StringRef kProfileCorruptTitle{"Main", "IDS_ProfileCorrupt_Titl
 inline constexpr StringRef kProfileCorruptBody{"Main", "IDS_ProfileCorrupt_Desc", 0,
                                                "The Forza Horizon save that you have selected is damaged and "
                                                "cannot be loaded."};
+// A new profile's VIDEO screen (830_GAMMA_ADJUST, orig1 f00030).
+inline constexpr StringRef kVideo{"MyProfile", "IDS_Video", 0, "VIDEO"};
+inline constexpr StringRef kBrightness{"MyProfile", "IDS_Brightness", 0, "BRIGHTNESS"};
+inline constexpr StringRef kSubtitles{"MyProfile", "IDS_Subtitles", 0, "SUBTITLES"};
+inline constexpr StringRef kEnable{"MyProfile", {}, 0x2F9F, "ENABLE"};
+inline constexpr StringRef kDisable{"MyProfile", "IDS_Disable", 0, "DISABLE"};
+inline constexpr StringRef kNotVisible{"MyProfile", "IDS_NotVisible", 0, "NOT VISIBLE"};
+inline constexpr StringRef kBarelyVisible{"MyProfile", {}, 0x7BA5, "BARELY VISIBLE"};
+inline constexpr StringRef kEasilyVisible{"MyProfile", "IDS_EasilyVisible", 0, "EASILY VISIBLE"};
+inline constexpr StringRef kBrightnessDesc{
+    "MyProfile", "IDS_VideoOption_Brightness_Desc", 0,
+    "Move the slider so that you can't see the text in the top box, but can just see the text in the middle box."};
+inline constexpr StringRef kSubtitlesDesc{"MyProfile", "IDS_VideoOption_Subtitles_Desc", 0,
+                                          "Enable or disable subtitles in movie playback."};
+inline constexpr StringRef kDescription{"GameOptions2", "IDS_Description", 0, "DESCRIPTION"};
+inline constexpr StringRef kSave{"HelpButtons", "IDS_Save", 0, "SAVE"};
+inline constexpr StringRef kResetDefault{"HelpButtons", "IDS_ResetDefault", 0, "RESET TO DEFAULT"};
 // No table has these: the engine's own entries behind EXTRAS.
 inline constexpr StringRef kExtras{{}, {}, 0, "EXTRAS", true};
 inline constexpr StringRef kNewCareer{{}, {}, 0, "NEW CAREER", true};

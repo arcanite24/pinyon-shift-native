@@ -445,8 +445,12 @@ int main() {
     using namespace carview::title_text;
     for (const carview::StringRef* r :
          {&kPressStart, &kSinglePlayer, &kMultiplayer, &kSelect, &kBack, &kContinue, &kYes, &kNo, &kPleaseWait,
-          &kNoNetworkTitle, &kNoNetworkBody, &kProfileCorruptTitle, &kProfileCorruptBody})
+          &kNoNetworkTitle, &kNoNetworkBody, &kProfileCorruptTitle, &kProfileCorruptBody, &kVideo, &kBrightness,
+          &kSubtitles, &kEnable, &kDisable, &kNotVisible, &kBarelyVisible, &kEasilyVisible, &kBrightnessDesc,
+          &kSubtitlesDesc, &kDescription, &kSave, &kResetDefault})
       check_ref(*r, "front end " + std::string(r->fallback));
+    check(carview::text_of(kBarelyVisible) == "BARELY VISIBLE" && carview::text_of(kEnable) == "ENABLE",
+          "VIDEO's raw keys read BARELY VISIBLE and ENABLE");
     check(carview::text_of(kSinglePlayer) == "SINGLE PLAYER" && carview::text_of(kMultiplayer) == "MULTIPLAYER",
           "the menu's rows read SINGLE PLAYER / MULTIPLAYER");
   }

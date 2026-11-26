@@ -153,7 +153,106 @@ TitleRowNodes title_row_nodes(const SceneDraw& sd, int slot) {
   return r;
 }
 
+namespace {
+
+// Greedy word wrap to `width` px in `ts`.
+std::vector<std::string> wrap_words(std::string_view text, const ui::TextStyle& ts, float width) {
+  std::vector<std::string> lines;
+  std::string line;
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find(' ', at);
+    if (end == std::string_view::npos) end = text.size();
+    const std::string word(text.substr(at, end - at));
+    const std::string next = line.empty() ? word : line + " " + word;
+    if (!line.empty() && ui::List::measure(next, ts) > width) {
+      lines.push_back(line);
+      line = word;
+    } else {
+      line = next;
+    }
+    at = end + 1;
+  }
+  if (!line.empty()) lines.push_back(line);
+  return lines;
+}
+
+}  // namespace
+
+// A new profile's VIDEO screen (830_GAMMA_ADJUST) as orig1 f00030 shows it
+// (1280x720 canvas, measured): the VIDEO tape top left, the black test panel
+// with its three boxes (NOT / BARELY / EASILY VISIBLE, dark text on darker
+// fills), BRIGHTNESS's slider and SUBTITLES's spinner under it on the pink
+// and dark bars, the DESCRIPTION panel right, A SAVE and Y RESET TO DEFAULT.
+// The whole block is turned 3 degrees as the scene's is. The scene itself is
+// not drawn: its rest layout is the entry animation's start (as 831's is,
+// options_screen.cpp), so the places are the capture's.
+bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
+  namespace t = title_text;
+  const SceneFrame f = SceneScreen::frame(w, h);
+  const float s = f.s;
+  constexpr float kTurn = -0.052f;
+  ui4::title_tape(l, s, f.x(150.0f), f.y(110.0f), text_of(t::kVideo), ui4::kBrushBlack, 46.0f, 300.0f);
+
+  // The test panel and its boxes.
+  l.turn(f.x(504.0f), f.y(343.0f), kTurn);
+  l.rect(f.x(214.0f), f.y(168.0f), f.x(794.0f), f.y(518.0f), ui::rgba(3, 3, 3, 250));
+  struct Box {
+    float y0, y1;
+    uint32_t fill;
+    StringRef text;
+  };
+  const Box boxes[] = {{188.0f, 282.0f, ui::rgba(5, 5, 5), t::kNotVisible},
+                       {282.0f, 380.0f, ui::rgba(9, 9, 9), t::kBarelyVisible},
+                       {380.0f, 494.0f, ui::rgba(20, 20, 20), t::kEasilyVisible}};
+  const ui::TextStyle box_ts = ui4::style(ui::Font::kD, 38.0f * s, ui::rgba(3, 3, 3), ui::Align::kCenter);
+  for (const Box& b : boxes) {
+    l.rect(f.x(236.0f), f.y(b.y0), f.x(772.0f), f.y(b.y1), b.fill);
+    l.text(f.x(504.0f), f.y(0.5f * (b.y0 + b.y1) - 18.0f), text_of(b.text), box_ts);
+  }
+
+  // The rows: the selected on pink, the other on a dark bar.
+  const ui::TextStyle label_ts = ui4::style(ui::Font::kD, 17.0f * s, kWhite);
+  const ui::TextStyle value_ts = ui4::style(ui::Font::kB, 17.0f * s, kWhite, ui::Align::kCenter);
+  for (int row = 0; row < 2; ++row) {
+    const float y0 = 520.0f + 28.0f * float(row), y1 = y0 + 26.0f;
+    const bool sel = row == m.video_row;
+    l.rect(f.x(222.0f), f.y(y0), f.x(806.0f), f.y(y1), sel ? ui4::kPink : ui::rgba(33, 33, 33, 235));
+    l.text(f.x(232.0f), f.y(y0 + 4.0f), text_of(row == 0 ? t::kBrightness : t::kSubtitles), label_ts);
+    ui4::opt_arrow(l, f.x(558.0f), f.y(y0 + 13.0f), 18.0f * s, -1);
+    ui4::opt_arrow(l, f.x(794.0f), f.y(y0 + 13.0f), 18.0f * s, 1);
+    if (row == 0) {
+      ui4::opt_slider(l, f.x(594.0f), f.y(y0 + 7.0f), f.x(732.0f), f.y(y1 - 7.0f), float(m.brightness) / 100.0f, s,
+                      ui::rgba(232, 234, 232), sel);
+      l.text(f.x(752.0f), f.y(y0 + 4.0f), std::to_string(m.brightness), value_ts);
+    } else {
+      l.text(f.x(678.0f), f.y(y0 + 4.0f), text_of(m.subtitles ? t::kEnable : t::kDisable), value_ts);
+    }
+    l.add_hit(f.x(222.0f), f.y(y0), f.x(806.0f), f.y(y1), ui::kHitRow, row);
+  }
+  l.unturn();
+
+  // DESCRIPTION: its title on an off-white strip, the row's text under it.
+  l.turn(f.x(945.0f), f.y(250.0f), kTurn);
+  l.rect(f.x(806.0f), f.y(170.0f), f.x(1084.0f), f.y(362.0f), ui::rgba(14, 14, 16, 205));
+  ui4::offwhite_strip(l, f.x(812.0f), f.y(140.0f), f.x(1068.0f), f.y(170.0f), s);
+  l.text(f.x(818.0f), f.y(149.0f), text_of(t::kDescription), ui4::style(ui::Font::kB, 18.0f * s, kInk));
+  const ui::TextStyle desc_ts =
+      ui4::style(ui::Font::kC, 13.0f * s, ui::rgba(222, 222, 222), ui::Align::kLeft, true);
+  const std::string desc = text_of(m.video_row == 0 ? t::kBrightnessDesc : t::kSubtitlesDesc);
+  float y = 182.0f;
+  for (const std::string& line : wrap_words(desc, desc_ts, 250.0f * s)) {
+    l.text(f.x(822.0f), f.y(y), line, desc_ts);
+    y += 27.0f;
+  }
+  l.unturn();
+
+  ui4::button_bar(l, {{"A", text_of(t::kSave)}, {"Y", text_of(t::kResetDefault)}}, w, h);
+  return true;
+}
+
 bool draw_title_screen(ui::List& l, const TitleScreenHud& ts, float w, float h) {
+  if (ts.menu.phase == Phase::kVideo) return draw_video_screen(l, ts.menu, w, h);
   SceneScreen sc(kPreSplashScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();

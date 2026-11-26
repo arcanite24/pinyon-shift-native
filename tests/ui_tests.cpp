@@ -478,6 +478,31 @@ void test_title_menu_model() {
   n.show_menu();
   n.open_extras();
   CHECK(n.confirm().action == M::Action::kNewCareer && n.popup == M::Popup::kNone);
+  // A new profile: Press Start, the profile step, then VIDEO (BRIGHTNESS 60,
+  // SUBTITLES off); left/right change the row, Y resets, B does nothing, A
+  // saves and goes on to the menu, and VIDEO does not come again.
+  M v;
+  v.first_profile = true;
+  v.confirm();
+  v.update(M::kProfileSeconds + 0.01);
+  CHECK(v.phase == M::Phase::kVideo && !v.menu_visible() && v.video_row == 0);
+  CHECK(v.brightness == M::kDefaultBrightness && !v.subtitles);
+  CHECK(v.adjust(1).cue == M::Cue::kMove && v.brightness == M::kDefaultBrightness + M::kBrightnessStep);
+  CHECK(v.move(1).cue == M::Cue::kMove && v.video_row == 1);
+  CHECK(v.adjust(-1).cue == M::Cue::kMove && v.subtitles);
+  CHECK(v.reset_video().cue == M::Cue::kAccept && v.brightness == M::kDefaultBrightness && !v.subtitles);
+  CHECK(v.back().cue == M::Cue::kNone && v.phase == M::Phase::kVideo);
+  v.move(1);
+  for (int i = 0; i < 200; ++i) v.adjust(1);
+  CHECK(v.brightness == 100 && v.adjust(1).cue == M::Cue::kNone);
+  v.brightness = 70;
+  st = v.confirm();
+  CHECK(st.action == M::Action::kSaveVideo && v.phase == M::Phase::kMenu && v.brightness == 70 && !v.first_profile);
+  v.back();
+  v.confirm();
+  v.update(M::kProfileSeconds + 0.01);
+  CHECK(v.phase == M::Phase::kMenu);
+  CHECK(v.adjust(1).cue == M::Cue::kNone && v.reset_video().cue == M::Cue::kNone);
   // A save that did not read: INVALID PROFILE once the menu shows.
   M p;
   p.profile_error = true;
