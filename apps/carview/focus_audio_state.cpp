@@ -46,7 +46,7 @@ void fill_focus_audio_state(const drive::Vehicle& vehicle, const audio::EnginePl
   vst.rpm = float(vehicle.rpm());
   vst.idle_rpm = float(vp.idle_rpm);
   vst.redline_rpm = float(vp.redline_rpm);
-  vst.throttle = float(vehicle.engine_throttle());
+  vst.throttle = float(vehicle.applied_throttle());
   vst.engine_load = float(std::clamp(std::max(engine_in.pos_torque, std::fabs(engine_in.neg_torque)), 0.0, 1.0));
   vst.gear = vehicle.gear();
   if (vst.gear < 0) {

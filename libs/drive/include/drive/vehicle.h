@@ -740,7 +740,10 @@ class Vehicle {
     return state_ == GearState::kClutchIn || state_ == GearState::kGearChange ||
            (target_gear_ != gear_before_ && (state_ == GearState::kRevMatch || state_ == GearState::kClutchOut));
   }
-  double engine_throttle() const { return engine_throttle_; }  // what the engine sees, 0..1
+  double engine_throttle() const { return engine_throttle_; }  // what the gearbox asks of the engine, 0..1
+  // The throttle the engine ran on in the last substep: engine_throttle()
+  // with the rev limiter's cut applied (the original's audio reads this one).
+  double applied_throttle() const { return applied_throttle_; }
   // The engine's torque (N m) at an rpm and throttle, before the clutch (uses current boost).
   double engine_torque(double rpm, double throttle) const;
   // The AI's hold throttle (SPEC-RACE-AI, Throttle; decoded): the gas at
@@ -762,7 +765,10 @@ class Vehicle {
   double stm_amount() const { return stm_amount_; }
   double transmission_damage() const { return trans_damage_; }  // [0, 1] from shifts without clutch
   double clutch_damage() const { return clutch_damage_; }       // [0, 1] from Manual+Clutch shift grinds
-  bool rev_limiter_active() const { return rev_cut_active_; }   // rhythmic ignition-cut redline limiter active
+  bool rev_limiter_active() const { return rev_cut_active_; }   // the rev limiter holds the throttle at 0
+  // The rev limiter's cut speed: halfway from RedlineRPM to TorqueCurveMaxRPM
+  // (7,900 rpm on the MX-5), as the original's engine setup stores it (Q341).
+  double rev_cut_rpm() const { return p_.redline_rpm + 0.5 * (p_.torque_curve_max_rpm - p_.redline_rpm); }
   int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
@@ -889,6 +895,7 @@ class Vehicle {
   double kb_steer_filtered_ = 0;
   bool rev_cut_active_ = false;
   double rev_cut_timer_ = 0;
+  double applied_throttle_ = 0;
   int gear_ = 1, target_gear_ = 1;
   int gear_before_ = 1;        // the gear a shift started from
   GearState state_ = GearState::kOpen;

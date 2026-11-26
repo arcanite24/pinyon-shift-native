@@ -213,7 +213,9 @@ void apply_popularity_with_events(DriveSession& s, double pts) {
 audio::EnginePlayer::Update DriveSession::sound_inputs(audio::View audio_view) {
         audio::EnginePlayer::Update u;
         const double rpm = vehicle.rpm();
-        double thr = vehicle.engine_throttle();
+        // The throttle after the rev limiter's cut, as the original's car-audio
+        // input reads the engine's throttle (Q341).
+        double thr = vehicle.applied_throttle();
         // Retail non-manual-clutch shifts scale engine audio throttle by 0.75x.
         if (vehicle.shifting() && vehicle.assists().shifting != 2) {
           thr = std::max(thr, vehicle.shaped_input().throttle) * 0.75;
