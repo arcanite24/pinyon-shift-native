@@ -243,6 +243,11 @@ struct GatherOptions {
   // switch at prop_lod0.
   double prop_near_radius = 0;
   bool props = true;
+  // Ours: gather the local-space models too (rmb_is_world_space false). A
+  // hub room's track (uiautoshow, uiworkshop, uipaintshop) keeps every model
+  // within 200 m of the origin, drawn where it lies, so the world-space test
+  // that sorts Colorado's props from its scenery would leave the room empty.
+  bool local_models = false;
   bool render_data = false;  // fill the Mesh's normals, UVs, colours and materials
   // The far ring (ours; needs render_data): the MIDDIST and UberLOD terrain
   // the near gather skips, from models whose header box comes within this,
