@@ -1,8 +1,9 @@
 #include "cars/physics.h"
 
-#include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
+#include <string>
 
 #include "fh1data/archive.h"
 
@@ -11,9 +12,13 @@ namespace {
 
 bool number(std::string_view s, double& out) {
   if (s.empty()) return false;
-  const char* end = s.data() + s.size();
-  auto r = std::from_chars(s.data(), end, out);
-  return r.ec == std::errc{} && r.ptr == end;
+  if (s.front() == ' ' || s.front() == '\t' || s.front() == '\r' || s.front() == '\n') return false;
+  std::string buf(s);
+  char* end = nullptr;
+  const double v = std::strtod(buf.c_str(), &end);
+  if (end != buf.c_str() + buf.size()) return false;
+  out = v;
+  return true;
 }
 
 std::string_view trim(std::string_view s) {
