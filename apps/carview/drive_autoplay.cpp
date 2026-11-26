@@ -199,6 +199,9 @@ void DriveSession::autoplay_frame() {
   std::snprintf(ovs, sizeof ovs, "%.2f rgb %.0f%.0f%.0f", a, ov.rgb[0], ov.rgb[1], ov.rgb[2]);
   ap.observe("overlay", a > 0.0f ? ovs : "0");
   ap.observe("race", app.race ? "on page " + std::to_string(results_page) : "off");
+  ap.observe("race_screen", std::string(race_flow::screen_name(race_screens.screen())));
+  ap.observe("loading", loading_screen.active() ? "on " + loading_screen.current_tip_title()
+                                                : (loading_screen.fading_out() ? "fade" : "off"));
   {
     const auto tel = app.audio_host.telemetry();
     ap.observe("radio", "station " + std::to_string(tel.radio_selected) + " clock10 " +
