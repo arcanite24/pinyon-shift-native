@@ -175,7 +175,7 @@ class EnginePlayer {
     double gain = 0, target_gain = 0;
     double base_target_gain = 0;
     double left = 1, right = 1;
-    Biquad lp, peq, load_peq;
+    Biquad lp, lp2, peq, load_peq;
     double cur_peq_gain = 1.0, cur_load_peq_gain = 1.0;
     // Expander state (ms).
     bool exp_triggered = false;
