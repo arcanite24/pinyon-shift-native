@@ -75,7 +75,8 @@ void raise_all(SceneScreen& sc, int n) {
 // the frame. Entering a slide bakes and restarts its curves, so a slide is
 // entered once and then scrubbed. False without the scene's timeline, the
 // component or the slide.
-bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view slide, double ms) {
+bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view slide, double ms,
+                bool subtree_only = false) {
   const SceneDraw& sd = sc.scene();
   tl.bind(sd.scene());
   if (!tl.ok() || !scene_timelines_enabled() || root < 0 || slide.empty()) return false;
@@ -85,7 +86,19 @@ bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view s
   tl.set_time(uint32_t(comp), float(ms));
   SceneBindings all;
   tl.apply(all);
-  for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
+  if (!subtree_only) {
+    for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
+    return true;
+  }
+  // Only `root`'s subtree: a second timeline on the same screen would
+  // otherwise write its resting look over the nodes the first one moves.
+  std::vector<int> stack{root};
+  while (!stack.empty()) {
+    const int n = stack.back();
+    stack.pop_back();
+    if (auto it = all.anim.find(n); it != all.anim.end()) sc.bindings().anim[n] = it->second;
+    for (int c : sd.children_of(n)) stack.push_back(c);
+  }
   return true;
 }
 
@@ -656,10 +669,12 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     const bool played =
         play_slide(sc, score_tl, child_path(sd, skill, "CompleteComponent/ScoreGroup"), score_slide, score_ms);
     if (played) {
-      // Total: BANK as the chain banks, else at rest (BANK ends at alpha 0).
+      // Total: BANK as the chain banks, on its own timeline that is not
+      // applied otherwise (BANK ends at alpha 0; its DEFAULT drops the total
+      // out of a live chain's row).
+      static SceneTimeline total_tl;
       const int total_c = child_path(sd, score, "Total");
-      bank_played = banked && !sk.active && play_slide(sc, score_tl, total_c, "BANK", since_bank * 1000.0);
-      if (!bank_played) play_slide(sc, score_tl, total_c, "DEFAULT", 0.0);
+      bank_played = banked && !sk.active && play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
       // Multiplier: ANIMATE as it changes, SHOWN while it holds.
       static float last_mult = 0.0f;
       static double mult_changed = -1e9;
@@ -672,7 +687,8 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       if (!sk.active) last_mult = 0.0f;
       const double since_mult = time - mult_changed;
       const bool animate = since_mult >= 0 && since_mult < kMultAnimateSeconds;
-      play_slide(sc, score_tl, mult, animate ? "ANIMATE" : "SHOWN", animate ? since_mult * 1000.0 : 0.0);
+      play_slide(sc, score_tl, mult, animate ? "ANIMATE" : "SHOWN", animate ? since_mult * 1000.0 : 0.0,
+                 true);
       // BANK moves anim_helper 35 px right, onto the centre once the X and
       // multiplier beside it are gone; the row here is already centred, so
       // the move is replaced by one that keeps the scaled total on it.
@@ -725,7 +741,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     } else if (since_skill >= 0.0 && since_skill < kSkillShowSeconds) {
       slide = "SHOWSKILL", ms = since_skill * 1000.0;
     }
-    if (play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms)) raise_all(sc, skill1);
+    if (play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms, true)) raise_all(sc, skill1);
     else show_all(sc, skill1);
     for (int c : {child(sd, skill1, "Background"), child(sd, skill1, "Smudge_Tape"), child(sd, skill1, "ComboIcon")})
       sc.hide(c);
