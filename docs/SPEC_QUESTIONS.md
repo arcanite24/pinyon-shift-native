@@ -3575,7 +3575,7 @@ Still open:
   `CarColorSel`'s posy of -0.15 puts the eye below the floor that way, so
   the origin may be the car's centre or its body's base;
 - which workshop part uses a sequence and which a preset (Q221);
-- the rooms' light (Q222, mostly answered; the car's is Q261) and the
+- the rooms' light (Q222, partly answered; the car's is Q261) and the
   Autoshow's crowd and DJ (Q223).
 
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
@@ -5139,7 +5139,7 @@ Needed:
 
 ## Q222 (MENU-02, not blocking): the hub rooms' interior shaders
 
-Mostly answered (WP3b). The rooms' surfaces use
+Partly answered (WP3b). The rooms' surfaces use
 `H_INT_DIFF_SPEC_REFL_NORM_AO_LM`, `H_INT_DIFF_SPEC_REFL_AO_LM`,
 `H_INT_ROAD_*`, `H_INT_DIFF_EMISSIVE_2` and a `HS_SKY_DIFF_HDRI_SHAD_1`
 dome. Their TrackSettings have no sun and keep fog off. The decoded pixel
@@ -5167,9 +5167,21 @@ no LUT, vignette, contrast, motion blur, god rays, lens flare or depth of
 field.
 
 The engine (`world_frag.glsl`'s interior branch, `hub_room.cpp`,
-`apply_hub_room_post`): the paint booth's back wall reads 233/230/233
-against the original's 231/234/241, and the floor 181 against 188
-(`20_paint_shop_wp3b.png`). A material whose lightmap record is a stub
+`apply_hub_room_post`), measured on `20_paint_shop_wp3b.png` against
+`20_paint_shop_orig.png` (same regions, the two cameras close but not
+equal):
+
+| Region (x0,y0,x1,y1) | Engine | Original |
+|---|---|---|
+| back wall (600,30,700,90) | 234 | 232 |
+| left wall (20,180,90,240) | 178 | 218 |
+| floor, front left (20,620,120,700) | 167 | 150 |
+| floor, right (1000,560,1200,640) | 159 | 140 |
+
+The back wall sits on the tone curve's shoulder and barely constrains the
+factor. With 1.5 instead of 2 the floors match (152 and 149) but the back
+wall drops to 219 and the left wall to 157. No single factor fits every
+surface, so the light is still an interim. A material whose lightmap record is a stub
 (the paint booth's door glass) takes its AO map as the lightmap and stays
 interior; before, it took Colorado's light and drew blue.
 
@@ -5196,8 +5208,9 @@ their animations.
 Partly answered (WP3b). Captures 23 to 26 show the world defocused behind
 the OPTIONS pages (CONTROLS, DIFFICULTY, HUD) and MY PROFILE's STATS.
 Captures 22 and 31 show it sharp behind the lists (OPTIONS and PHOTO
-MODE). The engine now blurs the frame behind those four pages with the
-pause popups' backdrop blur (`DriveSession::page_backdrop`;
+MODE). The engine now blurs the frame behind those four pages (and AUDIO,
+which has no capture) with the pause popups' backdrop blur
+(`DriveSession::page_backdrop`;
 `24_options_difficulty_wp3b.png`, `26_my_profile_stats_wp3b.png`).
 
 The prebuilt `post.frag.spv` had not been rebuilt since the backdrop flag
@@ -5218,7 +5231,9 @@ engine lights it with:
   iblSunColor x iblDirectScale x iblDirectScaleCar;
 - the mean of the room's `staticcarcubemap.xpr` (about 0.17 to 0.2) as
   its ambient, above and below;
-- the engine's reflections, not the room's `staticcarcubemap.xpr`.
+- the engine's reflections, not the room's `staticcarcubemap.xpr`;
+- no shadow on the room's floor, which the original casts under the car
+  (`20_paint_shop_orig.png`).
 
 Two other ambients were tried. The image-based one that lights the room
 (about 1.7 in the paint booth) turned the tyres light grey, against the
