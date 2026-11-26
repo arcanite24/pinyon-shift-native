@@ -6362,3 +6362,61 @@ player label is the profile's gamertag in the original (`User` in the
 recomp); the engine shows the engine profile's name. Needed: a capture
 of the pause menu with the DLC installed, and the rows' visibility
 rule.
+
+## Q321 (first30f, audio, partly answered): the focus car's TrashDSP and its runtime values
+
+Settles most of Q82. Read from the recomp's executable (Ghidra over the
+player's dump, and the translated code where Ghidra cannot decode VMX128).
+
+- **What it is.** `TrashDSP` is "iZotope Trash for FMOD", a custom FMOD Ex
+  DSP with 17 parameters: 0 and 1 the crossover cutoffs (Hz, 0 to 19,000,
+  kept at least 10 Hz apart), 2 to 4 each band's effect type (0, 1, 2), then
+  per band (5 to 8, 9 to 12, 13 to 16) input gain (dB, -30 to 20),
+  overdrive (0 to 10), mix (0 to 100) and output gain (dB, -40 to 10).
+- **Bands.** Three bands from first-order bilinear sections: low is the
+  low-pass at `Cutoff1`, mid the high-pass at `Cutoff1` then the low-pass at
+  `Cutoff2`, high the high-pass at `Cutoff2`. A cutoff at or above half the
+  rate is skipped. The bands are summed after their effects. How many
+  sections a split cascades is not traced (the engine uses one).
+- **Effects.** With `g_in` and `g_out` the gains as linear factors, the drive
+  `d = 10^(4 x overdrive / 20)` (4 dB a unit, so overdrive 4 is +16 dB) and
+  `m = mix / 100`, a band sample x becomes
+  `g_out x ((1 - m) x + m s(d g_in x))` (effect 1's vector path leaves `g_in`
+  out of the dry leg), where
+  - type 0 is a copy;
+  - type 1: `s(y) = y (1 + |y|) / (1 + y^2)` (slope 1 at 0, peak 1.207 at
+    y = 2.414, back to 1 at infinity);
+  - type 2: `s(y) = 2y - y^2` for 0 <= y <= 1, `-(2|y| - y^2)` for
+    -1 <= y < 0, and +-1 beyond (slope 2 at 0, hard clip at 1).
+- **Values sent each update.** With `UseCurves="0"` the band attributes go
+  out as they are. With `UseCurves="1"` each band's `inputgain`, `overdrive`,
+  `mix` and `outputgain` child curves are evaluated instead. Every band's
+  output gain (dB) is multiplied by the shift boost below.
+- **Trash or Distortion.** The car keeps both. A flag set at load picks one:
+  the car whose descriptor marks it as the focus human car gets the Trash
+  (and the Distortion is bypassed); any other car gets the FMOD Distortion
+  (`Distortion/Level`) instead. The engine ran both in series on the
+  focus exhaust.
+- **VolumeCompensate.** Not a band-sum scale: with the Trash active, the
+  focus channel group's volume is `VolumeCompensate x 0.175 x` a global
+  level read from the audio manager (not identified). With the Trash
+  bypassed the group is at its normal volume.
+- **DSPScalar.** On load and on every upgrade change, each band's
+  overdrive becomes `clamp(base + TrashBand<N>ODMax x s, 0, 10)` and
+  `VolumeCompensate` `clamp(base + TrashVolCompMin x s, 0, 1)`; `PEQGainMax`,
+  `PEQFreqMax` and `PEQBandwidthMax` add to the three groups' PEQ points the
+  same way. `s = DSPMaxScalar x` a float of the car's audio descriptor
+  (offset 84, next to the rpm range and the upgrade levels; its source is
+  not traced).
+- **ShiftVolumeScalar.** Not an engine volume boost. On an upshift, once
+  the clutch passes `clutch_engage_point`, a factor starts at
+  `ShiftVolBoostUpPct` and falls linearly to 1 over `ShiftVolBoostUpTime`
+  seconds (a downshift: at once, `...Down...`). The factor multiplies the
+  Trash bands' output gains in dB (MX-5: 1, 1 and -1 dB become 1.6, 1.6 and
+  -1.6). The engine boosted the whole engine by up to 2.6 times instead.
+- **Compressor.** The `_ET.xml` `Compressor` (Threshold, Attack, Release,
+  GainMakeup) is another DSP on the same focus chain.
+
+Not settled here: which emission groups the focus chain carries, the
+global level in the volume, and the descriptor float behind `s`
+(measured in Q322).
