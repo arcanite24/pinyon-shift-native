@@ -5083,8 +5083,14 @@ below (`Session::step_ai_rules`).
 
 Gate after the port (3-seed AI mean, s): FR22 166.3, FR16 127.4, FR24
 109.7, FR01 102.1, NR02 171.8, EXHIBITION_FEST_003 184.4 (before: 166.1,
-126.9, 109.7, 102.1, 171.7, 184.3). Crawling cars now reset at the slow
-limit, as the original's do.
+126.9, 109.7, 102.1, 171.7, 184.3). The 18 runs still have 9 AI resets
+in all, but not the same ones: FR16 seed 1 gains a "stuck on the line"
+reset at 78 s (the RX-7 at 1,702 m, before its two falls), EXHIBITION_FEST_003
+seed 1 loses the Mini's second reset at 168 s, and the rest fire up to
+1.6 s apart (3 s for the RX-7's falls after its new reset); one FR22
+reset is now "too slow", not "stuck in place" (the rules' order). The
+oracle recorded none (Q55), so the line points standing in for route
+waypoints may make the waypoint rule fire where the original's would not.
 
 Open:
 
