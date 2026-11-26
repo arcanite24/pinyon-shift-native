@@ -126,13 +126,20 @@ void EnginePlayer::trigger_expander(int group) {
 void EnginePlayer::trigger_shift_boost(bool upshift) {
   const auto& svs = sound_.shift_volume_scalar;
   if (!svs.present) return;
-  const double pct = upshift ? svs.boost_up_pct : svs.boost_down_pct;
+  // The game's ShiftVolumeScalar (Q322): Up/DownPct is the starting factor on
+  // the Trash bands' output gain in dB, falling linearly to 1 over Up/DownTime.
+  const double start = upshift ? svs.boost_up_pct : svs.boost_down_pct;
   const double dur = upshift ? svs.boost_up_time_s : svs.boost_down_time_s;
-  if (std::fabs(pct) <= 1e-4) return;
-  shift_boost_peak_ = std::clamp(pct, -0.8, 2.0);
-  shift_boost_dur_s_ = dur > 1e-3 ? dur : 0.18;
-  shift_boost_elapsed_s_ = 0.0;
-  shift_boost_cur_ = shift_boost_peak_;
+  if (std::fabs(start - 1.0) <= 1e-4 || dur <= 1e-3) return;
+  shift_start_ = start;
+  shift_dur_s_ = dur;
+  shift_elapsed_s_ = 0.0;
+  shift_factor_ = start;
+}
+
+double EnginePlayer::dsp_scalar() const {
+  const auto& d = sound_.dsp_scalar;
+  return d.present ? d.dsp_max_scalar * kDescriptorDspScalar : 0.0;
 }
 
 void EnginePlayer::update_expander_state(size_t g, double dt_ms) {
@@ -166,19 +173,17 @@ void EnginePlayer::advance_dsp(double dt) {
   const double dt_ms = clamped_dt * 1000.0;
   for (size_t g = 0; g < state_.size(); ++g) update_expander_state(g, dt_ms);
 
-  // Per-car ShiftVolumeScalar momentary boost envelope.
-  if (shift_boost_dur_s_ > 0.0 && std::fabs(shift_boost_peak_) > 1e-4) {
-    shift_boost_elapsed_s_ += clamped_dt;
-    if (shift_boost_elapsed_s_ >= shift_boost_dur_s_) {
-      shift_boost_cur_ = 0.0;
-      shift_boost_peak_ = 0.0;
-      shift_boost_dur_s_ = 0.0;
+  // ShiftVolumeScalar envelope.
+  if (shift_dur_s_ > 0.0) {
+    shift_elapsed_s_ += clamped_dt;
+    if (shift_elapsed_s_ >= shift_dur_s_) {
+      shift_factor_ = 1.0;
+      shift_dur_s_ = 0.0;
     } else {
-      const double u = std::clamp(shift_boost_elapsed_s_ / shift_boost_dur_s_, 0.0, 1.0);
-      shift_boost_cur_ = shift_boost_peak_ * (1.0 - u);
+      shift_factor_ = shift_start_ + (1.0 - shift_start_) * (shift_elapsed_s_ / shift_dur_s_);
     }
   } else {
-    shift_boost_cur_ = 0.0;
+    shift_factor_ = 1.0;
   }
 
   // No drivetrain_spring stage. The engine tuning's drivetrain_spring_*
@@ -197,31 +202,78 @@ void EnginePlayer::set(const Update& u) {
   const double raw_neg = safe_finite(u.neg_torque, 0.0);
   const double neg_in = raw_neg < 0 ? std::clamp(raw_neg, -1.0, 0.0) : std::clamp(raw_neg, 0.0, 1.0);
   SoundInputs in{n, thr, pos_t, neg_in};
-  const double global = safe_clamp(sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume * master, 0.0, 16.0, 0.0);
+  // The loops reach the focus DSP at their own level: `master` is applied
+  // after it, so the Trash drive does not move with the output level.
+  const double global = safe_clamp(sound_.global_volume.eval(in, neg_raises) * sound_.engine_volume, 0.0, 16.0, 0.0);
+  cur_master_ = safe_clamp(master, 0.0, 16.0, 0.0);
   const size_t view = size_t(std::clamp(int(u.view), 0, kViews - 1));
+  const double ds = dsp_scalar();
+  const DspScalarConfig& dsc = sound_.dsp_scalar;
 
-  // Focus _ET.xml DSP: FocusPEQ & Distortion parameter updates.
+  // Focus _ET.xml DSP. FocusPEQ, with the DSPScalar offsets on its curves
+  // (game clamps: gain 0.05..3, centre 20..22000 Hz, bandwidth 0.2..5).
   if (sound_.focus_peq.active && !positional) {
-    const double fg = safe_clamp(sound_.focus_peq.gain.eval(in, neg_raises), 0.05, 3.0, 1.0);
-    const double ffc = sound_.focus_peq.center_freq.eval(in, neg_raises);
-    const double fbw = sound_.focus_peq.bandwidth.eval(in, neg_raises);
+    const double fg =
+        safe_clamp(sound_.focus_peq.gain.eval(in, neg_raises) + dsc.peq_gain_max * ds, 0.05, 3.0, 1.0);
+    const double ffc =
+        safe_clamp(sound_.focus_peq.center_freq.eval(in, neg_raises) + dsc.peq_freq_max * ds, 20.0, 22000.0, 1000.0);
+    const double fbw =
+        safe_clamp(sound_.focus_peq.bandwidth.eval(in, neg_raises) + dsc.peq_bandwidth_max * ds, 0.2, 5.0, 1.0);
     cur_focus_peq_gain_ = fg;
-    focus_peq_l_.set_peq(ffc, fbw, fg, rate_);
-    focus_peq_r_.set_peq(ffc, fbw, fg, rate_);
+    focus_peq_l_.set_peq(std::min(ffc, 0.45 * rate_), fbw, fg, rate_);
+    focus_peq_r_.set_peq(std::min(ffc, 0.45 * rate_), fbw, fg, rate_);
   } else {
     cur_focus_peq_gain_ = 1.0;
     focus_peq_l_.set_bypass();
     focus_peq_r_.set_bypass();
   }
-  if (sound_.distortion.active && !positional) {
-    const double lv = sound_.distortion.level.present
-                          ? sound_.distortion.level.eval(in, neg_raises)
-                          : sound_.distortion.level_scalar;
-    cur_dist_level_ = safe_clamp(lv, 0.0, 0.95, 0.0);
-    cur_dist_comp_ = safe_clamp(sound_.distortion.volume_compensate, 0.1, 3.0, 1.0);
+  // The FMOD Distortion is the other cars' alternative to Trash; the focus car
+  // never runs it (the nodist probe, Q322), and the other cars' use is not yet
+  // modelled.
+  cur_dist_level_ = 0.0;
+  // Trash: the band values the game sends this update (Q321).
+  if (sound_.trash_dsp.active && !positional) {
+    const TrashDspConfig& td = sound_.trash_dsp;
+    for (size_t b = 0; b < 3; ++b) {
+      const TrashBandConfig& c = td.bands[b];
+      double in_db = c.input_gain_db, od = c.overdrive, mix = c.mix * 100.0, out_db = c.output_gain_db;
+      if (td.use_curves) {
+        if (c.input_gain_curve.present) in_db = c.input_gain_curve.eval(in, neg_raises);
+        if (c.overdrive_curve.present) od = c.overdrive_curve.eval(in, neg_raises);
+        if (c.mix_curve.present) mix = c.mix_curve.eval(in, neg_raises);
+        if (c.output_gain_curve.present) out_db = c.output_gain_curve.eval(in, neg_raises);
+      }
+      od = safe_clamp(od + dsc.trash_od_max[b] * ds, 0.0, 10.0, 0.0);
+      TrashBandNow& bn = trash_now_[b];
+      bn.type = c.effect_type;
+      bn.in = std::pow(10.0, safe_clamp(in_db, -30.0, 20.0, 0.0) / 20.0);
+      bn.drive = std::pow(10.0, 4.0 * od / 20.0);
+      bn.mix = safe_clamp(mix, 0.0, 100.0, 0.0) * 0.01;
+      bn.out_db = safe_clamp(out_db, -40.0, 10.0, 0.0);
+    }
+    cur_trash_volcomp_ = safe_clamp(td.volume_compensate + dsc.trash_volcomp_min * ds, 0.0, 1.0, 1.0);
+    cur_trash_group_gain_ = cur_trash_volcomp_ * kTrashGroupScale;
+    // First-order bilinear sections (prewarped); a cutoff at or above
+    // Nyquist leaves its split out.
+    const double nyq = 0.5 * rate_;
+    trash_c1_on_ = td.cutoff1_hz > 0.0 && td.cutoff1_hz < nyq;
+    trash_c2_on_ = td.cutoff2_hz > 0.0 && td.cutoff2_hz < nyq;
+    auto set_pair = [&](double fc, OnePole& lp, OnePole& hp) {
+      const double k = std::tan(kPi * std::min(fc, 0.499 * rate_) / rate_);
+      const double a1 = (k - 1.0) / (k + 1.0);
+      lp.b0 = lp.b1 = k / (1.0 + k);
+      lp.a1 = a1;
+      hp.b0 = 1.0 / (1.0 + k);
+      hp.b1 = -hp.b0;
+      hp.a1 = a1;
+    };
+    for (int c = 0; c < 2; ++c) {
+      set_pair(std::max(td.cutoff1_hz, 1.0), trash_lp1_[size_t(c)], trash_hp1_[size_t(c)]);
+      set_pair(std::max(td.cutoff2_hz, 1.0), trash_lp2_[size_t(c)], trash_hp2_[size_t(c)]);
+    }
   } else {
-    cur_dist_level_ = 0.0;
-    cur_dist_comp_ = 1.0;
+    cur_trash_volcomp_ = 1.0;
+    cur_trash_group_gain_ = 1.0;
   }
 
   // IntakeChuff one-shot trigger (SPEC-ENGINE-SOUND): snap-open from idle
@@ -345,56 +397,39 @@ void EnginePlayer::render(float* out, int frames) {
   advance_dsp(double(frames) / double(rate_));
 
   const bool run_focus_peq = sound_.focus_peq.active && !positional;
-  const bool run_dist = sound_.distortion.active && cur_dist_level_ > 1e-4;
   const bool run_trash = sound_.trash_dsp.active && !positional;
-  const bool run_focus_dsp = run_focus_peq || run_dist || run_trash;
-
-  auto group_bucket = [&](size_t g) -> int {
-    const std::string& nm = sound_.groups[g].name;
-    if (iequals(nm, "EngineIntake")) return 0;
-    if (iequals(nm, "EngineAmbient")) return 1;
-    return 2;  // ExhaustL / ExhaustR (EmissionGroup2)
-  };
-  bool has_exhaust = false;
-  for (size_t g = 0; g < state_.size(); ++g) {
-    if (group_bucket(g) == 2) {
-      has_exhaust = true;
-      break;
+  const bool run_focus_dsp = run_focus_peq || run_trash;
+  // The focus chain carries every emission group (Q322): the loops are summed
+  // at their own level, shaped, then set to the group volume and `master`.
+  const double post_gain = cur_master_ * kFocusPostScale * (run_trash ? cur_trash_group_gain_ : 1.0);
+  std::array<double, 3> out_gain{1, 1, 1};
+  for (size_t b = 0; b < 3; ++b) out_gain[b] = std::pow(10.0, trash_now_[b].out_db * shift_factor_ / 20.0);
+  auto shape_band = [&](double x, size_t b) {
+    const TrashBandNow& n = trash_now_[b];
+    const double y = x * n.in * n.drive;
+    double wet = y;
+    if (n.type == 1) {
+      wet = y * (1.0 + std::fabs(y)) / (1.0 + y * y);
+    } else if (n.type == 2) {
+      const double ay = std::fabs(y);
+      wet = ay >= 1.0 ? (y < 0 ? -1.0 : 1.0) : (y < 0 ? -(2.0 * ay - ay * ay) : (2.0 * ay - ay * ay));
     }
-  }
-  const int dsp_target_bucket = has_exhaust ? 2 : -1;  // Primary scope: EmissionGroup2 (ExhaustL/R)
-  const double shift_g = shift_boost_gain();
-
-  const double d_drive = 1.0 + 3.2 * cur_dist_level_;
-  const double d_norm = d_drive > 1.0 ? (1.0 / std::tanh(d_drive)) : 1.0;
-  const double a1 =
-      run_trash ? (1.0 - std::exp(-2.0 * kPi * std::clamp(sound_.trash_dsp.cutoff1_hz, 40.0, 0.4 * rate_) / rate_))
-                : 0.0;
-  const double a2 =
-      run_trash ? (1.0 - std::exp(-2.0 * kPi * std::clamp(sound_.trash_dsp.cutoff2_hz, 80.0, 0.45 * rate_) / rate_))
-                : 0.0;
-  auto shape_band = [](double x, const TrashBandConfig& b) {
-    if (b.mix <= 1e-4 || b.overdrive <= 1e-4) return x * b.output_gain;
-    const double k = 1.0 + 4.0 * b.overdrive;
-    const double wet = std::tanh(x * b.input_gain * k) / std::tanh(k);
-    return (x + (wet - x) * b.mix) * b.output_gain;
+    const double dry = n.type == 1 ? x : x * n.in;
+    return out_gain[b] * ((1.0 - n.mix) * dry + n.mix * wet);
   };
 
-  // Process in zero-allocation 256-frame stack chunks so FocusPEQ/Distortion/TrashDSP
-  // apply exclusively to the exhaust emission group (EmissionGroup2) while keeping
-  // EngineIntake, EngineAmbient, and IntakeChuff clean.
+  // 256-frame stack chunks: the focus car's groups go through FocusPEQ and
+  // Trash together; a positional car's groups go straight out.
   constexpr int kChunk = 256;
   float scoped_buf[kChunk * 2];
   for (int off = 0; off < frames; off += kChunk) {
     const int n_chunk = std::min(kChunk, frames - off);
     float* out_chunk = out + 2 * size_t(off);
     if (run_focus_dsp) std::fill(scoped_buf, scoped_buf + 2 * size_t(n_chunk), 0.0f);
-
     for (size_t g = 0; g < state_.size(); ++g) {
       GroupState& st = state_[g];
-      const bool route_to_dsp =
-          run_focus_dsp && (dsp_target_bucket < 0 || group_bucket(g) == dsp_target_bucket);
-      float* dst = route_to_dsp ? scoped_buf : out_chunk;
+      float* dst = run_focus_dsp ? scoped_buf : out_chunk;
+      const double group_post = run_focus_dsp ? kFocusPreScale : cur_master_;
       for (int f = 0; f < n_chunk; ++f) {
         double sum = 0;
         for (size_t i = 0; i < st.voices.size(); ++i) {
@@ -427,7 +462,7 @@ void EnginePlayer::render(float* out, int frames) {
         double s = st.peq.tick(sum, smooth_);
         s = st.load_peq.tick(s, smooth_);
         s = st.lp.tick(s, smooth_);
-        s *= st.gain * shift_g;
+        s *= st.gain * group_post;
         if (std::isfinite(s)) {
           dst[2 * f] += float(s * st.left);
           dst[2 * f + 1] += float(s * st.right);
@@ -442,24 +477,19 @@ void EnginePlayer::render(float* out, int frames) {
           ch[0] = focus_peq_l_.tick(ch[0], smooth_);
           ch[1] = focus_peq_r_.tick(ch[1], smooth_);
         }
-        if (run_dist) {
-          for (int c = 0; c < 2; ++c) {
-            const double wet = std::tanh(ch[c] * d_drive) * d_norm;
-            ch[c] = (ch[c] + (wet - ch[c]) * cur_dist_level_) * cur_dist_comp_;
-          }
-        }
         if (run_trash) {
-          for (int c = 0; c < 2; ++c) {
-            trash_lp1_[c] += (ch[c] - trash_lp1_[c]) * a1;
-            trash_lp2_[c] += (ch[c] - trash_lp2_[c]) * a2;
-            const double lo = trash_lp1_[c];
-            const double mid = trash_lp2_[c] - trash_lp1_[c];
-            const double hi = ch[c] - trash_lp2_[c];
-            ch[c] = (shape_band(lo, sound_.trash_dsp.bands[0]) + shape_band(mid, sound_.trash_dsp.bands[1]) +
-                     shape_band(hi, sound_.trash_dsp.bands[2])) *
-                    sound_.trash_dsp.volume_compensate;
+          for (size_t c = 0; c < 2; ++c) {
+            const double x = ch[c];
+            const double lo = trash_c1_on_ ? trash_lp1_[c].tick(x) : x;
+            double mid = trash_c1_on_ ? trash_hp1_[c].tick(x) : 0.0;
+            if (trash_c1_on_ && trash_c2_on_) mid = trash_lp2_[c].tick(mid);
+            const double hi = trash_c2_on_ ? trash_hp2_[c].tick(x) : 0.0;
+            ch[c] = shape_band(lo, 0) + (trash_c1_on_ ? shape_band(mid, 1) : 0.0) +
+                    (trash_c2_on_ ? shape_band(hi, 2) : 0.0);
           }
         }
+        ch[0] *= post_gain;
+        ch[1] *= post_gain;
         if (std::isfinite(ch[0])) out_chunk[2 * f] += float(ch[0]);
         if (std::isfinite(ch[1])) out_chunk[2 * f + 1] += float(ch[1]);
       }

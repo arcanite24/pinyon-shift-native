@@ -46,7 +46,8 @@ class EnginePlayer {
   // Triggers the Expander envelope on group `group` (or on all Exhaust groups
   // when `group < 0`), called when an exhaust burble or backfire pops.
   void trigger_expander(int group = -1);
-  // Triggers per-car ShiftVolumeScalar momentary volume boost on upshift/downshift.
+  // Starts the ShiftVolumeScalar envelope (upshift or downshift): a factor
+  // on the focus Trash bands' output gain in dB that falls back to 1 (Q322).
   void trigger_shift_boost(bool upshift);
   // Advances Expander & shift-boost timers by `dt` seconds (also advanced
   // automatically by render()).
@@ -71,7 +72,21 @@ class EnginePlayer {
   double load_peq_gain(size_t group) const;
   double focus_peq_gain() const { return cur_focus_peq_gain_; }
   double distortion_level() const { return cur_dist_level_; }
-  double shift_boost_gain() const { return std::clamp(1.0 + shift_boost_cur_, 0.2, 3.0); }
+  double shift_factor() const { return shift_factor_; }
+  // The DSPScalar s (DSPMaxScalar x the car descriptor's value, Q322).
+  double dsp_scalar() const;
+  // The focus engine group's volume after the Trash DSP (1 while it is off).
+  double trash_group_gain() const { return cur_trash_group_gain_; }
+  // Measured against the original (Q322): the car descriptor's scalar, and the
+  // group volume per unit of VolumeCompensate (0.175 x the audio manager's
+  // global level), both relative to the group volume with Trash off.
+  static constexpr double kDescriptorDspScalar = 0.9;
+  static constexpr double kTrashGroupScale = 0.24;
+  // The focus car's level into and out of its DSP chain, against the
+  // original's captures (Q322): its voices reach the chain with the snapshot
+  // and SFX volumes already on them, so the chain sees a quieter signal.
+  static constexpr double kFocusPreScale = 0.0794;  // -22 dB
+  static constexpr double kFocusPostScale = 2.82;   // +9 dB
   bool intake_chuff_active() const { return chuff_active_; }
 
  private:
@@ -173,19 +188,38 @@ class EnginePlayer {
   int thr_hist_count_ = 0;
   double dsp_time_s_ = 0.0;
 
-  // Per-car ShiftVolumeScalar boost envelope state.
-  double shift_boost_cur_ = 0.0;
-  double shift_boost_peak_ = 0.0;
-  double shift_boost_elapsed_s_ = 0.0;
-  double shift_boost_dur_s_ = 0.0;
+  // ShiftVolumeScalar envelope: the factor goes linearly from its start back to 1.
+  double shift_factor_ = 1.0;
+  double shift_start_ = 1.0;
+  double shift_elapsed_s_ = 0.0;
+  double shift_dur_s_ = 0.0;
 
   // Focus _ET.xml DSP state (FocusPEQ, Distortion, 3-band TrashDSP).
   Biquad focus_peq_l_, focus_peq_r_;
   double cur_focus_peq_gain_ = 1.0;
   double cur_dist_level_ = 0.0;
-  double cur_dist_comp_ = 1.0;
-  double trash_lp1_[2]{0.0, 0.0};
-  double trash_lp2_[2]{0.0, 0.0};
+  // Trash: the bands' values for this update, and per channel the states of the
+  // first-order sections LP(c1), HP(c1) then LP(c2), and HP(c2).
+  struct TrashBandNow {
+    int type = 0;
+    double in = 1, drive = 1, mix = 0, out_db = 0;
+  };
+  std::array<TrashBandNow, 3> trash_now_{};
+  double cur_trash_volcomp_ = 1.0;
+  double cur_trash_group_gain_ = 1.0;
+  struct OnePole {
+    double b0 = 1, b1 = 0, a1 = 0, x1 = 0, y1 = 0;
+    double tick(double x) {
+      const double y = b0 * x + b1 * x1 - a1 * y1;
+      x1 = x;
+      y1 = std::isfinite(y) ? y : 0.0;
+      if (std::fabs(y1) < 1e-20) y1 = 0.0;
+      return y1;
+    }
+  };
+  std::array<OnePole, 2> trash_lp1_{}, trash_hp1_{}, trash_lp2_{}, trash_hp2_{};
+  bool trash_c1_on_ = true, trash_c2_on_ = true;
+  double cur_master_ = 1.0;
 
   // Optional pinned owner (e.g. BakedSound) released on main thread after audio-thread retirement.
   std::shared_ptr<const void> owner_;

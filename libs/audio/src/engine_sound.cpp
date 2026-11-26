@@ -193,10 +193,10 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
       }
     }
     if (src) {
+      // A factor (1 = no change) on the Trash bands' output gain in dB (Q322).
       auto norm_pct = [](double raw) {
-        if (!std::isfinite(raw)) return 0.0;
-        const double scaled = std::fabs(raw) > 2.0 ? (raw * 0.01) : raw;
-        return std::clamp(scaled, -0.8, 2.0);
+        if (!std::isfinite(raw)) return 1.0;
+        return std::clamp(raw, 0.0, 10.0);
       };
       auto norm_time_s = [](double raw) {
         if (!std::isfinite(raw) || raw <= 0.0) return 0.0;
@@ -204,11 +204,11 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
         return std::clamp(sec, 0.0, 3.0);
       };
       out.shift_volume_scalar.boost_up_pct =
-          norm_pct(first_attr_number(*src, {"ShiftVolBoostUpPct", "BoostUpPct", "UpPct"}, 0.0));
+          norm_pct(first_attr_number(*src, {"ShiftVolBoostUpPct", "BoostUpPct", "UpPct"}, 1.0));
       out.shift_volume_scalar.boost_up_time_s =
           norm_time_s(first_attr_number(*src, {"ShiftVolBoostUpTime", "BoostUpTime", "UpTime"}, 0.0));
       out.shift_volume_scalar.boost_down_pct =
-          norm_pct(first_attr_number(*src, {"ShiftVolBoostDownPct", "BoostDownPct", "DownPct"}, 0.0));
+          norm_pct(first_attr_number(*src, {"ShiftVolBoostDownPct", "BoostDownPct", "DownPct"}, 1.0));
       out.shift_volume_scalar.boost_down_time_s =
           norm_time_s(first_attr_number(*src, {"ShiftVolBoostDownTime", "BoostDownTime", "DownTime"}, 0.0));
       out.shift_volume_scalar.present =
@@ -260,17 +260,19 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
   if (const XmlNode* trash = find_focus_dsp("TrashDSP", out.trash_dsp_group)) {
     const bool active = !trash->has("Active") || trash->number("Active", 0) >= 1.0;
     if (active) {
-      out.trash_dsp.cutoff1_hz = std::clamp(trash->number("Cutoff1", 300.0), 40.0, 4000.0);
+      // The plug-in's own parameter ranges (Q321): cutoffs 0..19000 Hz kept
+      // at least 10 Hz apart, VolumeCompensate 0..1 (as the game clamps it).
+      out.trash_dsp.use_curves = trash->number("UseCurves", 0) >= 1.0;
+      out.trash_dsp.cutoff1_hz = std::clamp(trash->number("Cutoff1", 300.0), 0.0, 19000.0);
       out.trash_dsp.cutoff2_hz =
-          std::clamp(trash->number("Cutoff2", 2500.0), out.trash_dsp.cutoff1_hz + 100.0, 14000.0);
-      out.trash_dsp.volume_compensate = std::clamp(trash->number("VolumeCompensate", 1.0), 0.05, 3.0);
+          std::clamp(trash->number("Cutoff2", 2500.0), std::min(out.trash_dsp.cutoff1_hz + 10.0, 19000.0), 19000.0);
+      out.trash_dsp.volume_compensate = std::clamp(trash->number("VolumeCompensate", 1.0), 0.0, 1.0);
       // The disc names the bands Band1, Band2 and Band3 (685 tunings each).
       static constexpr const char* kBandNames[3][2] = {
           {"Band1", "Low"},
           {"Band2", "Mid"},
           {"Band3", "High"},
       };
-      bool any_band = false;
       for (int bi = 0; bi < 3; ++bi) {
         const XmlNode* bn = nullptr;
         for (const char* nm : kBandNames[bi]) {
@@ -284,15 +286,35 @@ bool read_engine_tuning(const XmlNode& engine, EngineSound& out, std::vector<Har
         // bands' outputgain values are 0, others run -3..+3) and mix is a
         // percentage (80 on 1,739 bands). Read as linear factors, a 0 dB
         // band multiplies by zero and silences the focus car's exhaust.
-        const auto db = [](double v) { return std::pow(10.0, std::clamp(v, -40.0, 24.0) / 20.0); };
-        tb.input_gain = db(first_attr_number(*bn, {"inputgain", "InputGain"}, 0.0));
-        tb.overdrive = std::clamp(first_attr_number(*bn, {"overdrive", "Overdrive"}, 0.0), 0.0, 1.0);
+        // Ranges: inputgain -30..20 dB, overdrive 0..10, mix 0..100 %,
+        // outputgain -40..10 dB, effecttype 0..2.
+        tb.effect_type = std::clamp(int(std::lround(first_attr_number(*bn, {"effecttype", "EffectType"}, 0.0))), 0, 2);
+        tb.input_gain_db = std::clamp(first_attr_number(*bn, {"inputgain", "InputGain"}, 0.0), -30.0, 20.0);
+        tb.output_gain_db = std::clamp(first_attr_number(*bn, {"outputgain", "OutputGain"}, 0.0), -40.0, 10.0);
+        tb.input_gain = std::pow(10.0, tb.input_gain_db / 20.0);
+        tb.output_gain = std::pow(10.0, tb.output_gain_db / 20.0);
+        tb.overdrive = std::clamp(first_attr_number(*bn, {"overdrive", "Overdrive"}, 0.0), 0.0, 10.0);
         tb.mix = std::clamp(first_attr_number(*bn, {"mix", "Mix"}, 0.0) / 100.0, 0.0, 1.0);
-        tb.output_gain = db(first_attr_number(*bn, {"outputgain", "OutputGain"}, 0.0));
-        if (tb.mix > 1e-4 && tb.overdrive > 1e-4) any_band = true;
+        tb.input_gain_curve = read_param(bn->child("inputgain"));
+        tb.overdrive_curve = read_param(bn->child("overdrive"));
+        tb.mix_curve = read_param(bn->child("mix"));
+        tb.output_gain_curve = read_param(bn->child("outputgain"));
       }
-      out.trash_dsp.active = any_band;
+      // The game runs Trash whenever it is Active, whatever the bands hold: it
+      // also sets the focus engine's group volume (VolumeCompensate).
+      out.trash_dsp.active = true;
     }
+  }
+  if (const XmlNode* ds = engine.child("DSPScalar")) {
+    auto& d = out.dsp_scalar;
+    d.present = true;
+    d.peq_gain_max = ds->number("PEQGainMax", 0);
+    d.peq_freq_max = ds->number("PEQFreqMax", 0);
+    d.peq_bandwidth_max = ds->number("PEQBandwidthMax", 0);
+    d.trash_od_max = {ds->number("TrashBand1ODMax", 0), ds->number("TrashBand2ODMax", 0),
+                      ds->number("TrashBand3ODMax", 0)};
+    d.trash_volcomp_min = ds->number("TrashVolCompMin", 0);
+    d.dsp_max_scalar = ds->number("DSPMaxScalar", 0);
   }
   const int in_lv = std::clamp(levels.intake, 0, 3);
   const int ex_lv = std::clamp(levels.exhaust, 0, 3);
