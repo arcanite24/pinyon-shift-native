@@ -672,11 +672,21 @@ interims).
   and the info panel are guesses (Q130). The info panel is hidden because
   every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
   is a text tile after the makes.
-- **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
-  (Q129: the rooms' tracks cannot be drawn under the menu yet). The
-  workshop, the paint shop and the Autoshow's colour select aim with the
-  disc's camera presets (`UICarTargetCameraPresets.xml`); the Autoshow's
-  standard view and the garage keep the engine's turntable (Q129).
+- **Rooms.** The Autoshow, the workshop and the paint shop draw their own
+  tracks (`uiautoshow`, `uiworkshop`, `uipaintshop`; `hub_room.h`) in
+  Colorado's place while their screens are open, the car at the room's
+  origin on its floor; leaving restores Colorado (Q129). The garage and
+  Barn Finds keep the studio stage. The rooms' light is an interim (Q222):
+  their `H_INT_*` lightmaps scale the surface under a white hemisphere,
+  with no sun, fog or real-time sky (the room's own dome draws), and the
+  car keeps the engine's lighting. The Autoshow's crowd and DJ are not
+  drawn.
+- **Room cameras.** The room lists play `HomeSpaceCams.xml` (12 looping
+  shots); the workshop's parts play `WorkshopCams.xml`'s
+  `Upgrade_Part_*` sequences (which part plays which is Q221); the paint
+  editor's regions and the Autoshow's colour select use
+  `UICarTargetCameraPresets.xml`, with a 0.75 s smoothstep between
+  presets. The presets' angle limits and zoom are not applied (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
   VIDEO opens the engine's DISPLAY page (Q135).
