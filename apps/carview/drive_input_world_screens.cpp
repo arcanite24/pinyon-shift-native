@@ -427,7 +427,9 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
               // B, X and Y do nothing; A elsewhere sets and clears a route
               // with the map left open (the original's workshop map,
               // f01281/f01290_first30a_orig.png); A on the Horizon Heats
-              // routes there and closes it (interim, Q275).
+              // routes there and lets go of the lock (sub_828DC8A0 on a
+              // route to a career event, Q275): the map stays open and B
+              // then leaves it.
               if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
                 const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
                 const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
@@ -460,11 +462,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                                                                   "IDS_HudMsg_HorizonHeats",
                                                                   at.x, at.z));
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                    close_map();
+                    app.campaign.ftc_release_map_lock();
+                    map_dirty = true;
                     return true;
                   } else if (heats) {
                     map_route_to_selected();
-                    close_map();
+                    app.campaign.ftc_release_map_lock();
+                    map_dirty = true;
                     return true;
                   }
                   // Not the heats: the map's own A (route / clear route).

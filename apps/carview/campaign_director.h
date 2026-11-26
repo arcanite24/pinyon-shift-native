@@ -70,6 +70,7 @@ class CampaignDirector {
   static constexpr double kTimedAutosaveInterval = 30.0;
   bool timed_autosave_allowed(bool option_on) const { return option_on && !ftc_.active(); }
   const race::FirstTimeCareer& ftc() const { return ftc_; }
+  void ftc_release_map_lock() { ftc_.release_map_lock(); }
   // The career catalogue the first-time career takes its event sign-up
   // spheres (the heats final, the showcase) and Race Central from.
   void set_career_catalog(const race::CareerCatalog* catalog) { catalog_ = catalog; }
