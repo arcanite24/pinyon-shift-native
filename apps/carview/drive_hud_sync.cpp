@@ -720,6 +720,29 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             app.rally_service_repaired = false;
           }
         }
+        if (app.demo_rally_final && !app.rally_session.active()) {
+          app.demo_rally_final = false;
+          if (!app.rally_catalog.loaded) {
+            const auto db_ptr = app.parts_db.valid() ? app.parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+            if (!*app.car_names_loaded) carview::car_name("");
+            std::string rerr;
+            race::load_rally_catalog(app.state_root, db_ptr.get(), app.car_names->strings(), app.rally_catalog, &rerr);
+          }
+          if (app.rally_catalog.loaded && !app.rally_catalog.championships.empty()) {
+            const auto& ch = app.rally_catalog.championships.front();
+            if (app.rally_session.start_championship(app.rally_catalog, ch.event_id, int(app.race_options.difficulty))) {
+              for (size_t i = 0; i < ch.stages.size(); ++i) {
+                app.rally_session.record_stage_finish(app.rally_catalog, 120.0 + 4.0 * double(i));
+                if (i + 1 < ch.stages.size()) app.rally_session.advance_from_service_area();
+              }
+              const auto rew = app.rally_session.finalize(app.rally_catalog, app.saved, 0, 0);
+              app.rally_results_state =
+                  carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
+              app.rally_results_state.champion_unlocked = true;
+              app.rally_results_open = true;
+            }
+          }
+        }
         if (app.demo_rally_hub) {
           app.demo_rally_hub = false;
           if (!app.rally_catalog.loaded) {

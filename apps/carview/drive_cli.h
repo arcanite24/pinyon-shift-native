@@ -93,6 +93,9 @@ struct DriveConfig {
   // The Rally hub at start, every championship unlocked and the heats won
   // (in memory; the save given with --save takes it).
   bool demo_rally_hub = false;
+  // The first championship's end at start (every stage driven, champion):
+  // the final's screens (Q212).
+  bool demo_rally_final = false;
   std::filesystem::path pause_map_png;
   double cli_map_zoom = 4.5;
   double seed_distance = 0;
