@@ -449,9 +449,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                     heats = m.kind == MapMarker::kEvent &&
                             (m.id == std::to_string(race::FirstTimeCareer::kAllComerFinal) ||
                              (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
-                  } else if (have_hp) {
-                    heats = std::hypot(map_cx - hp[0], map_cz - hp[2]) < 40.0;
                   }
+                  if (!heats && have_hp) heats = std::hypot(map_px - hp[0], map_pz - hp[2]) < 40.0;
                   if (heats && have_hp && app.gps_solver.ready()) {
                     const drive::Vec3 at = vehicle.position();
                     fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], traffic::GpsDestKind::kFestivalRace,
