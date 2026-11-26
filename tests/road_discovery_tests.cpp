@@ -311,6 +311,147 @@ void test_map_edge_clamping_internal_size_and_filters() {
   }
 }
 
+void test_map_icon_status_layers() {
+  using carview::MapIconState;
+  using carview::MapView;
+  using Role = MapView::IconRole;
+
+  // 1. Role classification across both fullscreen (icon_up_*) and minimap (icon_facing_*) symbolizers.
+  check(MapView::classify_icon_role("icon_up", "race", 0, 2) == Role::kBase, "race shadow -> kBase");
+  check(MapView::classify_icon_role("icon_up_career", "race", 1, 0) == Role::kCareerBase, "race icon_up_career -> kCareerBase");
+  check(MapView::classify_icon_role("icon_facing_career", "race", 1, 0) == Role::kCareerBase, "race icon_facing_career -> kCareerBase");
+  check(MapView::classify_icon_role("icon_up_career_colour", "race", 0, 0) == Role::kCareerColour, "race colour -> kCareerColour");
+  check(MapView::classify_icon_role("icon_up_career_finish", "race", 5, 1) == Role::kCareerFinish, "race finish -> kCareerFinish");
+  check(MapView::classify_icon_role("icon_up_career_note", "race", 6, 1) == Role::kCareerNote, "race note -> kCareerNote");
+  check(MapView::classify_icon_role("icon_up", "nemesisrace", 4, 1) == Role::kCareerBase, "nemesis fullscreen (4,1) -> kCareerBase");
+  check(MapView::classify_icon_role("icon_facing", "nemesisrace", 4, 1) == Role::kCareerBase, "nemesis minimap (4,1) -> kCareerBase");
+  check(MapView::classify_icon_role("icon_facing", "streetrace", 2, 1) == Role::kCareerBase, "streetrace minimap (2,1) -> kCareerBase");
+  check(MapView::classify_icon_role("icon_up", "gas_station", 1, 2) == Role::kBase, "gas_station -> kBase");
+
+  MapView::IconStyle s_shadow{0, 2, 45, {255, 255, 255, 255}, Role::kBase, 520, {}, 0, 0};
+  MapView::IconStyle s_base{1, 0, 45, {255, 255, 255, 255}, Role::kCareerBase, 530, {}, 0, 0};
+  MapView::IconStyle s_ring{0, 0, 45, {255, 255, 255, 255}, Role::kCareerColour, 535, {}, 0, 0};
+  MapView::IconStyle s_finish{5, 1, 45, {255, 255, 255, 255}, Role::kCareerFinish, 540, {}, 0, 0};
+  MapView::IconStyle s_note{6, 1, 45, {255, 255, 255, 255}, Role::kCareerNote, 550, {}, 0, 0};
+
+  // 2. Uncompleted eligible P2P green wristband race: base (1,0), green ring, NO trophy, NO '!', HAS NEW.
+  {
+    MapIconState st;
+    st.completed = false;
+    st.eligible = true;
+    st.wristband_level = 1;  // Green
+    const auto r_base = MapView::resolve_icon_layer(s_base, "race", st);
+    const auto r_ring = MapView::resolve_icon_layer(s_ring, "race", st);
+    const auto r_fin = MapView::resolve_icon_layer(s_finish, "race", st);
+    const auto r_note = MapView::resolve_icon_layer(s_note, "race", st);
+    check(r_base.visible && r_base.cell_x == 1 && r_base.cell_y == 0 && r_base.colour.a == 255.0f,
+          "uncompleted P2P draws opaque (1,0) base");
+    check(r_ring.visible && r_ring.cell_x == 0 && r_ring.cell_y == 0 && r_ring.colour.g > 180.0f && r_ring.colour.r < 90.0f,
+          "uncompleted Green race tints ring green");
+    check(!r_fin.visible, "uncompleted event NEVER shows trophy cup (5,1)");
+    check(!r_note.visible, "eligible event NEVER shows '!' warning badge (6,1)");
+    check(MapView::marker_shows_new_badge("race", true, false), "uncompleted new race shows NEW");
+  }
+
+  // 3. Uncompleted ineligible race: base + wristband ring + '!' (6,1), NO trophy cup (5,1).
+  {
+    MapIconState st;
+    st.completed = false;
+    st.eligible = false;
+    st.wristband_level = 2;  // Blue
+    const auto r_ring = MapView::resolve_icon_layer(s_ring, "race", st);
+    const auto r_fin = MapView::resolve_icon_layer(s_finish, "race", st);
+    const auto r_note = MapView::resolve_icon_layer(s_note, "race", st);
+    check(r_ring.visible && r_ring.colour.b > 200.0f, "uncompleted Blue race tints ring blue");
+    check(!r_fin.visible, "uncompleted ineligible race has NO trophy cup");
+    check(r_note.visible && r_note.cell_x == 6 && r_note.cell_y == 1 && r_note.colour.a == 255.0f,
+          "ineligible race draws opaque '!' warning badge (6,1)");
+  }
+
+  // 4. Completed event (1st / 2nd / 3rd): muted opaque base, opaque dark grey ring, gold/silver/bronze trophy, NO NEW.
+  for (int place : {1, 2, 3}) {
+    MapIconState st;
+    st.completed = true;
+    st.best_place = place;
+    st.eligible = true;
+    st.wristband_level = 1;
+    const auto r_sh = MapView::resolve_icon_layer(s_shadow, "race", st);
+    const auto r_base = MapView::resolve_icon_layer(s_base, "race", st);
+    const auto r_ring = MapView::resolve_icon_layer(s_ring, "race", st);
+    const auto r_fin = MapView::resolve_icon_layer(s_finish, "race", st);
+    const auto r_note = MapView::resolve_icon_layer(s_note, "race", st);
+    check(r_sh.visible && r_sh.colour.a == 255.0f, "completed shadow stays 100% opaque");
+    check(r_base.visible && r_base.colour.a == 255.0f && r_base.colour.r < 220.0f && r_base.colour.r > 180.0f,
+          "completed base stays 100% opaque with muted RGB");
+    check(r_ring.visible && r_ring.cell_x == 0 && r_ring.cell_y == 0 && r_ring.colour.a == 255.0f &&
+              r_ring.colour.r == 100.0f && r_ring.colour.g == 102.0f && r_ring.colour.b == 108.0f,
+          "completed wristband ring turns opaque dark grey");
+    check(r_fin.visible && r_fin.cell_x == 5 && r_fin.cell_y == 1 && r_fin.colour.a == 255.0f,
+          "completed event shows opaque trophy cup (5,1)");
+    if (place == 1) check(r_fin.colour.r == 255.0f && r_fin.colour.g == 255.0f && r_fin.colour.b == 255.0f, "1st -> gold");
+    if (place == 2) check(r_fin.colour.r == 215.0f && r_fin.colour.g == 222.0f && r_fin.colour.b == 232.0f, "2nd -> silver");
+    if (place == 3) check(r_fin.colour.r == 218.0f && r_fin.colour.g == 152.0f && r_fin.colour.b == 96.0f, "3rd -> bronze");
+    check(!r_note.visible, "completed eligible event has NO '!' badge");
+    st.eligible = false;
+    check(!MapView::resolve_icon_layer(s_note, "race", st).visible,
+          "completed event suppresses '!' badge even when current car is ineligible");
+    check(!MapView::marker_shows_new_badge("race", true, true), "completed event NEVER shows NEW");
+  }
+
+  // 5. Circuit (2,0), Finale (7,1), and Gold wristband metallic ring (7,0) / nemesis star (4,5).
+  {
+    MapIconState circ;
+    circ.is_circuit = true;
+    circ.wristband_level = 6;  // Gold
+    const auto r_cb = MapView::resolve_icon_layer(s_base, "race", circ);
+    const auto r_cr = MapView::resolve_icon_layer(s_ring, "race", circ);
+    check(r_cb.cell_x == 2 && r_cb.cell_y == 0, "circuit race selects oval+flag cell (2,0)");
+    check(r_cr.cell_x == 7 && r_cr.cell_y == 0 && r_cr.colour.r == 255.0f && r_cr.colour.g == 255.0f && r_cr.colour.b == 255.0f,
+          "Gold wristband race selects gold metallic ring (7,0) untinted");
+
+    MapIconState fin;
+    fin.is_circuit = true;
+    fin.is_finale = true;
+    fin.wristband_level = 6;
+    const auto r_fb = MapView::resolve_icon_layer(s_base, "race", fin);
+    check(r_fb.cell_x == 7 && r_fb.cell_y == 1, "Horizon Finale selects crown cell (7,1)");
+
+    MapView::IconStyle s_nem_ring{5, 0, 75, {255, 255, 255, 255}, Role::kCareerColour, 535, {}, 0, 0};
+    MapIconState nem_gold;
+    nem_gold.wristband_level = 6;
+    const auto r_nr = MapView::resolve_icon_layer(s_nem_ring, "nemesisrace", nem_gold);
+    check(r_nr.cell_x == 4 && r_nr.cell_y == 5 && r_nr.colour.r == 255.0f,
+          "Gold wristband nemesis selects gold metallic star (4,5) untinted");
+    nem_gold.completed = true;
+    const auto r_nr_done = MapView::resolve_icon_layer(s_nem_ring, "nemesisrace", nem_gold);
+    check(r_nr_done.cell_x == 5 && r_nr_done.cell_y == 0 && r_nr_done.colour.r == 100.0f && r_nr_done.colour.a == 255.0f,
+          "completed Gold nemesis reverts to opaque dark grey star (5,0)");
+  }
+
+  // 6. Street hub partial vs 100% completion, and non-career NEW suppression + full opacity on completed speed traps.
+  {
+    MapView::IconStyle s_st_fin{5, 1, 45, {255, 255, 255, 255}, Role::kCareerFinish, 540, {}, 0, 0};
+    MapIconState partial;
+    partial.completed = false;
+    check(!MapView::resolve_icon_layer(s_st_fin, "streetrace", partial).visible,
+          "partially completed street hub has NO trophy cup");
+    MapIconState full;
+    full.completed = true;
+    full.best_place = 1;
+    check(MapView::resolve_icon_layer(s_st_fin, "streetrace", full).visible,
+          "100% completed street hub HAS trophy cup");
+
+    MapView::IconStyle s_trap{0, 3, 45, {255, 255, 255, 255}, Role::kBase, 350, {}, 0, 0};
+    MapIconState trap_done;
+    trap_done.completed = true;
+    const auto r_trap = MapView::resolve_icon_layer(s_trap, "speed_camera_completed", trap_done);
+    check(r_trap.visible && r_trap.colour.a == 255.0f, "completed speed trap stays 100% opaque");
+    check(!MapView::marker_shows_new_badge("speed_camera_discovered", true, false), "speed trap never shows NEW");
+    check(!MapView::marker_shows_new_badge("average_speed_camera_discovered", true, false), "speed zone never shows NEW");
+    check(!MapView::marker_shows_new_badge("gas_station", true, false), "outpost never shows NEW");
+  }
+}
+
 void test_colorado_corpus_optional() {
   const char* gr = std::getenv("SHIFT_GAME_ROOT");
   if (!gr || !*gr) return;
@@ -552,6 +693,193 @@ void test_colorado_corpus_optional() {
     std::printf("PT-09 cached 4K pause_map pan average: %.2f ms/frame\n", avg_ms);
     check(avg_ms < 40.0, "PT-09: cached 4K pause_map panning stays well under 40 ms/frame even unoptimized");
   }
+
+  // Bug 4: 1:1 map event status icons across BOTH pause_map() and minimap() on real retail XML + MapIconSheet.
+  {
+    using Role = carview::MapView::IconRole;
+    const auto* full_race = mv.fullscreen_icon_styles("race");
+    const auto* mini_race = mv.minimap_icon_styles("race");
+    check(full_race && full_race->size() == 5, "MapProfileFullscreen race has 5 classified symbolizers");
+    check(mini_race && mini_race->size() == 4, "MapProfileMinimap race has 4 classified symbolizers");
+    if (full_race && full_race->size() == 5) {
+      check((*full_race)[0].role == Role::kBase && (*full_race)[1].role == Role::kCareerBase &&
+                (*full_race)[2].role == Role::kCareerColour && (*full_race)[3].role == Role::kCareerFinish &&
+                (*full_race)[4].role == Role::kCareerNote,
+            "MapProfileFullscreen race symbolizers sorted: shadow -> base -> ring -> trophy -> note");
+    }
+    if (mini_race && mini_race->size() == 4) {
+      check((*mini_race)[0].role == Role::kCareerBase && (*mini_race)[1].role == Role::kCareerColour &&
+                (*mini_race)[2].role == Role::kCareerFinish && (*mini_race)[3].role == Role::kCareerNote,
+            "MapProfileMinimap race symbolizers sorted: base -> ring -> trophy -> note");
+    }
+
+    auto diff_region = [](const carview::HudImage& a, const carview::HudImage& b, int x0, int y0, int x1, int y1) {
+      int n = 0;
+      const int w = int(a.width), h = int(a.height);
+      x0 = std::clamp(x0, 0, w - 1);
+      x1 = std::clamp(x1, 0, w - 1);
+      y0 = std::clamp(y0, 0, h - 1);
+      y1 = std::clamp(y1, 0, h - 1);
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+          const size_t o = (size_t(y) * size_t(w) + size_t(x)) * 4;
+          const int dr = std::abs(int(a.rgba[o]) - int(b.rgba[o]));
+          const int dg = std::abs(int(a.rgba[o + 1]) - int(b.rgba[o + 1]));
+          const int db = std::abs(int(a.rgba[o + 2]) - int(b.rgba[o + 2]));
+          if (dr + dg + db > 45) ++n;
+        }
+      return n;
+    };
+    auto count_gold_diff = [](const carview::HudImage& base, const carview::HudImage& with_badge, int x0, int y0, int x1,
+                              int y1) {
+      int n = 0;
+      const int w = int(base.width), h = int(base.height);
+      x0 = std::clamp(x0, 0, w - 1);
+      x1 = std::clamp(x1, 0, w - 1);
+      y0 = std::clamp(y0, 0, h - 1);
+      y1 = std::clamp(y1, 0, h - 1);
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+          const size_t o = (size_t(y) * size_t(w) + size_t(x)) * 4;
+          const int r = with_badge.rgba[o], g = with_badge.rgba[o + 1], b = with_badge.rgba[o + 2];
+          const int dr = r - int(base.rgba[o]);
+          const int dg = g - int(base.rgba[o + 1]);
+          if (r > 170 && g > 130 && b < 110 && (dr > 30 || dg > 30)) ++n;
+        }
+      return n;
+    };
+    auto count_pink = [](const carview::HudImage& img, int x0, int y0, int x1, int y1) {
+      int n = 0;
+      const int w = int(img.width), h = int(img.height);
+      x0 = std::clamp(x0, 0, w - 1);
+      x1 = std::clamp(x1, 0, w - 1);
+      y0 = std::clamp(y0, 0, h - 1);
+      y1 = std::clamp(y1, 0, h - 1);
+      for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+          const size_t o = (size_t(y) * size_t(w) + size_t(x)) * 4;
+          const int r = img.rgba[o], g = img.rgba[o + 1], b = img.rgba[o + 2];
+          if (r > 180 && g < 80 && b > 70) ++n;
+        }
+      return n;
+    };
+
+    // Pause map pixel verification (marker centered at screen (320, 180); player placed far away).
+    const double mx = 0.0, mz = 0.0;
+    auto make_pause_sc = [&](const carview::MapMarker* mk) {
+      carview::MapScene s;
+      s.x = mx + 5000.0;
+      s.z = mz + 5000.0;
+      if (mk) s.markers.push_back(*mk);
+      return s;
+    };
+    const auto pause_empty = mv.pause_map(make_pause_sc(nullptr), 640, 360, 6.0, mx, mz);
+
+    carview::MapMarker ev_uncomp;
+    ev_uncomp.kind = carview::MapMarker::kEvent;
+    ev_uncomp.icon_tag = "race";
+    ev_uncomp.id = "TEST_RACE";
+    ev_uncomp.x = mx;
+    ev_uncomp.z = mz;
+    ev_uncomp.is_new = false;
+    ev_uncomp.completed = false;
+    ev_uncomp.eligible = true;
+    ev_uncomp.wristband_level = 1;  // Green
+
+    carview::MapMarker ev_inelig = ev_uncomp;
+    ev_inelig.eligible = false;
+
+    carview::MapMarker ev_comp1 = ev_uncomp;
+    ev_comp1.completed = true;
+    ev_comp1.best_place = 1;
+    ev_comp1.is_new = true;  // Must be suppressed because completed == true!
+
+    carview::MapMarker ev_new = ev_uncomp;
+    ev_new.is_new = true;
+
+    carview::MapMarker ev_circuit = ev_uncomp;
+    ev_circuit.is_circuit = true;
+
+    carview::MapMarker ev_finale = ev_uncomp;
+    ev_finale.is_finale = true;
+    ev_finale.wristband_level = 6;
+
+    const auto p_uncomp = mv.pause_map(make_pause_sc(&ev_uncomp), 640, 360, 6.0, mx, mz);
+    const auto p_inelig = mv.pause_map(make_pause_sc(&ev_inelig), 640, 360, 6.0, mx, mz);
+    const auto p_comp1 = mv.pause_map(make_pause_sc(&ev_comp1), 640, 360, 6.0, mx, mz);
+    const auto p_new = mv.pause_map(make_pause_sc(&ev_new), 640, 360, 6.0, mx, mz);
+    const auto p_circ = mv.pause_map(make_pause_sc(&ev_circuit), 640, 360, 6.0, mx, mz);
+    const auto p_fin = mv.pause_map(make_pause_sc(&ev_finale), 640, 360, 6.0, mx, mz);
+
+    check(count_gold_diff(pause_empty, p_uncomp, 275, 135, 308, 175) == 0,
+          "pause_map: uncompleted eligible event draws ZERO gold trophy cup pixels");
+    check(count_gold_diff(pause_empty, p_comp1, 275, 135, 308, 175) > 25,
+          "pause_map: completed 1st-place event draws gold trophy cup pixels at top-left");
+    check(count_gold_diff(pause_empty, p_uncomp, 336, 148, 365, 190) == 0,
+          "pause_map: eligible event draws ZERO yellow '!' warning pixels");
+    check(count_gold_diff(p_uncomp, p_inelig, 336, 148, 365, 190) > 20,
+          "pause_map: ineligible event draws yellow '!' warning pixels at right");
+    check(count_pink(p_new, 292, 122, 348, 158) > 35,
+          "pause_map: uncompleted is_new event draws pink NEW badge");
+    check(count_pink(p_comp1, 292, 122, 348, 158) == 0,
+          "pause_map: completed event suppresses pink NEW badge even when is_new=true");
+    check(diff_region(p_uncomp, p_circ, 304, 164, 336, 196) > 30,
+          "pause_map: circuit race icon (2,0) differs from P2P (1,0)");
+    check(diff_region(p_uncomp, p_fin, 304, 164, 336, 196) > 30,
+          "pause_map: Horizon Finale crown (7,1) differs from P2P (1,0)");
+
+    carview::MapMarker hub_partial;
+    hub_partial.kind = carview::MapMarker::kStreetHub;
+    hub_partial.icon_tag = "streetrace";
+    hub_partial.id = "HUB_1";
+    hub_partial.x = mx;
+    hub_partial.z = mz;
+    hub_partial.completed = false;
+    hub_partial.is_new = false;
+    carview::MapMarker hub_done = hub_partial;
+    hub_done.completed = true;
+    hub_done.best_place = 1;
+    const auto p_hub_part = mv.pause_map(make_pause_sc(&hub_partial), 640, 360, 6.0, mx, mz);
+    const auto p_hub_done = mv.pause_map(make_pause_sc(&hub_done), 640, 360, 6.0, mx, mz);
+    check(count_gold_diff(pause_empty, p_hub_part, 275, 135, 308, 175) == 0,
+          "pause_map: partially completed street hub draws ZERO gold trophy pixels");
+    check(count_gold_diff(p_hub_part, p_hub_done, 275, 135, 308, 175) > 25,
+          "pause_map: 100% completed street hub draws gold trophy pixels");
+
+    // Minimap pixel verification: marker 150 m directly ahead of the player (centered horizontally at x=128).
+    auto make_mini_sc = [&](const carview::MapMarker* mk) {
+      carview::MapScene s;
+      s.x = mx;
+      s.z = mz - 150.0;
+      s.heading = 0.0;
+      if (mk) s.markers.push_back(*mk);
+      return s;
+    };
+    const auto m_empty = mv.minimap(make_mini_sc(nullptr), 256);
+    const auto m_uncomp = mv.minimap(make_mini_sc(&ev_uncomp), 256);
+    const auto m_inelig = mv.minimap(make_mini_sc(&ev_inelig), 256);
+    const auto m_comp1 = mv.minimap(make_mini_sc(&ev_comp1), 256);
+    const auto m_new = mv.minimap(make_mini_sc(&ev_new), 256);
+    const auto m_hub_part = mv.minimap(make_mini_sc(&hub_partial), 256);
+    const auto m_hub_done = mv.minimap(make_mini_sc(&hub_done), 256);
+
+    check(count_gold_diff(m_empty, m_uncomp, 70, 50, 128, 130) == 0,
+          "minimap: uncompleted eligible event draws ZERO gold trophy cup pixels");
+    check(count_gold_diff(m_empty, m_comp1, 70, 50, 128, 130) > 15,
+          "minimap: completed 1st-place event draws gold trophy cup pixels");
+    check(count_gold_diff(m_empty, m_uncomp, 132, 55, 185, 130) == 0,
+          "minimap: eligible event draws ZERO yellow '!' warning pixels");
+    check(count_gold_diff(m_uncomp, m_inelig, 132, 55, 185, 130) > 12,
+          "minimap: ineligible event draws yellow '!' warning pixels");
+    check(count_pink(m_new, 90, 35, 166, 105) > 20,
+          "minimap: uncompleted is_new event draws pink NEW badge");
+    check(count_pink(m_comp1, 90, 35, 166, 105) == 0,
+          "minimap: completed event suppresses pink NEW badge");
+    check(count_gold_diff(m_empty, m_hub_part, 70, 50, 128, 130) == 0,
+          "minimap: partially completed street hub draws ZERO gold trophy pixels");
+    check(count_gold_diff(m_hub_part, m_hub_done, 70, 50, 128, 130) > 15,
+          "minimap: 100% completed street hub draws gold trophy pixels");
+  }
 }
 
 }  // namespace
@@ -560,6 +888,7 @@ int main() {
   test_synthetic_discovery_and_save();
   test_unvisited_distance_threshold_75m();
   test_map_edge_clamping_internal_size_and_filters();
+  test_map_icon_status_layers();
   test_colorado_corpus_optional();
   if (g_failed == 0) std::printf("road_discovery_tests: PASS\n");
   return g_failed ? 1 : 0;

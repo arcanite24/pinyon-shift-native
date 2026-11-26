@@ -5908,6 +5908,20 @@ Still needed: the minimap camera (Q89; no `UI/Map` tunable names it, the
 map's are `Map_Distance_Min/Max`, `Zoom_Default` and the like), and the
 edge clamp (`UI/Map/IconClampBufferX/Y`, default 1.0, range 0 to 1).
 
+**Status layers settled (fix-map-icons).** `read_profile` previously pushed
+every non-`_new` `<Symbolizer>` unconditionally into each icon group, so both
+`pause_map()` and `minimap()` drew `*_career_finish` (gold trophy cup `(5,1)`)
+and `*_career_note` (yellow `!` warning badge `(6,1)`) on every uncompleted
+eligible event. Symbolizers are now classified by role (`kBase`, `kCareerBase`,
+`kCareerColour`, `kCareerFinish`, `kCareerNote`), sorted by `sort_order`, and
+resolved identically in `pause_map()` and `minimap()`: trophy cup only when
+completed (1st/2nd/3rd gold/silver/bronze; street hubs only when all hub races
+are completed), `!` only on uncompleted events when `!eligible` against the
+player's current car, wristband-tier ring colours (or gold metallic `(7,0)`/`(4,5)`
+for Gold tier; opaque dark grey when completed), circuit `(2,0)` and finale `(7,1)`
+base cells, opaque completed icons (no alpha dimming), and `NEW` suppressed on
+completed markers and non-career icons.
+
 ## Q284 (first30b, not blocking): the beats this pass did not capture
 
 Two kinds of gap are left after the first30b pass.
