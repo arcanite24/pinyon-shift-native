@@ -73,6 +73,10 @@ struct Barn {
   // BarnFindLocationHint<n> (enabled, no delay) and BarnFindSpotted<n>
   // (disabled, 600-1200 s); n is the barn's own, not its activity number.
   std::vector<RadioRequest> radio_requests;
+  // The rumour's reveal (the activity's MapAnimation and MapVO substitute
+  // states): the map profile's camera animation (barn_find_region<k>_unlock)
+  // and the VO line Dak plays as the map opens (BarnFind<n>AppearsOnMap).
+  std::string map_animation, map_vo;
 };
 
 struct Collectibles {

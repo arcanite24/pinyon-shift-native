@@ -654,6 +654,10 @@ void DriveSession::open_map() {
 
 void DriveSession::close_map() {
           map_open = false;
+          // A rumour reveal's forced Barn Finds filter ends with the map.
+          map_reveal_anim = nullptr;
+          map_reveal_locked = false;
+          if (map_reveal_restore_filter) map_filter = map_reveal_saved_filter, map_reveal_restore_filter = false;
           map_overlay.active = false;
           host.renderer.set_overlay({}, 0, 0, 0, 0, 2);
           minimap_at = -1;

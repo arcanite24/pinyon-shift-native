@@ -556,6 +556,16 @@ struct DriveSession {
   double map_anim_hx = 0.0, map_anim_hz = 0.0, map_anim_px = 0.0, map_anim_pz = 0.0;
   double map_anim_hover_since = 0.0, map_anim_ghost_since = -1.0;
   double map_anim_drawn = -1.0;  // the map time last drawn
+  // A barn rumour's reveal (barnfinds.xml barnfindspawn_root): the map opens
+  // paused with Barn Finds forced on, Dak's VO plays and the camera runs the
+  // barn's map animation from the player to the rumour; the cursor is the
+  // player's again at its set_cursor trigger.
+  const mapanim::Animation* map_reveal_anim = nullptr;
+  double map_reveal_t = 0.0;
+  bool map_reveal_locked = false;
+  double map_reveal_cx = 0.0, map_reveal_cz = 0.0, map_reveal_zoom = 1.0;  // the opening camera
+  bool map_reveal_restore_filter = false;
+  MapFilterSet map_reveal_saved_filter;
   double map_px = 0.0, map_pz = 0.0;
   MapDialog map_dialog = MapDialog::kNone;
   int map_dialog_marker = -1;
@@ -782,6 +792,10 @@ struct DriveSession {
   // the player's radar sound; due when the next 30 Hz animation frame is.
   void map_anim_fill(MapScene& ms);
   bool map_anim_due() const;
+  // The rumour reveal: opens the map on barn `index`'s animation; steps its
+  // camera (true while the player's input is held).
+  void map_reveal_start(size_t index);
+  bool map_reveal_step(double dt);
   bool map_screen_event(const SDL_Event& e);
   void map_cursor_world();
   bool map_travel_quote(const MapMarker& m, int64_t& cost);

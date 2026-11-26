@@ -105,6 +105,21 @@ bool parse_collectibles(std::string_view flyers_xml, std::string_view barns_xml,
       b.restore_max_m = dd->number("distanceMax") * kMile;
       b.restore_threshold_m = dd->number("threshold") * kMile;
     }
+    // The StateGroup's MapAnimation and MapVO states (the reveal's camera
+    // move and VO line).
+    if (const auto* sg = a.child("StateGroup"))
+      for (const auto& st : sg->children) {
+        if (!audio::iequals(st.name, "State")) continue;
+        for (const auto& bh : st.children) {
+          if (!audio::iequals(bh.name, "Behaviour")) continue;
+          if (audio::iequals(st.attr("id"), "MapAnimation") && audio::iequals(bh.attr("id"), "CPlayMapAnimation")) {
+            for (const auto& at : bh.children)
+              if (audio::iequals(at.attr("id"), "animation")) b.map_animation = at.attr("value");
+          } else if (audio::iequals(st.attr("id"), "MapVO") && audio::iequals(bh.attr("id"), "CTriggerVO")) {
+            b.map_vo = bh.attr("trigger");
+          }
+        }
+      }
     if (const auto* dj = a.child("RadioDJRequests")) {
       for (const auto& r : audio::parse_radio_dj_requests(*dj))
         b.radio_requests.push_back({r.channel == audio::RadioChannel::kImmediate, r.event, r.delay_min_s, r.delay_max_s,

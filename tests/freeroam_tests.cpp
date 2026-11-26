@@ -730,6 +730,13 @@ int main() {
       }
       CHECK(doors.size() == 36);
       CHECK(disc.barns[0].trigger == "barnfind_bug_eb110bf_92" && near(disc.barns[0].at.x, 1423.378, 0.01));
+      // The rumour reveal: each barn's map camera animation and VO line.
+      const char* vo[9] = {"1215", "1040", "1277", "1105", "1386", "1154", "1301", "251", "1155"};
+      for (int i = 0; i < 9; ++i) {
+        const Barn& b = disc.barns[size_t(i)];
+        CHECK(b.map_animation == "barn_find_region" + std::to_string(i + 1) + "_unlock");
+        CHECK(b.map_vo == std::string("BarnFind") + vo[i] + "AppearsOnMap");
+      }
       // SpawnInfo (1-in-N odds over miles of odometer) and DistanceDriven 5/10/10 mi.
       const double min_p[9] = {10, 5, 5, 25, 200, 250, 100, 10, 150};
       const double max_mi[9] = {200, 100, 100, 250, 1500, 2250, 500, 200, 1000};

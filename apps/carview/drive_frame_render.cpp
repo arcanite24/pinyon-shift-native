@@ -1480,9 +1480,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 if (SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) cur_y += 1.0f;
               }
             }
+            // A barn rumour's reveal moves the camera and holds the cursor.
+            if (map_reveal_step(frame_dt)) cur_x = cur_y = zoom_axis = 0.0f;
             map_screen_step(frame_dt, std::clamp(cur_x, -1.0f, 1.0f), std::clamp(cur_y, -1.0f, 1.0f),
                             std::clamp(zoom_axis, -1.0f, 1.0f));
-            const bool map_cam_active = !map_dragging &&
+            const bool map_cam_active = !map_dragging && !map_reveal_locked &&
                                         (std::fabs(pan_x) > 1e-4 || std::fabs(pan_z) > 1e-4 || std::fabs(zoom_rate) > 1e-4 ||
                                          std::fabs(map_cam.vx()) > 1e-4 || std::fabs(map_cam.vz()) > 1e-4 ||
                                          std::fabs(map_cam.zoom() - map_cam.target_zoom()) > 1e-4);
