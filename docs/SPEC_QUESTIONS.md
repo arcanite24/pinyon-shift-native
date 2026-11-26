@@ -6536,7 +6536,7 @@ Still open:
 The engine plays `Tires/Tires/LOD1/<group>/<Roll|Skid>_<LF|RF|LR|RR>` for
 each wheel, in every group at once, with only the wheel's current group at
 full gain (the others fade out). Decoded:
-- **Feed** (sub_82BC35A0, sub_82BC4828): `SlipAngle` takes the normalised
+- **Feed** (the per-wheel tyre audio update and its level setup): `SlipAngle` takes the normalised
   slip angle's magnitude, `SlipRatio` the normalised slip ratio, signed
   against the direction of roll (positive spinning, negative locking: the
   original plays PeelOut for a reverse burnout too), `SurfaceIndex` the

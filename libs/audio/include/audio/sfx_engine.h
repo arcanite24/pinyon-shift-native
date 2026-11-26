@@ -523,8 +523,8 @@ class SfxEngine {
   };
 
  public:
-  // The parameters the game sets on its tyre and wind events (sub_82BC35A0,
-  // sub_82BC4828; Wind.fev), by name; an event takes those it has.
+  // The parameters the game sets on its tyre and wind events (its per-wheel
+  // tyre audio update; Wind.fev), by name; an event takes those it has.
   enum class EvParam : uint8_t {
     kSlipAngle = 0,
     kSlipRatio,

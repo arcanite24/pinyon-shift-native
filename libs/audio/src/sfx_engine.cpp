@@ -2590,7 +2590,7 @@ void SfxEngine::mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float t
 
 namespace {
 // The game scales its tyre events by tunables and per-car values it reads at
-// run time (sub_82BC4828's f31); this one level stands for their product (Q331).
+// run time (in its tyre audio level setup); this one level stands for their product (Q331).
 constexpr float kTyreEventLevel = 0.83f;  // -1.6 dB: wheelspin on tarmac -0.8, on dirt -2.4
 }  // namespace
 
@@ -2917,7 +2917,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
 
       if (tyre_bus && tyre_events_loaded && !st.rally_mode) {
         // Tires.fev LOD1: the wheel's Roll and Skid events in its surface's group,
-        // fed what sub_82BC35A0 sets (Q331); the other groups' voices fade out.
+        // fed what the game's per-wheel update sets (Q331); the other groups' voices fade out.
         static constexpr int16_t kGroupIndex[kTyreGroups] = {0, 11, 15, 2, 0};
         const int grp = wh.surface_group < kTyreGroups ? int(wh.surface_group) : 1;  // Mud plays OffRoad
         std::array<float, int(EvParam::kCount)> in{};
