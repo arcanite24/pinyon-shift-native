@@ -17,6 +17,7 @@
 #include "traffic/nav.h"
 #include "traffic/population.h"
 #include "traffic/roads.h"
+#include "traffic/scripted.h"
 
 namespace {
 
@@ -719,6 +720,95 @@ void test_traffic_behaviors() {
   }
 }
 
+void test_scripted_cars() {
+  CHECK(traffic::ScriptedCars::canonical_name("FestivalCar_0_Release") == "FestivalCar_0");
+  CHECK(traffic::ScriptedCars::canonical_name("FestivalCar_0_release") == "FestivalCar_0");
+  CHECK(traffic::ScriptedCars::canonical_name("FestivalCar_4") == "FestivalCar_4");
+
+  const traffic::NavMap map = straight_road();
+  traffic::Roads roads;
+  roads.build(map);
+
+  traffic::ScriptedCars sc;
+  // 1) Spawn parked car with snap_to_ground, initially without ground, then lazily snapped on step.
+  traffic::ScriptedCars::SpawnParams sp{};
+  sp.name = "FestivalCar_0";
+  sp.car_id = 1171;
+  sp.car_media = "FER_599XX_10";
+  sp.pos = {10.0, 5.0, 100.0};  // 10 m off road centerline (like a parking lot)
+  sp.heading_rad = 0.0;
+  sp.snap_to_ground = true;
+  const uint32_t id0 = sc.spawn(sp);
+  CHECK(id0 != 0 && sc.cars().size() == 1);
+  CHECK(!sc.cars()[0].released && near(sc.cars()[0].position.y, 5.0, 1e-9));
+
+  // Lazy ground snap once terrain collision loads.
+  sc.step(0.016, &roads, [](double, double, double, double& gy) {
+    gy = 117.8;
+    return true;
+  });
+  CHECK(sc.cars()[0].ground_snapped && near(sc.cars()[0].position.y, 117.8, 1e-6));
+  // Parked car does not move horizontally.
+  CHECK(near(sc.cars()[0].position.z, 100.0, 1e-6));
+
+  // Re-spawning with the same name replaces rather than duplicating.
+  const uint32_t id0_again = sc.spawn(sp);
+  CHECK(id0_again == id0 && sc.cars().size() == 1);
+
+  // 2) Release via "_Release" trigger name: accelerates from 0 m/s, merges onto road lane, drives along +Z.
+  traffic::ScriptedCars::ReleaseParams rp{};
+  rp.name = "FestivalCar_0_Release";
+  rp.use_release_pose = true;
+  rp.pos = {6.0, 117.8, 120.0};
+  rp.heading_rad = 0.0;
+  rp.snap_to_ground = true;
+  rp.initial_speed_mps = 0.0;
+  rp.despawn_time_s = 10.0;
+  CHECK(sc.release(rp, &roads));
+  CHECK(sc.cars()[0].released && sc.cars()[0].road == 0);
+
+  for (int i = 0; i < 300; ++i) {  // 5 seconds
+    sc.step(1.0 / 60.0, &roads, [](double, double, double, double& gy) {
+      gy = 117.8;
+      return true;
+    });
+  }
+  CHECK(sc.cars().size() == 1);
+  const auto* c0 = sc.find("FestivalCar_0");
+  CHECK(c0 != nullptr && c0->position.z > 180.0 && c0->speed > 15.0);
+  // Lateral offset merged toward right lane (~2.0 m, well inside starting 6.0 m).
+  CHECK(std::fabs(c0->lateral - 2.0) < 0.5);
+
+  // 3) Despawn timer expires cleanly after 10 s total.
+  for (int i = 0; i < 360; ++i) sc.step(1.0 / 60.0, &roads);
+  CHECK(sc.empty());
+
+  // 4) Lead-car pacing (Darius Flynt): slows slightly when far ahead, stays visible ahead of player.
+  traffic::ScriptedCars::SpawnParams flynt{};
+  flynt.name = "FestivalCar_0";
+  flynt.car_id = 1171;
+  flynt.car_media = "FER_599XX_10";
+  flynt.pos = {2.0, 0.0, 300.0};
+  flynt.heading_rad = 0.0;
+  flynt.pace_ahead = true;
+  sc.spawn(flynt);
+  traffic::ScriptedCars::ReleaseParams flynt_rel{};
+  flynt_rel.name = "FestivalCar_0_Release";
+  flynt_rel.initial_speed_mps = 49.0;  // ~110 mph
+  CHECK(sc.release(flynt_rel, &roads));
+  traffic::ScriptedCars::StepOptions opts{};
+  opts.has_player = true;
+  opts.player_pos = {2.0, 0.0, 100.0};  // Flynt is 200 m ahead -> should ease down
+  opts.player_heading = 0.0;
+  opts.player_speed = 30.0;
+  for (int i = 0; i < 180; ++i) sc.step(1.0 / 60.0, &roads, nullptr, opts);
+  CHECK(sc.cars().size() == 1 && sc.cars()[0].speed < 40.0);
+
+  // 5) clear() removes all scripted cars.
+  sc.clear();
+  CHECK(sc.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -726,6 +816,7 @@ int main() {
   test_push();
   test_hold_resume();
   test_traffic_behaviors();
+  test_scripted_cars();
   const char* root = std::getenv("SHIFT_GAME_ROOT");
   if (!root || !*root) {
     std::printf("traffic_tests: SHIFT_GAME_ROOT not set, corpus checks skipped\n");

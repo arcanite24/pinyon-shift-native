@@ -4,7 +4,8 @@ add_library(shift_traffic STATIC
   src/gps.cpp
   src/config.cpp
   src/population.cpp
-  src/bodies.cpp)
+  src/bodies.cpp
+  src/scripted.cpp)
 target_include_directories(shift_traffic PUBLIC include)
 target_link_libraries(shift_traffic PUBLIC shift_drive PRIVATE fh1data shift_audio)
 if(MSVC)

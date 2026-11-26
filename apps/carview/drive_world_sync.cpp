@@ -10,10 +10,12 @@
 #include <unordered_set>
 #include <vector>
 
+#include "traffic/scripted.h"
 #include "world/road_follow.h"
 
 namespace carview {
 
+const traffic::ScriptedCars* ftc_scripted_cars(const DriveSession& s);
 void set_driver_wristband_color(uint32_t rgba);
 void spawn_detached_car_part(const void* owner_key, int part_kind, const std::array<float, 3>& world_pos,
                              const std::array<float, 3>& car_vel, const std::array<float, 3>& car_fwd,
@@ -545,6 +547,147 @@ void DriveSession::place_world() {
             }
           }
           if (!fmore.empty()) host.showroom.add_instances(fmore);
+        }
+        if (!replay_viewer.active() && !app.race) {
+          if (const traffic::ScriptedCars* sc = ftc_scripted_cars(*this); sc && !sc->empty()) {
+            // Render scripted career/cutscene cars (Darius Flynt 599XX, Diner lot cars,
+            // Race to Festival rivals) using the guest Showroom pipeline.
+            float pm[16];
+            drive::model_to_world(info, vehicle, pm);
+            double pmd[16];
+            for (int i = 0; i < 16; ++i) pmd[i] = pm[i];
+            const double a = pmd[0], b = pmd[4], c = pmd[8], d = pmd[1], e = pmd[5], f = pmd[9], g = pmd[2],
+                         h = pmd[6], k = pmd[10];
+            const double det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+            const double id = det != 0.0 ? 1.0 / det : 0.0;
+            const double inv[9] = {(e * k - f * h) * id, (c * h - b * k) * id, (b * f - c * e) * id,
+                                   (f * g - d * k) * id, (a * k - c * g) * id, (c * d - a * f) * id,
+                                   (d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id};
+            double world_to_player[16]{};
+            for (int r = 0; r < 3; ++r)
+              for (int col = 0; col < 3; ++col) world_to_player[col * 4 + r] = inv[r * 3 + col];
+            for (int r = 0; r < 3; ++r)
+              world_to_player[12 + r] =
+                  -(inv[r * 3 + 0] * pmd[12] + inv[r * 3 + 1] * pmd[13] + inv[r * 3 + 2] * pmd[14]);
+            world_to_player[15] = 1.0;
+
+            static const DriveSession* s_sc_owner = nullptr;
+            static std::map<uint32_t, drive::CarLampState> s_sc_lamps;
+            static std::map<uint32_t, float> s_sc_wheel_spin;
+            if (s_sc_owner != this) {
+              s_sc_owner = this;
+              s_sc_lamps.clear();
+              s_sc_wheel_spin.clear();
+            }
+            const float sdt = float(tod_frame_dt > 0.0 ? std::clamp(tod_frame_dt, 0.0, 0.25) : 1.0 / 60.0);
+            constexpr float kTwoPi = 6.28318530717958647692f;
+            std::vector<Showroom::Instance> smore;
+            std::map<std::string, size_t> sc_media_occ;
+            std::unordered_set<Showroom*> claimed_sc_guests;
+            for (const auto& car : sc->cars()) {
+              if (car.car_media.empty() || !std::isfinite(car.position.x) || !std::isfinite(car.position.y) ||
+                  !std::isfinite(car.position.z))
+                continue;
+              const size_t occ = sc_media_occ[car.car_media]++;
+              const std::string gkey =
+                  (occ == 0u) ? ("sc:" + car.car_media) : ("sc:" + car.car_media + "@dup" + std::to_string(occ));
+              auto it = festival_guests.find(gkey);
+              if (it == festival_guests.end() && festival_guests.size() < 32) {
+                ShowroomOptions opt{};
+                opt.game_root = app.game_root_of();
+                if (app.headless) {
+                  // Synchronous load in headless/cutscene-capture mode so frame 1 draws all scripted cars.
+                  auto gs = std::make_unique<Showroom>(host.renderer);
+                  gs->set_guest();
+                  if (host.showroom.dynamic_env_view() && host.showroom.dynamic_env_sampler())
+                    gs->set_shared_dynamic_env(host.showroom.dynamic_env_view(), host.showroom.dynamic_env_sampler());
+                  std::string ge;
+                  if (gs->load(app.bake_dir, car.car_media, opt, ge) && gs->upload(ge)) {
+                    gs->load_car_lamps(app.game_root_of(), car.car_media);
+                    it = festival_guests.emplace(gkey, std::move(gs)).first;
+                  } else {
+                    it = festival_guests.emplace(gkey, nullptr).first;
+                  }
+                } else {
+                  request_guest_load_async(gkey, car.car_media, opt, 32);
+                }
+              }
+              Showroom* guest_sr = (it != festival_guests.end() && it->second) ? it->second.get() : nullptr;
+              if (!guest_sr && occ > 0u) {
+                if (auto it0 = festival_guests.find("sc:" + car.car_media);
+                    it0 != festival_guests.end() && it0->second) {
+                  guest_sr = it0->second.get();
+                }
+              }
+              if (!guest_sr) continue;
+              const drive::Quat yq{0, std::sin(car.heading * 0.5), 0, std::cos(car.heading * 0.5)};
+              const drive::Quat pq{std::sin(-car.pitch * 0.5), 0, 0, std::cos(-car.pitch * 0.5)};
+              const drive::Quat q{
+                  yq.w * pq.x + yq.x * pq.w + yq.y * pq.z - yq.z * pq.y,
+                  yq.w * pq.y - yq.x * pq.z + yq.y * pq.w + yq.z * pq.x,
+                  yq.w * pq.z + yq.x * pq.y - yq.y * pq.x + yq.z * pq.w,
+                  yq.w * pq.w - yq.x * pq.x - yq.y * pq.y - yq.z * pq.z,
+              };
+              float gm[16];
+              drive::model_to_world(guest_sr->car(), q, {0, 0, 0}, gm);
+              double gmd[16];
+              for (int i = 0; i < 16; ++i) gmd[i] = gm[i];
+              gmd[12] += car.position.x;
+              gmd[13] += car.position.y;
+              gmd[14] += car.position.z;
+              Showroom::Instance inst;
+              inst.car = guest_sr;
+              for (int col = 0; col < 4; ++col)
+                for (int row = 0; row < 4; ++row) {
+                  double sum = 0.0;
+                  for (int kk = 0; kk < 4; ++kk) sum += world_to_player[kk * 4 + row] * gmd[col * 4 + kk];
+                  inst.model[col * 4 + row] = float(sum);
+                }
+              const bool is_new_lamp = !s_sc_lamps.count(car.id);
+              drive::CarLampState& lstate = s_sc_lamps[car.id];
+              if (is_new_lamp) lstate.rng_state = 0x517CC1B7u ^ (car.id * 2654435761u);
+              drive::LampInputs lin{};
+              lin.brake_cmd = (car.released && car.braking) ? 1.0f : 0.0f;
+              lin.brake_pedal = lin.brake_cmd;
+              lin.gear = 1;
+              lin.tod_sec = app.tod_clock.tod_sec;
+              lin.dt = sdt;
+              lin.is_ai = true;
+              lin.snap_headlamps = is_new_lamp || app.headless;
+              lstate.update(lin);
+              inst.lamps = lstate.vectors();
+              inst.has_lamps = true;
+              if (car.paint_rgb >= 0) {
+                const uint32_t rgb = uint32_t(car.paint_rgb);
+                auto to_lin = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+                inst.paint_rgb[0] = to_lin(float((rgb >> 16) & 0xFF) / 255.0f);
+                inst.paint_rgb[1] = to_lin(float((rgb >> 8) & 0xFF) / 255.0f);
+                inst.paint_rgb[2] = to_lin(float(rgb & 0xFF) / 255.0f);
+                inst.has_paint = true;
+              }
+              smore.push_back(inst);
+
+              const auto& rest = guest_sr->car().wheel_centres_body;
+              const float radius = std::clamp(rest[0][1], 0.26f, 0.55f);
+              const float omega = float(car.speed) / radius;
+              float& spin = s_sc_wheel_spin[car.id];
+              spin = std::fmod(spin + omega * sdt, kTwoPi);
+              if (spin < 0.0f) spin += kTwoPi;
+              if (claimed_sc_guests.insert(guest_sr).second) {
+                WheelPose wposes[4]{};
+                for (int wi = 0; wi < 4; ++wi) {
+                  wposes[wi].centre[0] = rest[size_t(wi)][0];
+                  wposes[wi].centre[1] = rest[size_t(wi)][1];
+                  wposes[wi].centre[2] = rest[size_t(wi)][2];
+                  wposes[wi].steer = (wi < 2) ? float(car.steer_angle) : 0.0f;
+                  wposes[wi].spin = spin;
+                  wposes[wi].omega = omega;
+                }
+                guest_sr->set_wheel_poses(wposes);
+              }
+            }
+            if (!smore.empty()) host.showroom.add_instances(smore);
+          }
         }
         const bool player_in_tunnel = app.audio_host.in_tunnel();
         static const DriveWorldHost* s_tunnel_host = nullptr;

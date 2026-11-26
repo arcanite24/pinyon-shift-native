@@ -17,6 +17,8 @@
 
 namespace carview {
 
+void step_ftc_scripted_cars(DriveSession& s, double dt);
+
 DriveSession::Popup DriveSession::Popup::notify(NotifyKind kind, double at, const std::vector<std::string>& title_args,
                                                 const std::vector<std::string>& message_args,
                                                 const std::vector<std::string>& tag_args) {
@@ -942,7 +944,15 @@ bool DriveSession::step(const drive::Input& user_in) {
         // Free-roam Festival AI Racers & instant Head-to-Head point-to-point race.
         // Stepped BEFORE SkillTracker so Festival AI collisions break the active skill chain
         // on the exact frame they occur and apply visual damage + realistic angular impulse.
-        if (!app.race && festival_mgr) {
+        // Suppress random roaming Festival AI during the first-time career so generic
+        // roaming drivers do not intrude into the Viper drive, Diner, or Race to Festival.
+        if (!app.race && (app.campaign.ftc_active() || app.campaign.cutscenes().active())) {
+          step_ftc_scripted_cars(*this, drive::Vehicle::kStep);
+        }
+        if (!app.race && festival_mgr && app.campaign.ftc_active()) {
+          if (festival_mgr->h2h_active()) festival_mgr->cancel_head_to_head();
+          if (!festival_mgr->cars().empty()) festival_mgr->restore_rewind({});
+        } else if (!app.race && festival_mgr) {
           const drive::Vec3 fp = vehicle.position();
           const drive::Vec3 ff = drive::rotate(vehicle.orientation(), {0, 0, 1});
           const double fh = std::atan2(ff.x, ff.z);
@@ -1029,7 +1039,8 @@ bool DriveSession::step(const drive::Input& user_in) {
           }
         }
         // R3-CAM-15: Viper opening drive Festival-bound AI convoy & pass countdown.
-        if (!app.race && app.campaign.flow().stage() == race::CampaignStage::kViperIntroDrive) {
+        if (!app.race && !app.campaign.ftc_active() &&
+            app.campaign.flow().stage() == race::CampaignStage::kViperIntroDrive) {
           if (g_viper_convoy.owner != this || vehicle.time() < 0.05) {
             g_viper_convoy.owner = this;
             g_viper_convoy.last_spawn_t = -10.0;
