@@ -5437,9 +5437,12 @@ is gone about 2.1 s after it shows, which is `Total`'s `BANK` slide (in by
 hold. The skill line pulses at partial alpha for the chain's last moments
 (`Skill1`'s `WARNINGSKILL`), and the popularity disc is gone about 4.1 s
 after the bank (`PopularityBar` `SHOW`, 1.4 s, then `HIDE`, out by
-2.67 s). The engine now plays `BANK`, `WARNINGSKILL` over the last 1.2 s,
-`SHOWSKILL` as a skill lands, the multiplier's `ANIMATE` as it changes,
-and fades the disc out over the same 3.67..4.07 s.
+2.67 s). The engine now plays `BANK`, `WARNINGSKILL` over the last 1.2 s
+(holding its last dim step while a drift or burnout keeps the chain past
+the timer), `SHOWSKILL` as a skill lands, the multiplier's `ANIMATE` as it
+changes, and `PopularityBar`'s `SHOW` then `HIDE` for the disc (its fill
+arc rides with the disc's backgrounds). A lost chain shows the total it
+had (it had shown 0 live, the tracker clearing it first).
 
 Still needed: a capture series of a chain lost (a crash), from the last
 skill until the score is gone.

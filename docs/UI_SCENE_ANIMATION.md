@@ -411,11 +411,18 @@ Its children have their own components:
 0.6 s when the chain is lost and then `HIDE`. A bank keeps the group up and
 plays `Total`'s `BANK` (the original's banked total is gone about 2.1 s
 after it shows, first30b). `Skill1` plays `SHOWSKILL` for 0.6 s as a skill
-lands, `WARNINGSKILL` over the chain's last 1.2 s and `SHOWNSKILL` between;
-the multiplier plays `ANIMATE` as it changes. The disc keeps the engine's
-own badge animation and fades out from 3.67 to 4.07 s after the bank (the
-end of `SHOW` then `HIDE`). Without a timeline, a lost chain stays 1.5 s
-and fades over 0.7 s, and a banked total fades from 2 to 2.3 s (Q243).
+lands, `WARNINGSKILL` over the chain's last 1.2 s (holding its last dim
+step, 0.2 s before its end, while a drift or burnout keeps the chain past
+the timer) and `SHOWNSKILL` between; the multiplier plays `ANIMATE` as it
+changes. The disc plays `PopularityBar`'s `SHOW` from the bank, then
+`HIDE` from 1.4 s (out by 4.07 s), or `SHOWN` for a rank change on its
+own; the engine's badge animation still gives the rank and the ring
+flash, and the fill arc takes the opacity of the disc's `Backgrounds`.
+Each component runs on its own timeline and writes only its own subtree
+(`play_slide`'s `subtree_only`): one timeline's resting look would
+otherwise overwrite the nodes another moves. Without a timeline, a lost
+chain stays 1.5 s and fades over 0.7 s, a banked total fades from 2 to
+2.3 s and the disc from 3.67 to 4.07 s (Q243).
 
 ## Map profile animations
 
