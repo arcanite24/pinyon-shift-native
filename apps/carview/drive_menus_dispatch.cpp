@@ -636,10 +636,32 @@ void DriveSession::open_map() {
             map_h = win_h;
             map_cam.set_viewport(win_w, win_h, &app.map_view);
           }
-          map_zoom = std::max(2.0, map_cam.min_zoom());
+          const double base_zoom = std::max(2.0, map_cam.min_zoom());
+          double target_zoom = std::max(3.0, base_zoom * 1.5);
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
-          map_cam.reset(map_cx, map_cz, map_zoom);
+          if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
+            const FtcMapTarget mt = ftc_map_target();
+            if (mt.have_pos) {
+              const double d_m = std::hypot(mt.pos[0] - map_cx, mt.pos[2] - map_cz);
+              if (d_m < 650.0) {
+                // Festival locked maps (Horizon Heats, First Autoshow): zoom close onto
+                // the festival/target area (~2.3x base zoom, Q275).
+                target_zoom = std::max(4.6, base_zoom * 2.3);
+                map_cx = 0.5 * (map_cx + mt.pos[0]);
+                map_cz = 0.5 * (map_cz + mt.pos[2]);
+              } else {
+                // Showcase locked map: frame both player and target event closer in.
+                target_zoom = std::max(3.2, base_zoom * 1.6);
+                map_cx = 0.55 * map_cx + 0.45 * mt.pos[0];
+                map_cz = 0.55 * map_cz + 0.45 * mt.pos[2];
+              }
+            }
+          }
+          // Start at base_zoom and animate smoothly in to target_zoom via map_cam.
+          map_zoom = base_zoom;
+          map_cam.reset(map_cx, map_cz, base_zoom);
+          if (target_zoom > base_zoom * 1.01) map_cam.nudge_target_zoom(target_zoom / base_zoom);
           map_cx = map_cam.cx();
           map_cz = map_cam.cz();
           map_zoom = map_cam.zoom();

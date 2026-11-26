@@ -6,11 +6,14 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 
 #include "drive_session.h"
 #include "freeroam/fast_travel.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "race/owt.h"
+#include "race/route.h"
 
 namespace carview {
 namespace {
@@ -37,6 +40,32 @@ std::string travel_tag(const MapMarker& m) {
   return {};
 }
 
+// Cached (x, z) race-route preview polyline for a career event's route_id,
+// loaded once from aiopenworld.zip (.owt) with TrackRoute waypoint fallback.
+const std::vector<std::array<double, 2>>& cached_event_route_polyline(
+    const std::filesystem::path& game_root, int route_id) {
+  static const std::vector<std::array<double, 2>> kEmpty;
+  if (route_id <= 0 || game_root.empty()) return kEmpty;
+  static std::unordered_map<int, std::vector<std::array<double, 2>>> cache;
+  if (auto it = cache.find(route_id); it != cache.end()) return it->second;
+  std::vector<std::array<double, 2>> pts;
+  race::AiLineFile owt;
+  if (race::load_owt(game_root, route_id, owt, nullptr) && owt.points.size() >= 2) {
+    pts.reserve(owt.points.size() + (owt.closed ? 1u : 0u));
+    for (const auto& pt : owt.points) pts.push_back({double(pt.x), double(pt.z)});
+    if (owt.closed) pts.push_back(pts.front());
+  } else {
+    race::Route route;
+    if (race::load_route(game_root, route_id, route, nullptr)) {
+      const auto wps = route.waypoints();
+      pts.reserve(wps.size());
+      for (const auto* wp : wps) pts.push_back({wp->x, wp->z});
+    }
+  }
+  auto [it, _] = cache.emplace(route_id, std::move(pts));
+  return it->second;
+}
+
 }  // namespace
 
 void DriveSession::map_cursor_world() {
@@ -51,12 +80,14 @@ void DriveSession::map_cursor_world() {
 }
 
 void DriveSession::map_screen_open() {
-  // The cursor opens on the player (map_open_orig.png), which is off the
-  // centre when the view is held inside the map near its edge.
+  // The cursor opens near the player at the settled opening zoom, which is
+  // off the centre when the view is held inside the map or framed toward a
+  // career target.
   map_cursor.reset();
   if (map_w > 64 && map_h > 64) {
     const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
-    const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+    const double cursor_zoom = std::max(map_zoom, map_cam.target_zoom());
+    const double mpp = app.map_view.map_scale(map_w, map_h, cursor_zoom);
     const auto p = vehicle.position();
     map_cursor.absorb(float((0.5 * map_w + (p.x - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
                       float((0.5 * map_h - (p.z - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
@@ -183,6 +214,18 @@ void DriveSession::map_anim_fill(MapScene& ms) {
   ms.ghost_since = map_anim_ghost_since;
   ms.has_prev_hover = map_anim_prev;
   ms.prev_hover_x = map_anim_px, ms.prev_hover_z = map_anim_pz;
+  // Hover red race-route preview (MapProfileFullscreen.xml "track"): when
+  // hovering a career event marker outside an active race or H2H, supply its
+  // route polyline so MapView::pause_map renders it beneath any green GPS line.
+  if (!app.race && !(festival_mgr && festival_mgr->h2h_active()) && app.have_career_catalog &&
+      ms.selected_marker >= 0 && size_t(ms.selected_marker) < ms.markers.size()) {
+    const MapMarker& sel = ms.markers[size_t(ms.selected_marker)];
+    if (sel.kind == MapMarker::kEvent) {
+      if (const race::CareerEvent* ev = app.career_catalog.find_event(sel.id); ev && ev->route_id > 0) {
+        ms.route = cached_event_route_polyline(app.game_root_of(), ev->route_id);
+      }
+    }
+  }
   // The player's ping fires its "audio" trigger (Map_Radar) at each pass.
   // (Not the passes missed behind the FILTER popup or a dialog.)
   const mapanim::Animation* ping = app.map_view.icon_animation("player_local", "default");

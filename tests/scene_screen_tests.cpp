@@ -743,6 +743,14 @@ int main() {
               carview::text_of(carview::map_text::kBack) == "BACK" &&
               carview::text_of(carview::map_text::kSetRoute) == "SET ROUTE",
           "map details: its help bar's strings");
+    // Locked career map hovering an event offers X DETAILS alongside A SET ROUTE and LB FILTER.
+    ms.details = nullptr;
+    ms.tip = "Please set a route to the Showcase event.";
+    ms.band_texture = std::string(carview::kNoPlayerBarTopRow);
+    ms.prompts = {{"A", "SET ROUTE"}, {"X", "DETAILS"}, {"LB", "FILTER"}, {"LS", "MOVE"}, {"RS", "ZOOM"}};
+    carview::ui::List locked_ev;
+    check(carview::draw_map_screen(locked_ev, md, ms, 1280.0f, 720.0f) && !locked_ev.empty(),
+          "locked map hovering event draws with X DETAILS prompt");
   }
 
   // The car name tag's measured size (30_skill_toast_orig.png): BISHOP in
