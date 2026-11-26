@@ -6489,9 +6489,22 @@ probe). Runs: `.local/runs/first30f-<variant>`.
   -20 dB of the engine's group level (the snapshot and SFX volumes are on
   them in the game) and come out at +7 dB; the split is set by the idle
   (linear) and the full-gas (saturated) levels together.
+- **A second engine.** With the R34's whole `_ET.xml` and `_CMT.xml`
+  merged over the MX-5's (`r34snd`: RB26 turbo six on the same route and
+  physics; run `.local/runs/first30f-r34snd` against the engine's
+  `out/first30f/runs/e3-r34snd`), the same constants hold without
+  retuning. Idle -28.3 dB against the engine's -26.6 (centroid 141 and
+  146 Hz), full gas at 5,500 to 6,500 rpm -20.0 against -18.7, limiter
+  -19.6 dB, 552 Hz against -18.5 dB, 614 Hz, closed throttle at 2,500 to
+  4,500 rpm -21.9 against -21.7. The engine sits 1 to 1.5 dB loud across
+  the range, with the band split within a few percent. The MX-5's
+  shortfall on closed throttle at 3,500 to 4,500 rpm (-30.2 against
+  -26.8) does not show on the R34, so it is in the MX-5's NegLoad or
+  overrun tuning, not in the chain.
 
 Still open:
-- the descriptor float behind s (one car measured);
+- the descriptor float behind s (two engine tunings on one car measured);
+- the MX-5's closed-throttle level at mid rpm (3 dB quiet);
 - whether a split cascades more than one first-order section;
 - the FMOD Distortion for the other cars (not modelled: no capture);
 - the 6 dB idle-to-full difference left in the solo groups' top end.
