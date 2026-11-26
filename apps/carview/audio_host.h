@@ -164,6 +164,10 @@ class AudioHost {
   void set_race_encounter_active(bool active);
   void trigger_collision(const audio::CollisionHit& hit);
   void trigger_landing(const audio::LandingHit& hit);
+  // The snapshot matrix's gain on a bus now (1 without the matrix).
+  float snapshot_bus_gain(audio::Bus b) const {
+    return engine_.has_snapshot_matrix() ? engine_.matrix_bus_gain(b) : 1.0f;
+  }
   void set_rally_world(bool on);
   void set_radio_rally_mode(bool on);
   // Plays a cue as the game does: through ui4audio.xml's play name for it,

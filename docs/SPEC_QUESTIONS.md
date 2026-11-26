@@ -6665,18 +6665,90 @@ time from the trace (the recomp rendered about 34 frames a second).
   the same popup as at rest.
 - **The popup** is absent 0.57 to 0.68 s after the press, fading in at
   0.85 s, full by 1.02 to 1.09 s, still up at 2.74 to 3.04 s and gone by
-  4.14 to 4.71 s. The engine shows it from 1.0 s to 5.0 s after the press,
-  which fits.
+  4.14 to 4.71 s of wall time. The engine shows it from 1.0 s to 5.0 s
+  after the press. That fits only if the popup's timer steps 1/30 s per
+  rendered frame (SPEC-RADIO's HUD section), so that at 30 frames a second
+  the recomp's times grow by about 34/30 (gone by 4.7 to 5.3 s); in wall
+  time as captured, the engine's popup stays up 0.3 to 0.9 s longer.
 - **The change itself is not a crossfade.** The old station fades out from
   about 0.17 s after the press over about 0.45 s to silence, and the new
   station comes in about 0.7 s after the press within 50 ms. Before, the
   engine crossfaded both over `stationChangeFadeTimeUser` (0.25 s) with no
   dip. It now fades the old station out over that time and brings the new
-  one in over 50 ms once the old is silent.
+  one in over 50 ms once the old is silent. Only D-pad changes were
+  measured, so a change made by the game keeps the crossfade over
+  `stationChangeFadeTimeNormal`.
 
 Unknown:
 - why the fade-out takes about 0.45 s against the file's 0.25 s (a fade
-  stepped per rendered frame would explain it, as Q292's popup timer is);
+  stepped per rendered frame would explain it, as SPEC-RADIO's popup timer
+  is);
+- how a change made by the game sounds;
 - the gap before the new station (about 0.25 s of silence on the recomp;
   the engine has almost none);
 - DJ intros: none played in these runs, so their triggers are not measured.
+
+## Q336 (first30g, audio, not blocking): the camera's effect on the focus engine
+
+The MX-5 at idle (800 rpm), engine bus only, each view held for an 8 s
+capture (recomp `.local/runs/first30g-g4-views`, `orig-g4.fh1test`, RB
+cycling the views; control `first30g-g4b-views`, `orig-g4b.fh1test`).
+Steady windows only (each capture's first 1.5 s carries a transient):
+
+| view | original | engine, engine-only render | engine, live mixer |
+|---|---|---|---|
+| far chase | -42.3 dB, centroid 110 Hz | -41.6 dB, 123 Hz | -49.0 dB, 82 Hz |
+| near chase | -42.4 dB, 112 Hz | as far chase | as far chase |
+| cockpit | -50.9 dB, 287 Hz | -49.0 dB, 220 Hz | -51.4 dB, 62 Hz |
+| hood, bumper | -50.8 dB, 291 to 304 Hz | as cockpit | as cockpit |
+
+The far chase late in the control run reads -42.4 dB again, so the drop is
+the view and not the time since spawn. The engine's own render (the car's
+per-view group levels) is within about 1 dB of the original's 8.5 dB drop
+inside the car and brightens the same way. Through the live mixer the drop
+is only 2.4 dB and darker, because the EngineLFE layer that the mixer adds
+does not depend on the view (Q337). Engine runs:
+`out/first30g/runs/view{0..4}-engine`, `idle-nomix`, `idle-nomix-cam2`.
+
+Unknown:
+- look-back: -50.6 dB steady in one run, about -46 dB and unsteady in the
+  control, and the far chase after it read -38.7 dB;
+- the views under load (only idle was measured, which is mostly the
+  exhaust group);
+- what else leaks into the original's engine bus (bursts at -22 dB with a
+  1.2 kHz centroid in two captures at rest).
+
+## Q337 (first30g, audio, blocking for the engine's level in play): the live mixer puts the focus engine 7 dB under the original
+
+Q322 set the focus chain's levels (`kFocusPreScale`, `kFocusPostScale`)
+against the original using carview's engine-only render, which has no
+snapshot matrix. The game path (the live mixer, as carview plays it and as
+`--audio-mix` renders it) adds two things on the engine bus:
+- the snapshot matrix's gain, 0.35 (-9.1 dB) in free roam at rest; Q322's
+  pre-scale already stands for the snapshot and SFX volumes, so this counts
+  them twice;
+- the sfx engine's EngineLFE loop, mixed into the stereo engine bus at an
+  invented level (`0.22 x view x throttle x rpm`). The original's front
+  channels carry none of it (its LFE channel reads -54 to -78 dB during a
+  pull, and the EngineLFE events' speaker levels are all 0).
+
+On the c3 route against `first30f-base` (`out/first30g/runs/c3-engine-mix`
+and `c3-engine-nomix`):
+
+| state | original | engine-only render | live mixer |
+|---|---|---|---|
+| rest | -42.3 dB (clean idle) | -41.6 dB, 124 Hz | -48.7 dB, 89 Hz |
+| load, 5,000 to 5,600 rpm | -22.4 dB, 727 Hz, 7 % under 150 Hz | -20.8 dB, 962 Hz | -28.2 dB, 621 Hz, 40 % under 150 Hz |
+| limiter | -21.8 dB, 934 Hz, 1 % | -21.0 dB, 1,025 Hz, 1 % | -27.8 dB, 596 Hz, 47 % |
+
+So what the player hears is about 7 dB under the original at every state,
+and boomy. The tyre and wind levels (Q331, Q332) were fitted through the
+live mixer and are not affected.
+
+Not changed here: removing the EngineLFE layer from the stereo bus and
+dropping the double-counted snapshot gain go together (either alone moves
+the level the wrong way or leaves the spectrum wrong), and the second
+changes what every focus-engine level in the corpus tests was measured
+with. Needed: a decision on where the snapshot gain belongs for the focus
+car (before the chain, as Q322 assumes, or after it, as the matrix applies
+it), then both changes and a c3 re-measure through the live mixer.

@@ -649,6 +649,12 @@ void DriveSession::run_headless_drive() {
               std::printf(" %+.2f/%.2f/%u/%d/%.0f/%.2f", w.slip_ratio, w.slip_angle, unsigned(w.surface_group),
                           int(w.surface_index), w.wheel_rpm, w.load);
             std::printf("\n");
+            if (std::floor(vehicle.time()) > std::floor(vehicle.time() - drive::Vehicle::kStep))
+              std::printf("snapshot gain t %.0f: engine %.3f music %.3f tyres %.3f wind %.3f\n", vehicle.time(),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kEngine),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kMusic),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kTyres),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kWind));
           }
           const drive::Vec3 vpos = vehicle.position();
           const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
