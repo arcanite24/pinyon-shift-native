@@ -793,6 +793,8 @@ struct DriveSession {
   void open_map();
   // First-time career glue (drive_first_time_career.cpp).
   void feed_first_time_career();
+  // --autoplay (autoplay.h): due keys pushed as SDL events, the beat log.
+  void autoplay_frame();
   void apply_first_time_career();
   double ftc_throttle = 0.0;
   bool ftc_handbrake = false;

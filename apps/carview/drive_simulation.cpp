@@ -847,17 +847,20 @@ bool DriveSession::step(const drive::Input& user_in) {
           vehicle.set_draft(drive::compute_follower_draft(me, leaders.data(), leaders.size()));
         }
         drive::Input eff_user_in = user_in;
+        // --autoplay's `drive auto`: the player's own input comes from the
+        // sat-nav autopilot (a capture harness, not a game feature).
+        if (app.autoplay.drive_auto() && !app.race) eff_user_in = ftc_autopilot_input();
         if (app.campaign.ftc_active()) {
-          ftc_throttle = user_in.throttle;
-          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          ftc_throttle = eff_user_in.throttle;
+          ftc_handbrake = ftc_handbrake || eff_user_in.handbrake;
           // Controls off while the flow drives: the AI drives the player's
           // car on the route (the opening, the festival arrival), else the
           // car is held.
           if (!app.campaign.ftc().controls_enabled())
             eff_user_in = app.campaign.ftc().ai_driving() ? ftc_autopilot_input() : drive::Input{};
         } else if (app.campaign.tutor().active()) {
-          ftc_throttle = user_in.throttle;
-          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          ftc_throttle = eff_user_in.throttle;
+          ftc_handbrake = ftc_handbrake || eff_user_in.handbrake;
         }
         if (hold_for_reset_fade) {
           eff_user_in = drive::Input{};

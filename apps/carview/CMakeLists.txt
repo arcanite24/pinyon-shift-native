@@ -196,12 +196,14 @@ set(carview_sources
   trainer_overlay.cpp
   photo_mode.cpp
   playtest_recorder.cpp
+  autoplay.cpp
   replay_view.cpp
   achievements.cpp
   audio_host.cpp
   campaign_director.cpp
   first_time_career_ui.cpp
   drive_first_time_career.cpp
+  drive_autoplay.cpp
   cutscene_runtime.cpp
   campaign_ui.cpp
   fmv_player.cpp

@@ -340,7 +340,20 @@ void DriveSession::run_window_loop() {
   double air_time_s = 0.0;
   double prev_vel_y = 0.0;
   double min_air_vel_y = 0.0;
+  std::string autoplay_capture;  // the --autoplay capture in flight
   while (running) {
+    if (app.autoplay.active()) {
+      autoplay_frame();
+      if (app.autoplay.stop_requested()) {
+        app.autoplay_stopped = true;
+        running = false;
+        break;
+      }
+      if (autoplay_capture.empty() && pending_shot == PendingShot::kNone && !host.renderer.capture_pending()) {
+        autoplay_capture = app.autoplay.take_due_capture();
+        if (!autoplay_capture.empty()) host.renderer.request_capture(true);
+      }
+    }
     poll_sdl_events();
     if (!running) break;
     app.audio_host.set_window_minimized(app_lifecycle.backgrounded || window_minimized);
@@ -1712,6 +1725,18 @@ void DriveSession::run_window_loop() {
       }
     }
     if (!render_window_frame(now, frame_dt, menu_paused, trainer_freecam_active)) break;
+    if (!autoplay_capture.empty() && pending_shot == PendingShot::kNone) {
+      std::vector<uint8_t> cap_rgba;
+      uint32_t cap_w = 0, cap_h = 0;
+      if (host.renderer.take_captured_frame(cap_rgba, cap_w, cap_h)) {
+        for (size_t i = 3; i < cap_rgba.size(); i += 4) cap_rgba[i] = 255;
+        write_png(app.autoplay.png_path(autoplay_capture).string(), cap_w, cap_h, 4, cap_rgba.data());
+        app.autoplay.note("capture " + autoplay_capture);
+        autoplay_capture.clear();
+      } else if (!host.renderer.capture_pending()) {
+        autoplay_capture.clear();
+      }
+    }
     if (playtest_have_sample) {
       playtest_sample.cpu_ms = host.last_frame_cpu_ms;
       playtest_sample.gpu_ms = host.renderer.gpu_frame_ms();

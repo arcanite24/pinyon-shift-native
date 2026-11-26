@@ -174,6 +174,8 @@ struct DriveConfig {
   double cli_cutscene_time = 0.0;
   std::filesystem::path telemetry_json_path;
   std::filesystem::path record_session_dir;
+  // --autoplay <script> [--autoplay-out <dir>] (autoplay.h).
+  std::filesystem::path autoplay_script, autoplay_out;
   std::string capture_times_csv;
   std::filesystem::path cli_fmv_path;
   std::filesystem::path mods_root;
