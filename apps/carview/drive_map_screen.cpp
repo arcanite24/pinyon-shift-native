@@ -21,17 +21,6 @@ constexpr double kSnapPx = 30.0;
 
 double now_s() { return double(SDL_GetTicks()) / 1000.0; }
 
-// The profile's name, as the original shows its gamertag over the player
-// (race_view.cpp's rule): SHIFT_PLAYER_NAME, else the OS account, else User.
-const std::string& player_name() {
-  static const std::string me = [] {
-    for (const char* v : {"SHIFT_PLAYER_NAME", "USERNAME", "USER"})
-      if (const char* e = std::getenv(v); e && *e) return std::string(e).substr(0, 15);
-    return std::string("User");
-  }();
-  return me;
-}
-
 const freeroam::FastTravelTunables& tunables(const DriveApp& app) {
   static const freeroam::FastTravelTunables t = [&] {
     freeroam::FastTravelTunables out;
@@ -88,17 +77,20 @@ DriveSession::FtcMapTarget DriveSession::ftc_map_target() const {
   if (!app.campaign.ftc_active()) return t;
   const auto stage = app.campaign.ftc().stage();
   if (stage == race::FtcStage::kFirstAutoshow) {
-    // The map after the wristband (map_flow_with_race_central_vo). Interim:
-    // not captured; the disc's IDS_MapTip_SetRouteToRaceCentral suggests a
-    // route to Race Central lets it go, as the other two do (Q313). The
-    // English fallback is ours; the disc's string table supplies its text.
+    // Third locked map targets the Autoshow (not Race Central) so the
+    // tooltip and route lead directly to the player's first Autoshow visit.
     t.event_id = -1;
     t.have_pos = true;
-    t.pos = app.campaign.ftc().race_central();
-    t.tip_id = "IDS_MapTip_SetRouteToRaceCentral";
-    t.tip = "Please set a route to Race Central.";
-    t.gps_label = "IDS_HudMsg_RaceCentral";
-    t.gps_kind = traffic::GpsDestKind::kRaceCentral;
+    if (const auto* site =
+            app.have_career_catalog ? app.career_catalog.find_site(race::FestivalSite::kAutoshow) : nullptr) {
+      t.pos = site->pos;
+    } else {
+      t.pos = app.campaign.ftc().race_central();
+    }
+    t.tip_id = "IDS_MapTip_SetRouteToAutoshow";
+    t.tip = "Please set a route to the Autoshow.";
+    t.gps_label = "IDS_Festival_AS_Line1";
+    t.gps_kind = traffic::GpsDestKind::kAutoshow;
     return t;
   }
   if (stage == race::FtcStage::kShowcase) {
@@ -373,20 +365,13 @@ void DriveSession::map_screen_fill() {
     else if (map_travel_quote(m, cost))
       x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(cost)));
   } else {
-    // The player (their name over the arrow, map_open_orig.png), then a
-    // found or revealed sign or barn.
-    const drive::Vec3 at = vehicle.position();
-    const auto pc = to_canvas(at.x, at.z);
+    // Found or revealed discount sign or barn find under the cursor (no
+    // invented gamertag popup over the player arrow).
     const double snap = kSnapPx;
     auto near = [&](const std::array<float, 2>& c) {
       return std::hypot(double(c[0] - map_cursor.x), double(c[1] - map_cursor.y)) <= snap;
     };
-    if (near(pc)) {
-      p.kind = MapPopupKind::kSimple;
-      p.title = player_name();
-      p.x = pc[0], p.y = pc[1];
-      ms.locked = true;
-    } else if (app.progress_loaded) {
+    if (app.progress_loaded) {
       const bool reveal = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
       if (map_filter.shows(MapCategory::kDiscountSign)) {
         for (size_t i = 0; i < app.collectibles.signs.size() && p.kind == MapPopupKind::kNone; ++i) {
@@ -430,6 +415,10 @@ void DriveSession::map_screen_fill() {
   }
   if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
     ms.prompts.push_back({"A", text_of(route ? map_text::kClearRoute : map_text::kSetRoute)});
+    const bool hovering_event = map_selected_marker >= 0 &&
+                                size_t(map_selected_marker) < cached_map_markers.size() &&
+                                cached_map_markers[size_t(map_selected_marker)].kind == MapMarker::kEvent;
+    if (hovering_event) ms.prompts.push_back({"X", text_of(map_text::kDetails)});
     ms.prompts.push_back({"LB", text_of(map_text::kFilter)});
     ms.prompts.push_back({"LS", text_of({"HelpButtons", "IDS_Move", 0, "MOVE"})});
     ms.prompts.push_back({"RS", text_of({"HelpButtons", "IDS_ZOOM", 0, "ZOOM"})});

@@ -502,11 +502,6 @@ void DriveSession::update_map_selection() {
             if (d < best_d) best_d = d, map_selected_marker = int(i);
           }
           const drive::Vec3 at = vehicle.position();
-          // The player's own arrow wins over an icon at the same spot: the
-          // original opens the map on the player with their name and no
-          // event popup, even parked on the Gauntlet (map_cmp_first30d.png).
-          if (map_selected_marker >= 0 && std::hypot(at.x - map_px, at.z - map_pz) <= best_d)
-            map_selected_marker = -1;
           const bool ft_anywhere = slice12.trainer.effective_fast_travel_anywhere();
           double target_x = map_px, target_z = map_pz;
           if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
