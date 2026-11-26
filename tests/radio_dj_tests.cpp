@@ -234,6 +234,34 @@ void synthetic_names() {
     if (!audio::radio_has_event(d, c.channel, c.event)) missing.insert(c.event);
   CHECK((missing == std::set<std::string>{"FestivalUpdateWristband2", "FestivalUpdateWristband5",
                                           "FestivalUpdateWristband6"}));
+
+  // Flow/state names passed to radio_trigger_immediate route cleanly instead of
+  // missing RadioSystem.xml's immediate map (Rank 19: CycleRadioLogos & festival_wristband).
+  CHECK(audio::parse_radio_dj_state("festival_wristband") == audio::RadioDjState::kFestivalWristband);
+  CHECK(audio::parse_radio_dj_state("radiodj.festival_wristband") == audio::RadioDjState::kFestivalWristband);
+  CHECK(audio::parse_radio_dj_state("RADIODJ.SPECIAL_WRISTBAND") == audio::RadioDjState::kSpecialWristband);
+  CHECK(audio::parse_radio_dj_state("post_race") == audio::RadioDjState::kPostRace);
+  CHECK(audio::parse_radio_dj_state("CycleRadioLogos") == audio::RadioDjState::kCycleRadioLogos);
+  CHECK(audio::parse_radio_dj_state("cycleradiologos") == audio::RadioDjState::kCycleRadioLogos);
+  CHECK(audio::parse_radio_dj_state("IntroCutscene") == audio::RadioDjState::kNone);
+
+  // Level 0 festival_wristband cues resolve to valid RadioSystem.xml festival updates.
+  audio::RadioDjWristbands ftc_wb(&rules);
+  bool ftc_cancel = false;
+  const auto yellow_cues = ftc_wb.on_awarded(0, &ftc_cancel);
+  CHECK(ftc_cancel && !yellow_cues.empty());
+  for (const auto& c : yellow_cues) CHECK(audio::radio_has_event(d, c.channel, c.event));
+
+  // Channel fallback routes FestivalUpdate and Special lines when invoked via immediate.
+  RadioChannel resolved = RadioChannel::kImmediate;
+  CHECK(audio::resolve_radio_event_channel(d, RadioChannel::kImmediate, "IntroCutscene", resolved) &&
+        resolved == RadioChannel::kImmediate);
+  CHECK(audio::resolve_radio_event_channel(d, RadioChannel::kImmediate, "FestivalUpdateWristband1", resolved) &&
+        resolved == RadioChannel::kFestivalUpdate);
+  CHECK(audio::resolve_radio_event_channel(d, RadioChannel::kImmediate, "BarnFindLocationHint1", resolved) &&
+        resolved == RadioChannel::kSpecial);
+  CHECK(!audio::resolve_radio_event_channel(d, RadioChannel::kImmediate, "CycleRadioLogos", resolved));
+  CHECK(!audio::resolve_radio_event_channel(d, RadioChannel::kImmediate, "NoSuchEvent", resolved));
 }
 
 int corpus(const char* root) {
