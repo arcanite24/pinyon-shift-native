@@ -3363,7 +3363,8 @@ the spinner turns once a second (set by eye). On event loads the engine
 puts the event's name on the scene's `Stat_Text` (an engine request; no
 original frame shows it), placed by eye. The minimum holds (1 s from the
 title into free roam, 3 s into and out of events, none for fast travel)
-follow the recomp; the engine's 0.25 s fades are its own.
+follow the recomp. The engine's 0.25 s fade in is its own; the close is
+the flows' `global.fade_in` (1 s, black, S curve; Q244).
 
 Needed: the spinner's rate and the fades' timings from the scene's
 timelines.
@@ -5288,3 +5289,30 @@ the last skill until the score is gone.
 
 Needed: a capture series at 30 fps from a load screen closing into free
 roam and from a festival stage change, to fit the curve and the order.
+
+## Q245 (FE-01, not blocking): the title's music
+
+Settled: the title's music is `ui4audio.xml`'s `SplashScreen` play,
+`UIInGame/UI/FrontEnd/FE_Ambience` (`isLooping`). That event is in the
+`music` category and has one sound: `PressStart_Music.wav`,
+`UIInGame_Streams` sub-sound 22, 338.353 s. The engine's title bed
+(`UiMusicMode::kTitle`, the sub-sound named like `pressstart_music`) is
+that same sub-sound, and `audio_parity_corpus` checks the chain. The audio
+track of `PressStart.wmv` (wmapro, 48 kHz stereo, 53.93 s) is digital
+silence: FFmpeg's volumedetect reads -91 dB mean and peak, and astats reads
+-inf. Routing the movie's audio at `menuMovieMusic` (0.4) would add
+nothing, so the engine keeps it muted and plays no second music source.
+The audit's FE-01 fix (play the movie's track and drop the sample) would
+have silenced the title.
+
+Open:
+- **`menuMusic="0.0"`.** `AudioEngineConfig.xml`'s `menuMusic="0.0"` and
+  `menuMovieMusic="0.4"` are not mapped to FEV categories or mixer buses.
+  If `menuMusic` scaled the `music` category on the title, the title would
+  be silent, which the engine does not do.
+- **When `SplashScreen` fires and stops.** Whether it also plays on SINGLE
+  PLAYER's menu, and how it fades out, is not traced. The engine plays the
+  bed while the title is up.
+
+Needed: a recorded title session with its audio, from Press Start into the
+menu and into a load.

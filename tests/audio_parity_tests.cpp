@@ -7,8 +7,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <set>
@@ -22,6 +24,7 @@
 #include "audio/ui_audio.h"
 #include "audio/engine_player.h"
 #include "audio/fev.h"
+#include "audio/fsb4.h"
 #include "audio/sfx_engine.h"
 #include "audio/sources.h"
 #include "cars/database.h"
@@ -1060,6 +1063,58 @@ void corpus_ambience_events(const std::filesystem::path& game) {
   CHECK(worst < 0.25);
 }
 
+// FE-01: the title's music. ui4audio.xml's SplashScreen plays
+// UIInGame/UI/FrontEnd/FE_Ambience (looping), a music-category event of one
+// sound, PressStart_Music.wav in UIInGame_Streams (sub-sound 22, 338.353 s).
+// The engine's title bed (AudioEngine::UiMusicMode::kTitle) is the first
+// sub-sound named like "pressstart_music": that one.
+void corpus_title_music(const std::filesystem::path& game) {
+  const auto dir = game / "media" / "audio" / "UI" / "UIInGame";
+  audio::FevProject proj;
+  std::string err;
+  CHECK(audio::load_fev(dir / "UIInGame.fev", proj, &err));
+  const audio::FevEvent* ev = proj.find_event("UIInGame/UI/FrontEnd/FE_Ambience");
+  CHECK(ev != nullptr);
+  if (!ev) return;
+  CHECK(ev->categories.size() == 1 && ev->categories[0] == "music");
+  CHECK(std::fabs(ev->volume - 1.0f) < 1e-4f);
+  const audio::FevSoundInstance* inst = nullptr;
+  int count = int(ev->simple_instances.size());
+  if (!ev->simple_instances.empty()) inst = &ev->simple_instances[0];
+  for (const auto& ly : ev->layers) {
+    count += int(ly.instances.size());
+    if (!inst && !ly.instances.empty()) inst = &ly.instances[0];
+  }
+  CHECK(count == 1 && inst != nullptr && inst->sound_def_index < proj.sound_defs.size());
+  if (!inst || inst->sound_def_index >= proj.sound_defs.size()) return;
+  const auto& sd = proj.sound_defs[inst->sound_def_index];
+  CHECK(sd.entries.size() == 1);
+  if (sd.entries.size() != 1) return;
+  const auto& en = sd.entries[0];
+  CHECK(en.wavebank_name == "UIInGame_Streams" && en.subsound_index == 22 && en.length_ms == 338353);
+  CHECK(en.source_wav.find("PressStart_Music") != std::string::npos);
+
+  std::ifstream bf(dir / "UIInGame_Streams.fsb", std::ios::binary);
+  CHECK(bool(bf));
+  if (!bf) return;
+  bf.seekg(0, std::ios::end);
+  const uint64_t size = uint64_t(bf.tellg());
+  bf.seekg(0);
+  std::vector<uint8_t> head(size_t(std::min<uint64_t>(size, 1u << 20)));
+  bf.read(reinterpret_cast<char*>(head.data()), std::streamsize(head.size()));
+  std::vector<audio::FsbSample> samples;
+  CHECK(audio::read_fsb4(head, samples, &err, size));
+  int first = -1;
+  for (size_t i = 0; i < samples.size() && first < 0; ++i) {
+    std::string nm = samples[i].name;
+    for (char& c : nm) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (nm.find("pressstart_music") != std::string::npos) first = int(i);
+  }
+  std::printf("  title music: FE_Ambience -> %s, sub-sound %u; the engine's sample %d\n", sd.name.c_str(),
+              en.subsound_index, first);
+  CHECK(first == int(en.subsound_index));
+}
+
 int run_corpus() {
   const char* game = std::getenv("SHIFT_GAME_ROOT");
   if (!game || !*game || !std::filesystem::exists(game)) {
@@ -1067,6 +1122,7 @@ int run_corpus() {
     return 77;
   }
   const std::filesystem::path root(game);
+  corpus_title_music(root);
   corpus_damage_event(root);
   corpus_ui_catalog(root);
   const char* state = std::getenv("SHIFT_STATE_ROOT");
