@@ -401,7 +401,77 @@ Vehicle::Vehicle(const CarParams& params) : p_(params) {
     peak_power_rpm_ = std::max(std::max(800.0, p_.idle_rpm) + 100.0, std::min(best_rpm, p_.redline_rpm));
   }
   init_brakes();
+  init_steer_curve();
   reset({0, 0, 0});
+}
+
+double Vehicle::steer_grip_accel(double speed_mps) const {
+  // The steering model's lateral grip query (SPEC_QUESTIONS Q69, decoded):
+  // the axle loads from the static weight split and the aero downforce at
+  // this speed (not clamped below zero, then each axle floored at 0), half
+  // to each wheel; six passes in which each wheel's peak lateral friction
+  // at its load gives the axle's lateral force, and that force x the arm
+  // over the track moves load from the inner wheel (at least 0) to the
+  // outer (at most the axle's load). The result is the four wheels' loads
+  // after the last pass x the frictions of that pass, over the mass.
+  const double z_front = 0.5 * (p_.wheel_centres[0].z + p_.wheel_centres[1].z);
+  const double z_rear = 0.5 * (p_.wheel_centres[2].z + p_.wheel_centres[3].z);
+  const double wb = std::max(0.5, std::fabs(z_front - z_rear));
+  const double front_share = std::clamp((com_local_.z - z_rear) / wb, 0.0, 1.0);
+  const double v = std::max(0.0, speed_mps);
+  const double m = std::max(1.0, p_.mass);
+  // The original's weight uses 9.80665 (kgf), not the car's gravity.
+  const double nf = std::max(0.0, m * kKgf * front_share + (p_.aero_df_front + p_.aero_part_df_front) * v * v);
+  const double nr = std::max(0.0, m * kKgf * (1 - front_share) + (p_.aero_df_rear + p_.aero_part_df_rear) * v * v);
+  const double track_f = std::max(0.5, std::fabs(p_.wheel_centres[1].x - p_.wheel_centres[0].x));
+  const double track_r = std::max(0.5, std::fabs(p_.wheel_centres[3].x - p_.wheel_centres[2].x));
+  // The arm: the original reads two fields of each axle's wheel block (not
+  // identified). Interim: the centre of mass's height above the ground
+  // under it, which makes the transfer the whole steady-state moment.
+  const double arm = std::max(0.0, com_local_.y);
+  const double hf = 0.5 * nf, hr = 0.5 * nr;
+  double load[kWheels] = {hf, hf, hr, hr};  // inner front, outer front, inner rear, outer rear
+  double mu[kWheels] = {};
+  for (int pass = 0; pass < 6; ++pass) {
+    for (int i = 0; i < kWheels; ++i) mu[i] = tyre_peak_mu(p_, axle_of(i), TyrePeak::kLateral, load[i], v);
+    const double ff = load[0] * mu[0] + load[1] * mu[1];
+    const double fr = load[2] * mu[2] + load[3] * mu[3];
+    const double dnf = ff * arm / track_f, dnr = fr * arm / track_r;
+    load[0] = std::max(0.0, hf - dnf);
+    load[1] = std::min(nf, hf + dnf);
+    load[2] = std::max(0.0, hr - dnr);
+    load[3] = std::min(nr, hr + dnr);
+  }
+  double f = 0;
+  for (int i = 0; i < kWheels; ++i) f += load[i] * mu[i];
+  return f / m;
+}
+
+void Vehicle::init_steer_curve() {
+  // Built once per car (Q69): sample i at max(0.01, i / 0.4623) m/s (31
+  // steps to 150 mph), atan(MaxGees x L x a(v) / v^2) clamped between
+  // MinMaxAngle and SteerMaxAngle. L is read as the wheelbase (probable).
+  const double wb = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
+                              (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
+  const double lo = std::min(p_.steer_min_lock, p_.max_steer), hi = std::max(p_.steer_min_lock, p_.max_steer);
+  for (int i = 0; i < kSteerCurveSamples; ++i) {
+    const double v = std::max(0.01, double(i) / kSteerCurvePerMps);
+    steer_curve_[size_t(i)] = std::clamp(std::atan(p_.steer_max_gees * wb * steer_grip_accel(v) / (v * v)), lo, hi);
+  }
+}
+
+double Vehicle::steer_curve_at(double speed_mps) const {
+  // A four-point (Catmull-Rom) cubic through the samples around the speed.
+  constexpr int n = kSteerCurveSamples;
+  const double u = std::clamp(std::fabs(speed_mps) * kSteerCurvePerMps, 0.0, double(n - 1));
+  const int i1 = std::min(n - 2, int(std::floor(u)));
+  const double t = u - double(i1);
+  const int i0 = std::max(0, i1 - 1), i2 = std::min(n - 1, i1 + 1), i3 = std::min(n - 1, i1 + 2);
+  const double p0 = steer_curve_[size_t(i0)], p1 = steer_curve_[size_t(i1)];
+  const double p2 = steer_curve_[size_t(i2)], p3 = steer_curve_[size_t(i3)];
+  const double t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
 }
 
 void Vehicle::init_brakes() {
@@ -925,16 +995,15 @@ void Vehicle::shape_input(const Input& raw, double dt) {
 }
 
 double Vehicle::steer_lock() const {
-  const double wheelbase = std::fabs((p_.wheel_centres[0].z + p_.wheel_centres[1].z) / 2 -
-                                     (p_.wheel_centres[2].z + p_.wheel_centres[3].z) / 2);
-  const double v = std::fabs(speed());
   const double max_a = (!ai_ && assists_.steering == 0 && p_.max_steer_filtered > 0)
                            ? std::min(p_.max_steer, p_.max_steer_filtered)
                            : p_.max_steer;
-  if (ai_ || v <= 0.1) return max_a;
-  // The lock law is ours (interim, FEEL-16 d): the same in every steering mode.
-  return std::clamp(std::atan(p_.steer_gees_fit * p_.steer_max_gees * p_.gravity * wheelbase / (v * v)),
-                    std::min(p_.steer_min_lock, max_a), max_a);
+  if (ai_) return max_a;
+  // The decoded lock law (Q69): the smaller of the lock and the car's curve
+  // at |velocity|, clamped between min(MinMaxAngle, lock) and the lock. The
+  // same in every steering mode.
+  const double curve = steer_curve_at(length(vel_));
+  return std::clamp(std::min(max_a, curve), std::min(p_.steer_min_lock, max_a), max_a);
 }
 
 void Vehicle::update_boost(double dt, double throttle, double rpm_now) {
