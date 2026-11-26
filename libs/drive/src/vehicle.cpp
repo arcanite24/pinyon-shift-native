@@ -811,8 +811,17 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // launches.
   shaped_.throttle = approach(shaped_.throttle, gas_in, p_.throttle_rate, dt);
   {
-    const double v_abs = std::sqrt(vel_.x * vel_.x + vel_.y * vel_.y + vel_.z * vel_.z);
-    rest_time_ = v_abs < p_.rest_hold_speed ? rest_time_ + dt : 0.0;
+    const bool grounded = w_[0].contact || w_[1].contact || w_[2].contact || w_[3].contact;
+    // Measure horizontal (planar) speed while grounded so vertical suspension
+    // rebound after braking to a stop does not reset the rest-hold timer (Q291).
+    const double v_rest = grounded ? std::hypot(vel_.x, vel_.z)
+                                   : std::sqrt(vel_.x * vel_.x + vel_.y * vel_.y + vel_.z * vel_.z);
+    // While actively braking or holding handbrake on a slope, tolerate minor
+    // low-speed tyre creep (< 0.055 m/s ~= 0.20 km/h) so hill-hold engages
+    // reliably as the pedal lifts; unbraked coasting uses p_.rest_hold_speed.
+    const bool braking_to_stop = brake_in > 0.05 || raw.handbrake;
+    const double speed_lim = braking_to_stop ? std::max(p_.rest_hold_speed, 0.055) : p_.rest_hold_speed;
+    rest_time_ = (grounded && v_rest < speed_lim) ? rest_time_ + dt : 0.0;
     if (shaped_.throttle > 0.0) {
       // Let go at once (the trace's brake reads 0 on the first sample with
       // gas), not through the brake ramp.

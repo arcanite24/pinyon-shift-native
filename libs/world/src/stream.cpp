@@ -206,6 +206,32 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
   return g;
 }
 
+void Streamer::set_options(const GatherOptions& options) {
+  if (job_.valid()) (void)job_.get();
+  options_ = options;
+  pending_hidden_ = options.hidden;
+  preload_active_ = false;
+  force_ = true;
+}
+
+bool Streamer::preload_async(double x, double z) {
+  if (!async_ || gathers_ == 0) return false;
+  preload_active_ = true;
+  preload_x_ = x;
+  preload_z_ = z;
+  if (std::hypot(x - target_x(), z - target_z()) <= regather_) return true;
+  if (job_.valid()) return true;
+  if (force_) options_.hidden = pending_hidden_, force_ = false;
+  if (has_pending_hidden_positions_) {
+    options_.hidden_positions = pending_hidden_positions_;
+    has_pending_hidden_positions_ = false;
+  }
+  job_cx_ = x;
+  job_cz_ = z;
+  job_ = std::async(std::launch::async, [this, x, z] { return gather_now(x, z); });
+  return true;
+}
+
 void Streamer::take(Gathered&& g) {
   // Swapped, not moved: `g` leaves with the old gather (the caller frees it).
   std::swap(ground_, g.ground);
@@ -218,6 +244,8 @@ void Streamer::take(Gathered&& g) {
   last_seconds_ = g.seconds;
   cx_ = g.x;
   cz_ = g.z;
+  job_cx_ = cx_;
+  job_cz_ = cz_;
   ++gathers_;
 }
 
@@ -235,6 +263,8 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
       return false;
     }
     take(std::move(*g));
+    // Once the car is within regather_ of the newly swapped centre, any advisory preload hold is satisfied.
+    if (preload_active_ && std::hypot(x - cx_, z - cz_) <= regather_) preload_active_ = false;
     // The old gather goes on a thread of its own, off the step.
     if (drop_.valid()) drop_.wait();
     drop_ = std::async(std::launch::async, [old = std::move(g)]() mutable { old.reset(); });
@@ -248,6 +278,21 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
     options_.hidden_positions = pending_hidden_positions_;
     has_pending_hidden_positions_ = false;
   }
+  if (preload_active_ && gathers_ > 0) {
+    // Safety: always drop an advisory preload hold before the car can leave collision.
+    if (dist >= hard_edge) {
+      preload_active_ = false;
+    } else if (!forced && async_ && std::hypot(preload_x_ - cx_, preload_z_ - cz_) > regather_) {
+      job_cx_ = preload_x_;
+      job_cz_ = preload_z_;
+      const double px = preload_x_, pz = preload_z_;
+      job_ = std::async(std::launch::async, [this, px, pz] { return gather_now(px, pz); });
+      return true;
+    } else if (!forced) {
+      // Preloaded target is already resident and the car is safely inside collision.
+      return true;
+    }
+  }
   if (!forced && gathers_ > 0 && dist <= regather_) return true;
   if (async_ && gathers_ > 0) {
     // With set_lead: lead the gather centre ahead along the travel vector so a
@@ -259,6 +304,8 @@ bool Streamer::update(double x, double z, bool* changed, std::string* error) {
       gx += (x - cx_) / dist * lead;
       gz += (z - cz_) / dist * lead;
     }
+    job_cx_ = gx;
+    job_cz_ = gz;
     job_ = std::async(std::launch::async, [this, gx, gz] { return gather_now(gx, gz); });
     return true;
   }

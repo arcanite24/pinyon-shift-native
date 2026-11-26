@@ -20,6 +20,7 @@ namespace carview {
 void prime_world_and_place_vehicle_as_authored(DriveSession& s, std::array<double, 3> target_pos,
                                                double target_heading);
 void prime_world_at(DriveSession& s, double x, double z);
+void preload_world_at_async(DriveSession& s, double x, double z);
 
 namespace {
 
@@ -423,10 +424,15 @@ void DriveSession::apply_first_time_career() {
   auto& c = app.campaign;
   // The cutscene areas to stream before they play. Not while the player
   // drives: recentring the world away from the car would drop the road under
-  // it (the cutscene's own placement primes its area as it starts).
+  // it (the cutscene's own placement primes its area as it starts). Advisory
+  // preloads run asynchronously so movies, loading screens, and lead-in cuts
+  // never stall the main thread.
   for (const auto& at : c.take_cutscene_preloads()) {
     if (c.ftc_active() && c.ftc().controls_enabled()) continue;
-    prime_world_at(*this, at[0], at[2]);
+    preload_world_at_async(*this, at[0], at[2]);
+  }
+  if (!c.cutscenes().active() && c.ftc_active() && c.ftc().controls_enabled() && host.streamer) {
+    host.streamer->clear_preload();
   }
   if (c.cutscenes().active()) {
     DriveWorldHost* h = &host;
@@ -498,7 +504,21 @@ void DriveSession::apply_first_time_career() {
 
     if (cur_cs != st.last_cutscene) {
       if (cur_cs) {
-        if (iequal(cur_cs->name, "NEW_Diner_Cutscene_1") || iequal(cur_cs->name, "New_Diner_Cutscene_2")) {
+        if (iequal(cur_cs->name, "NEW_Diner_Cutscene_1")) {
+          st.cars.clear();
+          // Q279: asynchronously prime New_Diner_Cutscene_2 (422 m down the highway,
+          // still well inside the 750 m collision radius of NEW_Diner_Cutscene_1)
+          // while the 6.7 s approach shot plays so the cut lands without a stall.
+          if (const auto* next_cs = c.cutscenes().library().find("New_Diner_Cutscene_2")) {
+            for (const auto& ev : next_cs->events) {
+              if (ev.type == cutscene::EventType::kPlacePlayerCar || ev.type == cutscene::EventType::kCameraNode) {
+                const auto at = ev.position();
+                preload_world_at_async(*this, at[0], at[2]);
+                break;
+              }
+            }
+          }
+        } else if (iequal(cur_cs->name, "New_Diner_Cutscene_2")) {
           st.cars.clear();
         } else if (iequal(cur_cs->name, "New_Diner_Cutscene_3")) {
           // PlacePlayerCar_0 puts the player at FestivalCar_4's exact Diner spot.

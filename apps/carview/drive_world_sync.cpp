@@ -1537,7 +1537,18 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
   double ph = target_heading;
 
   if (s.host.streamer) {
+    const double prime_radius = std::max(100.0, s.host.streamer->regather_distance());
     auto sync_prime_at = [&](double cx, double cz) {
+      s.host.streamer->clear_preload();
+      const bool resident_ok =
+          s.host.streamer->gathers() > 0 &&
+          std::hypot(cx - s.host.streamer->centre_x(), cz - s.host.streamer->centre_z()) <= prime_radius;
+      const bool target_ok =
+          !s.host.streamer->gathering() ||
+          std::hypot(cx - s.host.streamer->target_x(), cz - s.host.streamer->target_z()) <= prime_radius;
+      // Fast-path: resident world already covers (cx, cz) within the regather radius and
+      // any in-flight async gather is also targeting the same area.
+      if (resident_ok && target_ok) return;
       bool any_changed = false;
       for (int wait_i = 0; wait_i < 2000 && s.host.streamer->gathering(); ++wait_i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1547,7 +1558,7 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
       }
       s.host.streamer->set_async(false);
       const double dist_centre = std::hypot(cx - s.host.streamer->centre_x(), cz - s.host.streamer->centre_z());
-      if (s.host.streamer->gathers() == 0 || dist_centre > 100.0) {
+      if (s.host.streamer->gathers() == 0 || dist_centre > prime_radius) {
         s.host.streamer->set_hidden(s.host.hidden_sent);
         bool ch = false;
         s.host.streamer->update(cx, cz, &ch, &s.app.error);
@@ -1613,7 +1624,7 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
         px = sp.position[0];
         pz = sp.position[2];
         ph = sp.heading;
-        if (std::hypot(px - s.host.streamer->centre_x(), pz - s.host.streamer->centre_z()) > 100.0) {
+        if (std::hypot(px - s.host.streamer->centre_x(), pz - s.host.streamer->centre_z()) > prime_radius) {
           sync_prime_at(px, pz);
         }
         double snap_y = sp.position[1];
@@ -1663,10 +1674,22 @@ void prime_world_and_place_vehicle_as_authored(DriveSession& s, std::array<doubl
 }
 
 void prime_world_at(DriveSession& s, double x, double z) {
-  // Streams the world around (x, z) without moving the car: a cutscene's
-  // places, before it plays (the original's CPrepareCutscene).
+  // Streams the world around (x, z) without moving the car: an immediate
+  // cutscene camera anchor or synchronous (headless) preload.
   if (!s.host.streamer) return;
   const auto t0 = std::chrono::steady_clock::now();
+  const double prime_radius = std::max(100.0, s.host.streamer->regather_distance());
+  s.host.streamer->clear_preload();
+  const bool resident_ok =
+      s.host.streamer->gathers() > 0 &&
+      std::hypot(x - s.host.streamer->centre_x(), z - s.host.streamer->centre_z()) <= prime_radius;
+  const bool target_ok =
+      !s.host.streamer->gathering() ||
+      std::hypot(x - s.host.streamer->target_x(), z - s.host.streamer->target_z()) <= prime_radius;
+  if (resident_ok && target_ok) {
+    std::printf("cutscene preload: (%.1f, %.1f) already resident (0 ms)\n", x, z);
+    return;
+  }
   bool any_changed = false;
   for (int wait_i = 0; wait_i < 2000 && s.host.streamer->gathering(); ++wait_i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1676,7 +1699,7 @@ void prime_world_at(DriveSession& s, double x, double z) {
   }
   s.host.streamer->set_async(false);
   const double dist_centre = std::hypot(x - s.host.streamer->centre_x(), z - s.host.streamer->centre_z());
-  if (s.host.streamer->gathers() == 0 || dist_centre > 100.0) {
+  if (s.host.streamer->gathers() == 0 || dist_centre > prime_radius) {
     s.host.streamer->set_hidden(s.host.hidden_sent);
     bool ch = false;
     s.host.streamer->update(x, z, &ch, &s.app.error);
@@ -1690,6 +1713,27 @@ void prime_world_at(DriveSession& s, double x, double z) {
   }
   std::printf("cutscene preload: primed world at (%.1f, %.1f) in %.0f ms\n", x, z,
               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+}
+
+void preload_world_at_async(DriveSession& s, double x, double z) {
+  // Advisory cutscene preload (CPrepareCutscene / next-cutscene lookahead):
+  // keeps async streaming enabled so the main thread does not stall during
+  // movies, loading screens, or lead-in cutscenes. Headless / sync runs fall
+  // back to the deduplicated synchronous prime.
+  if (!s.host.streamer) return;
+  if (!s.host.streamer_async || s.app.headless || s.host.streamer->gathers() == 0) {
+    prime_world_at(s, x, z);
+    return;
+  }
+  const double prime_radius = std::max(100.0, s.host.streamer->regather_distance());
+  const double dist_target = std::hypot(x - s.host.streamer->target_x(), z - s.host.streamer->target_z());
+  if (s.host.streamer->preload_async(x, z)) {
+    if (dist_target <= prime_radius) {
+      std::printf("cutscene preload: (%.1f, %.1f) already resident/in-flight (%.0f m, 0 ms)\n", x, z, dist_target);
+    } else {
+      std::printf("cutscene preload: queued async gather at (%.1f, %.1f) (%.0f m away, 0 ms)\n", x, z, dist_target);
+    }
+  }
 }
 
 }  // namespace carview
