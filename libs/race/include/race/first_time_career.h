@@ -265,6 +265,9 @@ class FirstTimeCareer {
   static constexpr int64_t kViperColourSequence = 7;
   static constexpr const char* kCorradoMedia = "VW_Corrado_95";
   static constexpr int64_t kCorradoCarId = 309;
+  // The Corrado's paint: red (0xDC001F), Combo_Colors sequence 2 (the
+  // original's diner and race to the festival; Q271).
+  static constexpr int64_t kCorradoColourSequence = 2;
   static constexpr int64_t kStartingMoney = 40000;  // CGivePlayerMoney
   // The first Autoshow's car list (Subaru WRX STi 2011, Mitsubishi Lancer Evo X GSR 2008).
   static constexpr std::array<int64_t, 2> kFirstAutoshowCars = {1323, 1009};

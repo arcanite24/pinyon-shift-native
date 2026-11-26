@@ -249,6 +249,10 @@ ShowroomOptions DriveWorldHost::build_car_options() {
       if (opts.match_sequence < 0 && (app.campaign_new_career_pending || app.campaign.ftc_active()) &&
           lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kViperMedia))
         opts.match_sequence = race::FirstTimeCareer::kViperColourSequence;
+      // The Corrado the career hands over is red (sequence 2 of car 309).
+      if (opts.match_sequence < 0 && app.campaign.ftc_active() &&
+          lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kCorradoMedia))
+        opts.match_sequence = race::FirstTimeCareer::kCorradoColourSequence;
       // A colour picked in the pause menu's paint page for this car.
       if (app.paint_sequence >= 0 && lower_ascii(app.paint_car) == lower_ascii(app.car)) opts.match_sequence = app.paint_sequence;
       return opts;
