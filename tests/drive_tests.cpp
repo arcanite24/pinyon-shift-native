@@ -171,6 +171,37 @@ void test_mesh_ground() {
   CHECK(t_hill > t_flat && t_hill < t_flat * 2);
 }
 
+// Q281: with no input the stopped car stays put on a slope (the original
+// holds it on the brakes); the gas lets go of it, and once it has stopped
+// again it is held again.
+void test_rest_hold() {
+  const auto p = test_car();
+  const auto hill = plane(0.05);  // about the free-roam spawn's 2.7 degrees
+  drive::Vehicle v(p);
+  for (int i = 0; i < 120 * 10; ++i) v.step({0, 0, 0, false}, hill);
+  const drive::Vec3 at = v.position();
+  std::printf("rest on a 5 %% grade: %.3f m from the start after 10 s, hold %d\n",
+              std::sqrt(at.x * at.x + at.z * at.z), int(v.rest_hold()));
+  CHECK(v.rest_hold());
+  CHECK(std::fabs(v.speed()) < 0.02 && std::sqrt(at.x * at.x + at.z * at.z) < 0.05);
+  CHECK(v.gear() == 1);  // the hold is not the driver's brake: no reverse
+  // The gas lets go at once: no brake on the first step with gas.
+  v.step({0, 1, 0, false}, hill);
+  CHECK(!v.rest_hold() && v.shaped_input().brake == 0);
+  for (int i = 0; i < 120 * 2; ++i) v.step({0, 1, 0, false}, hill);
+  CHECK(v.speed() > 5);
+  // Moving with no input: no hold.
+  v.step({0, 0, 0, false}, hill);
+  CHECK(!v.rest_hold());
+  // Stopped on a light brake (over half a pedal selects reverse at a stop)
+  // and released: held again.
+  for (int i = 0; i < 120 * 8; ++i) v.step({0, 0, 0.4, false}, hill);
+  std::printf("after the stop: %.3f m/s, gear %d\n", v.speed(), v.gear());
+  for (int i = 0; i < 120 * 4; ++i) v.step({0, 0, 0, false}, hill);
+  CHECK(v.rest_hold());
+  CHECK(std::fabs(v.speed()) < 0.02);
+}
+
 void test_script() {
   std::vector<drive::ScriptLine> s;
   std::string error;
@@ -1283,6 +1314,7 @@ int main() {
   test_reverse();
   test_script();
   test_mesh_ground();
+  test_rest_hold();
   test_model_to_world();
   test_oracle_lap();
   test_ai_field();

@@ -584,6 +584,7 @@ void Vehicle::launch(const Vec3& position, double heading, double speed, double 
   engine_torque_prev_ = 0;
   rev_cut_active_ = false;
   rev_cut_timer_ = 0;
+  rest_hold_ = false;  // on the move
 }
 
 void Vehicle::apply_impulse(const Vec3& point, const Vec3& impulse, double angular_scale) {
@@ -609,6 +610,10 @@ void Vehicle::reset(const Vec3& position, double heading) {
   state_ = GearState::kOpen;
   state_time_ = 0;
   reverse_hold_time_ = 0;
+  // Put down at rest: held from the start, as the original's car is from
+  // its spawn (Q281).
+  rest_hold_ = true;
+  rest_time_ = 0;
   pedal_swap_ = false;
   clutch_ = 0;
   locked_ = rev_matching_ = false;
@@ -792,6 +797,25 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     steer_angle_ = shaped_.steer * p_.max_steer;
     steer_ang_vel_ = 0.0;
     return;
+  }
+  // Q281, Q291: the original holds the player's stopped car on the brakes.
+  // With no gas, about 0.5 s after the car comes to rest the brake control
+  // reads 1.0 (traced on the 2.7 degree slope at the free-roam spawn, where
+  // the car otherwise rolls); the gas lets go of it at once, and a car put
+  // down at rest starts held. The rest speed and the delay are interims
+  // (Q291). The reverse entry reads raw_, so the hold selects no reverse.
+  {
+    const double v_abs = std::sqrt(vel_.x * vel_.x + vel_.y * vel_.y + vel_.z * vel_.z);
+    rest_time_ = v_abs < p_.rest_hold_speed ? rest_time_ + dt : 0.0;
+    if (gas_in > 0.0) {
+      // Let go at once (the trace's brake reads 0 on the first sample with
+      // gas), not through the brake ramp.
+      if (rest_hold_) shaped_.brake = std::min(shaped_.brake, brake_in);
+      rest_hold_ = false;
+    } else if (rest_time_ >= p_.rest_hold_delay) {
+      rest_hold_ = true;
+    }
+    if (rest_hold_) brake_in = 1.0;
   }
   shaped_.throttle = approach(shaped_.throttle, gas_in, p_.throttle_rate, dt);
   shaped_.brake = approach(shaped_.brake, brake_in, p_.brake_rate, dt);

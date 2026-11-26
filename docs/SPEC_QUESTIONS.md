@@ -5757,7 +5757,28 @@ Needed: the consumer of the two collision timers (likely through a
 pointer to the singleton kept by the reset code), and the meaning of
 the driver flag and car state above.
 
-## Q281 (first30b, physics, not blocking): the car creeps from a standstill
+## Q281 (answered, first30c): the car creeps from a standstill
+
+**Answer (first30c, recomp traces).** The original holds the stopped
+player car on the brakes. In `fh1.physics_trace` at the spawn, with no
+input, the car's brake control reads 1.00 from about 0.5 s after the
+speed reads 0.00 km/h, and the car stays at 0.00 on the 2.7° slope for
+the whole idle (`first30c-c1` and `first30c-c2` runs, 9.6 s and 4.3 s
+held). The gas lets go of it: on the first sample with gas the brake
+reads 0. The car rolls when it is not held: in Scenario A the car creeps
+0.4 to 0.6 km/h on the same grade in the first 0.5 s of gas, with the
+clutch still open. It is not idle torque or the clutch: the original
+coasts in first at 9 km/h with no gas and no brake. The engine's car
+rolled freely: 0.42 m/s² from rest, which is g·sin(2.5°), the clutch
+open, `drive --run rest` 21.8 km/h after 20 s. The engine now holds the
+player's car the same way (`Vehicle::rest_hold`, `rest_hold_speed`,
+`rest_hold_delay`): a car put down at rest starts held, the reverse entry
+still reads the driver's own brake, and AI cars have no hold. After the
+fix, the rest run moves 0.0 m in 20 s and the hold test in
+`drive_tests` passes. The speed threshold and the delay are interims
+(Q291).
+
+The question as first asked:
 
 In the first30b free-roam run (the `appdata-2026-09-27` seed, the red
 MX-5 next to the Gauntlet) the original's car sits at 0 km/h with no input
@@ -5850,3 +5871,30 @@ spectators is not known.
 Needed: the source of the start-line spectator instances (Q109): whether
 an event's `FR<n>_<k>` objects carry a crowd slot and its class, or where
 else the game reads them.
+
+## Q291 (first30c, physics, not blocking): the rest hold's speed and delay
+
+The original holds the stopped player car on the brakes (Q281). The
+traces give the behaviour but not its thresholds. At the 0.1 s sample
+spacing and two decimals of km/h, the brake control turns 1.00 between
+0.5 and 0.6 s after the speed first reads 0.00 km/h, and 0.9 to 1.6 s after
+it falls under 0.05 to 0.2 km/h while the car settles. So the engine
+uses an interim speed of 0.014 m/s (0.05 km/h) for an interim 0.5 s.
+
+These are not traced:
+- whether the rest timer runs while the driver brakes (the engine's does,
+  so a car braked to a stop is held as soon as the pedal comes up);
+- whether a car rolling backwards through zero is held;
+- whether the hold applies in reverse, on the handbrake, or with a racing
+  wheel;
+- whether the release is the gas alone or any input (in the engine only
+  the gas lets go; the traces show the gas releasing it and nothing about
+  the steer).
+
+The trigger dead zones also ate the route's small taps (gas 13/255 and
+38/255, brake 20/255 read 0.00), so the "gas above zero" test could not
+be probed at small pedal travel.
+
+Needed: the writer of the brake control at rest (the player controller's
+code, or a body oracle trace with the wheels' brake value), or a trace at
+finer spacing with a coast down to zero on a slope.

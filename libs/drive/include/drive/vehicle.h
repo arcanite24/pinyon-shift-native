@@ -358,6 +358,12 @@ struct CarParams {
   double reverse_select_speed = 6.7056;      // m/s: MaxForwardVelShiftReverseMPH (15 mph)
   double reverse_auto_enter_speed = 6.7056;  // m/s: MaxForwardSpeedMphToAutoEnterReverse
   double shift_reverse_pause = 0.0;          // s: ShiftReversePause
+  // The hold at rest (Q281): the player's car below this speed for this
+  // long with no gas is held on the brakes. Traced, not read from data:
+  // the brake control turns 1.0 about 0.5 s after the speed reads 0.00
+  // km/h; the speed threshold is an interim (Q291).
+  double rest_hold_speed = 0.014;  // m/s (0.05 km/h)
+  double rest_hold_delay = 0.5;    // s
   // The launch controller (SPEC-CAR-PHYSICS, Clutch and gearbox states).
   double launch_max_output_rpm = 700;  // the clutch output speed under which a start is a launch
   double launch_fall_time = 1.5;       // s for the target to fall from its start to its end
@@ -760,6 +766,8 @@ class Vehicle {
   int substeps() const { return substeps_; }
   const std::array<WheelState, kWheels>& wheels() const { return w_; }
   const Input& shaped_input() const { return shaped_; }
+  // The player's stopped car is held on the brakes until the gas (Q281).
+  bool rest_hold() const { return rest_hold_; }
   double steer_angle() const { return steer_angle_; }  // road wheels, rad
   // The road-wheel angle a full stick asks for at the current speed (the
   // lock narrows with speed; see shape_input).
@@ -886,6 +894,8 @@ class Vehicle {
   GearState state_ = GearState::kOpen;
   double state_time_ = 0;      // s in the current state
   double reverse_hold_time_ = 0;  // s brake held at low speed for reverse entry
+  bool rest_hold_ = false;     // the stopped car held on the brakes (Q281, Q291)
+  double rest_time_ = 0;       // s at rest (the hold's delay)
   bool pedal_swap_ = false;    // reverse pedal swap active (SPEC-CAR-PHYSICS)
   double clutch_ = 0;          // engagement
   double prev_rpm_ = 0;        // engine rpm at the last step (the launch servo's rate)
