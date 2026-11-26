@@ -355,10 +355,10 @@ void test_skills_and_popularity() {
     CHECK(tr.hud().multiplier == 1 && std::fabs(tr.hud().multiplier_f - 1.1f) < 1e-5f);
     CHECK(tr.hud().chain_points == 1600);
   }
-  // 3. Drive cleanly for 3.2 s -> banks trunc(1600 * 1.1) = 1760 pts -> crosses rank 249 AND 225 -> 5,000 Cr.
+  // 3. Drive cleanly for 4.8 s -> banks trunc(1600 * 1.1) = 1760 pts -> crosses rank 249 AND 225 -> 5,000 Cr.
   bool banked = false, rank_up = false, sponsor = false;
   int64_t sponsor_cr = 0;
-  for (int i = 0; i < 35; ++i) {
+  for (int i = 0; i < 48; ++i) {
     freeroam::SkillInput in;
     in.dt = dt, in.time = (t += dt), in.speed_ms = 25.0, in.forward_speed_ms = 25.0, in.wheels_on_ground = 4;
     for (const auto& ev : tr.step(in)) {
@@ -450,7 +450,7 @@ void test_skills_reset_session_clock() {
   CHECK(tr.hud().lost_at < -1e8);
   CHECK(tr.hud().last_skill.empty());
 
-  // At t = 0.1 s, Near Miss awards immediately and banks cleanly after 3.2 s.
+  // At t = 0.1 s, Near Miss awards immediately and banks cleanly after 4.5 s.
   {
     freeroam::SkillInput nm;
     nm.dt = 0.1, nm.time = 0.1, nm.speed_ms = 30.0, nm.forward_speed_ms = 30.0, nm.nearest_car_dist = 2.5;
@@ -459,7 +459,7 @@ void test_skills_reset_session_clock() {
     CHECK(tr.hud().active && tr.hud().chain_points == 100);
   }
   bool banked = false;
-  for (int i = 1; i <= 35; ++i) {
+  for (int i = 1; i <= 48; ++i) {
     freeroam::SkillInput in;
     in.dt = 0.1, in.time = 0.1 + 0.1 * i, in.speed_ms = 25.0, in.forward_speed_ms = 25.0;
     for (const auto& ev : tr.step(in))
