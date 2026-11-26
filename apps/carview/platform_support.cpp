@@ -165,6 +165,7 @@ PlatformShortcut match_macos_shortcut(uint32_t sdl_keycode, uint16_t sdl_keymod,
   if (sdl_keycode == SDLK_COMMA && !ctrl && !shift) return PlatformShortcut::kSettings;
   if (sdl_keycode == SDLK_F && ctrl && !shift) return PlatformShortcut::kToggleFullscreen;
   if (sdl_keycode == SDLK_P && shift && !ctrl) return PlatformShortcut::kPhotoMode;
+  if (sdl_keycode == SDLK_B && shift && !ctrl) return PlatformShortcut::kBugBookmark;
   if (sdl_keycode == SDLK_T && !ctrl && !shift) return PlatformShortcut::kTrainerOrTime;
   if (sdl_keycode == SDLK_Q && !ctrl && !shift) return PlatformShortcut::kQuit;
   return PlatformShortcut::kNone;

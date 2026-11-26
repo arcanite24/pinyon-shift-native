@@ -323,8 +323,13 @@ void DriveSession::run_window_loop() {
   if (!app.record_session_dir.empty() && !app.playtest_recorder.active()) {
     std::string rec_err;
     if (app.playtest_recorder.start(app.record_session_dir, &rec_err)) {
+#if defined(__APPLE__)
+      std::printf("playtest: recording session to %s (Cmd+Shift+B, F11, or Back+RB for bug capture)\n",
+                  app.playtest_recorder.session_dir().string().c_str());
+#else
       std::printf("playtest: recording session to %s (F11 or Back+RB for bug capture)\n",
                   app.playtest_recorder.session_dir().string().c_str());
+#endif
     } else {
       std::fprintf(stderr, "carview: --record-session failed: %s\n", rec_err.c_str());
     }
@@ -1722,6 +1727,8 @@ void DriveSession::run_window_loop() {
       }
       playtest_have_sample = true;
 
+      const bool bug_mark_from_shortcut = playtest_bug_mark_requested;
+      playtest_bug_mark_requested = false;
       bool bug_chord_now = false;
       if (const bool* kb = SDL_GetKeyboardState(nullptr); kb && kb[SDL_SCANCODE_F11]) bug_chord_now = true;
       if (!bug_chord_now) {
@@ -1733,7 +1740,7 @@ void DriveSession::run_window_loop() {
           }
         }
       }
-      if (bug_chord_now && !playtest_bug_chord_prev && !playtest_bug_capture_waiting &&
+      if ((bug_mark_from_shortcut || (bug_chord_now && !playtest_bug_chord_prev)) && !playtest_bug_capture_waiting &&
           app.playtest_recorder.can_trigger_bug_mark(playtest_sample.t)) {
         playtest_bug_sample = playtest_sample;
         playtest_bug_capture_waiting = true;

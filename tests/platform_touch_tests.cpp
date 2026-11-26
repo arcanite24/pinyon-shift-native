@@ -189,6 +189,9 @@ void test_macos_shortcuts_and_portable() {
   assert(carview::match_macos_shortcut(SDLK_COMMA, SDL_KMOD_LGUI, true) == PlatformShortcut::kSettings);
   assert(carview::match_macos_shortcut(SDLK_F, SDL_KMOD_LGUI | SDL_KMOD_LCTRL, true) == PlatformShortcut::kToggleFullscreen);
   assert(carview::match_macos_shortcut(SDLK_P, SDL_KMOD_LGUI | SDL_KMOD_LSHIFT, true) == PlatformShortcut::kPhotoMode);
+  assert(carview::match_macos_shortcut(SDLK_B, SDL_KMOD_LGUI | SDL_KMOD_LSHIFT, true) == PlatformShortcut::kBugBookmark);
+  assert(carview::match_macos_shortcut(SDLK_B, SDL_KMOD_LGUI, true) == PlatformShortcut::kNone);
+  assert(carview::match_macos_shortcut(SDLK_B, SDL_KMOD_LGUI | SDL_KMOD_LSHIFT, false) == PlatformShortcut::kNone);
   assert(carview::match_macos_shortcut(SDLK_T, SDL_KMOD_RGUI, true) == PlatformShortcut::kTrainerOrTime);
   assert(carview::match_macos_shortcut(SDLK_Q, SDL_KMOD_LGUI, true) == PlatformShortcut::kQuit);
   // On non-macOS, Cmd/Win shortcuts do not fire

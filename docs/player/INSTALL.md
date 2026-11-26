@@ -91,6 +91,7 @@ Runs natively on macOS 13.3+ using Vulkan over Metal via **MoltenVK**
 | Open Settings Overlay | `Cmd + ,` |
 | Toggle Fullscreen | `Ctrl + Cmd + F` |
 | Open Photo Mode | `Cmd + Shift + P` |
+| Bug Bookmark (Playtest Mode) | `Cmd + Shift + B` |
 | Step Time of Day / Trainer | `Cmd + T` |
 | Quit | `Cmd + Q` |
 

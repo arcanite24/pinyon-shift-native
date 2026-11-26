@@ -903,6 +903,7 @@ struct DriveSession {
   void poll_sdl_events();
   void sample_driving_input(drive::Input& in, double& rig_look);
   bool pad_was_driving_ = false;  // last frame's pad drove the car (glyph switch on the edge)
+  bool playtest_bug_mark_requested = false;  // one-shot trigger from macOS Cmd+Shift+B shortcut
 
   // Interactive window loop (drive_render_loop.cpp)
   void poll_async_guest_loads();

@@ -77,6 +77,7 @@ enum class PlatformShortcut {
   kPhotoMode,         // Cmd + Shift + P
   kTrainerOrTime,     // Cmd + T
   kQuit,              // Cmd + Q
+  kBugBookmark,       // Cmd + Shift + B
 };
 
 // Matches macOS standard Command shortcuts using SDL keycode + SDL_Keymod bits.

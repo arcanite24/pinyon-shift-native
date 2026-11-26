@@ -153,7 +153,7 @@ void DriveSession::poll_sdl_events() {
                        !SDL_IsGamepad(e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ? e.jbutton.which : e.jhat.which)) {
               slice12.notify_gamepad_input(0, pads);
             }
-            // macOS Command shortcuts (Cmd+,, Ctrl+Cmd+F, Cmd+Shift+P, Cmd+T, Cmd+Q).
+            // macOS Command shortcuts (Cmd+,, Ctrl+Cmd+F, Cmd+Shift+P, Cmd+Shift+B, Cmd+T, Cmd+Q).
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
 #if defined(__APPLE__)
               constexpr bool kIsMacOs = true;
@@ -181,6 +181,9 @@ void DriveSession::poll_sdl_events() {
                 photo_mode.set_metric_units(app.metric_units);
                 photo_mode.enter({pat.x, pat.y, pat.z}, std::atan2(pf.x, pf.z),
                                  carview::PhotoLimits::from_settings(live_photo_through_walls, live_photo_wider_limits));
+                continue;
+              } else if (sc == carview::PlatformShortcut::kBugBookmark && app.playtest_recorder.active()) {
+                playtest_bug_mark_requested = true;
                 continue;
               } else if (sc == carview::PlatformShortcut::kTrainerOrTime) {
                 app.tod_clock.step_hours(1.0);

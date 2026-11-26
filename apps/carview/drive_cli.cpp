@@ -54,7 +54,7 @@ void drive_usage() {
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
                "           --debug-title (show live car/speed/RPM/coords telemetry in the window title)\n"
                "           --record-session <dir> (or SHIFT_RECORD_SESSION=<dir>: zero-hitch playtest telemetry,\n"
-               "           F11 / Back+RB bug bookmark screenshot + JSON repro, exit summary.json)\n"
+               "           F11 / Cmd+Shift+B (macOS) / Back+RB bug bookmark screenshot + JSON repro, exit summary.json)\n"
                "           --autoplay script [--autoplay-out dir] (timed keys, PNG captures, autopilot\n"
                "           driving and a beat log, beats.csv; the format is in autoplay.h)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
