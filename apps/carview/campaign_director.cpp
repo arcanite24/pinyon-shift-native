@@ -428,7 +428,10 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
   }
   if (c.launch_event_id) {
     act.launch_event = true;
-    act.event_id = std::to_string(c.launch_event_id);
+    // The career names its races by Events.Id; the race loader by
+    // HorizonEventID (77 is FESTIVAL_SECOND).
+    const auto* ev = catalog_ ? catalog_->find_event_by_id(c.launch_event_id) : nullptr;
+    act.event_id = ev && !ev->horizon_id.empty() ? ev->horizon_id : std::to_string(c.launch_event_id);
   }
   act.open_autoshow = c.open_autoshow;
   act.collect_yellow_wristband = c.collect_yellow_wristband;
