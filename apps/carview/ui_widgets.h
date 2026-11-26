@@ -94,7 +94,9 @@ bool looks_like_raw_key(std::string_view s);
 class LoadingScreen {
  public:
   static constexpr double kFadeInSec = 0.25;
-  static constexpr double kFadeOutSec = 0.25;
+  // The hand-off: the flows black out after a load and run global.fade_in
+  // (1 s, S curve, black; race/screen_fade.h).
+  static constexpr double kFadeOutSec = 1.0;
   // The original's shortest loads: from the title into free roam, and into
   // and out of an event (fast travel has none).
   static constexpr double kTitleMinSeconds = 1.0;
@@ -106,6 +108,9 @@ class LoadingScreen {
   // is kept for the stand-in drawing when the scene is missing.
   void start(std::string event_title = {}, std::string subtitle = {});
   void stop();
+  // The hand-off after a load another screen drew (the boot and world
+  // loads): the black fade_in alone.
+  void fade_in_from_black();
   bool active() const { return active_; }
   bool fading_out() const { return fading_out_; }
   bool visible() const { return active_ || fading_out_; }

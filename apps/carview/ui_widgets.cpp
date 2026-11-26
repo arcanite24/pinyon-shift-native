@@ -14,6 +14,7 @@
 #include "fh1data/ui_overlay.h"
 #include "frontend_screens.h"
 #include "game_hud.h"
+#include "race/screen_fade.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
 
@@ -987,17 +988,20 @@ void LoadingScreen::stop() {
   }
 }
 
+void LoadingScreen::fade_in_from_black() {
+  active_ = false;
+  fading_out_ = true;
+  fade_out_elapsed_ = 0.0;
+}
+
 float LoadingScreen::veil_alpha() const {
   if (active_) {
     if (elapsed_ >= kFadeInSec) return 0.0f;
     const float u = 1.0f - float(std::clamp(elapsed_ / kFadeInSec, 0.0, 1.0));
     return u * u;
   }
-  if (fading_out_) {
-    const float t = float(std::clamp(fade_out_elapsed_ / kFadeOutSec, 0.0, 1.0));
-    const float u = 1.0f - t;
-    return u * u;
-  }
+  static_assert(kFadeOutSec == race::kFlowFadeIn.duration, "the hand-off is the flows' fade_in");
+  if (fading_out_) return race::screen_fade_cover(race::kFlowFadeIn, fade_out_elapsed_, true);
   return 0.0f;
 }
 
@@ -1147,9 +1151,7 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
   if (!active_) {
     if (fading_out_) {
       const float va = veil_alpha();
-      if (va > 0.004f) {
-        l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(va * 255.0f))));
-      }
+      if (va > 0.004f) l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(0, 0, 0, uint8_t(std::lround(va * 255.0f))));
     }
     return;
   }

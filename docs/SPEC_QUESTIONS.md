@@ -3363,7 +3363,8 @@ the spinner turns once a second (set by eye). On event loads the engine
 puts the event's name on the scene's `Stat_Text` (an engine request; no
 original frame shows it), placed by eye. The minimum holds (1 s from the
 title into free roam, 3 s into and out of events, none for fast travel)
-follow the recomp; the engine's 0.25 s fades are its own.
+follow the recomp. The engine's 0.25 s fade in is its own; the close is
+the flows' `global.fade_in` (1 s, black, S curve; Q244).
 
 Needed: the spinner's rate and the fades' timings from the scene's
 timelines.
@@ -3525,48 +3526,56 @@ render target of the car, or a file per car), and the camera they use.
 
 ## Q129 (UI, not blocking): the hub rooms' tracks and cameras
 
-The Autoshow, the workshop and the paint booth are tracks on the disc
-(`uiautoshow`, `uiworkshop`, `uipaintshop`) with their own camera presets
-(`UICarTargetCameraPresets.xml`, the `HorizonAutoshow` set). The engine
-still draws each room as its studio stage (`build_hub_stage`) with a
-per-room colour. As an interim the Autoshow stage is dark
-(`19_autoshow_orig.png` is a dark club stage); the workshop and the paint
-booth keep their colours. Needed: how the title loads a room's track
-under the menu (which track per screen, the car's placement in it) and
-which preset each screen's camera uses.
+Mostly answered (WP3). The Autoshow, the workshop and the paint booth are
+tracks on the disc (`uiautoshow`, `uiworkshop`, `uipaintshop`), and the
+engine now draws each one in Colorado's place while its screen is open
+(`hub_room.h`, `DriveWorldHost::enter_room_world`); the garage and Barn
+Finds keep the studio stage. What reading them took:
 
-The rooms' tracks: each is a small track folder like Colorado's
-(`bin.zip` of 8.6 to 16.1 MB, one PVS zone, a one-cell `.hex`, a
-collision box about the origin, empty `GameObjs.xml`, `CollObjs.xml` and
-post zones, no time of day). `World::open` and `Collision::open` take any
-track folder, so reading them is not the obstacle; drawing one under the
-menu is: room models within 200 m of the origin count as local and are
-not gathered (`rmb_is_world_space`), placements at the origin are dropped
-(a Colorado filter), and a second world's texture numbers would collide
-with Colorado's in the GPU world (one world per host). A room needs a
-full world swap (as the Rally's ColoradoDirt does, seconds per entry) or a
-second world channel, and its interior shaders (`H_INT_*`,
-`HS_SKY_DIFF_HDRI_*`) are unchecked. The car's place in a room is not in
-its data (the empty `GameObjs.xml`); the presets suggest the origin. So
-the rooms stay the studio stage (MENU-02).
+- The rooms' models are local (within 200 m of the origin), so the room
+  gathers them with `GatherOptions::local_models`.
+- Their `.pvs` model lists differ from Colorado's: list 0 names no model,
+  and the parser had taken its textures for a fixed header (`52b4b95a`).
+- The rooms' game frame is the car's body frame (+Z forward), mirrored in
+  z into the car model's frame; the car stands at the origin, its wheels
+  on the floor there. Unturned, the paint booth matches
+  `20_paint_shop_orig.png` (EXIT sign, doors and ceiling lights).
+- A room's texture records move past Colorado's
+  (`hub_room_record_base`). One record in the Autoshow (21) and one in the
+  paint booth are in no bundle of the room's archive and draw untextured.
+- Leaving a room re-prepares Colorado's last gather on the main thread
+  (about 0.3 s); entering and leaving twice is clean
+  (`19c_room_left_free_roam_wp3.png`).
 
-The camera presets: `media/UICarTargetCameraPresets.xml` (loose on the
-disc) has 28 presets under 27 names (`LiveryLayerSelect_Wing` twice: one
-for every car, one for car 1124), each an eye (`posx/y/z`) and look
-direction (`facex/y/z`) in the car's frame (+Z front), a field of view, X
-and Y angle limits and `allowZoom`. The engine reads them
-(`parse_car_camera_presets`) and aims the hub camera with them: the
-workshop's `Upgrades_*` by the selected part, the paint shop's
-`LiveryMainMenu` and `LiveryPaintMenu_Body` (editor), and the Autoshow's
-colour select `CarColorSel`. The field of view is taken as vertical. Open:
-- the Autoshow's standard view: `HorizonAutoshow` puts the eye 4.8 m from
-  the car, but every reference dump has the live camera 6.58 m off
-  (AUTOSHOW_REFERENCE.md), so the engine keeps its own camera there and in
-  the garage;
-- the angle limits and zoom (not applied; the engine's orbit limits stay),
-  the `LiveryLayerSelect_*` and `LiveryPaintMenu_*` per region, and which
-  preset the workshop uses for a mid- or rear-engined car's engine parts
-  (`Upgrades_Engine_Rear`).
+The cameras are three files, not only the presets:
+
+- The room lists (the Autoshow's browse, the paint booth's rows, the
+  workshop's rows) play `camera.zip`'s `HomeSpaceCams.xml`: 12 cams over
+  79.58 s, looping. Its first shot is the front-left three-quarter view of
+  captures 19 and 20.
+- The workshop's body parts and wheels play `WorkshopCams.xml`'s looping
+  `Upgrade_Part_*` sequences, placed on the car's parts (`PartSpace`);
+  its engine and drivetrain parts use the `Upgrades_*` presets. Which part
+  uses which camera is Q221.
+- The paint editor's regions use `LiveryPaintMenu_*` and the Autoshow's
+  colour select `CarColorSel` from `UICarTargetCameraPresets.xml`. A
+  change of preset blends over 0.75 s (smoothstep, the yaw the short way
+  round).
+
+Still open:
+
+- the presets' X and Y angle limits and `allowZoom` (the engine's orbit
+  limits stay), and the `LiveryLayerSelect_*` presets (the vinyl rows open
+  the engine's editor, Q132);
+- the blend's length and curve between presets (measured nowhere; 0.75 s
+  is the engine's);
+- the `HorizonAutoshow` preset, which no screen uses now (the Autoshow
+  plays HomeSpaceCams);
+- the presets' origin: the engine takes `posy` from the ground, but
+  `CarColorSel`'s posy of -0.15 puts the eye below the floor that way, so
+  the origin may be the car's centre or its body's base;
+- which workshop part uses a sequence and which a preset (Q221);
+- the rooms' light (Q222) and the Autoshow's crowd and DJ (Q223).
 
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
@@ -4896,20 +4905,17 @@ Still not played:
   event hubs' (`AVAILABLE` / `UNAVAILABLE` / `BRONZE` / `SILVER` / `GOLD`)
   and each activity's (`Upright` / `UprightWarning`). The engine's map does
   not draw those icons from the scene, and the nodes it does draw have no
-  slides. The audit's MAP-05 (a perspective map, its zoom, and the icons'
-  `reveal_drop` / `bulge` / `grow` animations) and HUD-11 (the rumour's
-  map reveal) are `MapProfileFullscreen.xml` profile animations. Those are
-  not BGF timelines, and this work does not cover them. What this work
-  did under HUD-11 is `947_HUD`'s notification panel (`SHOW` / `HIDE`).
-- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
-  - `SpeedCamera`: `OFF` / `SHOW` / `ON` / `OLDPB`, and more;
-  - its `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
-  - `MissionsDamage`: `BARFILL`;
-  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
-
-  The engine draws its own speed trap and mission HUDs, not these
-  components (ACT-01 and ACT-02 themselves), so there is nothing to play
-  them on yet.
+  slides. The audit's MAP-05 icon animations (`grow`, `bulge`, `ghost`,
+  the radar ping) and HUD-11 (the rumour's map reveal) are
+  `MapProfileFullscreen.xml` profile animations; they are now decoded and
+  played (Q241). The perspective map itself and the career unlocks'
+  `reveal_drop` are not.
+- **The mission HUD (ACT-02).** `MissionsDamage`'s `BARFILL` is a gauge
+  scrubbed by the damage's fraction. The engine draws its own mission HUD,
+  not `MissionsDamage` / `MissionsScoring` / `MissionCountdown`, and has no
+  photo shoot damage, so there is nothing to play it on yet. The speed trap
+  panel, `SpeedCamera` (ACT-01), is drawn and played (Q242), and so is the
+  chain's `ScoreGroup` (`SHOW` / `HIDE` / `ABORT`, Q243).
 
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).
@@ -5012,7 +5018,8 @@ The engine meanwhile:
 - A barn with a running rumour gets the tan icon.
 - A found barn (restoring, ready or collected) gets the dark icon, the
   sheet's colour with no tint, as both profiles give it.
-- A selection fades the other icons to the profile's `ghost` alpha (0.3).
+- A hover plays the profile's `ghost` on the other icons (alpha 1 to 0.3
+  over 0.3 s) and `unghost` when it ends (Q241).
 
 Open:
 - Which fields bytes +44 and +513 are.
@@ -5190,3 +5197,245 @@ whose `Id` equals the `Rewards_DriverLevelv3` level; if the original
 keys it by level - 1, the cap at level 2 is 7, not 5.
 
 Needed: the pick screen's flow, and the row the cap is read from.
+
+## Q221 (MENU-03, not blocking): which workshop part plays which camera
+
+The disc has two sources for the upgrade shop's camera, and neither says
+which part uses it:
+
+- `WorkshopCams.xml` has seven looping 10 s sequences:
+  `Upgrade_Part_FRONT`, `HOOD`, `REAR`, `WING`, `SIDE`, `FRONTWHEEL` and
+  `REARWHEEL`. Each is placed on one of the car's parts (`headlightR`,
+  `headlightL`, `taillightL`, `taillightR`, `wheelLF`, `wheelRF`,
+  `wheelRR`).
+- `UICarTargetCameraPresets.xml` has fixed presets: `Upgrades_Main`,
+  `FrontBumper`, `RearBumper`, `RearWing`, `Hood`, `WheelStyle`,
+  `Flywheel`, `Engine_Front`, `Engine_Rear` and `Drivetrain`.
+
+The engine plays the sequences for the parts they name, and the presets
+for the parts that have no sequence:
+
+- **Sequences (`workshop_part_sequence`):**
+  - front bumper → FRONT;
+  - rear bumper and exhaust → REAR;
+  - wing → WING;
+  - hood → HOOD;
+  - side skirts → SIDE;
+  - tyres, rims, brakes and suspension → FRONTWHEEL.
+- **Presets (`workshop_part_preset`):**
+  - the engine's parts → `Upgrades_Engine_Front` (every engine taken as
+    front-mounted);
+  - the flywheel → `Upgrades_Flywheel`;
+  - the drivetrain → `Upgrades_Drivetrain`.
+
+REARWHEEL is not used. The recomp's source does not name either file's
+entries; the names are in the game's data.
+
+The engine's part positions are estimates (`car_parts`: headlights at the
+front overhang, 0.7 m up). With them, HOOD's shot looks down at the floor
+ahead of the car, with the car at the top left of the frame. That may be
+the original's framing, or a wrong part position or `PartSpace` reading.
+No capture shows the upgrade shop.
+
+Needed:
+- the title's part-to-camera table, and whether the sequences play only
+  after a part is fitted;
+- the engine's placement for `Upgrades_Engine_Rear`;
+- the parts' real positions (the car model's light and wheel bones);
+- a capture of the upgrade shop.
+
+## Q222 (MENU-02, not blocking): the hub rooms' interior shaders
+
+The rooms' surfaces use `H_INT_DIFF_SPEC_REFL_NORM_AO_LM`,
+`H_INT_DIFF_SPEC_REFL_AO_LM`, `H_INT_DIFF_EMISSIVE_2` and a
+`HS_SKY_DIFF_HDRI_SHAD_1` dome. Their TrackSettings have no sun, keep fog
+off, and set a near-black hemisphere:
+
+- paint booth: ambient 0.04 and DesaturateAmount 0.92;
+- workshop: hemisphere 0;
+- Autoshow: hemisphere top (0.01, 0.02, 0.06).
+
+So the light is baked into each surface's `*_LM` map. The engine's world
+shader adds a Light_Map as Colorado's night spill instead, and its SPIR-V
+cannot be rebuilt here. The interim:
+
+- `load_hub_room` moves each lightmap into the AO slot, which the shader
+  multiplies in.
+- The frame has no sun, fog or real-time sky, and a white hemisphere of
+  `kHubRoomLightmapGain` (5).
+
+Against `20_paint_shop_orig.png` the back wall reads 150 of 232 and the
+floor 135 of 144; the original is also greyer (the desaturation is not
+applied). The car keeps the engine's lighting and reflections, not the
+room's `staticcarcubemap.xpr`, and the hemisphere's gain reaches it too
+(the 300SL's door reads 64 at gain 1.6 and 82 at 5). A pale car looks
+overexposed and banded (`19b_manufacturer_select_wp3.png`).
+
+Needed: the `H_INT_*` shaders' lightmap term (its scale and whether it
+replaces the AO), how the rooms' post-process (desaturation and exposure)
+applies, and how the car is lit in a room (the static cubemap).
+
+## Q223 (MENU-02, MENU-08, not blocking): the Autoshow's crowd and DJ
+
+`19_autoshow_orig.png` shows a crowd, a DJ at a desk and moving lights
+on the Autoshow's stage. The `uiautoshow` track has the stage, speaker
+stacks, banners and light strips but no characters: its `GameObjs.xml`
+is empty. The engine draws the room without them.
+
+Needed: where the title spawns the Autoshow's crowd and DJ (a homespace
+script, `075_SHOWROOM_HOMESPACE`'s scene, or the spectator system) and
+their animations.
+
+## Q224 (MENU-06, MENU-18, not blocking): the world behind the option and stats pages
+
+Captures 23 to 26 show the world defocused behind the OPTIONS pages
+(CONTROLS, DIFFICULTY, HUD) and MY PROFILE's STATS. Captures 22 and 31
+show it sharp behind the lists (OPTIONS and PHOTO MODE). The engine draws
+the world sharp behind every page (`23_options_controls_wp3.png` to
+`26_my_profile_stats_wp3.png`). On STATS, the bright sky then shows
+through the gaps between the rows, which the original's blurred, darker
+backdrop hides. The pages' rows and values match the captures (HUD's
+values since WP3).
+
+Needed: which screens turn on the blur (a scene flag or the screen's
+code), its strength and its fade in and out.
+
+## Q241 (MAP-05, HUD-11, not blocking): the map profile animations as the engine plays them
+
+The format, the eases, the loops, the triggers and the camera blend are
+decoded from the title ("Map profile animations" in
+`docs/UI_SCENE_ANIMATION.md`). These parts are the engine's reading:
+
+- **Zoom.** The title's camera has a distance; the engine's map is flat
+  with a zoom. The engine takes its opening zoom as the title's opening
+  distance (`UI/Map/Zoom_Default` 0.35 of `Map_Distance_Min..Max`, 2808 m)
+  and zooms as 1 / distance. That puts `UI/Map/Cursor_Zoom_Min` / `_Max`
+  (0.1, 0.4) at 2.97 times in and 1.13 out; the captures measured about
+  2.6 in and 1/6 out (`MapZoom`). A reveal can end at up to 2.97 times
+  (barns 5 and 9), past the player's 2.6, and the player's first zoom then
+  snaps back to 2.6.
+- **The reveal's end view.** The unlock animations' targets are not the
+  rumour circles' centres: they sit 100 m to 2 km from them, pulled
+  towards the middle of the map. With the zoom above, every circle's
+  centre ends in view at 1280 x 720 (`road_discovery_tests`). Barn 1's
+  `posX2` / `posY2` keys (1025, -4727) are not used.
+- **The cursor.** `set_cursor set` (2.1 s) gives the cursor back; the
+  engine puts it at the middle of the view. During the move the cursor
+  stays where it was and still locks onto icons passing under it.
+- **Events.** An icon plays one event at a time: `intro` from the opening,
+  `hover` / `ghost` while something is hovered, `unghost` after. The icon
+  hovered before goes back to its `default` when the cursor leaves for an
+  empty spot. When the player stands on an icon the cursor locks onto it
+  as the map opens, so the map opens ghosted; no capture shows that case.
+- **The time step.** The title advances the animations by at most 1/30 s a
+  frame; the engine uses the clock since the map opened.
+- **The rumour popup.** The engine still shows its NEW BARN FIND RUMOR
+  notification; it appears when the map closes.
+
+Needed: a capture series of a rumour reveal (the map opening on its own
+during a drive), and a capture of the map opened with the player on an
+icon.
+
+## Q242 (ACT-01, not blocking): the speed trap panel's flow and rows
+
+`947_HUD`'s `SpeedCamera` slides are decoded ("The speed trap panel" in
+`docs/UI_SCENE_ANIMATION.md`); which slide the game goes to when, and the
+rows' text, are not. No capture shows the panel. The engine's reading:
+
+- **The flow.** A trap's pass plays `SHOW` (1 s) with the pass's speed,
+  then `NEWPB` or `OLDPB`, which fade the panel out at 2 s. A zone plays
+  `SHOW` as it starts and `ON` while it runs, with the live average, then
+  `NEWPB` or `OLDPB` as it ends; a cancelled run (off road, too slow, out
+  of the corridor) plays `ABORT`. The comparison slides (`COMPARE*`,
+  `NOCOMPARE*`) are not played: the engine has no leaderboard or rival
+  times offline, so `CompLines`, `Summary` and `LeaderboardText` stay down.
+- **The rows.** `Title` is the camera's name (`List_SpeedCameras`, "East
+  Rt. 20 Speed Trap"), not `IDS_Description_SpeedCamera` (SPEED TRAP).
+  The speed has two decimals and an upper-case unit (`Activities/IDS_Mph`,
+  `IDS_KmPerHour`). `SpeedPB` reads `IDS_PB`: speed unit (PB: 192.42 KM/H),
+  after the map popup's line. `NEW_PB` is `IDS_NewPB` (NEW PB!).
+- **The layout.** Stackers are not run. Each row is put on its `Stacker`'s
+  line: `Title` 37 px under the speed. `SpeedPB`'s slides put it on the
+  same line as `Title` (34 to 38 px under the speed), so the engine puts it
+  one row further down; which of the two the stackers move is open.
+- **Gone with the scene's panel:** the engine's full-screen white flash
+  on a pass and its RETURN TO ROAD! line; the scene has neither. The pass
+  still plays the camera's sounds.
+
+Needed: a capture series of a speed trap pass (a new PB and not), a speed
+zone run (start, running, end, cancelled), and one with a friend's time on
+the leaderboard (the comparison slides).
+
+## Q243 (ACT-02, HUD, not blocking): when the chain's score plays its slides
+
+`ScoreGroup`'s `SHOW` / `HIDE` / `ABORT` are decoded ("The skill chain's
+score" in `docs/UI_SCENE_ANIMATION.md`); when the game goes to each is
+not. The engine plays `SHOW` from the chain's first skill, `ABORT` when the
+chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`; a banked total
+holds 3 s, then `HIDE`. The timer's event (what the game does when it
+fires) is not decoded; the 0.6 s hold is read from it, and shortens the
+lost total from the engine's earlier 2.2 s to 0.8 s. The 3 s bank hold is
+the engine's earlier measurement. The red of a lost total is the engine's.
+
+Needed: a capture series of a chain lost (a crash) and of one banked, from
+the last skill until the score is gone.
+
+## Q244 (FE-02, not blocking): the flow fades' S curve and where they play
+
+`state_definitions.xml`'s `global.fade_in`, `fade_out` (1 s) and
+`fade_out_half_sec` (0.5 s) are black `CFadeIn` fades with `CurveType` S
+("Screen fades" in `docs/UI_SCENE_ANIMATION.md`). Not decoded:
+
+- **The S curve's shape.** The engine takes it as smoothstep (as Q61 (d)
+  does for the cutscene fades); the evaluator behind `CurveType` 1 is not
+  read.
+- **Which fades the campaign's stage changes run.** The engine's stage
+  changes now run `fade_out_half_sec`, then `fade_in`, from the free-roam
+  flow's fades; which states each original screen change passes through is
+  not traced, and some may cut.
+- **The load hand-off.** The flow blacks out after a load and runs
+  `fade_in`; the engine starts that fade on the frame the load screen
+  closes, and also after the boot load when there is no title. Its clock
+  is the game's frame time. Each step is clamped to 0.05 s, and a frame
+  that does not advance the game clock counts 1/60 s. A logged boot
+  hand-off ran 59 frames and was clear by 0.88 s of game time. The first
+  frames after a load are slow, so on the wall clock the
+  capture (`load_handoff_fade_sheet_anim2.png`, 0.25 s apart) stretches to
+  about 1.25 s. Whether the original's fade counts game or wall time is
+  not known. Only the boot hand-off is captured. The title's load, the
+  world loads and the stage changes rest on the tests, and whether an
+  event load's fade stacks on a following movie or transition is not
+  checked.
+
+Needed: a capture series at 30 fps from a load screen closing into free
+roam and from a festival stage change, to fit the curve and the order.
+
+## Q245 (FE-01, not blocking): the title's music
+
+Settled: the title's music is `ui4audio.xml`'s `SplashScreen` play,
+`UIInGame/UI/FrontEnd/FE_Ambience` (`isLooping`). That event is in the
+`music` category and has one sound: `PressStart_Music.wav`,
+`UIInGame_Streams` sub-sound 22, 338.353 s. The engine's title bed
+(`UiMusicMode::kTitle`, the sub-sound named like `pressstart_music`) is
+that same sub-sound, and `audio_parity_corpus` checks the chain. The audio
+track of `PressStart.wmv` (wmapro, 48 kHz stereo, 53.93 s) is digital
+silence: FFmpeg's volumedetect reads -91 dB mean and peak, and astats reads
+-inf. The same decoder reads `FMV_01.wmv`'s first minute at -21.1 dB mean
+and 0 dB peak, so the reading is not a decode fault. `PressStart.def` names
+only the video stream (`<Video id="2" />`), while `FMV_01.def` lists its
+four language tracks. Routing the movie's audio at `menuMovieMusic` (0.4) would add
+nothing, so the engine keeps it muted and plays no second music source.
+The audit's FE-01 fix (play the movie's track and drop the sample) would
+have silenced the title.
+
+Open:
+- **`menuMusic="0.0"`.** `AudioEngineConfig.xml`'s `menuMusic="0.0"` and
+  `menuMovieMusic="0.4"` are not mapped to FEV categories or mixer buses.
+  If `menuMusic` scaled the `music` category on the title, the title would
+  be silent, which the engine does not do.
+- **When `SplashScreen` fires and stops.** Whether it also plays on SINGLE
+  PLAYER's menu, and how it fades out, is not traced. The engine plays the
+  bed while the title is up.
+
+Needed: a recorded title session with its audio, from Press Start into the
+menu and into a load.

@@ -158,6 +158,19 @@ void test_synthetic_cjk_and_widgets() {
   carview::ui::List ll;
   ls.draw(ll, 640.0f, 360.0f);
   check(!ll.empty(), "LoadingScreen::draw emits UI items");
+  // The hand-off: global.fade_in, black then 1 s of S curve.
+  ls.stop();
+  check(ls.fading_out() && ls.veil_alpha() == 1.0f, "the hand-off starts black");
+  ls.update(0.5);
+  check(std::fabs(ls.veil_alpha() - 0.5f) < 1e-4f, "the hand-off is half clear at 0.5 s");
+  ls.update(0.6);
+  check(!ls.visible() && ls.veil_alpha() == 0.0f, "the hand-off ends after 1 s");
+  carview::LoadingScreen handoff;
+  handoff.fade_in_from_black();
+  check(handoff.fading_out() && !handoff.active() && handoff.veil_alpha() == 1.0f,
+        "a load drawn elsewhere hands off from black");
+  handoff.update(0.25);
+  check(handoff.veil_alpha() < 1.0f && handoff.veil_alpha() > 0.8f, "the S curve starts slowly");
 
   // OnScreenKeyboard typing, plate uppercase, backspace, confirm.
   carview::OnScreenKeyboard kb;

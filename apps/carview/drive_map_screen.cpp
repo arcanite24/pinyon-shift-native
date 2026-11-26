@@ -72,6 +72,8 @@ void DriveSession::map_screen_open() {
                       float((0.5 * map_h - (p.z - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
   }
   map_opened_at = now_s();
+  map_anim_hover = map_anim_prev = false;
+  map_anim_hover_since = 0.0, map_anim_ghost_since = -1.0, map_anim_drawn = -1.0;
   map_base_zoom = map_zoom;
   map_filter_open = false;
   map_filter_row = map_filter_first = 0;
@@ -121,6 +123,114 @@ void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axi
     // The selected icon grows and the rest dim: a new raster.
     if (map_selected_marker != was) map_dirty = true;
   }
+}
+
+void DriveSession::map_anim_fill(MapScene& ms) {
+  const double t = std::max(0.0, now_s() - map_opened_at);
+  const bool same = map_hover_on == map_anim_hover &&
+                    (!map_hover_on || (std::fabs(map_hover_x - map_anim_hx) < 0.5 && std::fabs(map_hover_z - map_anim_hz) < 0.5));
+  if (!same) {
+    // The icon that was under the cursor ghosts (another hovered) or goes
+    // back to its default (none); the others ghost when a hover starts
+    // from none and unghost when it ends.
+    if (map_anim_hover) map_anim_prev = true, map_anim_px = map_anim_hx, map_anim_pz = map_anim_hz;
+    if (map_hover_on && !map_anim_hover) map_anim_ghost_since = t;
+    map_anim_hover = map_hover_on;
+    map_anim_hx = map_hover_x, map_anim_hz = map_hover_z;
+    map_anim_hover_since = t;
+  }
+  ms.anim_time = t;
+  ms.has_hover = map_anim_hover;
+  ms.hover_x = map_anim_hx, ms.hover_z = map_anim_hz;
+  ms.hover_since = map_anim_hover_since;
+  ms.ghost_since = map_anim_ghost_since;
+  ms.has_prev_hover = map_anim_prev;
+  ms.prev_hover_x = map_anim_px, ms.prev_hover_z = map_anim_pz;
+  // The player's ping fires its "audio" trigger (Map_Radar) at each pass.
+  // (Not the passes missed behind the FILTER popup or a dialog.)
+  const mapanim::Animation* ping = app.map_view.icon_animation("player_local", "default");
+  if (ping && t - std::max(0.0, map_anim_drawn) < 0.5)
+    for (const mapanim::Trigger* tr : ping->crossed(float(std::max(0.0, map_anim_drawn)), float(t)))
+      if (tr->type == "audio" && !tr->value.empty()) app.audio_host.play_ui(tr->value);
+  map_anim_drawn = t;}
+
+// The original's camera distance when the map opens (Zoom_Default's share
+// of Map_Distance_Min..Max, 2808 m), taken as the engine's opening zoom; the
+// zoom follows 1 / distance (Q241).
+const double kOpeningDistance = mapanim::map_distance(mapanim::kZoomDefault);
+
+void DriveSession::map_reveal_start(size_t index) {
+  if (index >= app.collectibles.barns.size() || map_open) return;
+  const auto& b = app.collectibles.barns[index];
+  open_map();
+  if (!map_open) return;
+  // CForceMapFilterStatus forceFilterType="On" filterType="BarnFinds".
+  map_reveal_saved_filter = map_filter;
+  map_reveal_restore_filter = true;
+  if (!map_filter.is_ticked(MapFilterRow::kBarnFinds)) map_filter.toggle(MapFilterRow::kBarnFinds);
+  update_map_selection();
+  map_dirty = true;
+  // CTriggerVO wait="false": the line plays over the map.
+  if (!b.map_vo.empty()) app.audio_host.trigger_vo(b.map_vo, false);
+  map_reveal_anim = app.map_view.animation(b.map_animation);
+  map_reveal_t = 0.0;
+  map_reveal_locked = map_reveal_anim != nullptr;
+  map_reveal_cx = map_cx, map_reveal_cz = map_cz, map_reveal_zoom = map_zoom;
+  std::printf("map: %s rumour reveal (%s, %s)\n", b.name.c_str(), b.map_animation.c_str(), b.map_vo.c_str());
+}
+
+bool DriveSession::map_reveal_step(double dt) {
+  if (!map_reveal_anim || !map_open) {
+    map_reveal_anim = nullptr;
+    map_reveal_locked = false;
+    return false;
+  }
+  const mapanim::Animation& a = *map_reveal_anim;
+  const double t0 = map_reveal_t;
+  map_reveal_t += std::min(dt, double(mapanim::kMaxStep));
+  // The title's blend: the camera from the player's view to the animation's
+  // (posX, posY) by alpha, and the distance from the player's to scaleY's
+  // share of Map_Distance_Min..Max, the zoom following the distance.
+  const mapanim::CameraMove m = mapanim::camera_at(a, float(map_reveal_t));
+  if (m.has_target) {
+    map_cx = map_reveal_cx + (m.x - map_reveal_cx) * m.weight;
+    map_cz = map_reveal_cz + (m.z - map_reveal_cz) * m.weight;
+  }
+  if (m.has_zoom) {
+    const double d_user = kOpeningDistance * map_base_zoom / std::max(1e-6, map_reveal_zoom);
+    const double d = d_user + (mapanim::map_distance(m.zoom) - d_user) * m.weight;
+    map_zoom = map_base_zoom * kOpeningDistance / std::max(1.0, d);
+  }
+  if (map_w > 64 && map_h > 64) app.map_view.clamp_camera(map_w, map_h, map_zoom, map_cx, map_cz);
+  map_dirty = true;
+  for (const mapanim::Trigger* tr : a.crossed(float(t0), float(map_reveal_t))) {
+    if (tr->type == "set_cursor") {
+      // The cursor is the player's again, at the middle of the view.
+      map_reveal_locked = false;
+      map_cursor.reset();
+      map_cam.reset(map_cx, map_cz, map_zoom);
+      map_cursor_world();
+      update_map_selection();
+    } else if (tr->type == "audio" && !tr->value.empty()) {
+      app.audio_host.play_ui(tr->value);
+    }
+  }
+  if (a.done(float(map_reveal_t))) {
+    map_reveal_anim = nullptr;
+    if (map_reveal_locked) {  // no set_cursor: free it at the end
+      map_reveal_locked = false;
+      map_cursor.reset();
+      map_cam.reset(map_cx, map_cz, map_zoom);
+      map_cursor_world();
+      update_map_selection();
+    }
+  }
+  return map_reveal_locked;
+}
+
+bool DriveSession::map_anim_due() const {
+  if (!map_open || map_filter_open || map_dialog != MapDialog::kNone || map_details) return false;
+  return now_s() - map_opened_at - map_anim_drawn >= double(mapanim::kMaxStep);
 }
 
 void DriveSession::map_screen_fill() {

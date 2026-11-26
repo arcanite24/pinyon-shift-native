@@ -580,6 +580,19 @@ bool DriveSession::free_roam_step() {
           host.free_roam->set_barn_tuning(bt.time_between_ticks_s, bt.max_idle_time_s, bt.min_distance_before_next_m,
                                           bt.min_speed_before_spawn_ms, bt.min_time_before_spawn_s);
         }
+        // --barn-reveal: that barn's rumour reveal, once the world is up.
+        if (!app.cli_barn_reveal.empty() && vehicle.time() > 3.0 && app.window && !map_open) {
+          for (size_t bi = 0; bi < app.collectibles.barns.size(); ++bi) {
+            if (app.collectibles.barns[bi].name != app.cli_barn_reveal) continue;
+            // The rumour starts as the controller would (an unfound barn).
+            if (bi >= app.progress.barns.size()) app.progress.barns.resize(app.collectibles.barns.size());
+            auto& bp = app.progress.barns[bi];
+            if (!freeroam::barn_discovered(bp.status) && bp.status != freeroam::kBarnRumour)
+              bp.status = freeroam::kBarnRumour, bp.rumour_at = std::trunc(app.progress.total_distance);
+            map_reveal_start(bi);
+          }
+          app.cli_barn_reveal.clear();
+        }
         freeroam::BarnContext barn_ctx;
         barn_ctx.free_roam = app.race == nullptr;
         barn_ctx.blocked = app.pr_stunt_session.active() || (app.speed_tracker && app.speed_tracker->zone_active());
@@ -631,6 +644,10 @@ bool DriveSession::free_roam_step() {
             }
             std::printf("t %.2f s: %s rumour at %.1f km driven\n", vehicle.time(),
                         app.collectibles.barns[size_t(ev.index)].name.c_str(), app.progress.total_distance / 1000);
+            // barnfindspawn_root: the paused map opens on the rumour (not in
+            // headless or scripted runs, which nobody closes the map in).
+            if (!app.headless && app.window && app.script_path.empty() && !app.race)
+              map_reveal_start(size_t(ev.index));
           } else if (ev.kind == freeroam::Event::kBarnReady) {
             // Restored: BARN FIND READY - {car}, Dak's call, then the garage collects it.
             const auto& b = app.collectibles.barns[size_t(ev.index)];
@@ -1507,14 +1524,18 @@ bool DriveSession::step(const drive::Input& user_in) {
             prev_speed_z = sp_at.z;
             have_prev_speed_pos = true;
           }
-          if (app.demo_speed_trap && !demo_speed_trap_done && vehicle.time() >= 4.0 && !app.speed_data.traps.empty()) {
-            demo_speed_trap_done = true;
+          // Two passes: ~144.3 mph at 4 s (a new PB), then ~134.2 mph at 13 s
+          // (short of it: the personal best line).
+          if (app.demo_speed_trap && demo_speed_trap_passes < 2 &&
+              vehicle.time() >= (demo_speed_trap_passes == 0 ? 4.0 : 13.0) && !app.speed_data.traps.empty()) {
+            const double mps = demo_speed_trap_passes == 0 ? 64.5 : 60.0;
+            ++demo_speed_trap_passes;
             const auto& g = app.speed_data.traps.front().gate;
             const double gx = g.right[0] - g.left[0], gz = g.right[2] - g.left[2];
             const double gl = std::max(1.0, std::hypot(gx, gz));
             const double nx = -gz / gl, nz = gx / gl;
             app.speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), g.center[0] - nx * 4.0, g.center[2] - nz * 4.0,
-                                g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, 64.5);  // ~144.3 mph flash & PB
+                                g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, mps);
           }
           // R3-CAM-11: Feed live off-road state to SpeedActivityTracker before stepping Speed Zones.
           {

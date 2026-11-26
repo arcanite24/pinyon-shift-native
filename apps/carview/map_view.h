@@ -42,6 +42,7 @@ inline std::array<double, 2> minimap_compass_north_pos(double map_heading_rad, i
 #include "freeroam/collectibles.h"
 #include "freeroam/road_discovery.h"
 #include "hud.h"
+#include "map_anim.h"
 #include "map_filter.h"
 
 namespace fh1 {
@@ -115,6 +116,19 @@ struct MapScene {
   // The pause map behind the FILTER popup and the fast travel dialogs:
   // blurred (map_filter_orig.png, map_fasttravel_confirm_orig.png).
   bool blur = false;
+  // The pause map's icon animations (MapProfileFullscreen.xml, map_anim.h):
+  // each icon plays its symbolizers' "intro" from the map's opening, "hover"
+  // under the cursor while the rest play "ghost", the rest "unghost" once
+  // the cursor leaves, and "default" where a symbolizer binds nothing to its
+  // event. Times are seconds since the map opened; anim_time < 0 draws each
+  // event's last frame (still pictures, tests).
+  double anim_time = -1;
+  bool has_hover = false;       // an icon under the cursor at (hover_x, hover_z)
+  double hover_x = 0, hover_z = 0;
+  double hover_since = 0;       // when this hover, or the last one's end, began
+  double ghost_since = -1;      // when the others ghosted (-1: not yet this opening)
+  bool has_prev_hover = false;  // the icon hovered before (it ghosts from hover_since)
+  double prev_hover_x = 0, prev_hover_z = 0;
 };
 
 class MapView {
@@ -158,11 +172,14 @@ class MapView {
     int cell_x = 0, cell_y = 0;
     double size = 45;  // DynamicSize (or Size)
     Rgba colour;
+    mapanim::Bindings anims;  // event -> animation name
   };
   struct Profile {
     std::map<std::string, LineStyle> roads;               // by road_type
     std::map<std::string, std::vector<IconStyle>> icons;  // by filter value, drawn in order
     Rgba region_fill{255, 255, 255, 255}, region_rim{0, 0, 0, 51};
+    mapanim::Library anims;       // the profile's <animations>
+    mapanim::Bindings new_badge;  // the career icons' "NEW" symbolizer (icon_up_career_new)
   };
   struct Atlas {
     uint32_t width = 0, height = 0;
@@ -174,6 +191,11 @@ class MapView {
   // True when retail New.xds badge texture was loaded from Horizon.zip.
   bool has_new_badge() const { return !new_badge_.rgba.empty(); }
   const Atlas& large_icons() const { return large_icons_; }
+  // The pause map profile's animations: one by name (the camera moves), and
+  // the one the `key` group's first symbolizer binding `event` plays.
+  const mapanim::Library& animations() const { return full_.anims; }
+  const mapanim::Animation* animation(std::string_view name) const { return full_.anims.find(name); }
+  const mapanim::Animation* icon_animation(std::string_view key, std::string_view event) const;
   const Atlas& small_icons() const { return small_icons_; }
 
  private:

@@ -261,6 +261,12 @@ bool DriveWorldHost::set_staged_world() {
           return false;
         }
         follower.set_points(std::move(prepared->road));
+        if (room_world != HubRoom::kNone) {
+          // A hub room is drawn: Colorado's new gather waits for the room to
+          // close (leave_room_world draws the streamer's latest).
+          deferred_prepared_.reset();
+          return true;
+        }
         showroom.set_world_glows(std::move(prepared->glows));
         // If an async GPU world upload is still in flight (or deferred textures for this ring
         // are still being drip-fed into the GPU at <= 1.8 ms/frame in windowed mode), never stall
@@ -286,6 +292,7 @@ bool DriveWorldHost::set_staged_world() {
 }
 
 bool DriveWorldHost::pump_deferred_world() {
+  if (room_world != HubRoom::kNone) return true;
   if (!deferred_prepared_ || showroom.has_pending_world() || showroom.deferred_upload_queue_size() > 0) return true;
   auto prepared = std::move(deferred_prepared_);
   if (!prepared || !prepared->staged) return true;
@@ -774,7 +781,7 @@ bool DriveWorldHost::open_world_and_car() {
           streamer->set_async(streamer_async);
           streamer->set_lead(true);  // keeps a fast car central in the collision
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
-            const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
+            const bool async_mid_drive = !prepare_on_main && streamer_async && streamer && streamer->gathers() >= 1;
             if (async_mid_drive) lower_stream_worker_priority();
             auto staged = std::make_shared<Showroom::StagedWorld>();
             std::string e;
@@ -898,6 +905,8 @@ bool DriveWorldHost::open_world_and_car() {
         if (boot_cancelled) {
           return false;
         }
+        // Straight into the world (no title): the hand-off fade.
+        if (boot_live_ui && !app.show_title) app.loading_hand_off = true;
         if (app.status == 0) {
           std::printf("spawn %s: %.3f %.3f %.3f heading %.4f rad\n", how, sp.position[0], sp.position[1],
                       sp.position[2], sp.heading);
@@ -1029,7 +1038,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             streamer->set_async(streamer_async);
             streamer->set_lead(true);
             streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
-              const bool async_mid_drive = streamer_async && streamer && streamer->gathers() >= 1;
+              const bool async_mid_drive = !prepare_on_main && streamer_async && streamer && streamer->gathers() >= 1;
               if (async_mid_drive) lower_stream_worker_priority();
               auto staged = std::make_shared<Showroom::StagedWorld>();
               std::string e;
@@ -1125,6 +1134,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         }
         if (hot_live_ui) app.audio_host.set_blocking_load(false);
         if (hot_cancelled) return false;
+        if (hot_live_ui) app.loading_hand_off = true;
         const double hot_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
         std::printf("carview: hot swap to %s in %.1f ms (car %s, regather %s, world textures kept: %zu, gpu draws: %u)\n",
@@ -1155,6 +1165,75 @@ void DriveWorldHost::run() {
   }
   if (app.validation) std::printf("validation messages: %u\n", renderer.validation_messages());
   if (app.status == 0 && renderer.validation_messages()) app.status = 3;
+}
+
+bool DriveWorldHost::enter_room_world(HubRoom room) {
+  if (room_world == room) return true;
+  if (!hub_room_track(room) || room_failed.count(room) || app.world_dir.empty() || !streamer) return false;
+  auto& cached = room_scenery[room];
+  if (!cached) {
+    auto s = std::make_shared<HubRoomScenery>();
+    std::string e;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!load_hub_room(app.game_root_of(), room, *s, &e)) {
+      std::fprintf(stderr, "carview: hub room %s: %s (the studio stage stays)\n", hub_room_track(room), e.c_str());
+      room_scenery.erase(room);
+      room_failed.insert(room);
+      return false;
+    }
+    std::printf("hub room %s: %zu models, %zu triangles, %zu textures (%zu failed), floor %.3f m, %.0f ms\n",
+                hub_room_track(room), s->models, s->triangles.positions.size() / 3, s->textures, s->failed,
+                double(s->floor_y),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    cached = std::move(s);
+  }
+  WorldTriangles tri = cached->triangles;
+  // Textures still resident from an earlier visit are not uploaded again.
+  tri.textures.erase(std::remove_if(tri.textures.begin(), tri.textures.end(),
+                                    [&](const std::shared_ptr<const WorldTextureData>& t) {
+                                      return t && showroom.has_world_texture(t->record);
+                                    }),
+                     tri.textures.end());
+  std::string e;
+  if (!showroom.set_world(build_world(tri), e)) {
+    std::fprintf(stderr, "carview: hub room %s: %s\n", hub_room_track(room), e.c_str());
+    room_failed.insert(room);
+    room_world = room;  // whatever was swapped in goes again
+    leave_room_world();
+    return false;
+  }
+  showroom.set_world_glows({});
+  // An interior: the room's own dome, not Colorado's sky.
+  showroom.set_sky_hidden(true);
+  room_world = room;
+  return true;
+}
+
+bool DriveWorldHost::leave_room_world() {
+  if (room_world == HubRoom::kNone) return true;
+  room_world = HubRoom::kNone;
+  showroom.set_sky_hidden(false);
+  deferred_prepared_.reset();
+  if (!streamer || !streamer->prepare() || streamer->mesh().triangles() == 0) return false;
+  // A gather on the worker owns the World: its result swaps Colorado in
+  // when it lands (set_staged_world).
+  if (streamer->gathering()) return true;
+  const auto t0 = std::chrono::steady_clock::now();
+  // On this thread: no worker priority, no deferred textures.
+  prepare_on_main = true;
+  std::any any = streamer->prepare()(streamer->mesh(), streamer->centre_x(), streamer->centre_z());
+  prepare_on_main = false;
+  auto* pp = std::any_cast<std::shared_ptr<Prepared>>(&any);
+  if (!pp || !*pp || !(*pp)->staged) return false;
+  std::shared_ptr<Prepared> prepared = std::move(*pp);
+  follower.set_points(std::move(prepared->road));
+  showroom.set_world_glows(std::move(prepared->glows));
+  std::string e;
+  const bool ok = showroom.set_world(std::move(*prepared->staged), e);
+  if (!ok) std::fprintf(stderr, "carview: Colorado after the hub room: %s\n", e.c_str());
+  std::printf("hub room left: Colorado drawn again (%.0f ms)\n",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  return ok;
 }
 
 }  // namespace carview

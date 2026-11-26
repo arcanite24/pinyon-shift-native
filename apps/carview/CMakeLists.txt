@@ -137,10 +137,11 @@ add_library(carview_hud STATIC
   race_screens.cpp
   rally_hub.cpp
   scene_screen.cpp
-  scene_timeline.cpp)
+  scene_timeline.cpp
+  map_anim.cpp)
 set_target_properties(carview_hud PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_hud PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(carview_hud PUBLIC fh1data shift_freeroam shift_race shift_garage shift_drive)
+target_link_libraries(carview_hud PUBLIC fh1data shift_freeroam shift_race shift_garage shift_drive shift_audio)
 
 set(carview_sources
   main.cpp
@@ -184,6 +185,7 @@ set(carview_sources
   upgrade_shop.cpp
   autoshow.cpp
   hub_scene.cpp
+  hub_room.cpp
   livery_editor.cpp
   career_page.cpp
   club_view.cpp

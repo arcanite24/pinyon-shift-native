@@ -134,20 +134,26 @@ bool parse_object_table(std::span<const uint8_t> d, PvsObjectTable& out, std::st
       out.textures[k].type = t[27];
     }
     try {
+      // `lists` model lists, list j for member j: its texture indices (a
+      // count, then the indices), its effect indices (likewise) and 15 words.
+      // List 0 names no model (Colorado's is textures 0 and 1; the hub
+      // rooms' tracks have it empty, MENU-02), so model_textures[j] is list
+      // j + 1, for member j + 1. Colorado's lists read the same as when the
+      // list-0 texture words were taken for a fixed "2, 0, 1" header.
       BeReader r(d, size_t(q - d.data()));
       const uint32_t lists = r.u32();
-      if (lists > 1u << 20) throw FormatError(std::to_string(lists) + " model lists");
-      for (uint32_t want : {2u, 0u, 1u})
-        if (r.u32() != want) throw FormatError("model list header is not 2, 0, 1");
-      out.model_textures.resize(lists);
-      for (auto& list : out.model_textures) {
+      if (lists == 0 || lists > 1u << 20) throw FormatError(std::to_string(lists) + " model lists");
+      out.model_textures.resize(lists - 1);
+      for (uint32_t j = 0; j < lists; ++j) {
+        const uint32_t t = r.u32();
+        if (t > r.remaining() / 4) throw FormatError("texture indices run past the end");
+        std::vector<uint32_t> skipped;
+        std::vector<uint32_t>& list = j > 0 ? out.model_textures[j - 1] : skipped;
+        list.resize(t);
+        for (auto& v : list) v = r.u32();
         const uint32_t k = r.u32();
         if (k > r.remaining() / 4) throw FormatError("effect indices run past the end");
         r.skip(size_t(k) * 4 + 15 * 4);
-        const uint32_t t = r.u32();
-        if (t > r.remaining() / 4) throw FormatError("texture indices run past the end");
-        list.resize(t);
-        for (auto& v : list) v = r.u32();
       }
     } catch (const FormatError& e) {
       out.model_textures.clear();

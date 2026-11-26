@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cars/livery.h"
+#include "fh1data/archive.h"
 #include "cars/sources.h"
 #include "settings.h"
 
@@ -477,6 +478,7 @@ bool DriveSession::map_marker_visible(const MapMarker& m) {
 
 void DriveSession::update_map_selection() {
           map_selected_marker = -1;
+          map_hover_on = false;
           map_overlay = carview::MapOverlayHud{};
           if (!map_open) return;
           if (map_w > 64 && map_h > 64) {
@@ -559,7 +561,11 @@ void DriveSession::update_map_selection() {
               map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
               map_overlay.distance_m = std::hypot(map_px - at.x, map_pz - at.z);
             }
+            map_hover_on = matched_collectible;
           }
+          // The icon under the cursor plays its hover animation (map_anim_fill).
+          if (map_selected_marker >= 0) map_hover_on = true;
+          map_hover_x = target_x, map_hover_z = target_z;
 
           // Retail FH1 1:1 button bar prompts with ZERO duplication between A and X:
           // A / Enter / Left-Click: Set / Toggle GPS route (keeps map open!).
@@ -649,6 +655,10 @@ void DriveSession::open_map() {
 
 void DriveSession::close_map() {
           map_open = false;
+          // A rumour reveal's forced Barn Finds filter ends with the map.
+          map_reveal_anim = nullptr;
+          map_reveal_locked = false;
+          if (map_reveal_restore_filter) map_filter = map_reveal_saved_filter, map_reveal_restore_filter = false;
           map_overlay.active = false;
           host.renderer.set_overlay({}, 0, 0, 0, 0, 2);
           minimap_at = -1;
@@ -788,6 +798,27 @@ const carview::CarCameraPreset* DriveSession::hub_preset(std::string_view name) 
             }
           }
           return carview::find_car_camera_preset(hub_cam_presets, name);
+}
+
+const cutscene::Cutscene* DriveSession::hub_sequence(std::string_view member, std::string_view name) {
+  auto it = hub_cam_sequences.find(std::string(member));
+  if (it == hub_cam_sequences.end()) {
+    std::unique_ptr<cutscene::Library> lib;
+    std::string why;
+    if (auto zip = fh1::Archive::open(app.game_root_of() / "media" / "camera.zip", &why)) {
+      auto r = zip->read(std::string(member));
+      if (r.ok()) {
+        lib = std::make_unique<cutscene::Library>();
+        const std::string xml(reinterpret_cast<const char*>(r.data.data()), r.data.size());
+        if (!cutscene::parse_camera_sequences(xml, *lib, &why)) lib.reset();
+      } else {
+        why = "no " + std::string(member);
+      }
+    }
+    if (!lib) std::fprintf(stderr, "carview: camera.zip %s: %s (the engine's camera)\n", std::string(member).c_str(), why.c_str());
+    it = hub_cam_sequences.emplace(std::string(member), std::move(lib)).first;
+  }
+  return it->second ? it->second->find(name) : nullptr;
 }
 
 void DriveSession::open_stats() {

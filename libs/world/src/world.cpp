@@ -1224,7 +1224,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   const double r = options.radius;
   for (uint32_t i = 0; i < models_.size(); ++i) {
     const ModelInfo& m = models_[i];
-    if (!m.ok || !m.world_space) continue;
+    if (!m.ok || (!m.world_space && !options.local_models)) continue;
     const double dx = std::max({0.0, double(m.box_min[0]) - x, x - double(m.box_max[0])});
     const double dz = std::max({0.0, double(m.box_min[2]) - z, z - double(m.box_max[2])});
     if (dx * dx + dz * dz > r * r) continue;

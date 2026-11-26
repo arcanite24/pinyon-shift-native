@@ -215,6 +215,9 @@ struct DriveApp : DriveConfig {
   // load screen holds LoadingScreen::kEventMinSeconds, as the original's does.
   bool loading_into_event = false;
   bool loading_out_of_event = false;
+  // A boot or world load's screen just closed: the session's loading screen
+  // runs the hand-off fade (global.fade_in) next frame.
+  bool loading_hand_off = false;
   // The next race is a restart (PreRace_restart: the grid menu only).
   bool race_restart = false;
   // The car chosen on the event's car select (STAY IN CAR? after the race).

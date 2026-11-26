@@ -892,8 +892,14 @@ class Showroom {
   // Real-time sky from media/realtimesky.zip (atmosphere, Stars.bin, sun/moon, clouds).
   bool upload_sky(const world::RealTimeSkyAssets& assets, std::string& error);
   bool has_sky() const { return sky_ready_; }
+  // Leaves the sky out of the frame (the background colour shows instead):
+  // the hub rooms are interiors with no time of day (MENU-02).
+  void set_sky_hidden(bool hidden) { sky_hidden_ = hidden; }
   // Updates dynamic 24-hour Time-of-Day lighting, fog, and sky parameters.
   void set_tod(const world::TodState& tod, int moon_phase, float real_time_sec, float eye_game_y);
+  // The state set_tod last took, for a frame that draws another place's
+  // light (a hub room's) until the next set_tod.
+  world::TodState& tod_state() { return tod_state_; }
   // Updates wind animation parameters (from TrackSettings.xml) for waving flags & grass.
   void set_wind(float speed, float amplitude) { wind_speed_ = speed, wind_amplitude_ = amplitude; }
   // The direction the sun shadow is cast from (towards the light, the
@@ -1541,6 +1547,7 @@ class Showroom {
   float tod_real_time_ = 0.0f;
   float tod_eye_game_y_ = 150.0f;
   bool sky_ready_ = false;
+  bool sky_hidden_ = false;
   bool sky_has_textures_ = false;
   struct SkyUniforms {
     float cam_fwd[4];

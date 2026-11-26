@@ -37,7 +37,7 @@ add_executable(cutscene_tests cutscene_tests.cpp)
 target_link_libraries(cutscene_tests PRIVATE shift_cutscene)
 add_test(NAME cutscene_tests COMMAND cutscene_tests)
 add_executable(cutscene_corpus_tests cutscene_corpus_tests.cpp)
-target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene)
+target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene shift_race shift_audio fh1data)
 add_test(NAME cutscene_corpus_tests COMMAND cutscene_corpus_tests)
 set_tests_properties(cutscene_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 
@@ -119,7 +119,7 @@ add_executable(trainer_pacing_tests trainer_pacing_tests.cpp
                ../apps/carview/upgrade_shop.cpp
                ../apps/carview/hub_scene.cpp)
 target_include_directories(trainer_pacing_tests PRIVATE ../apps/carview)
-target_link_libraries(trainer_pacing_tests PRIVATE carview_render carview_hud shift_race shift_freeroam shift_garage shift_drive
+target_link_libraries(trainer_pacing_tests PRIVATE carview_render carview_hud shift_cutscene shift_race shift_freeroam shift_garage shift_drive
                       shift_cars shift_stb shift_sqlite3)
 add_test(NAME trainer_pacing_tests COMMAND trainer_pacing_tests)
 
@@ -293,7 +293,7 @@ target_include_directories(gps_tests PRIVATE ../apps/carview)
 target_link_libraries(gps_tests PRIVATE shift_traffic shift_audio shift_drive shift_race)
 add_test(NAME gps_tests COMMAND gps_tests)
 
-add_executable(road_discovery_tests road_discovery_tests.cpp ../apps/carview/map_view.cpp
+add_executable(road_discovery_tests road_discovery_tests.cpp ../apps/carview/map_view.cpp ../apps/carview/map_anim.cpp
                ../apps/carview/settings_page.cpp ../apps/carview/render_modern.cpp ../apps/carview/rt_logic.cpp)
 target_include_directories(road_discovery_tests PRIVATE ../apps/carview)
 target_link_libraries(road_discovery_tests PRIVATE shift_freeroam shift_traffic shift_profile shift_drive fh1data shift_audio shift_race)
@@ -321,7 +321,7 @@ add_executable(hub_shop_tests hub_shop_tests.cpp
   ../apps/carview/upgrade_shop.cpp
   ../apps/carview/hub_scene.cpp)
 target_include_directories(hub_shop_tests PRIVATE ../apps/carview)
-target_link_libraries(hub_shop_tests PRIVATE carview_render carview_hud shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3)
+target_link_libraries(hub_shop_tests PRIVATE carview_render carview_hud shift_cutscene shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3)
 add_test(NAME hub_shop_tests COMMAND hub_shop_tests)
 
 add_executable(livery_damage_tests livery_damage_tests.cpp
@@ -331,7 +331,7 @@ add_executable(livery_damage_tests livery_damage_tests.cpp
   ../apps/carview/livery_editor.cpp
   ../apps/carview/settings_page.cpp)
 target_include_directories(livery_damage_tests PRIVATE ../apps/carview)
-target_link_libraries(livery_damage_tests PRIVATE carview_render carview_hud shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3 shift_stb)
+target_link_libraries(livery_damage_tests PRIVATE carview_render carview_hud shift_cutscene shift_freeroam shift_garage shift_race shift_drive shift_cars shift_sqlite3 shift_stb)
 add_test(NAME livery_damage_tests COMMAND livery_damage_tests)
 
 add_executable(acoustics_vo_radio_tests acoustics_vo_radio_tests.cpp)
@@ -447,7 +447,7 @@ if(SHIFT_BUILD_CARVIEW)
     ../apps/carview/trainer_overlay.cpp
     ../apps/carview/settings_page.cpp)
   target_include_directories(ui4_parity_tests PRIVATE ../apps/carview)
-  target_link_libraries(ui4_parity_tests PRIVATE carview_render carview_hud shift_freeroam shift_traffic shift_race shift_garage
+  target_link_libraries(ui4_parity_tests PRIVATE carview_render carview_hud shift_cutscene shift_freeroam shift_traffic shift_race shift_garage
                         shift_drive shift_cars shift_audio shift_profile shift_stb shift_sqlite3)
   add_test(NAME ui4_parity_tests COMMAND ui4_parity_tests)
 

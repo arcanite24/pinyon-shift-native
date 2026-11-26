@@ -65,6 +65,7 @@ class Streamer {
     has_pending_hidden_positions_ = true;
   }
   void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
+  const Prepare& prepare() const { return prepare_; }
   // The Prepare result of the mesh in use (moved out by the caller).
   std::any& prepared() { return prepared_; }
   bool gathering() const { return job_.valid(); }

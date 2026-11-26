@@ -1263,9 +1263,32 @@ void pr_stunt_hud(ui::List& l, const PrStuntHud& ps, const Layout& g) {
 }
 
 
+// The height SpeedCamera takes in the bottom stack (canvas px).
+constexpr float kSpeedCameraStep = 72.0f;
+
 float speed_activity_hud(ui::List& l, const freeroam::SpeedActivityHud& sh, const Layout& g, bool metric_units,
                          float lift_canvas) {
   const float s = g.s;
+  // 947_HUD's SpeedCamera, played through its slides (no screen flash and no
+  // off-road line: the scene has neither, Q242).
+  if (hud_speed_camera_available()) {
+    const SpeedCameraPhase p = speed_camera_phase(sh);
+    if (p.slide.empty()) return 0.0f;
+    auto number = [&](double mph) {
+      char buf[32];
+      std::snprintf(buf, sizeof buf, "%.2f", metric_units ? mph * 1.609344 : mph);
+      return std::string(buf);
+    };
+    SpeedCameraView v;
+    v.slide = p.slide;
+    v.ms = p.ms;
+    v.title = localize_speed_activity_name(p.title, p.zone);
+    v.speed = number(p.speed_mph);
+    v.unit = text_of(metric_units ? hud_text::kKmhLabel : hud_text::kMphLabel);
+    v.pb = text_of(hud_text::kPb) + ": " + number(p.best_mph) + " " + v.unit;
+    v.new_pb = text_of(hud_text::kNewPb);
+    if (draw_hud_speed_camera(l, v, g.w, g.h, g.s, lift_canvas)) return kSpeedCameraStep;
+  }
   if (sh.flash_alpha > 0.01f) {
     l.rect(0, 0, g.w, g.h, rgba(255, 255, 255, uint8_t(std::clamp(sh.flash_alpha * 255.0f, 0.0f, 220.0f))));
   }

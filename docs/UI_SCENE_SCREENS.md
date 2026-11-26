@@ -203,8 +203,10 @@ filter in `map_filter.h`.
   at 470 px/s; it stops at x 96..1184, y 88..635. Within 30 px of an icon
   (or the player's arrow, a found sign or a revealed barn) it locks on
   (`CURSOR_SNAP`, tinted faint white and scaled to about 54 px as in
-  `map_popup_outpost_orig.png`); the icon grows 1.25 times and the others
-  dim to 0.6.
+  `map_popup_outpost_orig.png`); the icon plays its profile's `hover`
+  (`bulge`: 1.7 times at 0.15 s, settling at 1.5) and the others `ghost`
+  (alpha 1 to 0.3 over 0.3 s), then `unghost` when the cursor leaves
+  ("Map profile animations" in `UI_SCENE_ANIMATION.md`).
 - **Zoom.** The right stick's y (or the wheel) zooms about the cursor at 1.9
   per second, from the opening scale (the most zoomed out) to 2.6 times it.
 - **Popup.** `MAP_OVERLAY/DETAIL` shows the icon's group: `CareerRace`
@@ -352,9 +354,12 @@ destinations, and an outpost must be discovered (Q90).
   own). In the live render the FILTER title tape is greyer and
   taller than the original's white bar, and the list's scroll indicator is
   drawn by hand (a track and a thumb at the cursor's row) in place of the
-  scene's. The icons' open and pulse animations and the barn rumour's
-  reveal animation are not ported, and travel keeps the loading screen
-  without the original's fast travel camera.
+  scene's. The icons play their profile animations (intro `grow`, hover
+  `bulge`, `ghost` / `unghost`, the player's `radar` ping), and a barn
+  rumour opens the map on its reveal animation ("Map profile animations" in
+  `UI_SCENE_ANIMATION.md`); the career unlocks' `reveal` drops are not
+  played. Travel keeps the loading screen without the original's fast
+  travel camera.
 - **Route arrow.** A route's next turn is `DirectionArrows` at the top
   centre (`draw_hud_direction_arrow`): the dark box (`DIRECTIONARROWBG`,
   which the scene leaves at alpha 0) and the turn's cell of
@@ -713,11 +718,22 @@ help bar, closing after the cutscene's 9.2 s (`race_screens.cpp`,
   and the info panel are guesses (Q130). The info panel is hidden because
   every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
   is a text tile after the makes.
-- **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
-  (Q129: the rooms' tracks cannot be drawn under the menu yet). The
-  workshop, the paint shop and the Autoshow's colour select aim with the
-  disc's camera presets (`UICarTargetCameraPresets.xml`); the Autoshow's
-  standard view and the garage keep the engine's turntable (Q129).
+- **Rooms.** The Autoshow, the workshop and the paint shop draw their own
+  tracks (`uiautoshow`, `uiworkshop`, `uipaintshop`; `hub_room.h`) in
+  Colorado's place while their screens are open, the car at the room's
+  origin on its floor; leaving restores Colorado (Q129). The garage and
+  Barn Finds keep the studio stage. The rooms' light is an interim (Q222):
+  their `H_INT_*` lightmaps scale the surface under a white hemisphere,
+  with no sun, fog or real-time sky (the room's own dome draws), and the
+  car keeps the engine's lighting. The Autoshow's crowd and DJ are not
+  drawn.
+- **Room cameras.** The room lists play `HomeSpaceCams.xml` (12 looping
+  shots); the workshop's body parts and wheels play `WorkshopCams.xml`'s
+  `Upgrade_Part_*` sequences and its engine and drivetrain parts the
+  `Upgrades_*` presets (which part uses which is Q221); the paint
+  editor's regions and the Autoshow's colour select use
+  `UICarTargetCameraPresets.xml`, with a 0.75 s smoothstep between
+  presets. The presets' angle limits and zoom are not applied (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
   VIDEO opens the engine's DISPLAY page (Q135).

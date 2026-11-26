@@ -93,6 +93,15 @@ struct SceneBindings {
   NodeOverride& index(int idx) { return by_node[idx]; }
 };
 
+// An animated ancestor's map of the scene's canvas, x' = (ax x + bx, ay y + by).
+// At namespace scope so it can be a default argument inside SceneDraw (clang
+// rejects a nested class's default member initializers there).
+struct SceneAnimMap {
+  float ax = 1.0f, ay = 1.0f, bx = 0.0f, by = 0.0f;
+  bool identity() const { return ax == 1.0f && ay == 1.0f && bx == 0.0f && by == 0.0f; }
+  std::array<float, 2> apply(float x, float y) const { return {ax * x + bx, ay * y + by}; }
+};
+
 class SceneDraw {
  public:
   // `turn`: each node drawn turned by its own rotation, about its centre
@@ -129,11 +138,7 @@ class SceneDraw {
   // colour. `tex_override` swaps the main texture. False when nothing could be drawn.
   // `am`: an animated ancestor's (or the node's own) map of the scene's
   // canvas, x' = (ax x + bx, ay y + by), applied before dx/dy.
-  struct AnimMap {
-    float ax = 1.0f, ay = 1.0f, bx = 0.0f, by = 0.0f;
-    bool identity() const { return ax == 1.0f && ay == 1.0f && bx == 0.0f && by == 0.0f; }
-    std::array<float, 2> apply(float x, float y) const { return {ax * x + bx, ay * y + by}; }
-  };
+  using AnimMap = SceneAnimMap;
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
              float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f, float k = 1.0f, float kbx = 0.0f,

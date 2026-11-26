@@ -15,6 +15,7 @@
 
 #include "autoshow.h"
 #include "cars/physics.h"
+#include "cutscene/cutscene.h"
 #include "garage/garage.h"
 #include "garage/pi_calc.h"
 #include "showroom.h"
@@ -69,6 +70,29 @@ const CarCameraPreset* find_car_camera_preset(const std::vector<CarCameraPreset>
 // (the Autoshow's standard view and the garage).
 std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor_open, bool colour_select);
 
+// MENU-03: the camera a hub screen shows, as the original picks it. A room's
+// own lists (the Autoshow's browse, the paint booth's and the workshop's
+// menus) play camera.zip's HomeSpaceCams.xml (CUI4AnimatedCamera sequence
+// 0); a workshop part plays its WorkshopCams.xml sequence; the paint
+// editor's regions and the Autoshow's colour select aim at their
+// UICarTargetCameraPresets.xml presets (CPaintMenu, CCarColorSelect).
+// Neither: the engine's own camera (the garage, Barn Finds).
+struct HubCameraShot {
+  std::string_view sequence_member;  // camera.zip member, empty for none
+  std::string_view sequence;         // the sequence's name in it ("" for a <Cams> root)
+  std::string_view preset;           // a preset's name, empty for none
+};
+// `paint_region`: the editor's PaintRegion (0 body .. 6 window tint);
+// `part_enum`: the upgrade shop's selected part, -1 off its part lists.
+HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int paint_region, bool colour_select);
+// The WorkshopCams.xml sequence for an upgrade part (the body parts and the
+// wheels), empty for the parts without one.
+std::string_view workshop_part_sequence(int part_enum);
+// The UICarTargetCameraPresets.xml preset for an engine or drivetrain part
+// (Upgrades_Engine_Front, Upgrades_Flywheel, Upgrades_Drivetrain), empty
+// for the others.
+std::string_view workshop_part_preset(int part_enum);
+
 // Smooth turntable camera for 3D Festival Hub screens.
 struct HubCamera {
   float yaw = 0.62f;        // radians (front 3/4 view)
@@ -93,14 +117,43 @@ struct HubCamera {
   float fov_deg = 0.0f;  // vertical; 0: the room's own
   float target_fov_deg = 0.0f;
 
+  // MENU-03: CUI4CarTargetCamera's move to a preset is a cubic Hermite
+  // (zero end tangents) over 0.75 s, the yaw the short way round; the
+  // HorizonAutoshow path snaps. While blend_t < blend_len the orbit runs
+  // from the from_* values to the targets.
+  static constexpr float kPresetBlendSeconds = 0.75f;
+  float blend_t = 0.0f, blend_len = 0.0f;
+  float from_yaw = 0.0f, from_pitch = 0.0f, from_dist = 0.0f, from_fov = 0.0f;
+  float from_pos[3] = {};
+
+  // MENU-03: an animated sequence (CUI4AnimatedCamera: camera.zip's
+  // HomeSpaceCams.xml for the rooms' own screens, WorkshopCams.xml's
+  // part sequences), keyed in the car's body axes (+X right, +Y up, +Z
+  // forward, origin on the ground), looped. Null: the orbit and presets.
+  const cutscene::Cutscene* sequence = nullptr;
+  double sequence_t = 0.0;
+  cutscene::CarParts parts;  // the PartSpace keys' parts, body axes
+  float ground_y = 0.0f;     // the ground point's height in the car model's frame
+
   void set_focus(HubCameraFocus focus);
   // Aims at the preset: its eye and direction (the car's frame mirrored
   // into the engine's, -Z forward) as yaw, pitch and distance about the
-  // ray's nearest point to the car's origin, and its field of view.
-  void set_preset(const CarCameraPreset& p);
+  // ray's nearest point to the car's origin, and its field of view. Blends
+  // there from the current view (kPresetBlendSeconds) unless `snap`.
+  void set_preset(const CarCameraPreset& p, bool snap = false);
+  // Plays `seq` from its start (a cut); the same sequence again keeps its
+  // time. Null stops it (the orbit takes over from the sequence's view).
+  void play(const cutscene::Cutscene* seq);
   void set_framing(float shift_x, float shift_y);
   void nudge_orbit(float dyaw, float dpitch, float ddist = 0.0f);
   void step(float dt);
+  // The view in the car model's frame: the eye, the look direction, the up
+  // vector and the vertical field of view (0: the room's own).
+  struct View {
+    float eye[3], forward[3], up[3];
+    float fov_deg;
+  };
+  View view() const;
 };
 
 // Builds the 3D studio turntable stage: circular showroom plinth, radial

@@ -10,7 +10,12 @@
 #include <string>
 #include <vector>
 
+#include <filesystem>
+
+#include "audio/xml.h"
 #include "cutscene/cutscene.h"
+#include "fh1data/archive.h"
+#include "race/screen_fade.h"
 
 namespace {
 
@@ -36,6 +41,43 @@ constexpr Expect kCareer[] = {
     {"Festival_Race_Outro", 18.3, -1},
 };
 
+// The engine's flow fades (race/screen_fade.h) against state_definitions.xml's
+// global.fade_in / fade_out / fade_out_half_sec.
+void check_screen_fades(const std::filesystem::path& root) {
+  std::string why;
+  auto modes = fh1::Archive::open(root / "media" / "gamemodes.zip", &why);
+  check(modes != nullptr, "gamemodes.zip opens: " + why);
+  if (!modes) return;
+  auto file = modes->read("state_definitions.xml");
+  check(file.ok(), "state_definitions.xml reads: " + file.error);
+  if (!file.ok()) return;
+  audio::XmlNode doc;
+  const std::string_view text(reinterpret_cast<const char*>(file.data.data()), file.data.size());
+  check(audio::parse_xml(text, doc, &why), "state_definitions.xml parses: " + why);
+  auto state = [&](std::string_view id) -> const audio::XmlNode* {
+    for (const auto& s : doc.children)
+      if (audio::iequals(s.name, "State") && s.attr("id") == id) return &s;
+    return nullptr;
+  };
+  const std::pair<const char*, race::ScreenFade> fades[] = {
+      {"fade_in", race::kFlowFadeIn}, {"fade_out", race::kFlowFadeOut}, {"fade_out_half_sec", race::kFlowFadeOutHalf}};
+  for (const auto& [id, f] : fades) {
+    const audio::XmlNode* s = state(id);
+    const audio::XmlNode* b = s ? s->child("Behaviour") : nullptr;
+    const audio::XmlNode* o = b ? b->child("FadeOptions") : nullptr;
+    check(o != nullptr, std::string("global.") + id + " has FadeOptions");
+    if (!o) continue;
+    check(b->attr("id") == "CFadeIn" && std::fabs(o->number("Duration") - f.duration) < 1e-6 &&
+              std::fabs(o->number("HoldDuration") - f.hold) < 1e-6 && (o->attr("CurveType") == "S") == f.s_curve &&
+              o->number("Color.x") == 0.0 && o->number("Color.y") == 0.0 && o->number("Color.z") == 0.0,
+          std::string("global.") + id + " matches the engine's fade");
+  }
+  check(race::screen_fade_cover(race::kFlowFadeIn, 0.0, true) == 1.0f &&
+            std::fabs(race::screen_fade_cover(race::kFlowFadeIn, 0.5, true) - 0.5f) < 1e-6 &&
+            race::screen_fade_cover(race::kFlowFadeOutHalf, 0.5, false) == 1.0f,
+        "the S curve's ends and middle");
+}
+
 double angle_deg(const std::array<double, 3>& a, const std::array<double, 3>& b) {
   const double na = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
   const double nb = std::sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
@@ -51,6 +93,7 @@ int main() {
     std::printf("cutscene_corpus_tests: SHIFT_GAME_ROOT not set, skipping\n");
     return 77;
   }
+  check_screen_fades(root);
   cutscene::Library lib;
   std::string err;
   if (!cutscene::load_freeroam_cutscenes(root, lib, &err)) {
