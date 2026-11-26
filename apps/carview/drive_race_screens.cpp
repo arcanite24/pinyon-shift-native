@@ -69,8 +69,22 @@ EventSummaryHud DriveSession::event_ticket(const race::CareerEvent& ev,
     if (tn != ev.track_name_ref) h.track = tn;
   }
   h.track_info = event_track_info(ev.track_surface, ev.laps > 1);
-  h.points = app.wristbands.points_for(ev.level, 1);
+  // Only non-qualifier Festival races (style 1, level >= 0) award wristband
+  // points; Heats qualifier (level < 0) awards the Yellow Wristband directly,
+  // and Showcases / Street / Showdowns / Headlines pay cash/prize car only.
+  const bool is_heats = (ev.style == 1 && ev.level < 0);
+  h.points = (ev.style == 1 && ev.level >= 0) ? app.wristbands.points_for(ev.level, 1) : 0;
   h.credits = int64_t(std::llround(ev.cash_prize));
+  if (is_heats) {
+    h.prize_heading = text_of(race_text::kHorizonHeatsInfo);
+    const std::string l1 = text_of(race_text::kHorizonHeatsReward1);
+    const std::string l2 = text_of(race_text::kHorizonHeatsReward2);
+    h.prize_wristband = l2.empty() ? l1 : (l1 + "\n" + l2);
+  } else if (ev.style == 3) {
+    h.prize_heading = text_of(race_text::kShowcaseInstructions);
+  } else if (ev.style == 2 || ev.style == 5 || ev.style == 6) {
+    h.prize_heading = text_of(race_text::kWinnerTakes);
+  }
   if (ev.target_class > 0 && size_t(ev.target_class) < names.size()) h.car_class = names[size_t(ev.target_class)];
   if (!ev.restriction_desc_ref.empty()) {
     const std::string rd = carview::game_text(ev.restriction_desc_ref);
@@ -81,8 +95,10 @@ EventSummaryHud DriveSession::event_ticket(const race::CareerEvent& ev,
   h.eligibility = text_of(elig.eligible             ? race_text::kCurrentCarEligible
                           : !eligible_cars.empty() ? race_text::kGarageCarsEligible
                                                    : race_text::kNoCarsEligible);
-  if (elig.uses_loaner && elig.loaner_car_id > 0)
+  if (elig.uses_loaner && elig.loaner_car_id > 0) {
     if (const auto* cs = app.career_catalog.find_car(elig.loaner_car_id)) h.provided_car = carview::car_name(cs->media_name);
+    h.eligibility.clear();
+  }
   if (const int best = app.career_catalog.best_place(ev, app.career); best > 0)
     h.best_finish = std::to_string(best) + place_suffix(best);
   if (cars) *cars = std::move(eligible_cars);

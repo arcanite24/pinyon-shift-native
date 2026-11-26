@@ -1,5 +1,6 @@
 #include "race/route.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -44,6 +45,24 @@ double Gate::crossing(double x0, double z0, double x1, double z1) const {
   const double cx = x0 + f * (x1 - x0), cz = z0 + f * (z1 - z0);
   if ((cx - x) * (cx - x) + (cz - z) * (cz - z) > reach * reach) return -1;
   return f;
+}
+
+void align_gate_to_heading(Gate& gate, double heading) {
+  const double hx = std::sin(heading), hz = std::cos(heading);
+  if (hx * gate.nx + hz * gate.nz < 0.0) {
+    gate.nx = -gate.nx;
+    gate.nz = -gate.nz;
+  }
+}
+
+double checkpoint_plane_side(const Gate& gate, double px, double pz, double car_progress, double gate_progress,
+                             double approach_window_m) {
+  const double raw = gate.side(px, pz);
+  const double win = std::max(0.0, approach_window_m);
+  if (car_progress < gate_progress - win) {
+    return std::min(raw, -std::max(3.0, gate_progress - car_progress));
+  }
+  return raw;
 }
 
 const RouteTransform* Route::find(std::string_view name) const {
