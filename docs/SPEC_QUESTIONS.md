@@ -6300,7 +6300,8 @@ ParamEQ's squared gain and no NegLoad at idle, the same route reads idle
 -41.6 dB against the original's -42.3 and the limiter -21.0 against -21.7
 (centroid 1,025 Hz against 934). Left: the top octaves (above 6 kHz) are
 4 to 10 dB hot in every state, and the lift at 3,500 to 4,500 rpm is about
-3 dB quiet.
+3 dB quiet. These levels are through carview's engine-only render; through
+the live mixer the player hears the engine about 7 dB lower (Q337).
 
 ## Q294 (first30c, audio, not blocking): the tyre and wind levels, and the engine's offline render
 
@@ -6533,6 +6534,7 @@ probe). Runs: `.local/runs/first30f-<variant>`.
   overrun tuning, not in the chain.
 
 Still open:
+- the live mixer puts these levels about 7 dB lower in play (Q337);
 - the descriptor float behind s (two engine tunings on one car measured);
 - the MX-5's closed-throttle level at mid rpm (3 dB quiet);
 - whether a split cascades more than one first-order section;
@@ -6643,7 +6645,11 @@ Unknown:
 - the event's `prand 0.05` pitch randomisation (its unit is not settled by
   Q331's pitch decode), so the engine plays without one;
 - the smashables (`Collisions/Smashables/...`) and scrapes still use the old
-  path.
+  path;
+- the listener distance: the engine feeds the distance from the listener to
+  the hit, so the LFE event (silent past 5 m) plays no LFE for the focus
+  car's own hits in the chase views. That follows FMOD's 3D distance if the
+  game's listener is at the camera; not checked against the original.
 
 Needed: head-on wall hits on the recomp at two or three speeds with only
 the collision sounds kept, and the engine's hits at the same speeds.
@@ -6727,10 +6733,13 @@ snapshot matrix. The game path (the live mixer, as carview plays it and as
 - the snapshot matrix's gain, 0.35 (-9.1 dB) in free roam at rest; Q322's
   pre-scale already stands for the snapshot and SFX volumes, so this counts
   them twice;
-- the sfx engine's EngineLFE loop, mixed into the stereo engine bus at an
-  invented level (`0.22 x view x throttle x rpm`). The original's front
-  channels carry none of it (its LFE channel reads -54 to -78 dB during a
-  pull, and the EngineLFE events' speaker levels are all 0).
+- the sfx engine's EngineLFE loop at an invented level
+  (`0.22 x view x throttle x rpm`), which goes to the LFE buffer and is
+  folded into L and R after the master compressor. In the original's
+  engine-only runs the LFE channel reads -54 to -78 dB during a pull and
+  the front fold has 1 % under 150 Hz, so the EngineLFE adds next to
+  nothing there. (fevdump reads the EngineLFE events' speaker levels as all
+  0; that field's meaning is my reading of the dump, not confirmed.)
 
 On the c3 route against `first30f-base` (`out/first30g/runs/c3-engine-mix`
 and `c3-engine-nomix`):
@@ -6742,8 +6751,12 @@ and `c3-engine-nomix`):
 | limiter | -21.8 dB, 934 Hz, 1 % | -21.0 dB, 1,025 Hz, 1 % | -27.8 dB, 596 Hz, 47 % |
 
 So what the player hears is about 7 dB under the original at every state,
-and boomy. The tyre and wind levels (Q331, Q332) were fitted through the
-live mixer and are not affected.
+and boomy. carview's windowed loop plays this path (it loads the snapshot
+matrix in `init_sfx`, and the LFE buffer is folded into the stereo output).
+The tyre levels (Q331) were fitted through the live mixer, and the wind
+(Q332) matched the original through it with no fitted level under the same
+matrix (0.3 on the wind bus), so the matrix's values look right and the
+correction belongs in the focus chain's scales.
 
 Not changed here: removing the EngineLFE layer from the stereo bus and
 dropping the double-counted snapshot gain go together (either alone moves
