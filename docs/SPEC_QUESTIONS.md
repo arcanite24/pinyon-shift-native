@@ -6100,6 +6100,15 @@ Update (first30e): settled from the title's data and new recomp probes (`E:\firs
 - The head-to-head offer between the heats: festival racers make no head-to-head offer while the first-time career runs.
 - The access violation on the session restart after a failed launch: not reproduced on this tip. An autoplay `launch` of an unknown event (77 twice, then NO_SUCH_EVENT) from a resumed heats save restarts the session each time ("gamedb: no event 77"), and the engine runs on for 70 s after the last one without a fault (`E:\first30e\c1`). The career itself no longer launches by `Events.Id`. The original crash's build (before `6ffa82bb`) was not rebuilt, so its cause is still unknown.
 
+Update (first30e, past the heats): the recomp now reaches the heats final and its rewards (Q313, r9-r12), but no capture gets past the showcase's locked map. The engine now runs from the heats to the first autoshow end to end. It resumes e15's showcase save under `--race-ai-hold 30` (e16-e18). The order:
+- The showcase's locked map (Q313).
+- The drive to Red Rock and SIGN ME UP!.
+- The showcase in the provided Mustang Boss 429: 1st, 6,875 Cr, YOU WON A CAR.
+- Skills_Unlock (drawn broken, Q313), then DRIVE TO RACE CENTRAL.
+- At Race Central: FMV_02, Wristband_Intro, the rewards (3 s of black), then the first autoshow's locked map.
+
+That last map stalled the engine. It had no tip and no way to let go, so the career waited for good (e17 `f_00584` on). It now asks for a route to Race Central under the disc's `IDS_MapTip_SetRouteToRaceCentral`, and A there lets it go as the other two maps do. That is an interim: the original's map at this point is not captured.
+
 ## Q311 (INTRO-05, GARAGE, not blocking): the HeroCar reads C 396, not C 400
 
 The original's locked map shows the career's Corrado at C 400 (first30a `f01281`, first30e r5 `m*`). The engine fits GlobalRegistry's `HeroCar/Upgrades` (`garage::fit_upgrade_levels`) and its PI model reads C 396 (`progression_tests --corpus`, "hero car: stock D 282 -> C 396").
@@ -6157,4 +6166,27 @@ Still open:
 - The showcase's sign-up: no capture reaches it.
 - Who drives the Corrado in r7/r9: the route has no throttle or stick, yet the car drives, and won the race.
 
-Needed: a route that leaves RACE RESULTS with B and goes on through the rewards.
+Update, first30e r10 (X only to 100 s, then A held 8 frames every 5 s): the Corrado finished 3rd this time. After the finish:
+- FINISHED 3RD PLACE over the finish line (`h00300`).
+- CASH REWARD, built up line by line (`h00303`, `h00306`; `r10_h00303.png`, `r10_h00306.png`):
+  - FINISHED 3RD 2,300 Cr;
+  - MILEAGE BONUS 400 Cr;
+  - DIFFICULTY & ASSISTS BONUS +25%;
+  - TOTAL 3,375 Cr, BALANCE: 3,875 Cr.
+- The Corrado under the FINISH gantry with no text (`h00309`).
+- A loading tip, HORIZON ROCKS, with PLEASE WAIT bottom right (`h00312`-`h00315`).
+- The locked map again (`h00318` on, `r10_h00321.png`). The tip reads "Please set a route to the Showcase event." The player bar shows the Corrado, C 400 and 3,875 Cr. No route is set yet, and the Red Rock showcase marker carries a NEW tag. A pressed off the marker set a waypoint, and the map stayed locked with A CLEAR ROUTE and LB FILTER (`h01122`, `r10_last.png`).
+- No wristband, Race Central or FMV comes between the heats and the showcase map.
+
+r11 (2nd, 3,750 Cr) and r12 (1st, 4,250 Cr) show the same order. Their loading tips were HORIZON PULSE and DARIUS FLYNT, so the tip comes at random from the free-roam group. The map opens zoomed in, with the spinner and PLEASE WAIT bottom left in place of the help bar, then the help bar comes up (r11 `h00279`-`h00288`).
+
+The engine's award matches. e15 (1st with `--race-ai-hold 30`) paid 4,250 Cr: base 3,000, mileage 400, then 25%. That is r12's TOTAL. e13 (6th) paid 1,875 Cr and 20 wristband points; what the original pays for a finish outside the top 3 is not captured. The e13-e17 runs resume e8's save, so their balances (1,475 Cr before the final) are not the new profile's 500.
+
+The engine before this pass set the showcase's route itself and never opened the map. Now, after a top-3 final, it opens the locked map once the race is gone (e16 `f_00027`). The map has this tip and no route. A on the showcase routes there (HORIZON Presents Mustang vs Mustang, 5,000 Cr), PLEASE WAIT shows for 3 s, the map closes, and ENTER THE SHOWCASE EVENT follows (e16 `f_00030`-`f_00033`). The career's result now waits for the race's reward pages; the engine had DRIVE TO RACE CENTRAL and the Skills_Unlock cutscene over YOU WON A CAR (e16 `f_00385`-`f_00405`).
+
+The showcase's ticket reads CAR PROVIDED Ford Mustang Boss 429. The engine's career launch raced it in the Corrado (e16); it now hands over the provided car, as the events page's launch does.
+
+Still open:
+- What A on the showcase does on the original's map. r11 and r12 moved the cursor blind and never landed on the marker; r11 stopped on Discount Sign 73 next to it.
+- The showcase race, its rewards and everything after it in the original: no capture reaches them.
+- The engine's Skills_Unlock cutscene after the showcase draws a broken scene: the sky and black shapes (e16 `f_00388`-`f_00403`).
