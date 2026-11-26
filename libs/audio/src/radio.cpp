@@ -645,6 +645,16 @@ bool Radio::set_playlist(const std::vector<std::string>& fmodnames, bool then_no
       sc->set_locked_playlist(std::move(idx), clock_, then_normal);
       if (const RadioEvent* t = sc->track_at(clock_)) seen_track_ = t->id;
     }
+    // The list's first track is a new track: its popup after the delay, or
+    // once the HUD is back (Everyday at the original's hand-over, The Power
+    // at the race to the festival; Q273).
+    if (popup_held_) {
+      popup_deferred_ = true;
+    } else {
+      popup_from_ = popup_clock_ + data_.levels.new_track_delay;
+      popup_station_ = s;
+      popup_press_ = false;
+    }
     return true;
   }
   return false;
@@ -674,6 +684,7 @@ void Radio::press(int dir) {
   last_change_was_user_ = true;
   popup_station_ = selected();
   popup_from_ = popup_clock_ + (on() ? kPopupDelay : 0.0);
+  popup_press_ = true;
 }
 
 void Radio::advance(double dt, bool run) {
@@ -695,19 +706,38 @@ void Radio::advance(double dt, bool run) {
     seen_track_ = t->id;
     const double from = popup_clock_ + data_.levels.new_track_delay;
     // Not over a popup showing or due (a press's).
-    if (popup_clock_ - popup_from_ > kPopupShow) {
+    if (popup_held_) {
+      popup_deferred_ = true;
+    } else if (popup_clock_ - popup_from_ > kPopupShow) {
       popup_from_ = from;
       popup_station_ = selected();
+      popup_press_ = false;
     }
+  }
+}
+
+void Radio::hold_popup(bool held) {
+  if (held == popup_held_) return;
+  popup_held_ = held;
+  if (held) {
+    // A popup showing or due goes with the HUD and comes back with it.
+    popup_deferred_ = popup_station_ >= 0 && popup_clock_ - popup_from_ <= kPopupShow;
+    popup_from_ = -1e9;
+  } else if (popup_deferred_) {
+    popup_deferred_ = false;
+    popup_from_ = popup_clock_ + data_.levels.new_track_delay;
+    popup_station_ = selected();
+    popup_press_ = false;
   }
 }
 
 Radio::Popup Radio::popup() const {
   Popup p;
   const double age = popup_clock_ - popup_from_;
-  if (age < 0 || age > kPopupShow || popup_station_ < 0) return p;
+  if (popup_held_ || age < 0 || age > kPopupShow || popup_station_ < 0) return p;
   p.alpha = std::clamp(std::min(age, kPopupShow - age) / kPopupFade, 0.0, 1.0);
   p.station = popup_station_;
+  p.press = popup_press_;
   if (popup_station_ == selected() && on())
     if (auto* s = const_cast<Radio*>(this)->schedule(popup_station_))
       if (const RadioEvent* t = s->track_at(clock_)) p.track = t->track;

@@ -100,7 +100,10 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
   // A band waiting to be collected shows that band, its objective in its
   // colour with no tape behind (07_pause_menu_orig.png).
   const bool collect = !st.band_next.empty() && st.band_collect_ready;
-  if (!st.band_next.empty()) {
+  const bool no_top = band_texture == kNoPlayerBarTopRow;
+  if (no_top) {
+    sc.hide(sc.node("TopRow", bar));
+  } else if (!st.band_next.empty()) {
     const std::string colour = upper(st.band_next);
     if (collect) {
       const std::string objective = format1(text_of(pause_text::kCollectWristband), colour);
@@ -124,7 +127,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
   const std::string band_tex = !band_texture.empty() ? band_texture
                                : shown_band.empty()      ? std::string()
                                                          : "WRISTBANDS/" + upper(shown_band.substr(0, shown_band.find(' ')));
-  if (band >= 0 && !band_tex.empty()) sc.at(band).texture = band_tex;
+  if (band >= 0 && !band_tex.empty() && !no_top) sc.at(band).texture = band_tex;
   // Middle row: the car and its class / PI.
   const int car = sc.node("TEXT_CAR", bar), pi = sc.node("TEXT_PI", bar), cls = sc.node("CLASS_A", bar);
   std::string name = st.club_tag.empty() ? st.car_name : "[" + st.club_tag + "] " + st.car_name;

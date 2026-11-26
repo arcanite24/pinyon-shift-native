@@ -3331,6 +3331,11 @@ cycle with an input partway through.
 
 The hold-to-skip is gone: a press skips (Q155).
 
+Update (first30a): settled in part by Q272. `Forza_Tone.wmv` plays after
+SINGLE PLAYER on a new profile, before the opening, and A does not skip it.
+One A during `T10_MS_Combined` went straight to Press Start without
+`Dolby_Corona_Intro`. The attract cycle is still not recorded.
+
 ## Q137 (BOOT-04, not blocking): the profile step after Press Start
 
 The original reads its profile after Press Start, then shows the menu.
@@ -3433,6 +3438,11 @@ front end's scenes or the string tables; the engine shows none.
 
 Needed: a capture of any save notice the original shows at boot or after
 Press Start.
+
+Update (first30a): the original shows a SAVING indicator at the bottom
+right during the race to the festival (`f00417`, `f00537`
+`_first30a_orig.png`). Its scene and trigger are not traced, and the
+engine shows none (Q280).
 
 ## Q143 (V4-02..V4-07, not blocking): the 1000 Club screens' unmeasured parts
 
@@ -4355,6 +4365,11 @@ cutscenes cannot be skipped at all.
 Needed: the `confirmskip` handling in the generated movie player, or a
 capture of one press on `FMV_01`.
 
+Update (first30a): the capture of A presses on `FMV_01` is in Q274. A shows
+a SKIP bubble with the Start glyph and does not skip. The campaign's movies
+now skip on Start or Esc only; the other presses show the bubble. The boot
+splashes keep the press skip.
+
 ## Q156 (VIS-09, not blocking): the car name tag's look
 
 Measured on one night frame (`30_skill_toast_orig.png`, BISHOP): white
@@ -4925,6 +4940,9 @@ WP6's table (parity/wp6) misread three times, now corrected:
 
 Needed: a capture of the opening titles, or the code that drives
 `H_OPENING_TITLES`.
+
+Update (first30a): the capture shows no card over the diner (Q279). The
+literal reading holds, and the engine no longer draws the cards.
 
 ## Q187 (MENU-17, MAP-05, ACT-01, ACT-02, not blocking): the scenes decoded but not fully played
 
@@ -5850,3 +5868,183 @@ spectators is not known.
 Needed: the source of the start-line spectator instances (Q109): whether
 an event's `FR<n>_<k>` objects carry a crowd slot and its class, or where
 else the game reads them.
+
+## Q271 (INTRO-03, INTRO-09, not blocking): the career cars' paint
+
+The first30a capture (recomp, fresh profile; frames in `research_notes/FH1 parity gap audit/captures/` as `fNNNNN_first30a_orig.png`, with `first30a_timing_log.txt`) shows two paints:
+- The opening Viper is yellow with a black stripe (`f00243`-`f00258`, `f00264`). That is `Combo_Colors` for car 1544, sequence 7: 0xFDCF03 on `nodamageBlack.tga`. Sequence 6 is the plain yellow and 8 the grey stripe.
+- The Corrado at the diner and in the race to the festival is red (`f00360`, `f00417`). That is car 309, sequence 2: 0xDC001F, not metallic.
+
+The engine had the default sequence 1 for both: red for the Viper and black (0x0F0A0F) for the Corrado. It now uses 7 and 2 while the career runs (`FirstTimeCareer::kViperColourSequence`, `kCorradoColourSequence`). `handover_first30a_engine_after.png` shows the Viper after the fix.
+
+Open:
+- What picks the sequence. `CSetCarForInitialDrive` and `CChangePlayerCar` carry no colour attribute, so it is in the title's code.
+- Whether the Corrado stays red in the garage after the career. The engine applies sequence 2 only while the career is active.
+
+Needed: the colour argument of the title's car swap for the initial drive and the diner.
+
+## Q272 (BOOT-01, INTRO-01, not blocking): Forza_Tone before a new career; the boot splashes on a press
+
+Settles Q136's "`Forza_Tone.wmv` is no longer played anywhere; where the original uses it is not known".
+
+From the capture (`orig2_opens.txt`, the render-test log's file opens):
+- `splash_intros/forza_tone.wmv` opens right after SINGLE PLAYER on a new profile, after the VIDEO screen (Q276).
+- It plays to the end (54.2 s, ffprobe) through A presses every 5 s. No SKIP prompt is shown (`f00150`, `f00189`).
+- Then a black frame, the controller loading screen for about 9 s, and Opening_Cutscene.
+
+The engine now plays it there and does not skip it on a press.
+
+Also settled for the boot: one A during `T10_MS_Combined` (at 20 s) went straight to `PressStart`. `Dolby_Corona_Intro` never opened. The engine's skip now ends the whole boot-splash stage.
+
+Open:
+- Whether Start or B skips Forza_Tone. Only A was sent.
+- Whether `Dolby_Corona_Intro` plays when nothing is pressed (older recomp logs suggest it does).
+
+## Q273 (INTRO-04, HUD, not blocking): the radio popup under the career's cutscenes
+
+The original shows the station popup when the HUD comes back after a cutscene:
+- At the hand-over: HORIZON BASS ARENA, "Everyday (Netsky VIP Mix)", Rusko (`f00264`, about 2 s after the white flash).
+- At the start of the race to the festival: "The Power", DJ Fresh feat. Dizzee Rascal (`f00420`, 1 s after `f00417`).
+
+Both tracks were started by `CSetRadioPlaylist` before or during the cutscene. The engine had marked a playlist's first track as already seen, so it showed no popup for it, and its popup timer ran under the cutscene.
+
+Engine now:
+- A playlist's first track counts as a new track.
+- While the career hides the HUD, a popup due is held (`Radio::hold_popup`).
+- It shows after the new-track delay (`HUDNewTrackDisplayDelayFreeRoam`, 2 s) once the HUD is back. `eng4` shows Everyday 2.1 s after the hand-over and The Power 2.0 s after the race to the festival starts.
+- A new track's popup is the logo, title and artist only. The engine had drawn its station strip (previous / current / next station) on every popup; it now draws it only for a station change. Whether the original shows the strip on a change is not captured here.
+
+Inferred: that the title holds the popup rather than timing the track's start to the end of the cutscene.
+
+Needed: the HUD popup's trigger in the title (track start, or HUD show).
+
+## Q274 (INTRO-13, not blocking): what skips FMV_01, and the SKIP bubble
+
+Narrows Q155. In the capture, FMV_01 (`CShowMovieScreen confirmskip="true"`, 136.0 s) played through A presses every 5 s.
+- A dark rounded bubble at the bottom left reading "SKIP", with the Start glyph, came and went in step with the presses (`f00552`, `f00558` with it; `f00600` without). See `skipscan.py`'s scan of `f00540`-`f00798`.
+- So A shows the prompt and does not skip, and the prompt names Start.
+
+The engine now does the same for every campaign movie:
+- Start or Esc skips (Tab stays a dev skip).
+- Enter, Space, A or B show the bubble (`kFmvSkipPromptSeconds`).
+
+Open:
+- The bubble's time on screen. Interim: 3 s.
+- Whether Start skips at once or needs the bubble up first.
+- Whether a second A within the bubble's time skips.
+- The bubble's scene and font. Interim: drawn to the capture's box, 70-146 x 654-681 at 720p.
+
+Needed: one Start press during FMV_01, and two A presses 1 s apart.
+
+## Q275 (INTRO-05, MAP, not blocking): the workshop's locked map
+
+After FMV_01 and a STREET RACES loading screen (`f01272`), the original opens the map locked (`map_locked_for_first_time_career` loops `map.map_screen` while `CLockMapScreenForFirstTimeCareer` says locked). In the capture (`f01281`, `f01290`, through `f02397`):
+- Top left: the tip "(i) Please set a route to the Horizon Heats event." (`InGame/IDS_MapTip_SetRouteToHeats`).
+- Help bar: A SET ROUTE (CLEAR ROUTE once a route is set), LB FILTER, L MOVE, R ZOOM. There is no EXIT MAP and no ENTER NOW.
+- Player bar: the car, `C 400` and 500 Cr. There is no wristband row.
+- The map opens zoomed in close on the festival (about three times the engine's opening zoom), and the cursor about 70 px left of the heats' NEW marker, not on it.
+- A at the cursor routes to that point and leaves the map open. The next A clears the route. Twenty minutes of A every 5 s never left the map.
+
+The engine had opened the plain map: EXIT MAP and ENTER NOW, B closing it, and the wristband objective. It now has:
+- the tip (in mixed case, as written) and the help bar above, with CLEAR ROUTE once a route is set;
+- no wristband row in the player bar;
+- B, X and Y doing nothing;
+- A elsewhere routing and clearing as usual;
+- A on the heats (its marker, or the cursor within 40 m of its sign-up place, whatever marker is selected) routing there and closing the map. The workshop's own marker (Dak's garage) is inside the lock-on radius of the heats' sign-up place.
+
+The last of these is the interim. The engine opens on the player at its usual zoom, as before (`lockmap_first30a_orig.png` against `lockmap_first30a_engine.png`).
+
+Open:
+- What releases the lock: a route to the heats, then B, or the route alone.
+- Where the cursor opens, and the opening zoom.
+- Whether the map routes to the marker when the cursor is near it.
+
+Engine run `eng6` shows these (`lockmap_route_first30a_engine_final.png`, `lockmap_first30a_engine_final.png`).
+
+Needed: a capture with the cursor moved onto the heats marker, then A, then B.
+
+## Q276 (BOOT-04, BOOT-07, not blocking): the first profile's VIDEO screen and the boot disclaimer
+
+On a fresh profile, Press Start leads to the `830_GAMMA_ADJUST` screen before the menu (orig1 `f00027`-`f00039`). It is titled VIDEO and has:
+- a BRIGHTNESS slider at 60;
+- SUBTITLES: DISABLE;
+- a DESCRIPTION text;
+- A SAVE and Y RESET TO DEFAULT.
+
+Before `T10_MS_Combined` the original also shows a legal disclaimer for about 3 s. It is probably the `P_STA_Disclaimer` texture in `Textures.zip`.
+
+The engine has neither: it goes from the splashes to Press Start, and from Press Start to the menu. Not fixed: the VIDEO screen needs `830_GAMMA_ADJUST` as a SceneScreen and a brightness and subtitle setting behind it.
+
+Needed: the gamma screen's bindings and whether it shows only on a new profile; the disclaimer's duration and scene.
+
+## Q277 (HUD-03, INTRO-08, not blocking): the hand-over HUD's units, pin and name tags
+
+At the hand-over and in the race to the festival the original shows:
+- miles: "2.7 MI" under the minimap, and mph on the dial;
+- name tags on the AI cars ahead (FLYNT on the opening's lead car, JENSEN at the diner);
+- no destination pin in the sky.
+
+The engine shows:
+- km/h, because `--no-settings` keeps the CLI default `metric_units = true`;
+- a destination pin icon over the road;
+- no lead car (Q160).
+
+Not changed here:
+- The unit default belongs to the settings code. The original's default for an English-US profile is miles.
+- The pin is the engine's sat-nav marker, used everywhere.
+
+Needed: the title's default units by region, and whether any sat-nav world pin exists in the original.
+
+## Q278 (ACT-01, INTRO-10, not blocking): skills in the career's opening, and PopularitySkillsFlow
+
+No skill scores on the original's initial drive or race to the festival: 30 frames with near misses and drafting show no chain (`f00264`-`f00345`, `f00417`-`f00537`). The free-roam flow plays `PopularitySkillsFlow` on the return to free roam after the Red Rock showcase:
+- the time to 18:40 (67,200 s), locked;
+- traffic cleared;
+- `Skills_Unlock` (15.5 s), with `CTriggerVO RedRockSkillsIntro` at its start;
+- then `CSetTimeOfDayPostPlaneRace`, the HUD and traffic.
+
+The engine had scored skills from the hand-over on and had no skills flow. Now:
+- no skill scores while the career runs, up to the end of `Skills_Unlock`;
+- the showcase's win plays the flow above (`FirstTimeCareer::kSkillsCutscene`, `kSkillsVo`, `kPostPlaneRaceTimeOfDay`), and controls, HUD and skills come back when it ends.
+
+Open:
+- The heats and the showcase are extrapolated: the capture did not reach them (Q280).
+- `CSetTimeOfDayPostPlaneRace`'s target is not read. The engine keeps 18:40.
+- `CShouldShowSkillsFlow`'s condition is not read.
+
+## Q279 (INTRO-07, not blocking): the opening titles do not show; the diner's timing
+
+Answers Q186's "Needed: a capture of the opening titles". The capture's 20 frames over the diner cutscenes (`f00354`-`f00414`, 3 s apart) show no title card. That covers all of New_Diner_Cutscene_2, where `ShowOpeningCredits` opens `H_OPENING_TITLES`. The scene's curves read literally (all opacity values 0) agree. The engine no longer draws the cards (`kOpeningCardsShown`). Q164's key times stay in `race::opening_title_alpha` for a later reading.
+
+Diner timing: the XML durations (6.7 + 59 + 2.5 = 68.2 s) match the original's about 66-69 s. The engine's wall clock ran 79.2 s (`eng2`: 11.8 / 60.4 / 7.1 s), 85.8 s (`eng3`) and 72.7 s (`eng4`: 9.4 / 58.8 / 4.5 s). The overrun sits on the first and third cutscenes each time (3 to 5 s each), with the second near its 59 s. The cutscene player ends at the XML durations, so the likely cause is the blocking world prime at those cuts (the diner's teleport in, and the car placed for the race out) stalling the step. Unverified: the logs carry no wall time for the primes. Not a flow difference.
+
+Needed: whether the title's code sets the cards' opacity (no scene action does).
+
+## Q280 (M6/INTRO, not blocking): the first-time career past the workshop map, not captured
+
+Every scripted original run stops at the locked map (Q275), so this pass has no original capture of these beats:
+- the heats and the final;
+- the showcase;
+- Race Central;
+- FMV_02;
+- Wristband_Intro;
+- the rewards;
+- the first Autoshow;
+- the sat-nav hand-over.
+
+The engine's order for them is the flow XML's (Q66). Its only capture is `eng5`, resumed from `eng4`'s heats save. It reached the heats final (FESTIVAL_SECOND, route 16, 8 cars) twice and finished 5th both times under `--race-auto`, so the career stayed at the heats. The showcase and the beats after it are not exercised end to end in this pass.
+
+Found on the way and fixed: the career launched its races by `Events.Id` (77), and the race loader looks them up by `HorizonEventID`. So the heats never started ("gamedb: no event 77"). After that failure, `eng4` crashed with an access violation (0xC0000005) about 40 s later, on the session restart. The crash was not chased: it has no dump, and with the launch fixed the path no longer runs. Repro: `eng4`'s route on a build before `6ffa82bb`.
+
+Also seen in `eng5`, not changed:
+- A resume at the heats loads the race under the boot splashes; it shows, on its grid, after the title.
+- The driving tutor's PRESS RT TO ACCELERATE stays up for the whole race under `--race-auto`, which feeds no player throttle.
+- A free-roam head-to-head (Matt Berg) offered itself between the heats.
+
+Seen up to the map and not resolved:
+- Credits. The original's player bar has 500 Cr on the locked map. The engine had 5,000 Cr there in `eng2`, saved before any race. It has had 0 since `2c97d1b2` stopped the free-roam wristband checks in the career, which probably paid the 5,000 (unverified). Where the original's 500 comes from (a race-to-the-festival award or a profile default) is not traced.
+- PI. The original's Corrado is C 400 after FMV_01 (Dak's garage in the movie). The engine's stock Corrado is D 282. Whether the title applies an upgrade with the movie is not read.
+- The loading screen between FMV_01 and the map (STREET RACES tip, PLEASE WAIT). The engine goes straight to the map.
+- The driving tutor. The original showed only PRESS RT TO ACCELERATE on the initial drive (with the AI holding the car). The engine shows the brake, rewind and e-brake hints too. The AI-driven capture cannot tell whether a human's input would have raised them.
+
+Needed: a capture that resumes at the heats checkpoint (the recomp seeded from the first pass's save), with the map passed by a cursor move onto the heats.

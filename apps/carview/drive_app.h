@@ -37,6 +37,7 @@
 #include "garage/pi_calc.h"
 #include "map_view.h"
 #include "mods_page.h"
+#include "autoplay.h"
 #include "playtest_recorder.h"
 #include "race/career.h"
 #include "race/rally_championship.h"
@@ -135,6 +136,7 @@ struct DriveApp : DriveConfig {
   StoryIntro story_intro;
   CampaignDirector campaign;
   bool campaign_new_career_pending = false;
+  bool career_tone_done = false;  // Forza_Tone.wmv opened for the pending new career
   PendingCampaignHandoff pending_handoff;
   std::vector<PendingBarnRestore> pending_barn_restorations;
   bool barn_restorations_reconciled = false;
@@ -309,6 +311,8 @@ struct DriveApp : DriveConfig {
 
   int pose_shot_counter = 0;
   PlaytestRecorder playtest_recorder;
+  Autoplay autoplay;
+  bool autoplay_stopped = false;  // the script's stop: the app quits
 
   bool init(int& exit_code);
   bool colorado_world() const;

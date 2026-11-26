@@ -180,7 +180,7 @@ void cycle_and_popup(const audio::RadioData& d) {
   p.advance(0.5);
   CHECK(p.popup().alpha == 0);
   p.advance(0.6);  // 1.1 s
-  CHECK(p.popup().alpha > 0 && p.popup().alpha < 1 && p.popup().station == 0);
+  CHECK(p.popup().alpha > 0 && p.popup().alpha < 1 && p.popup().station == 0 && p.popup().press);
   p.advance(1.0);  // 2.1 s
   CHECK(near(p.popup().alpha, 1) && p.popup().track == 0);
   p.advance(3.0);  // 5.1 s
@@ -191,6 +191,27 @@ void cycle_and_popup(const audio::RadioData& d) {
   CHECK(p.popup().alpha > 0 && p.popup().station == 2);
   p.advance(4.0);
   CHECK(p.popup().alpha == 0);
+  // Held (the career's cutscenes): a popup due goes, and comes back after
+  // the new-track delay once released.
+  audio::Radio h(d, 5);
+  h.select(2);
+  h.press(+1);
+  h.advance(1.5);
+  CHECK(h.popup().alpha > 0);
+  h.hold_popup(true);
+  CHECK(h.popup().alpha == 0);
+  h.advance(30.0);
+  CHECK(h.popup().alpha == 0);
+  h.hold_popup(false);
+  h.advance(d.levels.new_track_delay + 1.0);
+  CHECK(h.popup().alpha > 0 && h.popup().station == 0);
+  h.advance(5.0);
+  CHECK(h.popup().alpha == 0);
+  // Nothing due when held: nothing on release.
+  h.hold_popup(true);
+  h.hold_popup(false);
+  h.advance(d.levels.new_track_delay + 1.0);
+  CHECK(h.popup().alpha == 0);
 }
 
 void picker() {
@@ -544,6 +565,26 @@ void flow_radio_states(const audio::RadioData& d) {
   beta->audible(130.0, 400.0, ev);
   CHECK(!beta->has_locked_playlist());  // played once, then the station's own
   r.cancel_playlist();
+
+  // The list's first track is a new track: its popup after the new-track
+  // delay, or after the delay once a hold (the career's HUD) ends (Q273).
+  {
+    audio::Radio q(d, 31, true);
+    q.select(0);
+    CHECK(q.set_playlist({"T_Three"}, true));
+    CHECK(q.popup().alpha == 0);
+    q.advance(d.levels.new_track_delay + 1.0);
+    CHECK(q.popup().alpha > 0 && q.popup().station == 1 && q.popup().track == 1 && !q.popup().press);
+    audio::Radio hq(d, 31, true);
+    hq.select(0);
+    hq.hold_popup(true);
+    CHECK(hq.set_playlist({"T_Three"}, true));
+    hq.advance(20.0);
+    CHECK(hq.popup().alpha == 0);
+    hq.hold_popup(false);
+    hq.advance(d.levels.new_track_delay + 1.0);
+    CHECK(hq.popup().alpha > 0 && hq.popup().station == 1);
+  }
 
   // A looping list stays locked.
   audio::StationSchedule loop(d, 1, 3, 0.0, false);

@@ -193,7 +193,7 @@ void test_order() {
   }
   const std::vector<std::string> want_cs = {"Opening_Cutscene",     "NEW_Diner_Cutscene_1", "New_Diner_Cutscene_2",
                                             "New_Diner_Cutscene_3", "Festival_Race_Outro",  "Radio_Unlock",
-                                            "Wristband_Intro"};
+                                            "Skills_Unlock",        "Wristband_Intro"};
   check(host.cutscenes == want_cs, "cutscenes in order");
   auto has = [](const std::vector<std::string>& v, const char* s) { return std::find(v.begin(), v.end(), s) != v.end(); };
   check(has(host.preloads, "Opening_Cutscene") && has(host.preloads, "NEW_Diner_Cutscene_1") &&
@@ -345,6 +345,17 @@ void test_heats_and_showcase() {
   c = ftc.update(in);
   check(ftc.stage() == FtcStage::kTravelToRaceCentral && c.place_car && c.pos == FirstTimeCareer::kPlaneRacePlace,
         "showcase won: placed by the plane race, Race Central next");
+  check(c.play_cutscene == "Skills_Unlock" && c.vo.size() == 1 && c.vo[0] == "RedRockSkillsIntro" &&
+            c.set_time_of_day && c.time_of_day_s == FirstTimeCareer::kPostPlaneRaceTimeOfDay,
+        "PopularitySkillsFlow: 18:40, Skills_Unlock over RedRockSkillsIntro");
+  check(!ftc.controls_enabled() && !ftc.hud_visible() && !ftc.skills_unlocked(), "no controls or skills under it");
+  in.race_finished = false;
+  in.cutscene_active = true;
+  ftc.update(in);
+  check(!ftc.skills_unlocked(), "still under Skills_Unlock");
+  in.cutscene_active = false;
+  ftc.update(in);
+  check(ftc.controls_enabled() && ftc.hud_visible() && ftc.skills_unlocked(), "it ends: controls, HUD, skills");
   check(ftc.hud_instruction() == "IDS_HudInstruction_Travel_To_RaceCentral", "Drive to Race Central");
   // With a sign-up trigger the final waits for the player to drive there.
   FirstTimeCareer f2;

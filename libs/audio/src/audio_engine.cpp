@@ -679,7 +679,7 @@ void AudioEngine::radio_lock_viper_intro(bool lock) {
 }
 
 namespace {
-enum RadioFlowOp { kFlowPlaylist, kFlowSwitching, kFlowSilentIdents, kFlowStopDj, kFlowCancelPlaylist };
+enum RadioFlowOp { kFlowPlaylist, kFlowSwitching, kFlowSilentIdents, kFlowStopDj, kFlowCancelPlaylist, kFlowHoldPopup };
 }  // namespace
 
 void AudioEngine::radio_set_playlist(const std::vector<std::string>& fmodnames, bool then_normal) {
@@ -725,6 +725,14 @@ void AudioEngine::radio_cancel_playlist() {
   Command c;
   c.kind = Command::kRadioFlow;
   c.i0 = kFlowCancelPlaylist;
+  enqueue(c);
+}
+
+void AudioEngine::radio_hold_popup(bool held) {
+  Command c;
+  c.kind = Command::kRadioFlow;
+  c.i0 = kFlowHoldPopup;
+  c.b0 = held;
   enqueue(c);
 }
 
@@ -1119,6 +1127,7 @@ void AudioEngine::drain_commands() {
           case kFlowSilentIdents: radio_->set_silent_idents(c.b0); break;
           case kFlowStopDj: radio_->stop_dj(); break;
           case kFlowCancelPlaylist: radio_->cancel_playlist(); break;
+          case kFlowHoldPopup: radio_->hold_popup(c.b0); break;
           default: break;
         }
         break;

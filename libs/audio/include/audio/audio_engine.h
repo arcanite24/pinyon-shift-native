@@ -213,6 +213,7 @@ class AudioEngine {
   void radio_set_silent_idents(bool on);
   void radio_stop_dj();
   void radio_cancel_playlist();
+  void radio_hold_popup(bool held);  // Radio::hold_popup
 
   // Runtime custom radio commands.
   void runtime_radio_select(int station);

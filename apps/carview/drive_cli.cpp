@@ -51,6 +51,8 @@ void drive_usage() {
                "           --debug-title (show live car/speed/RPM/coords telemetry in the window title)\n"
                "           --record-session <dir> (or SHIFT_RECORD_SESSION=<dir>: zero-hitch playtest telemetry,\n"
                "           F11 / Back+RB bug bookmark screenshot + JSON repro, exit summary.json)\n"
+               "           --autoplay script [--autoplay-out dir] (timed keys, PNG captures, autopilot\n"
+               "           driving and a beat log, beats.csv; the format is in autoplay.h)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
                "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
                "           --bench-scenario noon_cruise|midnight_lights|cockpit_mirrors|race_pack|autoshow_studio|ui4_heavy|cold_boot_switch\n"
@@ -159,6 +161,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     if (a == "--cutscene-time") { cli_cutscene_time = std::max(0.0, std::atof(next())); continue; }
     if (a == "--telemetry-json") { telemetry_json_path = next(); continue; }
     if (a == "--record-session") { record_session_dir = next(); continue; }
+    if (a == "--autoplay") { autoplay_script = next(); continue; }
+    if (a == "--autoplay-out") { autoplay_out = next(); continue; }
     if (a == "--capture-times") { capture_times_csv = next(); continue; }
     if (a == "--fmv") { cli_fmv_path = next(); continue; }
     if (a == "--mods") { mods_root = next(); mods_off = false; continue; }

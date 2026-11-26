@@ -87,6 +87,9 @@ bool pause_popup_text(const PauseScreenHud& ps, std::string& title, std::string&
 
 // Binds a scene's PlayerBar (the pause menu's, shared by H_EVENT_SUMMARY):
 // the wristband objective, the car and its class, the credits.
+// band_texture: the wristband's texture (empty: from the HUD), or
+// kNoPlayerBarTopRow for a bar without its wristband row.
+inline constexpr const char* kNoPlayerBarTopRow = "-";
 void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& band_texture = {});
 
 // Fills `out` from the menu (the rows' texts resolved now).

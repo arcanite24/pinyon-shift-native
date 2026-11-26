@@ -847,17 +847,20 @@ bool DriveSession::step(const drive::Input& user_in) {
           vehicle.set_draft(drive::compute_follower_draft(me, leaders.data(), leaders.size()));
         }
         drive::Input eff_user_in = user_in;
+        // --autoplay's `drive auto`: the player's own input comes from the
+        // sat-nav autopilot (a capture harness, not a game feature).
+        if (app.autoplay.drive_auto() && !app.race) eff_user_in = ftc_autopilot_input();
         if (app.campaign.ftc_active()) {
-          ftc_throttle = user_in.throttle;
-          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          ftc_throttle = eff_user_in.throttle;
+          ftc_handbrake = ftc_handbrake || eff_user_in.handbrake;
           // Controls off while the flow drives: the AI drives the player's
           // car on the route (the opening, the festival arrival), else the
           // car is held.
           if (!app.campaign.ftc().controls_enabled())
             eff_user_in = app.campaign.ftc().ai_driving() ? ftc_autopilot_input() : drive::Input{};
         } else if (app.campaign.tutor().active()) {
-          ftc_throttle = user_in.throttle;
-          ftc_handbrake = ftc_handbrake || user_in.handbrake;
+          ftc_throttle = eff_user_in.throttle;
+          ftc_handbrake = ftc_handbrake || eff_user_in.handbrake;
         }
         if (hold_for_reset_fade) {
           eff_user_in = drive::Input{};
@@ -1199,7 +1202,9 @@ bool DriveSession::step(const drive::Input& user_in) {
         // Seeded on the first step after the game loads, race or not.
         if (app.notified_wristband == -2 && app.have_career_catalog)
           app.notified_wristband = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
-        if (!app.race && app.have_career_catalog) {
+        // Not in the career's opening: its rewards hand over the yellow band (no
+        // toast or DJ line for it before; first30a captures).
+        if (!app.race && app.have_career_catalog && !app.campaign.ftc_active()) {
           const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
           if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
           if (ready >= 0 && ready != app.notified_wristband) {
@@ -1387,8 +1392,12 @@ bool DriveSession::step(const drive::Input& user_in) {
           host.particle_sys.step(float(drive::Vehicle::kStep), {0.707f, 0.0f, 0.707f}, 1.45f);
         }
         // SPEC-SKILLS-POPULARITY: step driving skill detectors in free roam and active races.
-        // No skills while the career's AI drives the car under a cutscene.
+        // No skills while the career's AI drives the car under a cutscene,
+        // nor in the career's opening before PopularitySkillsFlow (none
+        // score on the initial drive or the race to the festival in the
+        // original; first30a captures).
         if (app.skill_tracker && !app.campaign.cutscene_drives_player() &&
+            (!app.campaign.ftc_active() || app.campaign.ftc().skills_unlocked()) &&
             (!app.race || (app.race->session().started() && !app.race->player_finished()))) {
           freeroam::SkillInput si;
           si.dt = drive::Vehicle::kStep;

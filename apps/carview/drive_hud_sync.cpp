@@ -640,7 +640,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         // Career header panels (pause menu & sub-menus).
         d.credits = app.career.credits;
         d.popularity_rank = app.current_pop_rank();
-        if (!app.wristbands.levels.empty()) {
+        // No wristband row in the career's opening: the yellow band comes with
+        // its rewards (the original's locked map, first30a captures).
+        if (!app.wristbands.levels.empty() && !app.campaign.ftc_active()) {
           const int cur_i = std::clamp(app.collected_wristband, 0, int(app.wristbands.levels.size()) - 1);
           const int pending = app.have_career_catalog ? app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband) : -1;
           d.band_points = app.career.wristband_points;
@@ -1086,6 +1088,17 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           list.clear();
           app.fmv_player.draw(list, float(width), float(height));
           carview::campaign_ui::draw_transition(list, app.campaign.flow().transition(), float(width), float(height));
+          // The story movie's SKIP bubble (Start glyph) after a press; placed
+          // as on the original's FMV_01 (f00552_first30a_orig.png).
+          if (app.campaign.is_blocking_gameplay() && double(SDL_GetTicksNS()) * 1e-9 < fmv_skip_prompt_until) {
+            const float s = float(height) / 720.0f;
+            const float x0 = 70.0f * s, y0 = 654.0f * s, x1 = 146.0f * s, y1 = 681.0f * s;
+            list.rect(x0, y0, x1, y1, carview::ui::rgba(16, 16, 16, 225), 3.0f * s);
+            list.rect(x0, y1 - 1.0f * s, x0 + 4.0f * s, y1 + 5.0f * s, carview::ui::rgba(16, 16, 16, 225));
+            carview::ui4::button_glyph(list, x0 + 15.0f * s, 0.5f * (y0 + y1), 9.0f * s, "START");
+            list.text(x0 + 29.0f * s, 0.5f * (y0 + y1) - 10.0f * s, "SKIP",
+                      carview::ui4::style(carview::ui::Font::kE, 20.0f * s, carview::ui4::kWhite));
+          }
         }
         if (!app.show_title && !app.headless)
           carview::ftc_ui::draw_overlay(list, app.campaign.screen_overlay(), float(width), float(height));

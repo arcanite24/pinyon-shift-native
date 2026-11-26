@@ -522,6 +522,12 @@ struct DriveSession {
   size_t outpost_hub_pick = 0;
   std::vector<OutpostHubItem> outpost_hub_items;
   RadioPopupGpuState radio_popup_gpu;
+  // The SKIP bubble over a story movie (confirmskip): shown until this wall
+  // time (SDL ticks, s) after a press that does not skip. Its length is an
+  // interim (Q274).
+  static constexpr double kFmvSkipPromptSeconds = 3.0;
+  double fmv_skip_prompt_until = -1.0;
+  bool radio_popup_held = false;  // Radio::hold_popup sent (the career's cutscenes hide the HUD)
   double minimap_at = -1;
 
   // Dial needle trail EMA (replaces function-local static in game_hud.cpp)
@@ -795,6 +801,8 @@ struct DriveSession {
   void open_map();
   // First-time career glue (drive_first_time_career.cpp).
   void feed_first_time_career();
+  // --autoplay (autoplay.h): due keys pushed as SDL events, the beat log.
+  void autoplay_frame();
   void apply_first_time_career();
   double ftc_throttle = 0.0;
   bool ftc_handbrake = false;

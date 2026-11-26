@@ -310,6 +310,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
   set_instruction(-1);
   in_trigger_ = false;
   awaiting_race_ = false;
+  skills_cutscene_ = false;
   FtcCommands c;
   switch (next) {
     case FtcStage::kNotStarted: break;
@@ -779,12 +780,35 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
         n.place_car = true;
         n.pos = kPlaneRacePlace;
         n.heading_deg = kPlaneRaceHeading;
+        // PopularitySkillsFlow: 18:40, no traffic, Skills_Unlock (it places
+        // the car where the plane race leaves it) over RedRockSkillsIntro;
+        // controls and the HUD come back when it ends.
+        n.set_time_of_day = true;
+        n.time_of_day_s = kPostPlaneRaceTimeOfDay;
+        n.set_civilian_traffic = true;
+        n.civilian_traffic = false;
+        n.play_cutscene = kSkillsCutscene;
+        n.vo.push_back(kSkillsVo);
+        controls_ = false;
+        hud_ = false;
+        skills_cutscene_ = true;
         return n;
       }
       sign_up(kMustangRace);
       break;
 
     case FtcStage::kTravelToRaceCentral:
+      if (skills_cutscene_) {
+        if (waited(in.cutscene_active)) {
+          skills_cutscene_ = false;
+          controls_ = true;
+          hud_ = true;
+          set_instruction(8);  // its large line shows with the HUD, not under the cutscene
+          c.set_civilian_traffic = true;
+          c.civilian_traffic = true;
+        }
+        break;
+      }
       if (dist_xz(in.player_pos, race_central_) < race_central_radius_) return go(FtcStage::kRaceCentralMovie);
       break;
 

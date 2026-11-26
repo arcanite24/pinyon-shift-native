@@ -327,6 +327,16 @@ size_t DriveApp::garage_picker() {
 bool DriveApp::init(int& exit_code) {
   exit_code = 0;
   if (!record_session_dir.empty()) std::setvbuf(stdout, nullptr, _IONBF, 0);
+  if (!autoplay_script.empty()) {
+    std::string ap_err;
+    const auto ap_out = autoplay_out.empty() ? autoplay_script.parent_path() / "autoplay" : autoplay_out;
+    if (!autoplay.load(autoplay_script, ap_out, &ap_err)) {
+      std::fprintf(stderr, "carview: --autoplay: %s\n", ap_err.c_str());
+      exit_code = 2;
+      return false;
+    }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+  }
   car_given = !car.empty();
   // The play test's defaults for a window: the bake in out/bake (or
   // out/bake1), the R34, Colorado from SHIFT_GAME_ROOT or the sibling
