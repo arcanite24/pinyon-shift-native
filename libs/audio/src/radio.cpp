@@ -653,6 +653,7 @@ bool Radio::set_playlist(const std::vector<std::string>& fmodnames, bool then_no
     } else {
       popup_from_ = popup_clock_ + data_.levels.new_track_delay;
       popup_station_ = s;
+      popup_press_ = false;
     }
     return true;
   }
@@ -683,6 +684,7 @@ void Radio::press(int dir) {
   last_change_was_user_ = true;
   popup_station_ = selected();
   popup_from_ = popup_clock_ + (on() ? kPopupDelay : 0.0);
+  popup_press_ = true;
 }
 
 void Radio::advance(double dt, bool run) {
@@ -709,6 +711,7 @@ void Radio::advance(double dt, bool run) {
     } else if (popup_clock_ - popup_from_ > kPopupShow) {
       popup_from_ = from;
       popup_station_ = selected();
+      popup_press_ = false;
     }
   }
 }
@@ -724,6 +727,7 @@ void Radio::hold_popup(bool held) {
     popup_deferred_ = false;
     popup_from_ = popup_clock_ + data_.levels.new_track_delay;
     popup_station_ = selected();
+    popup_press_ = false;
   }
 }
 
@@ -733,6 +737,7 @@ Radio::Popup Radio::popup() const {
   if (popup_held_ || age < 0 || age > kPopupShow || popup_station_ < 0) return p;
   p.alpha = std::clamp(std::min(age, kPopupShow - age) / kPopupFade, 0.0, 1.0);
   p.station = popup_station_;
+  p.press = popup_press_;
   if (popup_station_ == selected() && on())
     if (auto* s = const_cast<Radio*>(this)->schedule(popup_station_))
       if (const RadioEvent* t = s->track_at(clock_)) p.track = t->track;

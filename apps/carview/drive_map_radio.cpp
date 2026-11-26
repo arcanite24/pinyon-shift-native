@@ -66,7 +66,10 @@ void DriveSession::set_radio_popup(int /*height*/) {
         radio_popup_gpu.prev_station_label.clear();
         radio_popup_gpu.next_station_name.clear();
         radio_popup_gpu.next_station_label.clear();
-        if (rdata.cycle.size() >= 2) {
+        // A new track's popup is the logo, title and artist only; the station
+        // strip is a station change's (handover/festrace_first30a_orig.png).
+        if (!p.press) radio_popup_gpu.station_frequency.clear();
+        if (p.press && rdata.cycle.size() >= 2) {
           int cyc_idx = -1;
           for (size_t i = 0; i < rdata.cycle.size(); ++i) {
             if (rdata.cycle[i] == p.station) {

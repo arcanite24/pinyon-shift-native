@@ -180,7 +180,7 @@ void cycle_and_popup(const audio::RadioData& d) {
   p.advance(0.5);
   CHECK(p.popup().alpha == 0);
   p.advance(0.6);  // 1.1 s
-  CHECK(p.popup().alpha > 0 && p.popup().alpha < 1 && p.popup().station == 0);
+  CHECK(p.popup().alpha > 0 && p.popup().alpha < 1 && p.popup().station == 0 && p.popup().press);
   p.advance(1.0);  // 2.1 s
   CHECK(near(p.popup().alpha, 1) && p.popup().track == 0);
   p.advance(3.0);  // 5.1 s
@@ -574,7 +574,7 @@ void flow_radio_states(const audio::RadioData& d) {
     CHECK(q.set_playlist({"T_Three"}, true));
     CHECK(q.popup().alpha == 0);
     q.advance(d.levels.new_track_delay + 1.0);
-    CHECK(q.popup().alpha > 0 && q.popup().station == 1 && q.popup().track == 1);
+    CHECK(q.popup().alpha > 0 && q.popup().station == 1 && q.popup().track == 1 && !q.popup().press);
     audio::Radio hq(d, 31, true);
     hq.select(0);
     hq.hold_popup(true);

@@ -256,6 +256,7 @@ class Radio {
   struct Popup {
     int station = -1, track = -1;
     double alpha = 0;
+    bool press = false;  // a station change's popup, not a new track's
   };
   Popup popup() const;
   static constexpr double kPopupDelay = 1.0, kPopupShow = 4.0, kPopupFade = 0.2;
@@ -283,6 +284,7 @@ class Radio {
   int popup_station_ = -1;
   uint64_t seen_track_ = ~0ull;  // the selected station's track last seen
   bool popup_held_ = false, popup_deferred_ = false;
+  bool popup_press_ = false;
   bool last_change_was_user_ = true;
 };
 
