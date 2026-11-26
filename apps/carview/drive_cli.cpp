@@ -43,7 +43,8 @@ void drive_usage() {
                "           player's car; the default headless) --race-seed N\n"
                "           --race-replay <csv> (the player on an oracle path by race time; the M5 gate)\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
-               "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad\n"
+               "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad;\n"
+               "           --barn-reveal barnfind_NN plays that barn rumour's map reveal (testing)\n"
                "  report:  F12 in the window saves carview-pose-N.txt (car, position, heading, hour, camera;\n"
                "           its spawn line goes back in as --spawn x y z heading); the title shows the position\n"
                "  debug:   --contacts-log file (hard body contacts; walls with nothing drawn near)\n"
@@ -359,6 +360,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       has_cli_gps = true;
     } else if (a == "--pr-stunt") {
       cli_pr_stunt = next();
+    } else if (a == "--barn-reveal") {
+      cli_barn_reveal = next();
     } else if (a == "--outpost-hub") {
       cli_outpost_hub = next();
     } else if (a == "--pause-map-png") {

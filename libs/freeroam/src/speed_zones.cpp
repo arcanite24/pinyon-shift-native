@@ -297,6 +297,12 @@ void SpeedActivityTracker::cancel_active() {
   zone_off_road_t_ = 0.0;
 }
 
+void SpeedActivityTracker::note_abort(const SpeedZoneDef& z, double time) {
+  abort_title_ = display_label_for(z);
+  abort_speed_ = zone_elapsed_ > 0.05 ? (zone_corridor_progress_ / zone_elapsed_) * kMsToMph : 0.0;
+  abort_at_ = time;
+}
+
 void SpeedActivityTracker::set_off_road(bool off_road) {
   off_road_ = off_road;
   if (!off_road_) zone_off_road_t_ = 0.0;
@@ -307,7 +313,7 @@ void SpeedActivityTracker::reset_session_clock() {
   zone_cd_.clear();
   cancel_active();
   off_road_ = false;
-  banner_at_ = flash_at_ = -1e9;
+  banner_at_ = flash_at_ = abort_at_ = -1e9;
 }
 
 std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double time, double x0, double z0, double x1,
@@ -372,6 +378,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
       fail_ev.failed_off_road = true;
       out.push_back(std::move(fail_ev));
       zone_cd_[z.id] = time + 3.0;
+      note_abort(z, time);
       cancel_active();
     } else if (zone_elapsed_ > 0.5 && crossed_gate(x0, z0, x1, z1, exit_gate)) {
       // Score strictly against authored corridor length (clamped from gate geometry),
@@ -393,6 +400,7 @@ std::vector<SpeedActivityEvent> SpeedActivityTracker::step(double dt, double tim
       cancel_active();
     } else if (zone_slow_t_ > 4.0 || zone_elapsed_ > 90.0 || d_mid > std::max(800.0, span * 1.5)) {
       out.push_back({SpeedActivityEvent::kZoneCancelled, z.id, display_label_for(z), 0.0, 0.0, false, false});
+      note_abort(z, time);
       cancel_active();
     }
   } else {
@@ -446,6 +454,13 @@ SpeedActivityHud SpeedActivityTracker::hud(double time) const {
     h.banner_best_mph = banner_best_;
     h.banner_new_pb = banner_new_pb_;
     h.banner_at = banner_at_;
+    h.banner_age_s = since_banner;
+  }
+  if (const double since_abort = time - abort_at_; since_abort >= 0.0 && since_abort < 2.0 && !abort_title_.empty()) {
+    h.abort_active = true;
+    h.abort_title = abort_title_;
+    h.abort_speed_mph = abort_speed_;
+    h.abort_age_s = since_abort;
   }
   const double since_flash = time - flash_at_;
   if (since_flash >= 0.0 && since_flash < 0.45) {

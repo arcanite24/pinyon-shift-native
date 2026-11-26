@@ -873,30 +873,9 @@ void draw_transition(ui::List& l, const race::TransitionState& trans, float scre
   const float alpha = trans.cover_alpha();
   if (alpha <= 0.005f) return;
 
-  const float s = screen_h / 720.0f;
-  if (trans.kind == race::TransitionKind::kBrushWipe) {
-    const float edge = trans.wipe_edge();
-    const float band_w = screen_w * 0.55f;
-    const float cx = edge * (screen_w + band_w) - 0.5f * band_w;
-    ui4::TiltScope tilt(l, 0.5f * screen_w, 0.5f * screen_h, ui4::kTiltRad * 1.4f);
-    l.rect(0, 0, screen_w, screen_h, with_alpha(ui4::kBrushBlack, alpha * 0.92f));
-    ui4::brush(l, cx - 0.5f * band_w, -40.0f * s, cx + 0.5f * band_w, screen_h + 40.0f * s,
-               with_alpha(ui4::kPink, alpha), true);
-    if (!trans.label.empty() && alpha > 0.35f) {
-      l.text(0.5f * screen_w, 0.5f * screen_h - 18.0f * s, trans.label,
-             ui4::style(ui::Font::kE, 36.0f * s, with_alpha(ui4::kWhite, alpha), ui::Align::kCenter));
-    }
-  } else if (trans.kind == race::TransitionKind::kSlideLeft) {
-    const float w = screen_w * alpha;
-    l.rect(screen_w - w, 0, screen_w, screen_h, with_alpha(ui4::kBrushBlack, 0.92f));
-    l.rect(screen_w - w, 0, screen_w - w + 8.0f * s, screen_h, ui4::kPink);
-  } else if (trans.kind == race::TransitionKind::kSlideUp) {
-    const float h = screen_h * alpha;
-    l.rect(0, screen_h - h, screen_w, screen_h, with_alpha(ui4::kBrushBlack, 0.92f));
-    l.rect(0, screen_h - h, screen_w, screen_h - h + 6.0f * s, ui4::kPink);
-  } else {
-    l.rect(0, 0, screen_w, screen_h, with_alpha(ui::rgba(6, 6, 8, 255), alpha));
-  }
+  // Every kind is the flows' black screen fade (race/screen_fade.h): the
+  // original has no brush wipes, slides or title strips between screens.
+  l.rect(0, 0, screen_w, screen_h, with_alpha(ui::rgba(0, 0, 0, 255), alpha));
 }
 
 void draw(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {

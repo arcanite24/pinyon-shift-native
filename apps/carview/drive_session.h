@@ -333,7 +333,8 @@ struct DriveSession {
   double last_touch_y = 0;
   bool have_prev_speed_pos = false;
   double prev_speed_x = 0.0, prev_speed_z = 0.0;
-  bool demo_h2h_started = false, demo_speed_trap_done = false;
+  bool demo_h2h_started = false;
+  int demo_speed_trap_passes = 0;
   RigAccelState rig_accel;
   double step_physics_ms = 0.0;
   double step_ai_traffic_ms = 0.0;
@@ -552,6 +553,24 @@ struct DriveSession {
   MapScreenHud map_screen_hud;
   MapCursor map_cursor;
   double map_opened_at = 0.0, map_base_zoom = 2.0;
+  // The icon under the cursor (update_map_selection), and the pause map's
+  // icon animation clock (MapScene's animation fields, map_anim_fill).
+  bool map_hover_on = false;
+  double map_hover_x = 0.0, map_hover_z = 0.0;
+  bool map_anim_hover = false, map_anim_prev = false;
+  double map_anim_hx = 0.0, map_anim_hz = 0.0, map_anim_px = 0.0, map_anim_pz = 0.0;
+  double map_anim_hover_since = 0.0, map_anim_ghost_since = -1.0;
+  double map_anim_drawn = -1.0;  // the map time last drawn
+  // A barn rumour's reveal (barnfinds.xml barnfindspawn_root): the map opens
+  // paused with Barn Finds forced on, Dak's VO plays and the camera runs the
+  // barn's map animation from the player to the rumour; the cursor is the
+  // player's again at its set_cursor trigger.
+  const mapanim::Animation* map_reveal_anim = nullptr;
+  double map_reveal_t = 0.0;
+  bool map_reveal_locked = false;
+  double map_reveal_cx = 0.0, map_reveal_cz = 0.0, map_reveal_zoom = 1.0;  // the opening camera
+  bool map_reveal_restore_filter = false;
+  MapFilterSet map_reveal_saved_filter;
   double map_px = 0.0, map_pz = 0.0;
   MapDialog map_dialog = MapDialog::kNone;
   int map_dialog_marker = -1;
@@ -774,6 +793,14 @@ struct DriveSession {
   void map_screen_open();
   void map_screen_step(double dt, float sx, float sy, float zoom_axis);
   void map_screen_fill();
+  // The pause map's icon animations: fills `ms`'s animation fields and plays
+  // the player's radar sound; due when the next 30 Hz animation frame is.
+  void map_anim_fill(MapScene& ms);
+  bool map_anim_due() const;
+  // The rumour reveal: opens the map on barn `index`'s animation; steps its
+  // camera (true while the player's input is held).
+  void map_reveal_start(size_t index);
+  bool map_reveal_step(double dt);
   bool map_screen_event(const SDL_Event& e);
   void map_cursor_world();
   bool map_travel_quote(const MapMarker& m, int64_t& cost);

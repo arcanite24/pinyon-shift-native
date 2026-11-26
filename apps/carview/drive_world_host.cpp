@@ -905,6 +905,8 @@ bool DriveWorldHost::open_world_and_car() {
         if (boot_cancelled) {
           return false;
         }
+        // Straight into the world (no title): the hand-off fade.
+        if (boot_live_ui && !app.show_title) app.loading_hand_off = true;
         if (app.status == 0) {
           std::printf("spawn %s: %.3f %.3f %.3f heading %.4f rad\n", how, sp.position[0], sp.position[1],
                       sp.position[2], sp.heading);
@@ -1132,6 +1134,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
         }
         if (hot_live_ui) app.audio_host.set_blocking_load(false);
         if (hot_cancelled) return false;
+        if (hot_live_ui) app.loading_hand_off = true;
         const double hot_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_hot0).count();
         std::printf("carview: hot swap to %s in %.1f ms (car %s, regather %s, world textures kept: %zu, gpu draws: %u)\n",

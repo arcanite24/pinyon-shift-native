@@ -392,6 +392,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
             //    LB/RB or Q/E cycles filters, LT/RT/wheel zooms, B/Esc/M/Back closes).
             if (map_open) {
               bool close = false;
+              // A rumour reveal's camera move takes no input until its
+              // set_cursor trigger.
+              if (map_reveal_locked &&
+                  (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                   e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+                   e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL))
+                return true;
               // The scene-driven map's filter popup, dialogs, LB and X first.
               if (map_screen_event(e)) return true;
               auto zoom_by = [&](double f) {

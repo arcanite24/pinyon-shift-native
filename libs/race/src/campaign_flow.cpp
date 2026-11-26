@@ -1,4 +1,5 @@
 #include "race/campaign_flow.h"
+#include "race/screen_fade.h"
 
 #include "drive/save.h"
 #include "fh1data/stringtables.h"
@@ -601,9 +602,10 @@ double TransitionState::progress() const {
 
 float TransitionState::cover_alpha() const {
   if (!active) return 0.0f;
+  // A flow fade out to the peak, then a fade in: both the S curve.
   const double p = progress();
-  if (p <= peak) return float(ease_in_out_cubic(p / peak));
-  return float(ease_in_out_cubic((1.0 - p) / (1.0 - peak)));
+  if (p <= peak) return float(screen_fade_curve(true, p / peak));
+  return float(screen_fade_curve(true, (1.0 - p) / (1.0 - peak)));
 }
 
 float TransitionState::wipe_edge() const {
@@ -786,9 +788,8 @@ CampaignAction CampaignFlow::start_new_career(bool skip_movies, std::array<doubl
 CampaignAction CampaignFlow::enter_stage(CampaignStage next, TransitionKind trans) {
   stage_ = next;
   stage_time_ = 0.0;
-  if (trans != TransitionKind::kNone) {
-    transition_.start(trans, 0.55, next == CampaignStage::kViperIntroDrive ? "HORIZON COLORADO" : "");
-  }
+  // The flows' fade_out_half_sec then fade_in (state_definitions.xml).
+  if (trans != TransitionKind::kNone) transition_.start_split(trans, kFlowFadeOutHalf.duration, kFlowFadeIn.duration);
 
   CampaignAction act;
   cinematic_ = CinematicBanner{};

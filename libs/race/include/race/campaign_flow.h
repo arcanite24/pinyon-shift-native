@@ -280,12 +280,15 @@ class DialogQueue {
 };
 
 // ---- UI4 Screen Transition State Machine ----
+// Which stage change a transition marks. Every kind draws the same black
+// screen fade (race/screen_fade.h, S curves): the engine's old brush wipe and
+// slides are gone (FE-02).
 enum class TransitionKind : uint8_t {
   kNone = 0,
-  kBrushWipe,   // signature FH1 hot-pink diagonal brush wipe
-  kCrossFade,   // smooth dark/warm cross-fade
-  kSlideLeft,   // directional UI4 blade slide
-  kSlideUp,     // vertical curtain reveal
+  kBrushWipe,
+  kCrossFade,
+  kSlideLeft,
+  kSlideUp,
 };
 
 struct TransitionState {

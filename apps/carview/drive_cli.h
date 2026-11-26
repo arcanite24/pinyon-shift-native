@@ -99,6 +99,7 @@ struct DriveConfig {
   bool has_cli_gps = false;
   double cli_gps_x = 0.0, cli_gps_z = 0.0;
   std::string cli_pr_stunt, cli_outpost_hub;
+  std::string cli_barn_reveal;  // --barn-reveal: a barn rumour's map reveal once the world is up (testing)
   bool demo_speed_trap = false, demo_h2h = false;
   bool demo_rally_stage = false, demo_rally_service = false, demo_club = false;
   // The Rally hub at start, every championship unlocked and the heats won

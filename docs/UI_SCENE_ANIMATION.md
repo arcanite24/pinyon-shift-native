@@ -287,6 +287,38 @@ off, the screens draw as before).
     (the ButtonBar stays at 100); the captures show the menu opening and
     closing at once.
 
+## Screen fades
+
+The flows' fades are not scene slides: they are the `CFadeIn` behaviour of
+`gamemodes.zip`'s `state_definitions.xml`, with a `FadeOptions` block
+(parser 8285F3A8; `CFadeIn`'s loader 829080C0 keeps it at offset +64). The
+block reads `Duration`, `HoldDuration`, `CurveType` (the names `Linear`
+= 0 and `S` = 1) and `Color`. The disc's global fades:
+
+| State | Duration | Hold | Curve | Colour |
+|---|---|---|---|---|
+| `global.fade_in` | 1.0 s | 0 | S | black |
+| `global.fade_out` | 1.0 s | 0 | S | black |
+| `global.fade_out_half_sec` | 0.5 s | 0 | S | black |
+
+The free-roam flow after a load blacks out and ends on `global.fade_in`.
+The engine keeps the three in `race/screen_fade.h` (the S curve taken as
+smoothstep, Q244), and `cutscene_corpus_tests` checks them against the
+disc's file. One fade now serves every screen:
+
+- **The load hand-off.** The load screen's close is `global.fade_in`: black,
+  then 1 s of S curve back to the game (`LoadingScreen::kFadeOutSec`). The
+  boot load and the world loads (fast travel, into and out of events) draw
+  their own load screens, so they hand the fade to the session's
+  (`DriveApp::loading_hand_off`); before this, only the title's load faded,
+  over 0.25 s. Capture: `load_handoff_fade_sheet_anim2.png` (0.25 s apart).
+- **The campaign's stage changes.** Every `TransitionKind` draws the black
+  fade: `fade_out_half_sec` to black, then `fade_in` (it was 0.55 s in
+  all, a cubic ease each way). The engine's pink brush wipe, its two slides and
+  the "HORIZON COLORADO" card on the wipe are gone.
+- **The reset.** Reset-to-road keeps its `GameTunableSettings.ini` timings
+  on the same black S-curve fade.
+
 ## Decoded, not yet played
 
 - **`H_GENERIC` / `H_GENERIC_TITLE`.** `INTRO` is 300 / 600 ms with no
@@ -295,19 +327,159 @@ off, the screens draw as before).
   event hubs' (`AVAILABLE`, `UNAVAILABLE`, `BRONZE`, `SILVER`, `GOLD`) and
   each activity's (`Upright` / `UprightWarning`). The engine's map does not
   draw those icons from the scene. The nodes it does draw (the cursor,
-  popups, title tape and player bar) have no slides. MAP-05's animations
-  (the icons' `reveal_drop`, `bulge`, `grow` ...) and HUD-11's reveal flow
-  are `MapProfileFullscreen.xml` profile animations, not BGF timelines
-  (Q187).
-- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
-  - `SpeedCamera`: `OFF`, `SHOW`, `ON`, `OLDPB` and others;
-  - the `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
-  - `MissionsDamage`: `BARFILL`;
-  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
+  popups, title tape and player bar) have no slides. The icons' own
+  animations and the rumour reveal are profile animations ("Map profile
+  animations" below), now played.
+- **The mission HUD (ACT-02).** `Missions/MissionsDamage`'s `BARFILL`
+  (1 s) is a gauge scrubbed by its time: `DAMAGEBAR.TGA`'s offset runs from
+  -0.049 to -0.79 and `FillBarGradient` widens from 0 to 1.71 over it, so
+  the damage's fraction is the time. The engine has no damage for the
+  photo shoots and draws its own mission HUD, not `MissionCountdown`,
+  `MissionsScoring` or `MissionsDamage` (Q187). The speed trap panel
+  (ACT-01) and the chain's score (`ScoreGroup`) are played ("The speed trap
+  panel" and "The skill chain's score" below); the `Icon`'s `SPEEDCAM` /
+  `AVERAGESPEEDCAM` slides belong to the activation prompt's icon, which
+  the engine draws with its own texture.
 
-  The engine draws its own speed trap and mission HUDs, not these
-  components. Playing the slides waits on drawing those components first
-  (Q187).
+## The speed trap panel
+
+`947_HUD`'s `SpeedCamera` is its own component, with the slides `OFF`,
+`SHOW` (1 s), `ON` (1 s), `OLDPB` and `NEWPB` (4 s), six `COMPARE*` (7 s)
+and `ABORT` (2 s). Its rows: `Title` (a pill), `Speed` (the speed and its
+unit on a tape), `SpeedPB` (a pill), `PBIcon` (`NEW_PB` on a tape),
+`CompLines` (two rival lines and a VS icon), `Summary` (three lines) and
+`LeaderboardText` (a button prompt).
+
+What the slides do:
+- `SHOW`: `SpeedGroup` fades in over 0.11 s while it grows to 1.02 and back
+  by 0.2 s; `Title` and `Speed` are up, `SpeedPB` and `PBIcon` down.
+- `ON`: the same, still.
+- `OLDPB`: `SpeedPB` slides in from 27 px right (alpha 0.07 to 1 over
+  0.2 s), 4 px lower than in `SHOW`.
+- `NEWPB`: `Speed` goes down and `PBIcon` pops in (alpha 0.5 to 1, scale
+  1.3 to 0.95 to 1 over 0.3 s).
+- Both fade `SpeedGroup` out and shrink it to 0.9 from 1.8 to 2 s.
+- `ABORT`: `SpeedGroup` fades out over 0.2 s.
+- `COMPARE*` / `NOCOMPARE*`: the rival lines and the summary
+  (`IDS_Summary_Win` FASTER THAN:, `_Lose`, `_Move`, `_NC` YOU'RE
+  RANKED:) and, without `NOLB`, the leaderboard prompt, from 0.2 s to
+  about 4.2 s.
+
+The engine (`speed_camera_phase`, `draw_hud_speed_camera` in
+`hud_screen.cpp`) plays, from the trap and zone tracker:
+- a trap: `SHOW` for its 1 s with the pass's speed, then `NEWPB` or
+  `OLDPB`, down at 2 s;
+- a zone: `SHOW` as it starts and `ON` while it runs, with the live
+  average; `NEWPB` or `OLDPB` as it ends; `ABORT` when it is cancelled.
+
+The title is the camera's name (`List_SpeedCameras`), the speed has two
+decimals as the map's popup shows it, the unit is `Activities/IDS_Mph` or
+`IDS_KmPerHour`, the personal best line is `IDS_PB`: speed unit and
+NEW PB! is `IDS_NewPB`. The comparison slides are not played: the engine
+has no leaderboard or rival times offline. The stackers are not run, so
+each row is placed on its `Stacker`'s line; the personal best goes one row
+below the title (Q242). Without the scene's timeline the engine's own
+drawn panel stays.
+
+## The skill chain's score
+
+`DrivingSkill/CompleteComponent/ScoreGroup` (the chain's total and
+multiplier) is its own component. Its slides move `anim_helper`:
+- `SHOW`: alpha 0 to 1 over 0.2 s while it grows from 0.9 to 1.05 and
+  settles at 1 by 0.3 s;
+- `HIDE`: alpha 1 to 0 over 0.2 s while it shrinks to 0.95;
+- `ABORT`: holds it (alpha 0.97 to 1 over 0.6 s) and starts a 0.6 s timer;
+- `DEFAULT`: down.
+
+`draw_hud_skills` plays `SHOW` from the chain's first skill, `ABORT` for
+0.6 s when the chain is lost and then `HIDE`, and `HIDE` 3 s after a bank
+(where the measured fade started). Before, a lost chain stayed 1.5 s and
+faded over 0.7 s, and a banked total faded over 0.5 s; those fades stay for
+the scenes without a timeline (Q243).
+
+## Map profile animations
+
+The map's icon and camera animations are not BGF timelines: they are the
+`<animations>` of `MapProfileFullscreen.xml` (the minimap's profile has
+none), bound to icon events by each symbolizer's
+`<animation event=".." animation=".."/>`. `carview::mapanim`
+(`apps/carview/map_anim.h`) reads and samples them; `map_view.cpp` draws the
+icons with them and `drive_map_screen.cpp` runs the reveal camera.
+
+**The format** (the title's parsers: animation 82CD6428, frame 82CD5C50,
+ease 82CD17F0):
+- `<animation name loop speed>`: `loop` missing or `stop` holds the last
+  frame, `loop` wraps, `pingpong` runs back and forth; `speed` (default 1)
+  multiplies every key time. The length is the last frame's time times the
+  speed. Where a name is defined twice (the two `pulse`), the first stays.
+- `<frame advance>`: the frame's time is the previous frame's plus
+  `advance` (default 0). Its children are keys and triggers at that time.
+- `<key type value ease>`: seven tracks. `scaleX` and `posX2` share one,
+  `scaleY` and `zoom` one, `angle` and `posY2` one; the others are `posX`,
+  `posY`, `alpha` and `colour`.
+- `ease`: missing is `both`; `none`, `in`, `out`, `both`, `smooth`; any
+  other name is `smooth`.
+- `<trigger type value>`: `audio` (a ui4audio play name), `reveal` (`next`),
+  `shake` (`camera`) and `set_cursor` (`set`), fired as the time passes
+  them (82CD5FC8, 8255AEF8).
+
+**Sampling** (8251BF60): before the first key the first value, from the
+last key on the last value; between keys a and b a Catmull-Rom spline
+(82CB7D60) whose outer points come from the eases. Before a (8251B980):
+`none` / `in` continue the line (2a - b), `out` / `both` repeat b (flat
+leaving a), `smooth` takes the key before a (flat if a is the first).
+After b (8251BA30): `none` / `out` continue the line (2b - a), `in` /
+`both` repeat a (flat arriving at b), `smooth` takes the key after b. A
+loop folds the time by the length; ping-pong by twice the length, running
+back in the second half (8251C3E0).
+
+**The icons** (`MapScene`'s animation fields): each symbolizer plays the
+animation its icon's event binds, or its `default` one from the map's
+opening when it binds none:
+- `intro` from the opening: the facilities' and career icons' `grow`
+  (0.7 at 0.1 s, 1.05 at 0.26 s, 1 at 0.43 s); the hotspot's `hidden`.
+- `hover` under the cursor: `bulge` (1 to 1.7 over 0.15 s, 1.5 at 0.25 s,
+  straight lines). The captures agree: the outpost goes from 29 px in
+  `map_open_orig.png` to 46 px under the cursor in
+  `map_popup_outpost_orig.png`. The average speed cameras' line ends use
+  `fade_in`, `hidden` otherwise.
+- `ghost` on the rest while an icon is hovered (alpha 1 to 0.3 over
+  0.3 s), `unghost` when the cursor leaves it (0.3 to 1). The icon hovered
+  before ghosts from the moment the cursor moves to another; when the
+  cursor leaves for an empty spot it goes back to its `default`.
+- The career icons' NEW badge: `fade_out` on hover and ghost, `fade_in` on
+  unghost.
+- The player's ping (cell 4,4): `radar`, a 3 s loop: at 1.2 s alpha 0.5
+  and scale 0 with the `Map_Radar` sound, at 1.8 s alpha 0 and scale 8
+  (flat arriving).
+
+Not played: the career unlocks' `reveal` (`reveal_drop`, the smoke layers,
+`reveal_new_slide` and their `shake` / `reveal next` triggers), which
+belong to the career's map reveal flow; `pulse`, which no fullscreen
+symbolizer binds; the camera shake. The pause map redraws at 30 Hz while
+it is open so the animations run (the title steps them by at most 1/30 s).
+
+**The camera** (8251CEF8): the title's map camera sits at a distance of
+`Map_Distance_Min + (Map_Distance_Max - Map_Distance_Min) * zoom`
+(tunables `UI/Map/Map_Distance_Min` 200 and `_Max` 7652, registered at
+8315CD48 and the next function); it opens at `UI/Map/Zoom_Default` 0.35
+(2808 m), and `UI/Map/Cursor_Zoom_Min` / `_Max` are 0.1 and 0.4. A camera
+animation blends the player's camera towards the animation's: the position
+towards (`posX`, `posY`) and the distance towards `scaleY`'s distance, both
+by `alpha`. The engine has a flat map, so its zoom is taken as the opening
+zoom times 2808 m over the distance (Q241).
+
+**The barn rumour reveal** (gamemodes.zip `barnfinds.xml`,
+`barnfindspawn_root`): when a rumour starts the title forces the Barn
+Finds filter on (`CForceMapFilterStatus`), shows an empty screen, pauses,
+triggers the barn's `MapVO` line (`BarnFind<n>AppearsOnMap`, not waited
+on), loads the map, plays the barn's `MapAnimation`
+(`barn_find_region<k>_unlock`) and runs the normal map flow; leaving the
+map unpauses the game. Each unlock animation holds the player's view for
+0.6 s, then blends over 1.5 s to its target at a zoom of 0.1 to 0.2, and
+fires `set_cursor` at 2.1 s. The engine holds the player's input until
+then and puts the cursor at the middle of the view. Barn 1's animation also
+has `posX2` / `posY2` keys, which are not used (Q241).
 
 ## Tools
 

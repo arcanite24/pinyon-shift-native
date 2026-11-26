@@ -19,6 +19,10 @@
 #include "scene_screen.h"
 #include "ui4_chrome.h"
 
+namespace freeroam {
+struct SpeedActivityHud;
+}
+
 namespace carview {
 
 struct DriveHud;
@@ -45,6 +49,12 @@ inline constexpr StringRef kRace{"InGame", "IDS_Race", 0, "RACE"};
 inline constexpr StringRef kLap{"InGame", "IDS_CurrentLapTimeLabel", 0, "LAP"};
 inline constexpr StringRef kLast{"InGame", "IDS_Last", 0, "LAST"};
 inline constexpr StringRef kBest{"InGame", "IDS_Best", 0, "BEST"};
+inline constexpr StringRef kSpeedTrap{"Activities", "IDS_Description_SpeedCamera", 0, "SPEED TRAP"};
+inline constexpr StringRef kSpeedZone{"Activities", "IDS_Description_AverageSpeedZone", 0, "SPEED ZONE"};
+inline constexpr StringRef kNewPb{"Activities", "IDS_NewPB", 0, "NEW PB!"};
+inline constexpr StringRef kPb{"Activities", "IDS_PB", 0, "PB"};
+inline constexpr StringRef kMphLabel{"Activities", "IDS_Mph", 0, "MPH"};
+inline constexpr StringRef kKmhLabel{"Activities", "IDS_KmPerHour", 0, "KM/H"};
 // No string table has these: the engine's own.
 inline constexpr StringRef kSplit{{}, {}, 0, "SPLIT", true};
 }  // namespace hud_text
@@ -182,5 +192,35 @@ struct NotifyView {
 // or the scene is missing).
 float draw_hud_notification(ui::List& l, const NotifyView& n, float w, float h, float s, float lift);
 bool hud_notification_available();
+
+// --- SpeedCamera (the speed trap and zone panel) ---------------------------
+
+// Which of SpeedCamera's slides plays and how far in (ms), from the trap or
+// zone state; empty: none up (docs/UI_SCENE_ANIMATION.md, Q242). A trap's
+// pass plays SHOW for its 1 s, then NEWPB or OLDPB; a zone plays SHOW as it
+// starts and ON while it runs, then NEWPB or OLDPB as it ends, or ABORT as
+// it is cancelled. NEWPB and OLDPB fade the panel out at 2 s.
+struct SpeedCameraPhase {
+  std::string_view slide;
+  double ms = 0.0;
+  bool zone = false;
+  bool new_pb = false;
+  double speed_mph = 0.0, best_mph = 0.0;
+  std::string title;  // the camera's or zone's id or name, as the tracker has it
+};
+SpeedCameraPhase speed_camera_phase(const freeroam::SpeedActivityHud& sh);
+
+// One frame of the panel: the camera's name, the speed and its unit, the
+// personal best line (OLDPB) and the NEW PB! line (NEWPB).
+struct SpeedCameraView {
+  std::string_view slide;
+  double ms = 0.0;
+  std::string title, speed, unit, pb, new_pb;
+};
+// Draws it with its slide's look, lifted `lift` canvas px; false when the
+// scene, its node, its slide or the timelines are missing (the caller draws
+// its own).
+bool draw_hud_speed_camera(ui::List& l, const SpeedCameraView& v, float w, float h, float s, float lift);
+bool hud_speed_camera_available();
 
 }  // namespace carview

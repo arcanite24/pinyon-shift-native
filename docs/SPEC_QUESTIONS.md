@@ -3363,7 +3363,8 @@ the spinner turns once a second (set by eye). On event loads the engine
 puts the event's name on the scene's `Stat_Text` (an engine request; no
 original frame shows it), placed by eye. The minimum holds (1 s from the
 title into free roam, 3 s into and out of events, none for fast travel)
-follow the recomp; the engine's 0.25 s fades are its own.
+follow the recomp. The engine's 0.25 s fade in is its own; the close is
+the flows' `global.fade_in` (1 s, black, S curve; Q244).
 
 Needed: the spinner's rate and the fades' timings from the scene's
 timelines.
@@ -4879,20 +4880,17 @@ Still not played:
   event hubs' (`AVAILABLE` / `UNAVAILABLE` / `BRONZE` / `SILVER` / `GOLD`)
   and each activity's (`Upright` / `UprightWarning`). The engine's map does
   not draw those icons from the scene, and the nodes it does draw have no
-  slides. The audit's MAP-05 (a perspective map, its zoom, and the icons'
-  `reveal_drop` / `bulge` / `grow` animations) and HUD-11 (the rumour's
-  map reveal) are `MapProfileFullscreen.xml` profile animations. Those are
-  not BGF timelines, and this work does not cover them. What this work
-  did under HUD-11 is `947_HUD`'s notification panel (`SHOW` / `HIDE`).
-- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
-  - `SpeedCamera`: `OFF` / `SHOW` / `ON` / `OLDPB`, and more;
-  - its `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
-  - `MissionsDamage`: `BARFILL`;
-  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
-
-  The engine draws its own speed trap and mission HUDs, not these
-  components (ACT-01 and ACT-02 themselves), so there is nothing to play
-  them on yet.
+  slides. The audit's MAP-05 icon animations (`grow`, `bulge`, `ghost`,
+  the radar ping) and HUD-11 (the rumour's map reveal) are
+  `MapProfileFullscreen.xml` profile animations; they are now decoded and
+  played (Q241). The perspective map itself and the career unlocks'
+  `reveal_drop` are not.
+- **The mission HUD (ACT-02).** `MissionsDamage`'s `BARFILL` is a gauge
+  scrubbed by the damage's fraction. The engine draws its own mission HUD,
+  not `MissionsDamage` / `MissionsScoring` / `MissionCountdown`, and has no
+  photo shoot damage, so there is nothing to play it on yet. The speed trap
+  panel, `SpeedCamera` (ACT-01), is drawn and played (Q242), and so is the
+  chain's `ScoreGroup` (`SHOW` / `HIDE` / `ABORT`, Q243).
 
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).
@@ -4995,7 +4993,8 @@ The engine meanwhile:
 - A barn with a running rumour gets the tan icon.
 - A found barn (restoring, ready or collected) gets the dark icon, the
   sheet's colour with no tint, as both profiles give it.
-- A selection fades the other icons to the profile's `ghost` alpha (0.3).
+- A hover plays the profile's `ghost` on the other icons (alpha 1 to 0.3
+  over 0.3 s) and `unghost` when it ends (Q241).
 
 Open:
 - Which fields bytes +44 and +513 are.
@@ -5190,3 +5189,143 @@ values since WP3).
 
 Needed: which screens turn on the blur (a scene flag or the screen's
 code), its strength and its fade in and out.
+
+## Q241 (MAP-05, HUD-11, not blocking): the map profile animations as the engine plays them
+
+The format, the eases, the loops, the triggers and the camera blend are
+decoded from the title ("Map profile animations" in
+`docs/UI_SCENE_ANIMATION.md`). These parts are the engine's reading:
+
+- **Zoom.** The title's camera has a distance; the engine's map is flat
+  with a zoom. The engine takes its opening zoom as the title's opening
+  distance (`UI/Map/Zoom_Default` 0.35 of `Map_Distance_Min..Max`, 2808 m)
+  and zooms as 1 / distance. That puts `UI/Map/Cursor_Zoom_Min` / `_Max`
+  (0.1, 0.4) at 2.97 times in and 1.13 out; the captures measured about
+  2.6 in and 1/6 out (`MapZoom`). A reveal can end at up to 2.97 times
+  (barns 5 and 9), past the player's 2.6, and the player's first zoom then
+  snaps back to 2.6.
+- **The reveal's end view.** The unlock animations' targets are not the
+  rumour circles' centres: they sit 100 m to 2 km from them, pulled
+  towards the middle of the map. With the zoom above, every circle's
+  centre ends in view at 1280 x 720 (`road_discovery_tests`). Barn 1's
+  `posX2` / `posY2` keys (1025, -4727) are not used.
+- **The cursor.** `set_cursor set` (2.1 s) gives the cursor back; the
+  engine puts it at the middle of the view. During the move the cursor
+  stays where it was and still locks onto icons passing under it.
+- **Events.** An icon plays one event at a time: `intro` from the opening,
+  `hover` / `ghost` while something is hovered, `unghost` after. The icon
+  hovered before goes back to its `default` when the cursor leaves for an
+  empty spot. When the player stands on an icon the cursor locks onto it
+  as the map opens, so the map opens ghosted; no capture shows that case.
+- **The time step.** The title advances the animations by at most 1/30 s a
+  frame; the engine uses the clock since the map opened.
+- **The rumour popup.** The engine still shows its NEW BARN FIND RUMOR
+  notification; it appears when the map closes.
+
+Needed: a capture series of a rumour reveal (the map opening on its own
+during a drive), and a capture of the map opened with the player on an
+icon.
+
+## Q242 (ACT-01, not blocking): the speed trap panel's flow and rows
+
+`947_HUD`'s `SpeedCamera` slides are decoded ("The speed trap panel" in
+`docs/UI_SCENE_ANIMATION.md`); which slide the game goes to when, and the
+rows' text, are not. No capture shows the panel. The engine's reading:
+
+- **The flow.** A trap's pass plays `SHOW` (1 s) with the pass's speed,
+  then `NEWPB` or `OLDPB`, which fade the panel out at 2 s. A zone plays
+  `SHOW` as it starts and `ON` while it runs, with the live average, then
+  `NEWPB` or `OLDPB` as it ends; a cancelled run (off road, too slow, out
+  of the corridor) plays `ABORT`. The comparison slides (`COMPARE*`,
+  `NOCOMPARE*`) are not played: the engine has no leaderboard or rival
+  times offline, so `CompLines`, `Summary` and `LeaderboardText` stay down.
+- **The rows.** `Title` is the camera's name (`List_SpeedCameras`, "East
+  Rt. 20 Speed Trap"), not `IDS_Description_SpeedCamera` (SPEED TRAP).
+  The speed has two decimals and an upper-case unit (`Activities/IDS_Mph`,
+  `IDS_KmPerHour`). `SpeedPB` reads `IDS_PB`: speed unit (PB: 192.42 KM/H),
+  after the map popup's line. `NEW_PB` is `IDS_NewPB` (NEW PB!).
+- **The layout.** Stackers are not run. Each row is put on its `Stacker`'s
+  line: `Title` 37 px under the speed. `SpeedPB`'s slides put it on the
+  same line as `Title` (34 to 38 px under the speed), so the engine puts it
+  one row further down; which of the two the stackers move is open.
+- **Gone with the scene's panel:** the engine's full-screen white flash
+  on a pass and its RETURN TO ROAD! line; the scene has neither. The pass
+  still plays the camera's sounds.
+
+Needed: a capture series of a speed trap pass (a new PB and not), a speed
+zone run (start, running, end, cancelled), and one with a friend's time on
+the leaderboard (the comparison slides).
+
+## Q243 (ACT-02, HUD, not blocking): when the chain's score plays its slides
+
+`ScoreGroup`'s `SHOW` / `HIDE` / `ABORT` are decoded ("The skill chain's
+score" in `docs/UI_SCENE_ANIMATION.md`); when the game goes to each is
+not. The engine plays `SHOW` from the chain's first skill, `ABORT` when the
+chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`; a banked total
+holds 3 s, then `HIDE`. The timer's event (what the game does when it
+fires) is not decoded; the 0.6 s hold is read from it, and shortens the
+lost total from the engine's earlier 2.2 s to 0.8 s. The 3 s bank hold is
+the engine's earlier measurement. The red of a lost total is the engine's.
+
+Needed: a capture series of a chain lost (a crash) and of one banked, from
+the last skill until the score is gone.
+
+## Q244 (FE-02, not blocking): the flow fades' S curve and where they play
+
+`state_definitions.xml`'s `global.fade_in`, `fade_out` (1 s) and
+`fade_out_half_sec` (0.5 s) are black `CFadeIn` fades with `CurveType` S
+("Screen fades" in `docs/UI_SCENE_ANIMATION.md`). Not decoded:
+
+- **The S curve's shape.** The engine takes it as smoothstep (as Q61 (d)
+  does for the cutscene fades); the evaluator behind `CurveType` 1 is not
+  read.
+- **Which fades the campaign's stage changes run.** The engine's stage
+  changes now run `fade_out_half_sec`, then `fade_in`, from the free-roam
+  flow's fades; which states each original screen change passes through is
+  not traced, and some may cut.
+- **The load hand-off.** The flow blacks out after a load and runs
+  `fade_in`; the engine starts that fade on the frame the load screen
+  closes, and also after the boot load when there is no title. Its clock
+  is the game's frame time. Each step is clamped to 0.05 s, and a frame
+  that does not advance the game clock counts 1/60 s. A logged boot
+  hand-off ran 59 frames and was clear by 0.88 s of game time. The first
+  frames after a load are slow, so on the wall clock the
+  capture (`load_handoff_fade_sheet_anim2.png`, 0.25 s apart) stretches to
+  about 1.25 s. Whether the original's fade counts game or wall time is
+  not known. Only the boot hand-off is captured. The title's load, the
+  world loads and the stage changes rest on the tests, and whether an
+  event load's fade stacks on a following movie or transition is not
+  checked.
+
+Needed: a capture series at 30 fps from a load screen closing into free
+roam and from a festival stage change, to fit the curve and the order.
+
+## Q245 (FE-01, not blocking): the title's music
+
+Settled: the title's music is `ui4audio.xml`'s `SplashScreen` play,
+`UIInGame/UI/FrontEnd/FE_Ambience` (`isLooping`). That event is in the
+`music` category and has one sound: `PressStart_Music.wav`,
+`UIInGame_Streams` sub-sound 22, 338.353 s. The engine's title bed
+(`UiMusicMode::kTitle`, the sub-sound named like `pressstart_music`) is
+that same sub-sound, and `audio_parity_corpus` checks the chain. The audio
+track of `PressStart.wmv` (wmapro, 48 kHz stereo, 53.93 s) is digital
+silence: FFmpeg's volumedetect reads -91 dB mean and peak, and astats reads
+-inf. The same decoder reads `FMV_01.wmv`'s first minute at -21.1 dB mean
+and 0 dB peak, so the reading is not a decode fault. `PressStart.def` names
+only the video stream (`<Video id="2" />`), while `FMV_01.def` lists its
+four language tracks. Routing the movie's audio at `menuMovieMusic` (0.4) would add
+nothing, so the engine keeps it muted and plays no second music source.
+The audit's FE-01 fix (play the movie's track and drop the sample) would
+have silenced the title.
+
+Open:
+- **`menuMusic="0.0"`.** `AudioEngineConfig.xml`'s `menuMusic="0.0"` and
+  `menuMovieMusic="0.4"` are not mapped to FEV categories or mixer buses.
+  If `menuMusic` scaled the `music` category on the title, the title would
+  be silent, which the engine does not do.
+- **When `SplashScreen` fires and stops.** Whether it also plays on SINGLE
+  PLAYER's menu, and how it fades out, is not traced. The engine plays the
+  bed while the title is up.
+
+Needed: a recorded title session with its audio, from Press Start into the
+menu and into a load.
