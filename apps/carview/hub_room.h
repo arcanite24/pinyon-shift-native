@@ -46,7 +46,8 @@ struct HubRoomScenery {
   // H_INT_*_LM lightmaps, which world_frag.glsl's interior branch reads as
   // the decoded H_INT shaders do: albedo x c0.z x (LM + (AO.g + 0.05) x
   // ambColor), ambColor the image-based `ibl_ambient` below, not
-  // LightAmbient). The car takes the hemisphere pair as its ambient.
+  // LightAmbient). The car takes the static cube's mean
+  // (`cube_mean`) as its ambient (interim, Q261).
   std::array<float, 3> ambient{0.04f, 0.03f, 0.03f};
   std::array<float, 3> hemi_top{0.0f, 0.0f, 0.0f};
   std::array<float, 3> hemi_bottom{0.0f, 0.0f, 0.0f};

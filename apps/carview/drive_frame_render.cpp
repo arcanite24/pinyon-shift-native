@@ -1235,8 +1235,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   t.hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
                   t.ambient_color[size_t(k)] = rs->ibl_ambient[size_t(k)];
                   t.car_sun_color[size_t(k)] = rs->car_key[size_t(k)];
-                  t.car_hl_top[size_t(k)] = rs->hemi_top[size_t(k)];
-                  t.car_hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
+                  t.car_hl_top[size_t(k)] = rs->cube_mean[size_t(k)];
+                  t.car_hl_bottom[size_t(k)] = rs->cube_mean[size_t(k)];
                 }
                 t.day_night_post = -1.0f;
                 t.ibl_ambient_scale = 1.0f;
