@@ -278,8 +278,10 @@ void DriveSession::fire_satnav_event(const traffic::GpsPromptEvent& gev) {
           case K::kArrivedNear: cue = audio::SatNavCue::kNearDestination; break;
           case K::kArrived:
             cue = audio::SatNavCue::kArrived;
-            popup = {"DESTINATION REACHED", "YOU HAVE ARRIVED AT YOUR WAYPOINT", vehicle.time(), -1,
-                     carview::ui::rgba(74, 238, 97)};
+            if (!app.race && !app.campaign.ftc_active()) {
+              popup = {"DESTINATION REACHED", "YOU HAVE ARRIVED AT YOUR WAYPOINT", vehicle.time(), -1,
+                       carview::ui::rgba(74, 238, 97)};
+            }
             break;
           case K::kTurnNow:
             if (is_roundabout_exit) {
@@ -407,8 +409,9 @@ void DriveSession::start_pr_stunt(const freeroam::PrStunt& st) {
 
 bool DriveSession::free_roam_step() {
         const drive::Vec3 pos_now = vehicle.position();
-        // Retail FH1 discovers driven Colorado roads in both free roam and active races.
-        if (app.road_discovery.ready()) {
+        // Gate road discovery during closed races and first-time career so
+        // ROADS DRIVEN toasts never leak over FTC drives or races.
+        if (app.road_discovery.ready() && !app.race && !app.campaign.ftc_active()) {
           for (const auto& rev : app.road_discovery.update(pos_now.x, pos_now.z)) {
             char rb[96];
             std::snprintf(rb, sizeof rb, "ROAD DISCOVERED  %d / %d", rev.discovered_count, rev.total_count);
@@ -471,17 +474,19 @@ bool DriveSession::free_roam_step() {
             }
           }
           if (app.have_outposts) {
-            const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
-            if (disc_idx >= 0 && size_t(disc_idx) < app.outposts.outposts.size()) {
-              const auto& op = app.outposts.outposts[size_t(disc_idx)];
-              // Discovery only unlocks the fast-travel destination: no
-              // credits or popularity in the original.
-              const int dc = app.outpost_progress.discovered_count(app.outposts);
-              popup = Popup::notify(NotifyKind::kOutpostDiscovered, vehicle.time());
-              std::printf("t %.2f s: outpost %s discovered (%d/%zu)\n", vehicle.time(), op.display_name.c_str(), dc,
-                          app.outposts.outposts.size());
-              app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
-              save_due = true;
+            if (!app.campaign.ftc_active()) {
+              const int disc_idx = app.outpost_progress.check_discovery(app.outposts, at.x, at.z);
+              if (disc_idx >= 0 && size_t(disc_idx) < app.outposts.outposts.size()) {
+                const auto& op = app.outposts.outposts[size_t(disc_idx)];
+                // Discovery only unlocks the fast-travel destination: no
+                // credits or popularity in the original.
+                const int dc = app.outpost_progress.discovered_count(app.outposts);
+                popup = Popup::notify(NotifyKind::kOutpostDiscovered, vehicle.time());
+                std::printf("t %.2f s: outpost %s discovered (%d/%zu)\n", vehicle.time(), op.display_name.c_str(), dc,
+                            app.outposts.outposts.size());
+                app.audio_host.trigger_ui(audio::UiCue::kSkillAward);
+                save_due = true;
+              }
             }
             if (app.pr_stunt_session.active()) {
               freeroam::PrStuntUpdate psu;
@@ -1542,7 +1547,8 @@ bool DriveSession::step(const drive::Input& user_in) {
           }
         }
         // Speed Traps & Speed Zones (free-roam gate crossings, camera flash, audio cue, PB persistence).
-        if (!app.race && app.speed_tracker) {
+        // Quiet during closed races and first-time career (unless --demo-speed-trap is active).
+        if (!app.race && app.speed_tracker && (!app.campaign.ftc_active() || app.demo_speed_trap)) {
           const drive::Vec3 sp_at = vehicle.position();
           if (!have_prev_speed_pos) {
             prev_speed_x = sp_at.x;
@@ -1612,6 +1618,8 @@ bool DriveSession::step(const drive::Input& user_in) {
               save_due = true;
             }
           }
+        } else {
+          have_prev_speed_pos = false;
         }
         if (app.freeroam_challenges && !app.race && !app.campaign.cutscene_drives_player() &&
             !app.campaign.flow().is_onboarding())
