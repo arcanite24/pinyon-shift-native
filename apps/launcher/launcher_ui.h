@@ -16,13 +16,14 @@ namespace launcher {
 enum class LauncherTab : int {
   kPlay = 0,
   kSetup = 1,
-  kDlc = 2,
-  kMods = 3,
-  kRadio = 4,
-  kWheel = 5,
-  kUpdate = 6,
-  kAndroid = 7,
-  kCount = 8,
+  kSaves = 2,
+  kDlc = 3,
+  kMods = 4,
+  kRadio = 5,
+  kWheel = 6,
+  kUpdate = 7,
+  kAndroid = 8,
+  kCount = 9,
 };
 
 const char* tab_name(LauncherTab tab);
@@ -33,20 +34,6 @@ struct HitBox {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   bool focusable = true;
   bool contains(float x, float y) const { return x >= x0 && x <= x1 && y >= y0 && y <= y1; }
-};
-
-struct ResolutionPreset {
-  const char* label;
-  int width;
-  int height;
-};
-
-inline constexpr ResolutionPreset kResolutionPresets[5] = {
-    {"Auto", 0, 0},
-    {"1280\xC3\x97" "720", 1280, 720},
-    {"1920\xC3\x97" "1080", 1920, 1080},
-    {"2560\xC3\x97" "1440", 2560, 1440},
-    {"3840\xC3\x97" "2160", 3840, 2160},
 };
 
 struct LauncherUiState {
@@ -60,9 +47,21 @@ struct LauncherUiState {
   int selected_preset = 1;      // 0: ultra, 1: high, 2: low, 3: smooth-60, 4: quality-30, 5: low-power
   int selected_resolution = 0;  // 0..4 into kResolutionPresets
   int selected_backend = 0;     // 0..N into available_backend_choices()
+  int selected_vsync = 0;       // 0..2 into kVsyncChoices
+  int selected_fps_cap = 0;     // 0..6 into kFpsCapChoices
   bool launch_fullscreen = false;
   std::string launch_car = "NIS_SkylineGTRVSpecII_02";
   std::string extra_args;
+
+  // Saves tab state
+  std::vector<SaveProfileEntry> save_profiles;
+  int selected_save_profile = 0;
+  int save_profiles_scroll = 0;
+  std::string new_profile_gamertag;
+  std::vector<PinyonSaveSource> pinyon_sources;
+  int selected_pinyon_source = 0;
+  int pinyon_sources_scroll = 0;
+  std::string saves_status;
 
   // Setup tab state
   std::string disc_path_input;

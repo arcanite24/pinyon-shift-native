@@ -68,6 +68,25 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                 app.shadows_flag = ls.shadows;
                 app.bloom_flag = ls.bloom_mode;
                 if (!ls.graphics_backend.empty()) app.graphics_backend = ls.graphics_backend;
+                app.fullscreen = ls.fullscreen;
+                if (app.window) {
+                  const bool cur_fs = (SDL_GetWindowFlags(app.window) & SDL_WINDOW_FULLSCREEN) != 0;
+                  if (cur_fs != ls.fullscreen) {
+                    SDL_SetWindowFullscreen(app.window, ls.fullscreen);
+                  }
+                  if (!ls.fullscreen && !ls.window_size.empty()) {
+                    unsigned rw = 0, rh = 0;
+                    if (std::sscanf(ls.window_size.c_str(), "%ux%u", &rw, &rh) == 2 && rw >= 320 && rh >= 240) {
+                      int cw = 0, ch = 0;
+                      SDL_GetWindowSize(app.window, &cw, &ch);
+                      if (unsigned(cw) != rw || unsigned(ch) != rh) {
+                        SDL_SetWindowSize(app.window, int(rw), int(rh));
+                        app.width = rw;
+                        app.height = rh;
+                      }
+                    }
+                  }
+                }
                 live_sound_enabled = ls.sound;
                 live_radio_enabled = ls.radio;
                 live_hud_speedo_mode = ls.hud_speedo_mode;

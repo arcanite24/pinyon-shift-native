@@ -63,6 +63,8 @@ struct LiveSettings {
   drive::FestivalPacingConfig festival_pacing;
   bool hidden_cars = false;
   std::string graphics_backend = "auto";
+  bool fullscreen = false;
+  std::string window_size;  // empty: auto, else "1280x720"|"1920x1080"|"2560x1440"|"3840x2160"
   std::string preset;      // empty: default, else "low"|"high"|"ultra"|"low-power"
   std::string shadows;     // empty: default, else "off"|"low"|"high"
   int bloom_mode = -1;     // -1: default, 0: off, 1: on

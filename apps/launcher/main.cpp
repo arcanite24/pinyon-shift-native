@@ -71,7 +71,7 @@ void upload_launcher_ui_atlas(carview::Renderer& renderer, bool full) {
 void print_usage() {
   std::printf(
       "shift-launcher: Shift Engine launcher\n"
-      "  shift-launcher [--portable] [--game <dir>] [--tab play|setup|content|mods|radio|controls|updates|android]\n"
+      "  shift-launcher [--portable] [--game <dir>] [--tab play|setup|saves|content|mods|radio|controls|updates|android]\n"
       "  shift-launcher --screenshot <out.png> [--game <dir>] [--tab <name>] [--width 1280] [--height 720] [--scale 1.0] [--demo]\n");
 }
 
@@ -176,6 +176,8 @@ enum class DialogKind {
   kBrowseStateRoot,
   kBrowseSaveFile,
   kBrowseSaveFolder,
+  kBrowsePinyonFolder,
+  kBrowsePinyonZip,
   kImportStfs,
   kImportContentFolder,
   kInstallModZip,
@@ -219,7 +221,32 @@ void SDLCALL on_file_dialog_complete(void* userdata, const char* const* filelist
   ctx->queue->items.push_back(std::move(res));
 }
 
-void refresh_all(launcher::LauncherUiState& st) {
+void load_synced_settings(launcher::LauncherUiState& st) {
+  st.wheel_cfg = launcher::load_wheel_settings(st.paths.settings_file);
+  st.selected_preset = launcher::preset_index_for_name(launcher::load_graphics_preset_setting(st.paths.settings_file));
+  st.selected_resolution = launcher::load_resolution_setting(st.paths.settings_file);
+  st.launch_fullscreen = launcher::load_fullscreen_setting(st.paths.settings_file);
+  st.selected_vsync = launcher::vsync_index_for_name(launcher::load_vsync_setting(st.paths.settings_file));
+  st.selected_fps_cap = launcher::fps_cap_index_for_name(launcher::load_fps_cap_setting(st.paths.settings_file));
+  st.launcher_sounds_enabled = launcher::load_launcher_sounds_setting(st.paths.settings_file);
+  {
+    const std::string be = launcher::load_graphics_backend_setting(st.paths.settings_file);
+    const auto choices = launcher::available_backend_choices();
+    st.selected_backend = 0;
+    for (int i = 0; i < int(choices.size()); ++i) {
+      if (be == choices[size_t(i)].id) {
+        st.selected_backend = i;
+        break;
+      }
+    }
+  }
+  st.save_profiles = launcher::scan_save_profiles(st.paths);
+  if (st.selected_save_profile >= int(st.save_profiles.size())) {
+    st.selected_save_profile = std::max(0, int(st.save_profiles.size()) - 1);
+  }
+}
+
+void refresh_all(launcher::LauncherUiState& st, const std::vector<std::filesystem::path>& extra_pinyon_roots = {}) {
   launcher::read_play_config(st.paths.play_dir, st.play_cfg);
   if (!st.play_cfg.game_root.empty() && st.disc_path_input.empty()) {
     st.disc_path_input = st.play_cfg.game_root.string();
@@ -235,19 +262,10 @@ void refresh_all(launcher::LauncherUiState& st) {
   st.mods = launcher::scan_mods(st.paths.mods_dir);
   st.save_iso = launcher::evaluate_save_isolation(st.mods);
   if (st.selected_mod >= int(st.mods.size())) st.selected_mod = std::max(0, int(st.mods.size()) - 1);
-  st.wheel_cfg = launcher::load_wheel_settings(st.paths.settings_file);
-  st.selected_preset = launcher::preset_index_for_name(launcher::load_graphics_preset_setting(st.paths.settings_file));
-  st.launcher_sounds_enabled = launcher::load_launcher_sounds_setting(st.paths.settings_file);
-  {
-    const std::string be = launcher::load_graphics_backend_setting(st.paths.settings_file);
-    const auto choices = launcher::available_backend_choices();
-    st.selected_backend = 0;
-    for (int i = 0; i < int(choices.size()); ++i) {
-      if (be == choices[size_t(i)].id) {
-        st.selected_backend = i;
-        break;
-      }
-    }
+  load_synced_settings(st);
+  st.pinyon_sources = launcher::scan_pinyon_save_sources(extra_pinyon_roots);
+  if (st.selected_pinyon_source >= int(st.pinyon_sources.size())) {
+    st.selected_pinyon_source = std::max(0, int(st.pinyon_sources.size()) - 1);
   }
   const auto ips = launcher::discover_local_lan_ips();
   if (!ips.empty()) st.sync_lan_ip = ips.front();
@@ -270,14 +288,16 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   }
   args.push_back("--preset");
   args.push_back(preset_arg);
-  const auto& res = launcher::kResolutionPresets[std::clamp(st.selected_resolution, 0, 4)];
+  const auto& res = launcher::kResolutionPresets[std::clamp(st.selected_resolution, 0, launcher::kResolutionPresetCount - 1)];
   if (res.width > 0 && res.height > 0) {
-    args.push_back("--width");
-    args.push_back(std::to_string(res.width));
-    args.push_back("--height");
-    args.push_back(std::to_string(res.height));
+    args.push_back("--size");
+    args.push_back(std::to_string(res.width) + "x" + std::to_string(res.height));
   }
-  if (st.launch_fullscreen) args.push_back("--fullscreen");
+  args.push_back(st.launch_fullscreen ? "--fullscreen" : "--no-fullscreen");
+  args.push_back("--vsync");
+  args.push_back(launcher::vsync_name_for_index(st.selected_vsync));
+  args.push_back("--fps-cap");
+  args.push_back(launcher::fps_cap_name_for_index(st.selected_fps_cap));
   {
     const auto backends = launcher::available_backend_choices();
     if (!backends.empty()) {
@@ -286,6 +306,20 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
         args.push_back("--backend");
         args.push_back(choice.id);
       }
+    }
+  }
+  {
+    std::string active_profile;
+    for (const auto& p : st.save_profiles) {
+      if (p.active) {
+        active_profile = p.name;
+        break;
+      }
+    }
+    if (active_profile.empty()) active_profile = launcher::load_profile_setting(st.paths.settings_file);
+    if (!active_profile.empty()) {
+      args.push_back("--profile");
+      args.push_back(active_profile);
     }
   }
   if (!st.save_import_path.empty()) {
@@ -309,6 +343,9 @@ bool launch_carview(const launcher::LauncherUiState& st, std::string& notice) {
   }
 
   std::vector<std::pair<std::string, std::string>> env;
+  if (!st.paths.settings_file.empty()) {
+    env.emplace_back("SHIFT_SETTINGS", st.paths.settings_file.string());
+  }
   const std::filesystem::path effective_state =
       !st.state_path_input.empty() ? std::filesystem::path(st.state_path_input) : st.paths.state_dir;
   if (!effective_state.empty()) {
@@ -329,6 +366,9 @@ void scroll_active_tab(launcher::LauncherUiState& st, int delta) {
   switch (st.active_tab) {
     case launcher::LauncherTab::kSetup:
       st.setup_log_scroll = std::max(0, st.setup_log_scroll + delta);
+      break;
+    case launcher::LauncherTab::kSaves:
+      st.save_profiles_scroll = std::max(0, st.save_profiles_scroll - delta);
       break;
     case launcher::LauncherTab::kDlc:
       st.content_scroll = std::max(0, st.content_scroll - delta);
@@ -553,6 +593,7 @@ int main(int argc, char** argv) {
   launcher::ContentInstallRunner content_runner;
   launcher::WifiSyncServer wifi_server;
   DialogQueue dialog_queue;
+  std::vector<std::filesystem::path> extra_pinyon_roots;
   bool was_setup_running = false;
   bool was_content_running = false;
   bool text_input_active = false;
@@ -560,16 +601,53 @@ int main(int argc, char** argv) {
   carview::ui::List ui_list;
   std::vector<launcher::HitBox> hitboxes;
 
-  auto active_setup_text_field = [&]() -> std::string* {
-    if (state.active_tab != launcher::LauncherTab::kSetup) return nullptr;
-    if (state.focused_id == "setup:path") return &state.disc_path_input;
-    if (state.focused_id == "setup:state_path") return &state.state_path_input;
-    if (state.focused_id == "setup:save_path") return &state.save_import_path;
+  // Lightweight file-mtime tracking for bidirectional settings.txt & profiles.txt reload on focus gain.
+  std::filesystem::file_time_type last_settings_mtime{};
+  std::filesystem::file_time_type last_profiles_mtime{};
+  bool has_settings_mtime = false;
+  bool has_profiles_mtime = false;
+
+  auto query_mtime = [](const std::filesystem::path& p, std::filesystem::file_time_type& out) -> bool {
+    if (p.empty()) return false;
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(p, ec);
+    if (ec) return false;
+    out = t;
+    return true;
+  };
+  auto record_sync_mtimes = [&]() {
+    has_settings_mtime = query_mtime(state.paths.settings_file, last_settings_mtime);
+    has_profiles_mtime = query_mtime(state.paths.data_root / "profiles.txt", last_profiles_mtime);
+  };
+  auto sync_external_settings_if_changed = [&]() -> bool {
+    std::filesystem::file_time_type cur_st{}, cur_pr{};
+    const bool cur_has_st = query_mtime(state.paths.settings_file, cur_st);
+    const bool cur_has_pr = query_mtime(state.paths.data_root / "profiles.txt", cur_pr);
+    const bool st_changed = (cur_has_st != has_settings_mtime) || (cur_has_st && cur_st != last_settings_mtime);
+    const bool pr_changed = (cur_has_pr != has_profiles_mtime) || (cur_has_pr && cur_pr != last_profiles_mtime);
+    if (!st_changed && !pr_changed) return false;
+    has_settings_mtime = cur_has_st;
+    last_settings_mtime = cur_st;
+    has_profiles_mtime = cur_has_pr;
+    last_profiles_mtime = cur_pr;
+    load_synced_settings(state);
+    return true;
+  };
+  record_sync_mtimes();
+
+  auto active_text_field = [&]() -> std::string* {
+    if (state.active_tab == launcher::LauncherTab::kSetup) {
+      if (state.focused_id == "setup:path") return &state.disc_path_input;
+      if (state.focused_id == "setup:state_path") return &state.state_path_input;
+      if (state.focused_id == "setup:save_path") return &state.save_import_path;
+    } else if (state.active_tab == launcher::LauncherTab::kSaves) {
+      if (state.focused_id == "saves:new_tag") return &state.new_profile_gamertag;
+    }
     return nullptr;
   };
 
   auto sync_text_input = [&]() {
-    const bool want = active_setup_text_field() != nullptr;
+    const bool want = active_text_field() != nullptr;
     if (want && !text_input_active) {
       SDL_StartTextInput(window);
       text_input_active = true;
@@ -668,20 +746,41 @@ int main(int argc, char** argv) {
       state.selected_preset = std::clamp(std::atoi(id.c_str() + 7), 0, launcher::kGraphicsPresetCount - 1);
       const char* pname = launcher::preset_name_for_index(state.selected_preset);
       launcher::save_graphics_preset_setting(state.paths.settings_file, pname);
+      record_sync_mtimes();
       state.banner_notice = std::string("Graphics preset set to ") +
                             launcher::kGraphicsPresets[state.selected_preset].label + " (" + pname + ").";
     } else if (id.rfind("res:", 0) == 0) {
-      state.selected_resolution = std::clamp(std::atoi(id.c_str() + 4), 0, 4);
+      state.selected_resolution = std::clamp(std::atoi(id.c_str() + 4), 0, launcher::kResolutionPresetCount - 1);
+      launcher::save_resolution_setting(state.paths.settings_file, state.selected_resolution);
+      record_sync_mtimes();
+      state.banner_notice = std::string("Resolution set to ") +
+                            launcher::kResolutionPresets[state.selected_resolution].label + ".";
     } else if (id.rfind("backend:", 0) == 0) {
       const auto backends = launcher::available_backend_choices();
       if (!backends.empty()) {
         state.selected_backend = std::clamp(std::atoi(id.c_str() + 8), 0, int(backends.size()) - 1);
         const auto& choice = backends[size_t(state.selected_backend)];
         launcher::save_graphics_backend_setting(state.paths.settings_file, choice.id);
+        record_sync_mtimes();
         state.banner_notice = std::string("Graphics backend set to ") + choice.label + ".";
       }
+    } else if (id.rfind("vsync:", 0) == 0) {
+      state.selected_vsync = std::clamp(std::atoi(id.c_str() + 6), 0, launcher::kVsyncChoiceCount - 1);
+      const auto& vc = launcher::kVsyncChoices[state.selected_vsync];
+      launcher::save_vsync_setting(state.paths.settings_file, vc.id);
+      record_sync_mtimes();
+      state.banner_notice = std::string("VSync set to ") + vc.label + ".";
+    } else if (id.rfind("fps:", 0) == 0) {
+      state.selected_fps_cap = std::clamp(std::atoi(id.c_str() + 4), 0, launcher::kFpsCapChoiceCount - 1);
+      const auto& fc = launcher::kFpsCapChoices[state.selected_fps_cap];
+      launcher::save_fps_cap_setting(state.paths.settings_file, fc.id);
+      record_sync_mtimes();
+      state.banner_notice = std::string("FPS cap set to ") + fc.label + ".";
     } else if (id == "act:fullscreen") {
       state.launch_fullscreen = !state.launch_fullscreen;
+      launcher::save_fullscreen_setting(state.paths.settings_file, state.launch_fullscreen);
+      record_sync_mtimes();
+      state.banner_notice = state.launch_fullscreen ? "Window mode set to Fullscreen." : "Window mode set to Windowed.";
     } else if (id == "act:play") {
       launch_carview(state, state.banner_notice);
     } else if (id == "act:open_play") {
@@ -703,12 +802,144 @@ int main(int argc, char** argv) {
         state.banner_notice = "Portable mode enabled.";
       }
       state.state_path_input.clear();
-      refresh_all(state);
+      refresh_all(state, extra_pinyon_roots);
+      record_sync_mtimes();
     } else if (id == "act:apply_rec") {
       state.selected_preset = launcher::preset_index_for_name(state.hw_rec.carview_preset);
       launcher::save_graphics_preset_setting(state.paths.settings_file,
                                              launcher::preset_name_for_index(state.selected_preset));
+      record_sync_mtimes();
       state.banner_notice = "Selected recommended preset: " + state.hw_rec.label;
+    } else if (id == "saves:new_tag") {
+      state.focused_id = id;
+    } else if (id.rfind("saves:prof:", 0) == 0) {
+      const int idx = std::atoi(id.c_str() + 11);
+      if (idx >= 0 && idx < int(state.save_profiles.size())) state.selected_save_profile = idx;
+    } else if (id.rfind("saves:src:", 0) == 0) {
+      const int idx = std::atoi(id.c_str() + 10);
+      if (idx >= 0 && idx < int(state.pinyon_sources.size())) state.selected_pinyon_source = idx;
+    } else if (id == "saves:set_active") {
+      if (state.selected_save_profile >= 0 && size_t(state.selected_save_profile) < state.save_profiles.size()) {
+        const std::string target = state.save_profiles[size_t(state.selected_save_profile)].name;
+        std::string err;
+        if (launcher::set_active_save_profile(state.paths, target, &err)) {
+          state.save_profiles = launcher::scan_save_profiles(state.paths);
+          record_sync_mtimes();
+          state.saves_status = "Active profile switched to '" + target + "'.";
+          state.banner_notice = state.saves_status;
+        } else {
+          state.saves_status = err.empty() ? "Could not switch active profile." : err;
+          state.banner_notice = state.saves_status;
+        }
+      }
+    } else if (id == "saves:new") {
+      std::string tag = clean_pasted_path(state.new_profile_gamertag);
+      if (tag.empty()) tag = "Driver " + std::to_string(state.save_profiles.size() + 1);
+      std::string created_name, err;
+      if (launcher::create_save_profile(state.paths, tag, &created_name, &err)) {
+        state.new_profile_gamertag.clear();
+        state.save_profiles = launcher::scan_save_profiles(state.paths);
+        for (int i = 0; i < int(state.save_profiles.size()); ++i) {
+          if (state.save_profiles[size_t(i)].name == created_name) state.selected_save_profile = i;
+        }
+        record_sync_mtimes();
+        state.saves_status = "Created profile '" + created_name + "' (" + tag + ").";
+        state.banner_notice = state.saves_status;
+      } else {
+        state.saves_status = err.empty() ? "Could not create profile." : err;
+        state.banner_notice = state.saves_status;
+      }
+    } else if (id == "saves:duplicate") {
+      if (state.selected_save_profile >= 0 && size_t(state.selected_save_profile) < state.save_profiles.size()) {
+        const std::string src_name = state.save_profiles[size_t(state.selected_save_profile)].name;
+        std::string dup_name, err;
+        if (launcher::duplicate_save_profile(state.paths, src_name, &dup_name, &err)) {
+          state.save_profiles = launcher::scan_save_profiles(state.paths);
+          for (int i = 0; i < int(state.save_profiles.size()); ++i) {
+            if (state.save_profiles[size_t(i)].name == dup_name) state.selected_save_profile = i;
+          }
+          record_sync_mtimes();
+          state.saves_status = "Duplicated '" + src_name + "' -> '" + dup_name + "'.";
+          state.banner_notice = state.saves_status;
+        } else {
+          state.saves_status = err.empty() ? "Could not duplicate profile." : err;
+          state.banner_notice = state.saves_status;
+        }
+      }
+    } else if (id == "saves:backup") {
+      if (state.selected_save_profile >= 0 && size_t(state.selected_save_profile) < state.save_profiles.size()) {
+        const std::string target = state.save_profiles[size_t(state.selected_save_profile)].name;
+        std::string label, err;
+        if (launcher::backup_save_profile(state.paths, target, &label, &err)) {
+          state.save_profiles = launcher::scan_save_profiles(state.paths);
+          state.saves_status = "Backed up '" + target + "' (" + label + ").";
+          state.banner_notice = state.saves_status;
+        } else {
+          state.saves_status = err.empty() ? "Backup skipped." : err;
+          state.banner_notice = state.saves_status;
+        }
+      }
+    } else if (id == "saves:delete") {
+      if (state.selected_save_profile >= 0 && size_t(state.selected_save_profile) < state.save_profiles.size()) {
+        const std::string target = state.save_profiles[size_t(state.selected_save_profile)].name;
+        std::string err;
+        if (launcher::delete_save_profile(state.paths, target, &err)) {
+          state.save_profiles = launcher::scan_save_profiles(state.paths);
+          if (state.selected_save_profile >= int(state.save_profiles.size())) {
+            state.selected_save_profile = std::max(0, int(state.save_profiles.size()) - 1);
+          }
+          record_sync_mtimes();
+          state.saves_status = "Removed profile '" + target + "' (files moved aside safely).";
+          state.banner_notice = state.saves_status;
+        } else {
+          state.saves_status = err.empty() ? "Cannot delete profile." : err;
+          state.banner_notice = state.saves_status;
+        }
+      }
+    } else if (id == "saves:open_folder") {
+      if (state.selected_save_profile >= 0 && size_t(state.selected_save_profile) < state.save_profiles.size()) {
+        open_folder_in_shell(state.save_profiles[size_t(state.selected_save_profile)].save_dir, state.banner_notice);
+      } else {
+        open_folder_in_shell(state.paths.drive_dir, state.banner_notice);
+      }
+    } else if (id == "saves:rescan") {
+      state.pinyon_sources = launcher::scan_pinyon_save_sources(extra_pinyon_roots);
+      if (state.selected_pinyon_source >= int(state.pinyon_sources.size())) {
+        state.selected_pinyon_source = std::max(0, int(state.pinyon_sources.size()) - 1);
+      }
+      state.saves_status = "Found " + std::to_string(state.pinyon_sources.size()) + " PinyonShift save source(s).";
+      state.banner_notice = state.saves_status;
+    } else if (id == "saves:browse_folder") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowsePinyonFolder};
+      SDL_ShowOpenFolderDialog(on_file_dialog_complete, ctx, window, nullptr, false);
+    } else if (id == "saves:browse_zip") {
+      auto* ctx = new DialogContext{&dialog_queue, DialogKind::kBrowsePinyonZip};
+      SDL_ShowOpenFileDialog(on_file_dialog_complete, ctx, window, kModZipFilters, 2, nullptr, false);
+    } else if (id == "saves:import_sel" || id == "saves:import_new") {
+      if (state.selected_pinyon_source < 0 || size_t(state.selected_pinyon_source) >= state.pinyon_sources.size()) {
+        state.saves_status = "Select a PinyonShift save source first.";
+        state.banner_notice = state.saves_status;
+      } else {
+        const auto& src = state.pinyon_sources[size_t(state.selected_pinyon_source)];
+        const bool as_new = (id == "saves:import_new");
+        std::string target_name;
+        if (!as_new && state.selected_save_profile >= 0 &&
+            size_t(state.selected_save_profile) < state.save_profiles.size()) {
+          target_name = state.save_profiles[size_t(state.selected_save_profile)].name;
+        } else if (as_new) {
+          target_name = clean_pasted_path(state.new_profile_gamertag);
+        }
+        std::string summary, err;
+        if (launcher::import_pinyon_save(state.paths, src.path, target_name, as_new, !as_new, &summary, &err)) {
+          state.save_profiles = launcher::scan_save_profiles(state.paths);
+          record_sync_mtimes();
+          state.saves_status = summary;
+          state.banner_notice = summary;
+        } else {
+          state.saves_status = err.empty() ? "Import failed." : err;
+          state.banner_notice = state.saves_status;
+        }
+      }
     } else if (id == "setup:path" || id == "setup:state_path" || id == "setup:save_path") {
       state.focused_id = id;
     } else if (id == "setup:browse_iso") {
@@ -737,6 +968,7 @@ int main(int argc, char** argv) {
       state.launcher_sounds_enabled = !state.launcher_sounds_enabled;
       state.setup_all_sounds = state.launcher_sounds_enabled;
       launcher::save_launcher_sounds_setting(state.paths.settings_file, state.launcher_sounds_enabled);
+      record_sync_mtimes();
       if (state.launcher_sounds_enabled) {
         ui_audio.play_confirm(true);
         state.banner_notice = "Launcher UI sounds enabled.";
@@ -857,6 +1089,7 @@ int main(int argc, char** argv) {
     } else if (id == "wheel:save") {
       std::string err;
       if (launcher::save_wheel_settings(state.paths.settings_file, state.wheel_cfg, &err)) {
+        record_sync_mtimes();
         state.wheel_status = "Saved settings to " + state.paths.settings_file.filename().string();
       } else {
         state.wheel_status = err;
@@ -955,167 +1188,270 @@ int main(int argc, char** argv) {
     return {sx, sy};
   };
 
+  auto add_pinyon_source_path = [&](const std::filesystem::path& p) {
+    extra_pinyon_roots.push_back(p);
+    state.pinyon_sources = launcher::scan_pinyon_save_sources(extra_pinyon_roots);
+    std::error_code ec;
+    const auto want = std::filesystem::weakly_canonical(p, ec);
+    for (int i = 0; i < int(state.pinyon_sources.size()); ++i) {
+      const auto cand = std::filesystem::weakly_canonical(state.pinyon_sources[size_t(i)].path, ec);
+      if (cand == want || state.pinyon_sources[size_t(i)].path == p) {
+        state.selected_pinyon_source = i;
+        break;
+      }
+    }
+    state.active_tab = launcher::LauncherTab::kSaves;
+    if (state.selected_pinyon_source >= 0 && size_t(state.selected_pinyon_source) < state.pinyon_sources.size()) {
+      const auto& s = state.pinyon_sources[size_t(state.selected_pinyon_source)];
+      state.saves_status = s.importable ? ("Ready to import: " + s.label) : s.detail;
+    } else {
+      state.saves_status = "No PinyonShift save export found at " + p.filename().string();
+    }
+    state.banner_notice = state.saves_status;
+  };
+
   float user_zoom = 1.0f;
   bool running = true;
-  while (running && !quit_for_update) {
-    const auto [scale_x, scale_y] = current_pixel_scale();
+  bool window_focused = true;
+  bool window_minimized = false;
+  bool window_occluded = false;
+  bool dirty = true;
+  bool atlas_synced = false;
+  size_t last_setup_logs = 0;
+  float last_setup_frac = -1.0f;
+  std::string last_setup_stage;
+  float last_content_frac = -1.0f;
+  std::string last_content_stage;
+  size_t last_sync_activity_count = 0;
+  float last_live_steer = 0.0f;
+  float last_live_throttle = 0.0f;
+  float last_live_brake = 0.0f;
 
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-      if (e.type == SDL_EVENT_QUIT) {
-        running = false;
-      } else if (e.type == SDL_EVENT_TEXT_INPUT) {
-        if (std::string* field = active_setup_text_field(); field && e.text.text) {
-          for (const char* p = e.text.text; *p; ++p) {
-            if (*p != '\r' && *p != '\n') field->push_back(*p);
+  auto process_event = [&](const SDL_Event& e, float scale_x, float scale_y) {
+    if (e.type == SDL_EVENT_QUIT) {
+      running = false;
+    } else if (e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) {
+      window_focused = true;
+      window_minimized = false;
+      window_occluded = false;
+      renderer.set_window_focused(true);
+      sync_external_settings_if_changed();
+      dirty = true;
+    } else if (e.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
+      window_focused = false;
+      renderer.set_window_focused(false);
+      state.hovered_id.clear();
+      state.pressed_id.clear();
+      dirty = true;
+    } else if (e.type == SDL_EVENT_WINDOW_MINIMIZED) {
+      window_minimized = true;
+      window_focused = false;
+      renderer.set_window_focused(false);
+    } else if (e.type == SDL_EVENT_WINDOW_OCCLUDED) {
+      window_occluded = true;
+    } else if (e.type == SDL_EVENT_WINDOW_RESTORED || e.type == SDL_EVENT_WINDOW_EXPOSED) {
+      window_minimized = false;
+      window_occluded = false;
+      dirty = true;
+    } else if (e.type == SDL_EVENT_WINDOW_RESIZED || e.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+               e.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+      dirty = true;
+    } else if (e.type == SDL_EVENT_TEXT_INPUT) {
+      if (std::string* field = active_text_field(); field && e.text.text) {
+        for (const char* p = e.text.text; *p; ++p) {
+          if (*p != '\r' && *p != '\n') field->push_back(*p);
+        }
+        dirty = true;
+      }
+    } else if (e.type == SDL_EVENT_KEY_DOWN) {
+      const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
+      const bool ctrl = (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+      std::string* editing_field = active_text_field();
+      if (ctrl && (e.key.key == SDLK_EQUALS || e.key.key == SDLK_PLUS || e.key.key == SDLK_KP_PLUS)) {
+        user_zoom = std::clamp(user_zoom + 0.15f, 0.75f, 2.0f);
+        state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
+      } else if (ctrl && (e.key.key == SDLK_MINUS || e.key.key == SDLK_KP_MINUS)) {
+        user_zoom = std::clamp(user_zoom - 0.15f, 0.75f, 2.0f);
+        state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
+      } else if (ctrl && (e.key.key == SDLK_0 || e.key.key == SDLK_KP_0)) {
+        user_zoom = 1.0f;
+        state.banner_notice = "UI zoom reset (100%).";
+      } else if (ctrl && e.key.key == SDLK_V && state.active_tab == launcher::LauncherTab::kSetup) {
+        if (char* clip = SDL_GetClipboardText()) {
+          const std::string pasted = clean_pasted_path(clip);
+          SDL_free(clip);
+          if (!pasted.empty()) {
+            if (state.focused_id == "setup:state_path") apply_state_root(pasted);
+            else if (state.focused_id == "setup:save_path") apply_save_import_path(pasted);
+            else apply_disc_source(pasted);
           }
         }
-      } else if (e.type == SDL_EVENT_KEY_DOWN) {
-        const bool shift = (e.key.mod & SDL_KMOD_SHIFT) != 0;
-        const bool ctrl = (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
-        std::string* editing_field = active_setup_text_field();
-        if (ctrl && (e.key.key == SDLK_EQUALS || e.key.key == SDLK_PLUS || e.key.key == SDLK_KP_PLUS)) {
-          user_zoom = std::clamp(user_zoom + 0.15f, 0.75f, 2.0f);
-          state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
-        } else if (ctrl && (e.key.key == SDLK_MINUS || e.key.key == SDLK_KP_MINUS)) {
-          user_zoom = std::clamp(user_zoom - 0.15f, 0.75f, 2.0f);
-          state.banner_notice = "UI zoom: " + std::to_string(int(std::lround(user_zoom * 100.0f))) + "%";
-        } else if (ctrl && (e.key.key == SDLK_0 || e.key.key == SDLK_KP_0)) {
-          user_zoom = 1.0f;
-          state.banner_notice = "UI zoom reset (100%).";
-        } else if (ctrl && e.key.key == SDLK_V && state.active_tab == launcher::LauncherTab::kSetup) {
-          if (char* clip = SDL_GetClipboardText()) {
-            const std::string pasted = clean_pasted_path(clip);
-            SDL_free(clip);
-            if (!pasted.empty()) {
-              if (state.focused_id == "setup:state_path") apply_state_root(pasted);
-              else if (state.focused_id == "setup:save_path") apply_save_import_path(pasted);
-              else apply_disc_source(pasted);
-            }
+      } else if (editing_field) {
+        if (e.key.key == SDLK_ESCAPE) {
+          state.focused_id.clear();
+        } else if (e.key.key == SDLK_BACKSPACE) {
+          if (ctrl) editing_field->clear();
+          else pop_utf8_char(*editing_field);
+        } else if (e.key.key == SDLK_DELETE) {
+          editing_field->clear();
+        } else if (e.key.key == SDLK_RETURN) {
+          if (state.focused_id == "saves:new_tag") {
+            handle_click("saves:new");
+          } else if (state.focused_id == "setup:state_path") {
+            apply_state_root(state.state_path_input);
+          } else if (state.focused_id == "setup:save_path") {
+            apply_save_import_path(state.save_import_path);
+          } else {
+            apply_disc_source(state.disc_path_input);
           }
-        } else if (editing_field) {
-          if (e.key.key == SDLK_ESCAPE) {
-            state.focused_id.clear();
-          } else if (e.key.key == SDLK_BACKSPACE) {
-            if (ctrl) editing_field->clear();
-            else pop_utf8_char(*editing_field);
-          } else if (e.key.key == SDLK_DELETE) {
-            editing_field->clear();
-          } else if (e.key.key == SDLK_RETURN) {
-            if (state.focused_id == "setup:state_path") apply_state_root(state.state_path_input);
-            else if (state.focused_id == "setup:save_path") apply_save_import_path(state.save_import_path);
-            else apply_disc_source(state.disc_path_input);
-            state.focused_id.clear();
-          } else if (e.key.key == SDLK_TAB) {
-            cycle_focus(state, hitboxes, shift ? -1 : 1);
-          }
-        } else if (e.key.key == SDLK_ESCAPE) {
-          if (!state.focused_id.empty()) state.focused_id.clear();
-          else running = false;
-        } else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_8) {
-          state.active_tab = launcher::LauncherTab(e.key.key - SDLK_1);
           state.focused_id.clear();
         } else if (e.key.key == SDLK_TAB) {
-          if (ctrl) {
-            const int n = int(launcher::LauncherTab::kCount);
-            state.active_tab = launcher::LauncherTab((int(state.active_tab) + (shift ? n - 1 : 1)) % n);
-            state.focused_id.clear();
-          } else {
-            cycle_focus(state, hitboxes, shift ? -1 : 1);
-          }
-        } else if (e.key.key == SDLK_UP) {
-          if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
-            state.selected_mod = std::max(0, state.selected_mod - 1);
-          } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
-            state.selected_device = std::max(0, state.selected_device - 1);
-          } else {
-            const int n = int(launcher::LauncherTab::kCount);
-            state.active_tab = launcher::LauncherTab((int(state.active_tab) + n - 1) % n);
-          }
-        } else if (e.key.key == SDLK_DOWN) {
-          if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
-            state.selected_mod = std::min(int(state.mods.size()) - 1, state.selected_mod + 1);
-          } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
-            state.selected_device = std::min(int(state.devices.size()) - 1, state.selected_device + 1);
-          } else {
-            const int n = int(launcher::LauncherTab::kCount);
-            state.active_tab = launcher::LauncherTab((int(state.active_tab) + 1) % n);
-          }
-        } else if (e.key.key == SDLK_PAGEUP) {
-          scroll_active_tab(state, 3);
-        } else if (e.key.key == SDLK_PAGEDOWN) {
-          scroll_active_tab(state, -3);
-        } else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
-          if (!state.focused_id.empty()) {
-            handle_click(state.focused_id);
-          } else if (e.key.key == SDLK_RETURN && state.active_tab == launcher::LauncherTab::kPlay) {
-            launch_carview(state, state.banner_notice);
-          }
+          cycle_focus(state, hitboxes, shift ? -1 : 1);
         }
-      } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
-        state.mouse_x = e.motion.x * scale_x;
-        state.mouse_y = e.motion.y * scale_y;
-        state.hovered_id.clear();
-        for (const auto& hb : hitboxes) {
-          if (hb.contains(state.mouse_x, state.mouse_y)) state.hovered_id = hb.id;
+      } else if (e.key.key == SDLK_ESCAPE) {
+        if (!state.focused_id.empty()) state.focused_id.clear();
+        else running = false;
+      } else if (e.key.key >= SDLK_1 && e.key.key <= SDLK_9) {
+        const int idx = int(e.key.key - SDLK_1);
+        if (idx < int(launcher::LauncherTab::kCount)) {
+          state.active_tab = launcher::LauncherTab(idx);
+          state.focused_id.clear();
         }
-      } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
-        const float px = e.button.x * scale_x;
-        const float py = e.button.y * scale_y;
-        state.pressed_id.clear();
-        bool hit_any = false;
+      } else if (e.key.key == SDLK_TAB) {
+        if (ctrl) {
+          const int n = int(launcher::LauncherTab::kCount);
+          state.active_tab = launcher::LauncherTab((int(state.active_tab) + (shift ? n - 1 : 1)) % n);
+          state.focused_id.clear();
+        } else {
+          cycle_focus(state, hitboxes, shift ? -1 : 1);
+        }
+      } else if (e.key.key == SDLK_UP) {
+        if (state.active_tab == launcher::LauncherTab::kSaves && !state.save_profiles.empty()) {
+          state.selected_save_profile = std::max(0, state.selected_save_profile - 1);
+        } else if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
+          state.selected_mod = std::max(0, state.selected_mod - 1);
+        } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
+          state.selected_device = std::max(0, state.selected_device - 1);
+        } else {
+          const int n = int(launcher::LauncherTab::kCount);
+          state.active_tab = launcher::LauncherTab((int(state.active_tab) + n - 1) % n);
+        }
+      } else if (e.key.key == SDLK_DOWN) {
+        if (state.active_tab == launcher::LauncherTab::kSaves && !state.save_profiles.empty()) {
+          state.selected_save_profile =
+              std::min(int(state.save_profiles.size()) - 1, state.selected_save_profile + 1);
+        } else if (state.active_tab == launcher::LauncherTab::kMods && !state.mods.empty()) {
+          state.selected_mod = std::min(int(state.mods.size()) - 1, state.selected_mod + 1);
+        } else if (state.active_tab == launcher::LauncherTab::kWheel && !state.devices.empty()) {
+          state.selected_device = std::min(int(state.devices.size()) - 1, state.selected_device + 1);
+        } else {
+          const int n = int(launcher::LauncherTab::kCount);
+          state.active_tab = launcher::LauncherTab((int(state.active_tab) + 1) % n);
+        }
+      } else if (e.key.key == SDLK_PAGEUP) {
+        scroll_active_tab(state, 3);
+      } else if (e.key.key == SDLK_PAGEDOWN) {
+        scroll_active_tab(state, -3);
+      } else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
+        if (!state.focused_id.empty()) {
+          handle_click(state.focused_id);
+        } else if (e.key.key == SDLK_RETURN && state.active_tab == launcher::LauncherTab::kPlay) {
+          launch_carview(state, state.banner_notice);
+        }
+      }
+      dirty = true;
+    } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+      state.mouse_x = e.motion.x * scale_x;
+      state.mouse_y = e.motion.y * scale_y;
+      std::string next_hover;
+      for (const auto& hb : hitboxes) {
+        if (hb.contains(state.mouse_x, state.mouse_y)) next_hover = hb.id;
+      }
+      if (next_hover != state.hovered_id) {
+        state.hovered_id = std::move(next_hover);
+        dirty = true;
+      }
+    } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
+      const float px = e.button.x * scale_x;
+      const float py = e.button.y * scale_y;
+      state.pressed_id.clear();
+      bool hit_any = false;
+      for (const auto& hb : hitboxes) {
+        if (hb.contains(px, py)) {
+          state.pressed_id = hb.id;
+          state.focused_id = hb.id;
+          hit_any = true;
+          break;
+        }
+      }
+      if (!hit_any) state.focused_id.clear();
+      dirty = true;
+    } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
+      const float px = e.button.x * scale_x;
+      const float py = e.button.y * scale_y;
+      const std::string pressed = state.pressed_id;
+      state.pressed_id.clear();
+      if (!pressed.empty()) {
         for (const auto& hb : hitboxes) {
-          if (hb.contains(px, py)) {
-            state.pressed_id = hb.id;
-            state.focused_id = hb.id;
-            hit_any = true;
+          if (hb.id == pressed && hb.contains(px, py)) {
+            handle_click(hb.id);
             break;
           }
         }
-        if (!hit_any) state.focused_id.clear();
-      } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT) {
-        const float px = e.button.x * scale_x;
-        const float py = e.button.y * scale_y;
-        const std::string pressed = state.pressed_id;
-        state.pressed_id.clear();
-        if (!pressed.empty()) {
-          for (const auto& hb : hitboxes) {
-            if (hb.id == pressed && hb.contains(px, py)) {
-              handle_click(hb.id);
-              break;
-            }
-          }
-        }
-      } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-        if (e.wheel.y > 0.0f) scroll_active_tab(state, 2);
-        else if (e.wheel.y < 0.0f) scroll_active_tab(state, -2);
-      } else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
-        const std::filesystem::path dropped(e.drop.data);
-        std::error_code drop_ec;
-        const bool is_file = std::filesystem::is_regular_file(dropped, drop_ec);
-        if (is_file && launcher::is_stfs_package_file(dropped)) {
-          start_content_import({dropped});
-        } else if (is_file && launcher::is_iso_image_path(dropped)) {
-          apply_disc_source(dropped);
-        } else if (state.active_tab == launcher::LauncherTab::kMods) {
-          launcher::install_mod_source(dropped, state.paths.mods_dir, state.banner_notice);
-          state.mods = launcher::scan_mods(state.paths.mods_dir);
-          state.save_iso = launcher::evaluate_save_isolation(state.mods);
-        } else if (state.active_tab == launcher::LauncherTab::kDlc) {
-          start_content_import({dropped});
-        } else if (state.active_tab == launcher::LauncherTab::kRadio) {
-          if (dropped.extension() == ".png" || dropped.extension() == ".PNG") {
-            state.radio_cfg.logo_png_path = dropped;
-            state.radio_logo_check = launcher::validate_station_logo_png(dropped);
-          } else {
-            state.radio_cfg.music_folder = dropped;
-            state.radio_tracks = launcher::scan_radio_music_folder(dropped);
-          }
+      }
+      dirty = true;
+    } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+      if (e.wheel.y > 0.0f) scroll_active_tab(state, 2);
+      else if (e.wheel.y < 0.0f) scroll_active_tab(state, -2);
+      dirty = true;
+    } else if (e.type == SDL_EVENT_DROP_FILE && e.drop.data) {
+      const std::filesystem::path dropped(e.drop.data);
+      std::error_code drop_ec;
+      const bool is_file = std::filesystem::is_regular_file(dropped, drop_ec);
+      if (state.active_tab == launcher::LauncherTab::kSaves) {
+        add_pinyon_source_path(dropped);
+      } else if (is_file && launcher::is_stfs_package_file(dropped)) {
+        start_content_import({dropped});
+      } else if (is_file && launcher::is_iso_image_path(dropped)) {
+        apply_disc_source(dropped);
+      } else if (state.active_tab == launcher::LauncherTab::kMods) {
+        launcher::install_mod_source(dropped, state.paths.mods_dir, state.banner_notice);
+        state.mods = launcher::scan_mods(state.paths.mods_dir);
+        state.save_iso = launcher::evaluate_save_isolation(state.mods);
+      } else if (state.active_tab == launcher::LauncherTab::kDlc) {
+        start_content_import({dropped});
+      } else if (state.active_tab == launcher::LauncherTab::kRadio) {
+        if (dropped.extension() == ".png" || dropped.extension() == ".PNG") {
+          state.radio_cfg.logo_png_path = dropped;
+          state.radio_logo_check = launcher::validate_station_logo_png(dropped);
         } else {
-          apply_disc_source(dropped);
+          state.radio_cfg.music_folder = dropped;
+          state.radio_tracks = launcher::scan_radio_music_folder(dropped);
         }
-      } else if (e.type == SDL_EVENT_JOYSTICK_ADDED || e.type == SDL_EVENT_JOYSTICK_REMOVED) {
-        rescan_joys();
+      } else {
+        apply_disc_source(dropped);
+      }
+      dirty = true;
+    } else if (e.type == SDL_EVENT_JOYSTICK_ADDED || e.type == SDL_EVENT_JOYSTICK_REMOVED) {
+      rescan_joys();
+      dirty = true;
+    }
+  };
+
+  while (running && !quit_for_update) {
+    const auto [scale_x, scale_y] = current_pixel_scale();
+    const bool backgrounded = window_minimized || window_occluded;
+    const bool live_wheel_poll = (state.active_tab == launcher::LauncherTab::kWheel && !open_joys.empty());
+    const bool active_anim = state.setup_progress.running || state.content_install.running || live_wheel_poll;
+
+    SDL_Event e;
+    if (dirty && !backgrounded) {
+      while (SDL_PollEvent(&e)) process_event(e, scale_x, scale_y);
+    } else {
+      const int wait_ms = backgrounded ? 100 : (active_anim ? 16 : 100);
+      if (SDL_WaitEventTimeout(&e, wait_ms)) {
+        process_event(e, scale_x, scale_y);
+        while (SDL_PollEvent(&e)) process_event(e, scale_x, scale_y);
       }
     }
 
@@ -1127,6 +1463,7 @@ int main(int argc, char** argv) {
       std::lock_guard<std::mutex> lk(dialog_queue.mu);
       dialog_results.swap(dialog_queue.items);
     }
+    if (!dialog_results.empty()) dirty = true;
     for (const auto& dr : dialog_results) {
       if (!dr.error.empty()) {
         state.banner_notice = "File picker unavailable (" + dr.error + ") - drag and drop or paste path (Ctrl+V).";
@@ -1139,6 +1476,8 @@ int main(int argc, char** argv) {
         apply_state_root(dr.paths.front());
       } else if (dr.kind == DialogKind::kBrowseSaveFile || dr.kind == DialogKind::kBrowseSaveFolder) {
         apply_save_import_path(dr.paths.front());
+      } else if (dr.kind == DialogKind::kBrowsePinyonFolder || dr.kind == DialogKind::kBrowsePinyonZip) {
+        add_pinyon_source_path(dr.paths.front());
       } else if (dr.kind == DialogKind::kImportStfs || dr.kind == DialogKind::kImportContentFolder) {
         start_content_import(dr.paths);
       } else if (dr.kind == DialogKind::kInstallModZip || dr.kind == DialogKind::kInstallModFolder) {
@@ -1162,6 +1501,13 @@ int main(int argc, char** argv) {
 
     // Poll async setup runner, content STFS installer & Wi-Fi sync activity + live wheel axes
     state.setup_progress = setup_runner.snapshot();
+    if (state.setup_progress.running || state.setup_progress.log_lines.size() != last_setup_logs ||
+        state.setup_progress.fraction != last_setup_frac || state.setup_progress.stage_label != last_setup_stage) {
+      last_setup_logs = state.setup_progress.log_lines.size();
+      last_setup_frac = state.setup_progress.fraction;
+      last_setup_stage = state.setup_progress.stage_label;
+      dirty = true;
+    }
     if (was_setup_running && !state.setup_progress.running && state.setup_progress.finished) {
       if (state.setup_progress.success) {
         launcher::read_play_config(state.paths.play_dir, state.play_cfg);
@@ -1169,17 +1515,34 @@ int main(int argc, char** argv) {
       } else if (!state.setup_progress.error_text.empty()) {
         state.banner_notice = state.setup_progress.error_text;
       }
+      dirty = true;
     }
     was_setup_running = state.setup_progress.running;
 
     state.content_install = content_runner.snapshot();
+    if (state.content_install.running || state.content_install.fraction != last_content_frac ||
+        state.content_install.status_label != last_content_stage) {
+      last_content_frac = state.content_install.fraction;
+      last_content_stage = state.content_install.status_label;
+      dirty = true;
+    }
     if (was_content_running && !state.content_install.running && state.content_install.finished) {
       state.content_status = launcher::scan_content_packages(state.paths.state_dir, state.paths.mods_dir, state.paths.play_dir);
       if (!state.content_install.summary.empty()) state.banner_notice = state.content_install.summary;
+      dirty = true;
     }
     was_content_running = state.content_install.running;
-    if (wifi_server.running()) state.sync_activity = wifi_server.recent_activity();
-    if (!open_joys.empty() && state.selected_device >= 0 && size_t(state.selected_device) < open_joys.size()) {
+
+    if (wifi_server.running()) {
+      auto act = wifi_server.recent_activity();
+      if (act.size() != last_sync_activity_count) {
+        last_sync_activity_count = act.size();
+        state.sync_activity = std::move(act);
+        dirty = true;
+      }
+    }
+
+    if (live_wheel_poll && state.selected_device >= 0 && size_t(state.selected_device) < open_joys.size()) {
       SDL_Joystick* j = open_joys[size_t(state.selected_device)];
       auto ax = [&](int idx) {
         return (idx >= 0 && idx < SDL_GetNumJoystickAxes(j)) ? float(SDL_GetJoystickAxis(j, idx)) / 32767.0f : 0.0f;
@@ -1187,24 +1550,38 @@ int main(int argc, char** argv) {
       state.live_steer = ax(std::max(0, state.wheel_cfg.steer.axis_index));
       state.live_throttle = std::clamp((ax(std::max(1, state.wheel_cfg.throttle.axis_index)) + 1.0f) * 0.5f, 0.0f, 1.0f);
       state.live_brake = std::clamp((ax(std::max(2, state.wheel_cfg.brake.axis_index)) + 1.0f) * 0.5f, 0.0f, 1.0f);
+      if (std::fabs(state.live_steer - last_live_steer) > 0.004f ||
+          std::fabs(state.live_throttle - last_live_throttle) > 0.004f ||
+          std::fabs(state.live_brake - last_live_brake) > 0.004f) {
+        last_live_steer = state.live_steer;
+        last_live_throttle = state.live_throttle;
+        last_live_brake = state.live_brake;
+        dirty = true;
+      }
+    }
+
+    // Skip rendering completely while minimized/occluded or clean so MoltenVK / DXGI never blocks while backgrounded.
+    if (window_minimized || window_occluded || !dirty) {
+      continue;
     }
 
     int win_w = int(width), win_h = int(height);
     int px_w = int(width), px_h = int(height);
     SDL_GetWindowSize(window, &win_w, &win_h);
     SDL_GetWindowSizeInPixels(window, &px_w, &px_h);
+    if (px_w <= 0 || px_h <= 0) continue;
+
     const float pixel_density = win_w > 0 ? float(px_w) / float(win_w) : 1.0f;
     const float display_scale = std::max(1.0f, SDL_GetWindowDisplayScale(window));
     const float size_scale = std::min(float(px_w) / 1920.0f, float(px_h) / 1080.0f);
     const float dpi = std::clamp(std::max({pixel_density, display_scale, size_scale}) * user_zoom, 0.75f, 3.0f);
     launcher::build_launcher_ui(ui_list, state, float(px_w), float(px_h), hitboxes, dpi);
-    static bool atlas_synced = false;
     upload_launcher_ui_atlas(renderer, !atlas_synced);
     atlas_synced = true;
     renderer.set_ui(ui_list.items());
     std::string ferr;
     if (!renderer.draw_frame(carview::FrameConstants{}, ferr)) break;
-    SDL_Delay(16);
+    dirty = false;
   }
 
   ui_audio.shutdown();

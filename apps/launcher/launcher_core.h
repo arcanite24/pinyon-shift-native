@@ -179,6 +179,7 @@ struct GpuInfo {
   uint64_t vram_bytes = 0;
   uint32_t api_version = 0;  // VK_MAKE_API_VERSION
   uint32_t vendor_id = 0;
+  bool portability = false;  // true on MoltenVK / VK_KHR_portability_subset
 
   std::string vulkan_version_string() const;
   bool supports_vulkan_1_3() const;
@@ -240,11 +241,138 @@ bool save_graphics_preset_setting(const std::filesystem::path& settings_file,
                                   std::string_view preset_id,
                                   std::string* error = nullptr);
 
+struct ResolutionPreset {
+  const char* label;
+  int width;
+  int height;
+};
+inline constexpr int kResolutionPresetCount = 5;
+inline constexpr ResolutionPreset kResolutionPresets[kResolutionPresetCount] = {
+    {"Auto", 0, 0},
+    {"1280\xC3\x97" "720", 1280, 720},
+    {"1920\xC3\x97" "1080", 1920, 1080},
+    {"2560\xC3\x97" "1440", 2560, 1440},
+    {"3840\xC3\x97" "2160", 3840, 2160},
+};
+
+struct VsyncChoice {
+  const char* id;     // "fifo", "mailbox", "immediate"
+  const char* label;  // "FIFO", "Mailbox", "Off"
+};
+inline constexpr int kVsyncChoiceCount = 3;
+inline constexpr VsyncChoice kVsyncChoices[kVsyncChoiceCount] = {
+    {"fifo", "FIFO"},
+    {"mailbox", "Mailbox"},
+    {"immediate", "Off"},
+};
+
+struct FpsCapChoice {
+  const char* id;     // "60", "display", "30", "40", "120", "144", "240"
+  const char* label;  // "60", "Display", "30", "40", "120", "144", "240"
+};
+inline constexpr int kFpsCapChoiceCount = 7;
+inline constexpr FpsCapChoice kFpsCapChoices[kFpsCapChoiceCount] = {
+    {"60", "60"},
+    {"display", "Display"},
+    {"30", "30"},
+    {"40", "40"},
+    {"120", "120"},
+    {"144", "144"},
+    {"240", "240"},
+};
+
+int resolution_index_for_size(std::string_view size_str);
+int vsync_index_for_name(std::string_view vsync);
+const char* vsync_name_for_index(int index);
+int fps_cap_index_for_name(std::string_view fps_cap);
+const char* fps_cap_name_for_index(int index);
+
+int load_resolution_setting(const std::filesystem::path& settings_file);
+bool save_resolution_setting(const std::filesystem::path& settings_file,
+                             int resolution_index,
+                             std::string* error = nullptr);
+
+bool load_fullscreen_setting(const std::filesystem::path& settings_file);
+bool save_fullscreen_setting(const std::filesystem::path& settings_file,
+                             bool fullscreen,
+                             std::string* error = nullptr);
+
+std::string load_vsync_setting(const std::filesystem::path& settings_file);
+bool save_vsync_setting(const std::filesystem::path& settings_file,
+                        std::string_view vsync_id,
+                        std::string* error = nullptr);
+
+std::string load_fps_cap_setting(const std::filesystem::path& settings_file);
+bool save_fps_cap_setting(const std::filesystem::path& settings_file,
+                          std::string_view fps_cap_id,
+                          std::string* error = nullptr);
+
+std::string load_profile_setting(const std::filesystem::path& settings_file);
+bool save_profile_setting(const std::filesystem::path& settings_file,
+                          std::string_view profile_name,
+                          std::string* error = nullptr);
+
 // Persists whether launcher UI sound feedback is enabled in settings.txt.
 bool load_launcher_sounds_setting(const std::filesystem::path& settings_file);
 bool save_launcher_sounds_setting(const std::filesystem::path& settings_file,
                                   bool enabled,
                                   std::string* error = nullptr);
+
+// ---- 3b. Save File Management & PinyonShift Read-Only Import ---------------
+
+struct SaveProfileEntry {
+  std::string name;
+  std::string gamertag;
+  std::filesystem::path save_dir;
+  bool active = false;
+  bool has_save = false;
+  bool imported_career = false;
+  int64_t credits = 0;
+  int xp = 0;
+  int level = 0;
+  int garage_cars = 0;
+  int signs_found = 0;
+  std::string current_car;
+  int backup_count = 0;
+  std::string modified_label;
+};
+
+enum class PinyonSaveKind {
+  kPlaintextExport,
+  kExportZip,
+  kEncryptedPinyon,
+};
+
+struct PinyonSaveSource {
+  std::string label;
+  std::filesystem::path path;
+  PinyonSaveKind kind = PinyonSaveKind::kEncryptedPinyon;
+  bool importable = false;
+  std::string detail;
+};
+
+std::vector<SaveProfileEntry> scan_save_profiles(const LauncherPaths& paths);
+bool set_active_save_profile(const LauncherPaths& paths, std::string_view name, std::string* err = nullptr);
+bool create_save_profile(const LauncherPaths& paths, std::string_view gamertag, std::string* out_name = nullptr,
+                         std::string* err = nullptr);
+bool duplicate_save_profile(const LauncherPaths& paths, std::string_view src_name, std::string* out_name = nullptr,
+                            std::string* err = nullptr);
+bool backup_save_profile(const LauncherPaths& paths, std::string_view name, std::string* out_label = nullptr,
+                         std::string* err = nullptr);
+bool delete_save_profile(const LauncherPaths& paths, std::string_view name, std::string* err = nullptr);
+
+// Strictly read-only scan of standard PinyonShift locations and any extra_roots.
+std::vector<PinyonSaveSource> scan_pinyon_save_sources(const std::vector<std::filesystem::path>& extra_roots = {});
+
+// Strictly read-only import of a PinyonShift plaintext export folder or .zip archive into
+// a Shift Engine profile (creating an automatic before-import backup of any existing target save).
+bool import_pinyon_save(const LauncherPaths& paths,
+                        const std::filesystem::path& source,
+                        std::string_view target_profile_name,
+                        bool create_new_profile,
+                        bool replace_existing,
+                        std::string* out_summary = nullptr,
+                        std::string* out_error = nullptr);
 
 // Safe POSIX single-quote shell escaping (immune to spaces, quotes, $, backticks, metacharacters).
 std::string shell_quote_posix(std::string_view arg);

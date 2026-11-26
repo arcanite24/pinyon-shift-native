@@ -860,6 +860,49 @@ int main() {
     CHECK(vp.value("subtitles") == "off");
   }
 
+  // Bidirectional launcher <-> carview display settings: window mode (--fullscreen/--no-fullscreen) & resolution (--size).
+  {
+    CHECK(carview::is_settings_option("--fullscreen"));
+    CHECK(carview::is_settings_option("--no-fullscreen"));
+    bool size_takes_val = false;
+    CHECK(carview::is_settings_option("--size", &size_takes_val) && size_takes_val);
+
+    carview::SettingsPage disp;
+    disp.load({});
+    CHECK(disp.value("window mode") == "windowed");
+    CHECK(disp.value("resolution") == "auto");
+    CHECK(!disp.live_settings().fullscreen);
+    CHECK(disp.live_settings().window_size.empty());
+
+    disp.load({"--fullscreen", "--size", "2560x1440"});
+    CHECK(disp.value("window mode") == "fullscreen");
+    CHECK(disp.value("resolution") == "2560x1440");
+    CHECK(disp.live_settings().fullscreen);
+    CHECK(disp.live_settings().window_size == "2560x1440");
+    CHECK(has(disp.tokens(), {"--fullscreen"}));
+    CHECK(has(disp.tokens(), {"--size", "2560x1440"}));
+
+    // --no-fullscreen resets window mode back to windowed.
+    disp.load({"--fullscreen", "--no-fullscreen", "--size", "1920x1080"});
+    CHECK(disp.value("window mode") == "windowed");
+    CHECK(disp.value("resolution") == "1920x1080");
+    CHECK(!disp.live_settings().fullscreen);
+
+    // sync_from_live updates both rows and places them on Display tab.
+    carview::LiveSettings live_d;
+    live_d.fullscreen = true;
+    live_d.window_size = "3840x2160";
+    disp.sync_from_live(live_d);
+    CHECK(disp.value("window mode") == "fullscreen");
+    CHECK(disp.value("resolution") == "3840x2160");
+    bool found_wm = false, found_res = false;
+    for (const auto& dr : disp.display_rows()) {
+      if (dr.name == "window mode" && dr.tab == carview::SettingsPage::Tab::kDisplay) found_wm = true;
+      if (dr.name == "resolution" && dr.tab == carview::SettingsPage::Tab::kDisplay) found_res = true;
+    }
+    CHECK(found_wm && found_res);
+  }
+
   std::printf("settings_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

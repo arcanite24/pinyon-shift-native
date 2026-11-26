@@ -23,7 +23,11 @@
 #include <unistd.h>
 #endif
 
+#include "drive/save.h"
+#include "fh1data/archive.h"
+#include "garage/garage.h"
 #include "launcher_core.h"
+#include "profile/drive_save.h"
 #include "setup/stfs.h"
 #include "setup/xiso.h"
 #include "sha256.h"
@@ -424,11 +428,49 @@ void test_hardware_advisor() {
   assert(rec_lo.preset_id == "ultra_low_30");
   assert(rec_lo.carview_preset == "low");
 
-  // Old Vulkan 1.2 driver -> warning
+  // Old Vulkan 1.2 driver on desktop NVIDIA -> warning
   launcher::HardwareInfo old_vk = hi;
   old_vk.gpu->api_version = (1u << 22) | (2u << 12);
   const auto rec_old = launcher::recommend_preset(old_vk);
   assert(!rec_old.warning.empty());
+
+  // Apple M4 Pro (24 GB unified, 120 Hz, 12C/12T, 0x106B, discrete=false, Vulkan 1.2 via MoltenVK):
+  // must NEVER warn "Driver update recommended" and must get Ultra / high-tier preset!
+  launcher::HardwareInfo m4pro;
+  m4pro.physical_cores = 12;
+  m4pro.logical_threads = 12;
+  m4pro.refresh_hz = 120;
+  m4pro.gpu = launcher::GpuInfo{"Apple M4 Pro", false, false, 24ull << 30, (1u << 22) | (2u << 12), 0x106B, true};
+  const auto rec_m4 = launcher::recommend_preset(m4pro);
+  assert(rec_m4.warning.empty());
+  assert(rec_m4.carview_preset == "ultra");
+  assert(rec_m4.preset_id != "low_spec_60");
+  assert(rec_m4.label == "Ultra 120");
+  assert(rec_m4.driver_url == "https://support.apple.com/macos");
+  assert(launcher::vendor_driver_url(0x106B) == "https://support.apple.com/macos");
+
+  // Apple Silicon 16 GB 60 Hz -> High / Quality 60, no warning
+  launcher::HardwareInfo m2_16 = m4pro;
+  m2_16.refresh_hz = 60;
+  m2_16.gpu->name = "Apple M2 Pro";
+  m2_16.gpu->vram_bytes = 16ull << 30;
+  const auto rec_m2 = launcher::recommend_preset(m2_16);
+  assert(rec_m2.warning.empty());
+  assert(rec_m2.carview_preset == "high");
+  assert(rec_m2.label == "Quality 60");
+
+  // Apple Silicon 8 GB -> Smooth 60, no warning
+  launcher::HardwareInfo m1_8 = m2_16;
+  m1_8.gpu->name = "Apple M1";
+  m1_8.gpu->vram_bytes = 8ull << 30;
+  const auto rec_m1 = launcher::recommend_preset(m1_8);
+  assert(rec_m1.warning.empty());
+  assert(rec_m1.carview_preset == "smooth-60");
+
+  // Software renderer (llvmpipe) -> warning even if portability set
+  launcher::HardwareInfo sw = hi;
+  sw.gpu = launcher::GpuInfo{"llvmpipe (LLVM 17)", false, true, 4ull << 30, (1u << 22) | (3u << 12), 0x10005, false};
+  assert(!launcher::recommend_preset(sw).warning.empty());
 
   // Concise single-line hardware summary with no marketing/slop text
   const std::string desc = launcher::describe_hardware(hi);
@@ -1111,6 +1153,278 @@ void test_stfs_tu_v4_and_dlc_install() {
   std::printf("  [ok] STFS Title Update v4 + Rally/1000 Club/DLC install & scan\n");
 }
 
+void write_stored_zip_local(const std::filesystem::path& zip,
+                            const std::vector<std::pair<std::string, std::vector<uint8_t>>>& files) {
+  std::vector<uint8_t> out, cd;
+  auto le16 = [](std::vector<uint8_t>& v, uint16_t x) {
+    v.push_back(uint8_t(x & 0xFF));
+    v.push_back(uint8_t(x >> 8));
+  };
+  auto le32 = [&](std::vector<uint8_t>& v, uint32_t x) {
+    le16(v, uint16_t(x & 0xFFFF));
+    le16(v, uint16_t(x >> 16));
+  };
+  for (const auto& [name, data] : files) {
+    const uint32_t crc = fh1::crc32(data);
+    const uint32_t off = uint32_t(out.size());
+    le32(out, 0x04034B50); le16(out, 20); le16(out, 0); le16(out, 0); le16(out, 0); le16(out, 0);
+    le32(out, crc); le32(out, uint32_t(data.size())); le32(out, uint32_t(data.size()));
+    le16(out, uint16_t(name.size())); le16(out, 0);
+    out.insert(out.end(), name.begin(), name.end());
+    out.insert(out.end(), data.begin(), data.end());
+
+    le32(cd, 0x02014B50); le16(cd, 20); le16(cd, 20); le16(cd, 0); le16(cd, 0); le16(cd, 0); le16(cd, 0);
+    le32(cd, crc); le32(cd, uint32_t(data.size())); le32(cd, uint32_t(data.size()));
+    le16(cd, uint16_t(name.size())); le16(cd, 0); le16(cd, 0); le16(cd, 0); le16(cd, 0); le32(cd, 0); le32(cd, off);
+    cd.insert(cd.end(), name.begin(), name.end());
+  }
+  const uint32_t cd_off = uint32_t(out.size());
+  out.insert(out.end(), cd.begin(), cd.end());
+  le32(out, 0x06054B50); le16(out, 0); le16(out, 0);
+  le16(out, uint16_t(files.size())); le16(out, uint16_t(files.size()));
+  le32(out, uint32_t(cd.size())); le32(out, cd_off); le16(out, 0);
+  write_binary_file(zip, out);
+}
+
+void test_bidirectional_settings_sync() {
+  const auto root = make_temp_dir("shift_launcher_sync_settings_test");
+  const auto sf = root / "settings.txt";
+  {
+    std::ofstream f(sf, std::ios::binary | std::ios::trunc);
+    f << "# user comment\nno-traffic\ndifficulty hard\n";
+  }
+
+  assert(launcher::save_graphics_preset_setting(sf, "ultra"));
+  assert(launcher::save_resolution_setting(sf, 2));  // 1920x1080
+  assert(launcher::save_fullscreen_setting(sf, true));
+  assert(launcher::save_graphics_backend_setting(sf, "metal"));
+  assert(launcher::save_vsync_setting(sf, "mailbox"));
+  assert(launcher::save_fps_cap_setting(sf, "120"));
+  assert(launcher::save_profile_setting(sf, "weekend"));
+
+  assert(launcher::load_graphics_preset_setting(sf) == "ultra");
+  assert(launcher::load_resolution_setting(sf) == 2);
+  assert(launcher::load_fullscreen_setting(sf) == true);
+  assert(launcher::load_graphics_backend_setting(sf) == "metal");
+  assert(launcher::load_vsync_setting(sf) == "mailbox");
+  assert(launcher::load_fps_cap_setting(sf) == "120");
+  assert(launcher::load_profile_setting(sf) == "weekend");
+
+  // Unrelated lines must be preserved untouched.
+  {
+    const std::string txt = read_binary_string(sf);
+    assert(txt.find("# user comment") != std::string::npos);
+    assert(txt.find("no-traffic") != std::string::npos);
+    assert(txt.find("difficulty hard") != std::string::npos);
+    assert(txt.find("size 1920x1080") != std::string::npos);
+    assert(txt.find("fullscreen") != std::string::npos);
+    assert(txt.find("vsync mailbox") != std::string::npos);
+    assert(txt.find("fps-cap 120") != std::string::npos);
+    assert(txt.find("profile weekend") != std::string::npos);
+  }
+
+  // Switching resolution to Auto removes `size`; switching fullscreen off writes `no-fullscreen`.
+  assert(launcher::save_resolution_setting(sf, 0));
+  assert(launcher::save_fullscreen_setting(sf, false));
+  assert(launcher::save_vsync_setting(sf, "immediate"));
+  assert(launcher::save_fps_cap_setting(sf, "display"));
+  assert(launcher::load_resolution_setting(sf) == 0);
+  assert(launcher::load_fullscreen_setting(sf) == false);
+  assert(launcher::load_vsync_setting(sf) == "immediate");
+  assert(launcher::load_fps_cap_setting(sf) == "display");
+  {
+    const std::string txt = read_binary_string(sf);
+    assert(txt.find("size ") == std::string::npos);
+    assert(txt.find("no-fullscreen") != std::string::npos);
+    assert(txt.find("no-traffic") != std::string::npos);
+  }
+
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] bidirectional settings.txt round-trip (preset, size, fullscreen, backend, vsync, fps-cap, profile)\n");
+}
+
+void test_save_management_and_pinyon_import() {
+  const auto root = make_temp_dir("shift_launcher_saves_test");
+  const auto paths = launcher::resolve_launcher_paths(root, true, "windows");
+  std::filesystem::create_directories(paths.drive_dir);
+
+  // Seed default profile with a real save.txt + garage.txt.
+  {
+    drive::DriveSave ds;
+    ds.car = "NIS_SkylineGTRVSpecII_02";
+    ds.credits = 55000;
+    ds.wristband_points = 1200;
+    ds.level = 4;
+    ds.signs_found = {"flyer_001", "flyer_002"};
+    ds.garage = {445};
+    std::string err;
+    assert(drive::write_save(paths.drive_dir / "save.txt", ds, &err));
+    garage::Garage g;
+    garage::Car c;
+    c.id = 1;
+    c.car_id = 445;
+    c.performance_index = 0.52;
+    c.class_id = 3;
+    g.cars.push_back(c);
+    g.last_id = 1;
+    g.selected = 1;
+    assert(garage::write_garage(paths.drive_dir / "garage.txt", g, &err));
+  }
+
+  // 1. Scan initial default profile
+  auto profiles = launcher::scan_save_profiles(paths);
+  assert(profiles.size() == 1);
+  assert(profiles[0].name == "default");
+  assert(profiles[0].active);
+  assert(profiles[0].has_save);
+  assert(profiles[0].credits == 55000);
+  assert(profiles[0].garage_cars == 1);
+  assert(profiles[0].signs_found == 2);
+
+  // 2. Create new profile
+  std::string weekend_name, err;
+  assert(launcher::create_save_profile(paths, "Weekend Racer", &weekend_name, &err));
+  assert(weekend_name == "weekend-racer");
+
+  // 3. Switch active profile (updates both profiles.txt and settings.txt)
+  assert(launcher::set_active_save_profile(paths, weekend_name, &err));
+  assert(launcher::load_profile_setting(paths.settings_file) == weekend_name);
+  profiles = launcher::scan_save_profiles(paths);
+  assert(profiles.size() == 2);
+  bool weekend_active = false;
+  for (const auto& p : profiles) {
+    if (p.name == weekend_name) weekend_active = p.active;
+  }
+  assert(weekend_active);
+
+  // 4. Backup default profile
+  std::string backup_id;
+  assert(launcher::backup_save_profile(paths, "default", &backup_id, &err));
+  assert(!backup_id.empty());
+  profiles = launcher::scan_save_profiles(paths);
+  assert(profiles[0].backup_count == 1);
+
+  // 5. Duplicate default profile -> copies save.txt & garage.txt
+  std::string dup_name;
+  assert(launcher::duplicate_save_profile(paths, "default", &dup_name, &err));
+  assert(!dup_name.empty());
+  profiles = launcher::scan_save_profiles(paths);
+  bool found_dup = false;
+  for (const auto& p : profiles) {
+    if (p.name == dup_name) {
+      found_dup = true;
+      assert(p.has_save && p.credits == 55000 && p.garage_cars == 1);
+    }
+  }
+  assert(found_dup);
+
+  // 6. Delete refuses default and active, succeeds on inactive duplicate
+  assert(!launcher::delete_save_profile(paths, "default", &err));
+  assert(!launcher::delete_save_profile(paths, weekend_name, &err));
+  assert(launcher::delete_save_profile(paths, dup_name, &err));
+  profiles = launcher::scan_save_profiles(paths);
+  assert(profiles.size() == 2);
+
+  // 7. PinyonShift auto-detection & strictly read-only import (plaintext export, ZIP, encrypted)
+  const auto pinyon_root = root / "pinyon_sources";
+  const auto plaintext_dir = pinyon_root / "export_plaintext";
+  {
+    drive::DriveSave src_ds;
+    src_ds.car = "VIP_Viper_13";
+    src_ds.credits = 248000;
+    src_ds.wristband_points = 6400;
+    src_ds.level = 7;
+    src_ds.signs_found = {"flyer_001", "flyer_002", "flyer_003"};
+    src_ds.garage = {445, 500};
+    garage::Garage src_g;
+    garage::Car c1;
+    c1.id = 1;
+    c1.car_id = 445;
+    c1.performance_index = 0.55;
+    c1.class_id = 3;
+    garage::Car c2;
+    c2.id = 2;
+    c2.car_id = 500;
+    c2.performance_index = 0.65;
+    c2.class_id = 4;
+    src_g.cars = {c1, c2};
+    src_g.last_id = 2;
+    src_g.selected = 1;
+    assert(profile::export_forza_profile(src_ds, src_g, plaintext_dir, &err));
+  }
+  // Hash plaintext export files before scan/import to verify strictly read-only behavior.
+  std::string body_sha_before, db_sha_before;
+  assert(launcher::sha256_file(plaintext_dir / "ForzaProfile.body", body_sha_before));
+  assert(launcher::sha256_file(plaintext_dir / "PlayerDatabase.sqlite", db_sha_before));
+
+  // Build an export ZIP containing the plaintext export.
+  const auto zip_path = pinyon_root / "horizon_export.zip";
+  {
+    const std::string body_str = read_binary_string(plaintext_dir / "ForzaProfile.body");
+    const std::string db_str = read_binary_string(plaintext_dir / "PlayerDatabase.sqlite");
+    write_stored_zip_local(
+        zip_path,
+        {{"user/ForzaProfile.body", std::vector<uint8_t>(body_str.begin(), body_str.end())},
+         {"user/PlayerDatabase.sqlite", std::vector<uint8_t>(db_str.begin(), db_str.end())}});
+  }
+
+  // Build an encrypted PinyonShift preview user tree (read-only detection test).
+  const auto enc_dir = pinyon_root / "source" / "0.1.0" / ".local" / "preview" / "user" / "ForzaProfile";
+  std::filesystem::create_directories(enc_dir);
+  {
+    std::ofstream f(enc_dir / "ForzaProfile", std::ios::binary);
+    f << "ENCRYPTED_CONSOLE_BLOB";
+  }
+  std::string enc_sha_before;
+  assert(launcher::sha256_file(enc_dir / "ForzaProfile", enc_sha_before));
+
+  const auto sources = launcher::scan_pinyon_save_sources({pinyon_root});
+  bool saw_plaintext = false, saw_zip = false, saw_encrypted = false;
+  for (const auto& s : sources) {
+    if (s.kind == launcher::PinyonSaveKind::kPlaintextExport && s.importable) saw_plaintext = true;
+    if (s.kind == launcher::PinyonSaveKind::kExportZip && s.importable) saw_zip = true;
+    if (s.kind == launcher::PinyonSaveKind::kEncryptedPinyon && !s.importable) saw_encrypted = true;
+  }
+  assert(saw_plaintext && saw_zip && saw_encrypted);
+
+  // Import plaintext export into existing `weekend-racer` profile.
+  std::string summary;
+  assert(launcher::import_pinyon_save(paths, plaintext_dir, weekend_name, false, true, &summary, &err));
+  assert(summary.find("248,000 CR") != std::string::npos);
+
+  // Import ZIP into a brand new profile.
+  assert(launcher::import_pinyon_save(paths, zip_path, "Zip Career", true, false, &summary, &err));
+  assert(summary.find("248,000 CR") != std::string::npos);
+  profiles = launcher::scan_save_profiles(paths);
+  assert(profiles.size() == 3);
+  bool found_zip_prof = false;
+  for (const auto& p : profiles) {
+    if (p.gamertag == "Zip Career") {
+      found_zip_prof = true;
+      assert(p.has_save && p.credits == 248000 && p.garage_cars == 2 && p.signs_found == 3);
+    }
+  }
+  assert(found_zip_prof);
+
+  // Encrypted source must be refused cleanly without creating a new profile.
+  const size_t count_before_enc = profiles.size();
+  assert(!launcher::import_pinyon_save(paths, enc_dir.parent_path(), "Bad Enc", true, false, &summary, &err));
+  assert(!err.empty());
+  assert(launcher::scan_save_profiles(paths).size() == count_before_enc);
+
+  // Verify ALL source files are 100% untouched byte-for-byte!
+  std::string body_sha_after, db_sha_after, enc_sha_after;
+  assert(launcher::sha256_file(plaintext_dir / "ForzaProfile.body", body_sha_after));
+  assert(launcher::sha256_file(plaintext_dir / "PlayerDatabase.sqlite", db_sha_after));
+  assert(launcher::sha256_file(enc_dir / "ForzaProfile", enc_sha_after));
+  assert(body_sha_before == body_sha_after);
+  assert(db_sha_before == db_sha_after);
+  assert(enc_sha_before == enc_sha_after);
+
+  std::filesystem::remove_all(root);
+  std::printf("  [ok] save profile CRUD & read-only PinyonShift export/ZIP/encrypted detection + import\n");
+}
+
 }  // namespace
 
 int main() {
@@ -1124,6 +1438,8 @@ int main() {
   test_preset_mapping_and_cores();
   test_launcher_sounds_and_posix_quoting();
   test_graphics_backend_selector();
+  test_bidirectional_settings_sync();
+  test_save_management_and_pinyon_import();
   test_steam_vdf();
   test_mods_and_dlc();
   test_stfs_tu_v4_and_dlc_install();

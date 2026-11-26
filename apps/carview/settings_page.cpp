@@ -36,6 +36,8 @@ struct Kept {
 constexpr Kept kKept[] = {
     {"preset", true, "preset"},
     {"size", true, "size"},
+    {"fullscreen", false, "fullscreen"},
+    {"no-fullscreen", false, "fullscreen"},
     {"msaa", true, "msaa"},
     {"shadows", true, "shadows"},
     {"bloom", false, "bloom"},
@@ -454,6 +456,13 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"low-power", {"--preset", "low-power"}},
         {"smooth-60", {"--preset", "smooth-60"}},
         {"quality-30", {"--preset", "quality-30"}}}},
+      {"window mode", {{"windowed", {}}, {"fullscreen", {"--fullscreen"}}}},
+      {"resolution",
+       {{"auto", {}},
+        {"1280x720", {"--size", "1280x720"}},
+        {"1920x1080", {"--size", "1920x1080"}},
+        {"2560x1440", {"--size", "2560x1440"}},
+        {"3840x2160", {"--size", "3840x2160"}}}},
       {"shadows",
        {{"default", {}}, {"off", {"--shadows", "off"}}, {"low", {"--shadows", "low"}}, {"high", {"--shadows", "high"}}}},
       {"bloom", {{"default", {}}, {"on", {"--bloom"}}, {"off", {"--no-bloom"}}}},
@@ -1014,6 +1023,32 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
       }
       continue;
     }
+    if (t == "--size" && has_value) {
+      std::string sz = tokens[i + 1];
+      for (char& ch : sz) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      for (Row& r : rows_) {
+        if (std::string(r.name) != "resolution") continue;
+        if (sz.empty() || sz == "auto") {
+          r.pick = 0;
+        } else {
+          bool matched = false;
+          for (size_t c = 0; c < r.choices.size(); ++c) {
+            if (r.choices[c].tokens.size() == 2 && r.choices[c].tokens[1] == sz) {
+              r.pick = c;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            r.choices.push_back({sz, {"--size", sz}});
+            r.pick = r.choices.size() - 1;
+          }
+        }
+        break;
+      }
+      ++i;
+      continue;
+    }
     if (t == "--lut" && has_value) {
       const std::string& lut_name = tokens[i + 1];
       for (Row& r : rows_) {
@@ -1097,6 +1132,7 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
           {"--rt-denoise", "rt denoiser"},
           {"--no-head-tracking", "head tracking (opentrack)"},
           {"--no-switch-handbrake-clutch", "switch handbrake/clutch"},
+          {"--no-fullscreen", "window mode"},
       };
       for (const auto& rf : kResetFlags) {
         if (t == rf.flag) {
@@ -1130,7 +1166,8 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
 
 namespace {
 SettingsPage::Tab classify_setting_row(const std::string& name) {
-  if (name == "preset" || name == "shadows" || name == "bloom" || name == "brightness" || name == "subtitles" ||
+  if (name == "preset" || name == "window mode" || name == "resolution" || name == "shadows" || name == "bloom" ||
+      name == "brightness" || name == "subtitles" ||
       name == "camera" || name == "camera effects" ||
       name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
       name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera" ||
@@ -1563,6 +1600,8 @@ LiveSettings SettingsPage::live_settings() const {
     const std::string gb = pick_val("graphics backend");
     ls.graphics_backend = gb.empty() ? "auto" : gb;
   }
+  ls.fullscreen = pick_label("window mode") == "fullscreen";
+  ls.window_size = pick_val("resolution");
   ls.preset = pick_val("preset");
   ls.shadows = pick_val("shadows");
   {
@@ -1783,6 +1822,27 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   else if (live.bloom_mode == 0) set_by_label("bloom", "off");
 
   set_by_val("graphics backend", (live.graphics_backend.empty() || live.graphics_backend == "auto") ? "" : live.graphics_backend);
+  set_by_label("window mode", live.fullscreen ? "fullscreen" : "windowed");
+  if (!live.window_size.empty()) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != "resolution") continue;
+      bool matched = false;
+      for (size_t idx = 0; idx < r.choices.size(); ++idx) {
+        if (r.choices[idx].tokens.size() == 2 && r.choices[idx].tokens[1] == live.window_size) {
+          r.pick = idx;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) {
+        r.choices.push_back({live.window_size, {"--size", live.window_size}});
+        r.pick = r.choices.size() - 1;
+      }
+      break;
+    }
+  } else {
+    set_by_val("resolution", "");
+  }
 
   // Slice 12 live state.
   set_by_val("camera editor", live.camera_editor.driving_view == drive::DrivingView::kWheel

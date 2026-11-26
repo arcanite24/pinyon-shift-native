@@ -173,6 +173,7 @@ void DriveSession::poll_sdl_events() {
                 continue;
               } else if (sc == carview::PlatformShortcut::kToggleFullscreen) {
                 const bool fs = (SDL_GetWindowFlags(app.window) & SDL_WINDOW_FULLSCREEN) != 0;
+                app.fullscreen = !fs;
                 SDL_SetWindowFullscreen(app.window, !fs);
                 continue;
               } else if (sc == carview::PlatformShortcut::kPhotoMode && !picking && !(app.race && app.race->player_finished())) {

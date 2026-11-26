@@ -260,6 +260,13 @@ void draw_sidebar_icon(ui::List& l, LauncherTab tab, float cx, float cy, float d
       l.circle(cx, cy, 2.0f * d, col);
       break;
     }
+    case LauncherTab::kSaves: {
+      // Save card / floppy outline
+      l.frame(cx - r * 0.9f, cy - r * 0.9f, cx + r * 0.9f, cy + r * 0.9f, col, t, 1.5f * d);
+      l.frame(cx - r * 0.45f, cy - r * 0.9f, cx + r * 0.45f, cy - r * 0.25f, col, t, 0.5f * d);
+      l.line(cx - r * 0.45f, cy + r * 0.35f, cx + r * 0.45f, cy + r * 0.35f, t, col);
+      break;
+    }
     case LauncherTab::kDlc: {
       // Content package box
       l.frame(cx - r, cy - r * 0.85f, cx + r, cy + r * 0.85f, col, t, 1.5f * d);
@@ -313,6 +320,17 @@ void draw_page_header(ui::List& l, float x0, float x1, float y, std::string_view
   draw_divider(l, x0, y + 36.0f * d, x1, d);
 }
 
+std::string fmt_credits(int64_t cr) {
+  std::string raw = std::to_string(cr < 0 ? -cr : cr);
+  std::string out;
+  for (size_t i = 0; i < raw.size(); ++i) {
+    if (i > 0 && (raw.size() - i) % 3 == 0) out.push_back(',');
+    out.push_back(raw[i]);
+  }
+  if (cr < 0) out.insert(out.begin(), '-');
+  return out + " CR";
+}
+
 // ---- Tab 1: Play -----------------------------------------------------------
 
 void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
@@ -320,10 +338,10 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float cw = x1 - x0;
   draw_page_header(l, x0, x1, y0, "Play", d);
 
-  const float top_y = y0 + 50.0f * d;
+  const float top_y = y0 + 46.0f * d;
 
-  // 1. Hero Card: Game status, profile, car, and 1-click Play button
-  const float hero_h = 124.0f * d;
+  // 1. Hero Card: Game status, active profile summary, car, and 1-click Play button
+  const float hero_h = 118.0f * d;
   draw_card(l, x0, top_y, x1, top_y + hero_h, d);
 
   const bool ready = st.play_cfg.is_ready();
@@ -333,11 +351,11 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
   const float play_y0 = top_y + 0.5f * (hero_h - play_h);
   const float text_max_w = std::max(200.0f * d, play_x0 - x0 - 44.0f * d);
 
-  draw_text(l, x0 + 24.0f * d, top_y + 20.0f * d, "Forza Horizon", FontFace::kSemiBold, 23.0f * d, kTextPrimary,
+  draw_text(l, x0 + 24.0f * d, top_y + 16.0f * d, "Forza Horizon", FontFace::kSemiBold, 22.0f * d, kTextPrimary,
             ui::Align::kLeft, text_max_w);
 
   // Readiness line with subtle status dot
-  const float sy = top_y + 56.0f * d;
+  const float sy = top_y + 50.0f * d;
   l.circle(x0 + 29.0f * d, sy + 7.5f * d, 4.0f * d, ready ? kGreen : kAmber);
   const std::string car_info =
       st.play_cfg.disc_car_count > 0
@@ -347,18 +365,43 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
       ready ? ("Ready  \xC2\xB7  " + car_info + "  \xC2\xB7  " +
                (st.play_cfg.has_colorado_index ? "Colorado world index" : "World index builds on launch"))
             : "Game files not configured yet  \xC2\xB7  Open Setup to select your disc folder";
-  draw_text(l, x0 + 40.0f * d, sy, ready_str, FontFace::kRegular, 13.5f * d, ready ? kTextPrimary : kAmber,
+  draw_text(l, x0 + 40.0f * d, sy, ready_str, FontFace::kRegular, 13.0f * d, ready ? kTextPrimary : kAmber,
             ui::Align::kLeft, text_max_w - 16.0f * d);
 
-  // Active profile & car line
-  const std::string car_label = carview::ui4::pretty_car_media_name(st.launch_car);
-  const std::string meta_str = "Profile: " + st.save_iso.profile + "   \xC2\xB7   Car: " + car_label;
-  draw_text(l, x0 + 24.0f * d, top_y + 84.0f * d, meta_str, FontFace::kRegular, 13.0f * d, kTextSecondary,
+  // Active profile (gamertag, credits, car count) & launch car line
+  const SaveProfileEntry* active_prof = nullptr;
+  for (const auto& p : st.save_profiles) {
+    if (p.active) {
+      active_prof = &p;
+      break;
+    }
+  }
+  std::string prof_desc;
+  if (active_prof) {
+    prof_desc = active_prof->gamertag;
+    if (active_prof->has_save) {
+      prof_desc += " (" + fmt_credits(active_prof->credits) + " \xC2\xB7 " +
+                   std::to_string(active_prof->garage_cars) + " cars)";
+    } else {
+      prof_desc += " (New Career)";
+    }
+  } else {
+    prof_desc = st.save_iso.profile;
+  }
+  const std::string car_media =
+      (active_prof && active_prof->has_save && !active_prof->current_car.empty()) ? active_prof->current_car
+                                                                                  : st.launch_car;
+  const std::string car_label = carview::ui4::pretty_car_media_name(car_media);
+  std::string meta_str = "Profile: " + prof_desc + "   \xC2\xB7   Car: " + car_label;
+  if (st.save_iso.kind != "own") {
+    meta_str += "   \xC2\xB7   Save: " + st.save_iso.profile;
+  }
+  draw_text(l, x0 + 24.0f * d, top_y + 76.0f * d, meta_str, FontFace::kRegular, 12.5f * d, kTextSecondary,
             ui::Align::kLeft, text_max_w);
 
   // Play folder path (quiet monospace)
   const std::string play_path = st.paths.play_dir.empty() ? "(not set)" : st.paths.play_dir.string();
-  draw_text(l, x0 + 24.0f * d, top_y + 106.0f * d, play_path, FontFace::kMono, 11.5f * d, kTextMuted,
+  draw_text(l, x0 + 24.0f * d, top_y + 97.0f * d, play_path, FontFace::kMono, 11.0f * d, kTextMuted,
             ui::Align::kLeft, text_max_w);
 
   // Primary Play button
@@ -366,20 +409,23 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               {.primary = true});
 
   // 2. Display & Performance Card
-  const float cfg_y = top_y + hero_h + 14.0f * d;
-  const float cfg_h = 240.0f * d;
+  const float cfg_y = top_y + hero_h + 12.0f * d;
+  const float cfg_h = 264.0f * d;
   draw_card(l, x0, cfg_y, x1, cfg_y + cfg_h, d);
 
-  draw_text(l, x0 + 24.0f * d, cfg_y + 16.0f * d, "Graphics & Display", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x0 + 24.0f * d, cfg_y + 14.0f * d, "Graphics & Display", FontFace::kSemiBold, 14.0f * d, kTextPrimary);
+  draw_text(l, x1 - 24.0f * d, cfg_y + 15.0f * d, "Synced with in-game settings.txt", FontFace::kRegular, 11.5f * d,
+            kTextMuted, ui::Align::kRight);
 
-  const float lbl_w = 104.0f * d;
+  const float lbl_w = 100.0f * d;
   const float right_btn_w = 156.0f * d;
   const float seg_x0 = x0 + 24.0f * d + lbl_w;
   const float seg_x1 = x1 - 24.0f * d - right_btn_w - 12.0f * d;
 
   // Row 1: Graphics Preset (Ultra, High, Low-Spec, Smooth 60, Quality 30, Low Power)
-  const float r1_y = cfg_y + 44.0f * d;
-  const float row_h = 32.0f * d;
+  const float r1_y = cfg_y + 40.0f * d;
+  const float row_h = 30.0f * d;
+  const float row_gap = 8.0f * d;
   draw_text(l, x0 + 24.0f * d, text_y_center(r1_y, r1_y + row_h, 13.0f * d), "Preset", FontFace::kRegular,
             13.0f * d, kTextSecondary);
   const char* preset_labels[kGraphicsPresetCount] = {};
@@ -392,7 +438,7 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               "Use Recommended", d);
 
   // Row 2: Resolution & Window mode
-  const float r2_y = r1_y + row_h + 10.0f * d;
+  const float r2_y = r1_y + row_h + row_gap;
   draw_text(l, x0 + 24.0f * d, text_y_center(r2_y, r2_y + row_h, 13.0f * d), "Resolution", FontFace::kRegular,
             13.0f * d, kTextSecondary);
   const char* res_labels[5] = {kResolutionPresets[0].label, kResolutionPresets[1].label, kResolutionPresets[2].label,
@@ -405,7 +451,7 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
               {.selected = st.launch_fullscreen});
 
   // Row 3: Graphics Backend (Auto / Vulkan / DirectX 12 on Windows; Auto / Metal 3 / Vulkan on macOS)
-  const float r3_y = r2_y + row_h + 10.0f * d;
+  const float r3_y = r2_y + row_h + row_gap;
   draw_text(l, x0 + 24.0f * d, text_y_center(r3_y, r3_y + row_h, 13.0f * d), "Backend", FontFace::kRegular,
             13.0f * d, kTextSecondary);
   const auto backends = available_backend_choices();
@@ -420,9 +466,30 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
                          : "RHI: Auto",
             FontFace::kMono, 12.0f * d, kTextMuted, ui::Align::kLeft, right_btn_w);
 
+  // Row 4: VSync + FPS Cap (compact single row, synced with settings.txt)
+  const float r4_y = r3_y + row_h + row_gap;
+  draw_text(l, x0 + 24.0f * d, text_y_center(r4_y, r4_y + row_h, 13.0f * d), "VSync", FontFace::kRegular,
+            13.0f * d, kTextSecondary);
+  const float vsync_w = std::min(220.0f * d, (x1 - 24.0f * d - seg_x0) * 0.30f);
+  const char* vs_labels[kVsyncChoiceCount] = {kVsyncChoices[0].label, kVsyncChoices[1].label, kVsyncChoices[2].label};
+  static constexpr const char* kVsIds[kVsyncChoiceCount] = {"vsync:0", "vsync:1", "vsync:2"};
+  draw_segmented(l, hits, st, seg_x0, r4_y, seg_x0 + vsync_w, r4_y + row_h, vs_labels, kVsIds, kVsyncChoiceCount,
+                 std::clamp(st.selected_vsync, 0, kVsyncChoiceCount - 1), d);
+
+  const float fps_lbl_x = seg_x0 + vsync_w + 18.0f * d;
+  const float fps_seg_x0 = fps_lbl_x + 62.0f * d;
+  draw_text(l, fps_lbl_x, text_y_center(r4_y, r4_y + row_h, 13.0f * d), "FPS Cap", FontFace::kRegular,
+            13.0f * d, kTextSecondary);
+  const char* fps_labels[kFpsCapChoiceCount] = {};
+  for (int fi = 0; fi < kFpsCapChoiceCount; ++fi) fps_labels[fi] = kFpsCapChoices[fi].label;
+  static constexpr const char* kFpsIds[kFpsCapChoiceCount] = {
+      "fps:0", "fps:1", "fps:2", "fps:3", "fps:4", "fps:5", "fps:6"};
+  draw_segmented(l, hits, st, fps_seg_x0, r4_y, x1 - 24.0f * d, r4_y + row_h, fps_labels, kFpsIds, kFpsCapChoiceCount,
+                 std::clamp(st.selected_fps_cap, 0, kFpsCapChoiceCount - 1), d);
+
   // Hardware 1-line summary bar
-  const float hw_y = r3_y + row_h + 14.0f * d;
-  const float hw_h = 38.0f * d;
+  const float hw_y = r4_y + row_h + 12.0f * d;
+  const float hw_h = 36.0f * d;
   draw_inset_box(l, x0 + 24.0f * d, hw_y, x1 - 24.0f * d, hw_y + hw_h, d,
                  st.hw_rec.warning.empty() ? kBorderSubtle : kAmber);
   const std::string hw_line = describe_hardware(st.hw_info);
@@ -435,8 +502,8 @@ void draw_play_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, f
             12.5f * d, st.hw_rec.warning.empty() ? kGreen : kAmber, ui::Align::kRight);
 
   // 3. Bottom Two-Column Row: Quick Actions + Installed Content Summary
-  const float bot_y = cfg_y + cfg_h + 16.0f * d;
-  const float bot_h = std::max(150.0f * d, y1 - bot_y);
+  const float bot_y = cfg_y + cfg_h + 12.0f * d;
+  const float bot_h = std::max(146.0f * d, y1 - bot_y);
   const float left_w = std::floor((cw - 16.0f * d) * 0.56f);
   const float left_x1 = x0 + left_w;
   const float right_x0 = left_x1 + 16.0f * d;
@@ -713,7 +780,209 @@ void draw_setup_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, 
   }
 }
 
-// ---- Tab 3: Content (DLC & Title Update) -----------------------------------
+// ---- Tab 3: Saves & PinyonShift Import -------------------------------------
+
+void draw_saves_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
+                    std::vector<HitBox>& hits) {
+  const float cw = x1 - x0;
+  draw_page_header(l, x0, x1, y0, "Saves", d);
+
+  const float top_y = y0 + 48.0f * d;
+  const float total_h = std::max(360.0f * d, y1 - top_y);
+  const float gap = 14.0f * d;
+  const float c1_h = std::floor((total_h - gap) * 0.51f);
+  const float c2_y = top_y + c1_h + gap;
+  const float c2_h = std::max(160.0f * d, y1 - c2_y);
+
+  // ---- Card 1: Shift Engine Profiles ----
+  draw_card(l, x0, top_y, x1, top_y + c1_h, d);
+  draw_text(l, x0 + 20.0f * d, top_y + 14.0f * d, "Shift Engine Profiles", FontFace::kSemiBold, 14.0f * d,
+            kTextPrimary);
+
+  // Inline new-profile gamertag box + New Profile button on top-right
+  const float new_btn_w = 104.0f * d;
+  const float tag_box_w = 176.0f * d;
+  const float tag_x1 = x1 - 20.0f * d - new_btn_w - 8.0f * d;
+  const float tag_x0 = tag_x1 - tag_box_w;
+  const float hdr_btn_y0 = top_y + 8.0f * d;
+  const float hdr_btn_y1 = top_y + 36.0f * d;
+
+  const bool tag_foc = st.focused_id == "saves:new_tag";
+  hits.push_back({"saves:new_tag", tag_x0, hdr_btn_y0, tag_x1, hdr_btn_y1, true});
+  draw_inset_box(l, tag_x0, hdr_btn_y0, tag_x1, hdr_btn_y1, d,
+                 tag_foc ? kAccent : (st.hovered_id == "saves:new_tag" ? kBorderHover : kBorderSubtle));
+  std::string tag_disp = st.new_profile_gamertag;
+  if (tag_foc) tag_disp.push_back('|');
+  const bool tag_empty = st.new_profile_gamertag.empty() && !tag_foc;
+  draw_text(l, tag_x0 + 10.0f * d, text_y_center(hdr_btn_y0, hdr_btn_y1, 12.0f * d),
+            tag_empty ? "New gamertag..." : tag_disp, FontFace::kRegular, 12.0f * d,
+            tag_empty ? kTextMuted : kTextPrimary, ui::Align::kLeft, tag_box_w - 20.0f * d);
+  draw_button(l, hits, st, "saves:new", tag_x1 + 8.0f * d, hdr_btn_y0, x1 - 20.0f * d, hdr_btn_y1, "New Profile", d);
+
+  draw_divider(l, x0 + 1.0f * d, top_y + 44.0f * d, x1 - 1.0f * d, d);
+
+  const float plist_y0 = top_y + 48.0f * d;
+  const float plist_y1 = top_y + c1_h - 46.0f * d;
+  const float prow_h = 44.0f * d;
+  const int pvis = std::max(1, int((plist_y1 - plist_y0) / prow_h));
+  const int ptotal = int(st.save_profiles.size());
+  const int pstart = std::clamp(st.save_profiles_scroll, 0, std::max(0, ptotal - pvis));
+
+  for (int i = 0; i < pvis && pstart + i < ptotal; ++i) {
+    const size_t idx = size_t(pstart + i);
+    const auto& p = st.save_profiles[idx];
+    const float ry = plist_y0 + float(i) * prow_h;
+    const bool sel = int(idx) == st.selected_save_profile;
+    const std::string pid = "saves:prof:" + std::to_string(idx);
+    hits.push_back({pid, x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + prow_h - 2.0f * d, true});
+
+    if (sel) {
+      l.rect(x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + prow_h - 2.0f * d, kBgSelected, 5.0f * d);
+      l.rect(x0 + 10.0f * d, ry + 8.0f * d, x0 + 13.0f * d, ry + prow_h - 8.0f * d, kAccent, 1.5f * d);
+    } else if (st.hovered_id == pid) {
+      l.rect(x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + prow_h - 2.0f * d, kBgHover, 5.0f * d);
+    }
+
+    const uint32_t dot = p.active ? kGreen : (p.has_save ? kBlue : kTextMuted);
+    l.circle(x0 + 26.0f * d, ry + 0.5f * prow_h, 4.0f * d, dot);
+
+    float tx = x0 + 40.0f * d;
+    const float tag_w = draw_text(l, tx, text_y_center(ry, ry + prow_h, 13.5f * d), p.gamertag,
+                                  FontFace::kSemiBold, 13.5f * d, kTextPrimary);
+    tx += tag_w + 8.0f * d;
+
+    if (p.active) {
+      const float bw = 52.0f * d;
+      const float bh = 18.0f * d;
+      const float by = ry + 0.5f * (prow_h - bh);
+      l.rect(tx, by, tx + bw, by + bh, kGreenSoft, 4.0f * d);
+      l.frame(tx, by, tx + bw, by + bh, ui::fade(kGreen, 0.6), 1.0f * d, 4.0f * d);
+      draw_text(l, tx + 0.5f * bw, text_y_center(by, by + bh, 10.5f * d), "ACTIVE", FontFace::kSemiBold,
+                10.5f * d, kGreen, ui::Align::kCenter);
+      tx += bw + 8.0f * d;
+    }
+
+    draw_text(l, tx, text_y_center(ry, ry + prow_h, 11.5f * d), "(" + p.name + ")", FontFace::kMono, 11.5f * d,
+              kTextMuted, ui::Align::kLeft, 130.0f * d);
+
+    std::string stats;
+    if (p.has_save) {
+      stats = fmt_credits(p.credits) + "  \xC2\xB7  " + std::to_string(p.garage_cars) + " cars  \xC2\xB7  " +
+              std::to_string(p.signs_found) + " signs  \xC2\xB7  " + std::to_string(p.backup_count) + " backups";
+      if (!p.modified_label.empty()) stats += "  \xC2\xB7  " + p.modified_label;
+    } else {
+      stats = "New career (no save.txt yet)  \xC2\xB7  " + std::to_string(p.backup_count) + " backups";
+    }
+    draw_text(l, x1 - 24.0f * d, text_y_center(ry, ry + prow_h, 12.0f * d), stats, FontFace::kRegular, 12.0f * d,
+              p.has_save ? kTextSecondary : kTextMuted, ui::Align::kRight, cw * 0.58f);
+  }
+  if (st.save_profiles.empty()) {
+    draw_text(l, x0 + 20.0f * d, plist_y0 + 12.0f * d, "No save profiles found.", FontFace::kRegular, 12.5f * d,
+              kTextMuted);
+  }
+  draw_scrollbar(l, x1 - 10.0f * d, plist_y0 + 4.0f * d, plist_y1 - 4.0f * d, pstart, pvis, ptotal, d);
+
+  // Bottom action toolbar for Shift Engine Profiles
+  draw_divider(l, x0 + 1.0f * d, top_y + c1_h - 44.0f * d, x1 - 1.0f * d, d);
+  const float bar_y0 = top_y + c1_h - 37.0f * d;
+  const float bar_y1 = top_y + c1_h - 8.0f * d;
+  float bx = x0 + 18.0f * d;
+  auto add_btn = [&](const char* id, const char* lbl, float w, ButtonStyle bs = {}) {
+    draw_button(l, hits, st, id, bx, bar_y0, bx + w * d, bar_y1, lbl, d, bs);
+    bx += (w + 8.0f) * d;
+  };
+  add_btn("saves:set_active", "Set Active", 104.0f, {.primary = true});
+  add_btn("saves:backup", "Backup", 86.0f);
+  add_btn("saves:duplicate", "Duplicate", 96.0f);
+  add_btn("saves:delete", "Delete", 82.0f);
+  add_btn("saves:open_folder", "Open Folder", 112.0f);
+
+  // ---- Card 2: Import from PinyonShift / Horizon 1 ----
+  draw_card(l, x0, c2_y, x1, c2_y + c2_h, d);
+  draw_text(l, x0 + 20.0f * d, c2_y + 14.0f * d, "Import from PinyonShift / Horizon 1", FontFace::kSemiBold,
+            14.0f * d, kTextPrimary);
+
+  const float rsc_w = 80.0f * d;
+  const float brf_w = 148.0f * d;
+  const float brz_w = 104.0f * d;
+  const float c2_hy0 = c2_y + 8.0f * d;
+  const float c2_hy1 = c2_y + 36.0f * d;
+  draw_button(l, hits, st, "saves:rescan", x1 - 20.0f * d - brz_w - brf_w - rsc_w - 16.0f * d, c2_hy0,
+              x1 - 20.0f * d - brz_w - brf_w - 16.0f * d, c2_hy1, "Rescan", d);
+  draw_button(l, hits, st, "saves:browse_folder", x1 - 20.0f * d - brz_w - brf_w - 8.0f * d, c2_hy0,
+              x1 - 20.0f * d - brz_w - 8.0f * d, c2_hy1, "Browse Export Folder", d);
+  draw_button(l, hits, st, "saves:browse_zip", x1 - 20.0f * d - brz_w, c2_hy0, x1 - 20.0f * d, c2_hy1,
+              "Browse .zip", d);
+
+  draw_divider(l, x0 + 1.0f * d, c2_y + 44.0f * d, x1 - 1.0f * d, d);
+
+  const float slist_y0 = c2_y + 48.0f * d;
+  const float slist_y1 = c2_y + c2_h - 46.0f * d;
+  const float srow_h = 46.0f * d;
+  const int svis = std::max(1, int((slist_y1 - slist_y0) / srow_h));
+  const int stotal = int(st.pinyon_sources.size());
+  const int sstart = std::clamp(st.pinyon_sources_scroll, 0, std::max(0, stotal - svis));
+
+  for (int i = 0; i < svis && sstart + i < stotal; ++i) {
+    const size_t idx = size_t(sstart + i);
+    const auto& src = st.pinyon_sources[idx];
+    const float ry = slist_y0 + float(i) * srow_h;
+    const bool sel = int(idx) == st.selected_pinyon_source;
+    const std::string sid = "saves:src:" + std::to_string(idx);
+    hits.push_back({sid, x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + srow_h - 2.0f * d, true});
+
+    if (sel) {
+      l.rect(x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + srow_h - 2.0f * d, kBgSelected, 5.0f * d);
+      l.rect(x0 + 10.0f * d, ry + 8.0f * d, x0 + 13.0f * d, ry + srow_h - 8.0f * d, kAccent, 1.5f * d);
+    } else if (st.hovered_id == sid) {
+      l.rect(x0 + 10.0f * d, ry + 2.0f * d, x1 - 16.0f * d, ry + srow_h - 2.0f * d, kBgHover, 5.0f * d);
+    }
+
+    const uint32_t col = src.importable ? kGreen : kAmber;
+    const uint32_t bg = src.importable ? kGreenSoft : kAmberSoft;
+    l.circle(x0 + 26.0f * d, ry + 0.5f * srow_h, 4.0f * d, col);
+
+    const char* badge_lbl = src.importable ? "Ready to Import" : "Encrypted \xE2\x80\x94 export first";
+    const float badge_w = src.importable ? 116.0f * d : 172.0f * d;
+    const float badge_h = 22.0f * d;
+    const float badge_x0 = x1 - 24.0f * d - badge_w;
+    const float badge_y0 = ry + 0.5f * (srow_h - badge_h);
+    l.rect(badge_x0, badge_y0, badge_x0 + badge_w, badge_y0 + badge_h, bg, 4.0f * d);
+    l.frame(badge_x0, badge_y0, badge_x0 + badge_w, badge_y0 + badge_h, ui::fade(col, 0.55), 1.0f * d, 4.0f * d);
+    draw_text(l, badge_x0 + 0.5f * badge_w, text_y_center(badge_y0, badge_y0 + badge_h, 11.0f * d), badge_lbl,
+              FontFace::kSemiBold, 11.0f * d, col, ui::Align::kCenter);
+
+    const float text_w = std::max(120.0f * d, badge_x0 - (x0 + 52.0f * d));
+    draw_text(l, x0 + 40.0f * d, ry + 6.0f * d, src.label, FontFace::kSemiBold, 13.0f * d, kTextPrimary,
+              ui::Align::kLeft, text_w);
+    const std::string sub = src.detail + "  \xC2\xB7  " + src.path.string();
+    draw_text(l, x0 + 40.0f * d, ry + 25.0f * d, sub, FontFace::kMono, 11.0f * d, kTextMuted,
+              ui::Align::kLeft, text_w);
+  }
+  if (st.pinyon_sources.empty()) {
+    draw_text(l, x0 + 20.0f * d, slist_y0 + 14.0f * d,
+              "No PinyonShift saves detected automatically. Click Browse Export Folder / Browse .zip or drag and drop here.",
+              FontFace::kRegular, 12.0f * d, kTextMuted, ui::Align::kLeft, cw - 40.0f * d);
+  }
+  draw_scrollbar(l, x1 - 10.0f * d, slist_y0 + 4.0f * d, slist_y1 - 4.0f * d, sstart, svis, stotal, d);
+
+  // Bottom import action bar
+  draw_divider(l, x0 + 1.0f * d, c2_y + c2_h - 44.0f * d, x1 - 1.0f * d, d);
+  const float ibar_y0 = c2_y + c2_h - 37.0f * d;
+  const float ibar_y1 = c2_y + c2_h - 8.0f * d;
+  draw_button(l, hits, st, "saves:import_sel", x0 + 18.0f * d, ibar_y0, x0 + 180.0f * d, ibar_y1,
+              "Import into Selected", d);
+  draw_button(l, hits, st, "saves:import_new", x0 + 188.0f * d, ibar_y0, x0 + 362.0f * d, ibar_y1,
+              "Import as New Profile", d, {.primary = true});
+  const std::string hint =
+      !st.saves_status.empty()
+          ? st.saves_status
+          : "Read-only import (source files are never modified; existing saves are backed up automatically).";
+  draw_text(l, x0 + 378.0f * d, text_y_center(ibar_y0, ibar_y1, 11.5f * d), hint, FontFace::kRegular, 11.5f * d,
+            kTextSecondary, ui::Align::kLeft, std::max(80.0f * d, x1 - 20.0f * d - (x0 + 378.0f * d)));
+}
+
+// ---- Tab 4: Content (DLC & Title Update) -----------------------------------
 
 void draw_dlc_tab(ui::List& l, const LauncherUiState& st, float x0, float y0, float x1, float y1, float d,
                   std::vector<HitBox>& hits) {
@@ -1442,6 +1711,7 @@ const char* tab_name(LauncherTab tab) {
   switch (tab) {
     case LauncherTab::kPlay: return "Play";
     case LauncherTab::kSetup: return "Setup";
+    case LauncherTab::kSaves: return "Saves";
     case LauncherTab::kDlc: return "Content";
     case LauncherTab::kMods: return "Mods";
     case LauncherTab::kRadio: return "Radio";
@@ -1456,6 +1726,7 @@ bool parse_tab_name(std::string_view name, LauncherTab& out) {
   const std::string l = lower_str(name);
   if (l == "play") { out = LauncherTab::kPlay; return true; }
   if (l == "setup") { out = LauncherTab::kSetup; return true; }
+  if (l == "saves" || l == "save" || l == "profiles" || l == "profile") { out = LauncherTab::kSaves; return true; }
   if (l == "content" || l == "dlc" || l == "v4") { out = LauncherTab::kDlc; return true; }
   if (l == "mods" || l == "mod") { out = LauncherTab::kMods; return true; }
   if (l == "radio") { out = LauncherTab::kRadio; return true; }
@@ -1601,6 +1872,22 @@ void populate_demo_state(LauncherUiState& st) {
   st.live_gear = 3;
   st.wheel_status = "Multi-device USB rig active.";
 
+  // Demo Saves & PinyonShift Sources
+  st.save_profiles = {
+      {"default", "Horizon Driver", "D:/ShiftEngine/data/drive", true, true, true, 4075645, 41250, 24, 38, 64,
+       "NIS_SkylineGTRVSpecII_02", 4, "2026-11-26 15:20"},
+      {"weekend", "Weekend Racer", "D:/ShiftEngine/data/profiles/weekend", false, true, false, 185000, 4200, 5, 6, 12,
+       "VW_CorradoVR6_95", 1, "2026-11-24 21:10"},
+  };
+  st.selected_save_profile = 0;
+  st.pinyon_sources = {
+      {"PinyonShift Export (user)", "C:/Users/Driver/Documents/PinyonShift/export_user",
+       PinyonSaveKind::kPlaintextExport, true, "Plaintext export folder (ForzaProfile.body + PlayerDatabase.sqlite)"},
+      {"PinyonShift Preview (0.1.0)", "C:/Users/Driver/AppData/Local/PinyonShift/source/0.1.0/.local/preview/user",
+       PinyonSaveKind::kEncryptedPinyon, false, "Encrypted console profile — export plaintext in PinyonShift first"},
+  };
+  st.selected_pinyon_source = 0;
+
   // Demo Android Wi-Fi Sync
   st.sync_active = true;
   st.sync_lan_ip = "192.168.1.42";
@@ -1641,8 +1928,8 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
   draw_divider(l, 16.0f * d, 64.0f * d, sidebar_w - 16.0f * d, d);
 
   // Sidebar navigation items
-  static constexpr const char* kTabIds[8] = {
-      "tab:play", "tab:setup", "tab:dlc", "tab:mods", "tab:radio", "tab:wheel", "tab:update", "tab:android"};
+  static constexpr const char* kTabIds[9] = {
+      "tab:play", "tab:setup", "tab:saves", "tab:dlc", "tab:mods", "tab:radio", "tab:wheel", "tab:update", "tab:android"};
   const float nav_y0 = 76.0f * d;
   const float nav_h = 34.0f * d;
   const float nav_gap = 4.0f * d;
@@ -1691,6 +1978,7 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
   switch (st.active_tab) {
     case LauncherTab::kPlay: draw_play_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
     case LauncherTab::kSetup: draw_setup_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
+    case LauncherTab::kSaves: draw_saves_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
     case LauncherTab::kDlc: draw_dlc_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
     case LauncherTab::kMods: draw_mods_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
     case LauncherTab::kRadio: draw_radio_tab(l, st, content_x0, content_y0, content_x1, content_y1, d, hitboxes); break;
@@ -1709,7 +1997,7 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
               11.5f * d, kTextPrimary, ui::Align::kLeft, (content_x1 - content_x0) * 0.72f);
   }
   draw_text(l, content_x1, text_y_center(fy, height, 11.0f * d),
-            "1-8 Tabs  \xC2\xB7  Tab Focus  \xC2\xB7  Enter Activate", FontFace::kRegular, 11.0f * d, kTextMuted,
+            "1-9 Tabs  \xC2\xB7  Tab Focus  \xC2\xB7  Enter Activate", FontFace::kRegular, 11.0f * d, kTextMuted,
             ui::Align::kRight);
 }
 

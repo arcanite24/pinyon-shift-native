@@ -3,7 +3,7 @@ add_library(shift_launcher_core STATIC
   launcher_core.cpp
   wifi_sync.cpp)
 target_include_directories(shift_launcher_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(shift_launcher_core PUBLIC shift_setup shift_world)
+target_link_libraries(shift_launcher_core PUBLIC shift_setup shift_world shift_profile)
 if(TARGET shift_volk)
   target_link_libraries(shift_launcher_core PUBLIC shift_volk)
   target_compile_definitions(shift_launcher_core PUBLIC SHIFT_LAUNCHER_HAS_VOLK=1)

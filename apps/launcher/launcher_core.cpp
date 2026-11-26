@@ -18,6 +18,13 @@
 
 #include <cstddef>
 
+#include "cars/database.h"
+#include "cars/sources.h"
+#include "drive/save.h"
+#include "garage/garage.h"
+#include "profile/backup.h"
+#include "profile/profiles.h"
+#include "profile/xenia_import.h"
 #include "setup/stfs.h"
 #include "setup/stream_reader.h"
 #include "setup/xiso.h"
@@ -1227,6 +1234,7 @@ std::string vendor_driver_url(uint32_t vendor_id) {
     case 0x1002: return "https://www.amd.com/en/support/download/drivers.html";
     case 0x10DE: return "https://www.nvidia.com/en-us/drivers/";
     case 0x8086: return "https://www.intel.com/content/www/us/en/download-center/home.html";
+    case 0x106B: return "https://support.apple.com/macos";
     default: return "https://vulkan.lunarg.com/";
   }
 }
@@ -1290,6 +1298,9 @@ HardwareInfo probe_hardware(int refresh_hz) {
             g.vram_bytes = vram;
             g.api_version = props.apiVersion;
             g.vendor_id = props.vendorID;
+#if defined(__APPLE__)
+            g.portability = true;
+#endif
             if (!best || (g.discrete && !best->discrete) ||
                 (!g.software && best->software) ||
                 (g.discrete == best->discrete && g.vram_bytes > best->vram_bytes)) {
@@ -1320,15 +1331,54 @@ HardwareRecommendation recommend_preset(const HardwareInfo& info) {
 
   const GpuInfo& gpu = *info.gpu;
   rec.driver_url = vendor_driver_url(gpu.vendor_id);
-  if (gpu.software) {
+  const std::string gpu_low = lower_ascii(gpu.name);
+  const bool is_software = gpu.software || gpu_low.find("llvmpipe") != std::string::npos ||
+                           gpu_low.find("swiftshader") != std::string::npos;
+  const bool is_apple_gpu = (gpu.vendor_id == 0x106B);
+  const bool is_moltenvk = is_apple_gpu || gpu.portability || gpu_low.find("moltenvk") != std::string::npos;
+
+  if (is_software) {
     rec.warning = "Only a software Vulkan device (" + gpu.name + ") was found; install a hardware GPU driver.";
+  } else if (is_moltenvk) {
+    // On macOS, MoltenVK reports Vulkan 1.2 (and Metal 3 is supported natively);
+    // only warn if Vulkan is below 1.1.
+    if (!gpu.supports_vulkan_1_1()) {
+      rec.warning = "Shift Engine requires Vulkan 1.1+ via MoltenVK or Metal 3; this driver reports Vulkan " +
+                    gpu.vulkan_version_string() + ". Update macOS.";
+    }
   } else if (!gpu.supports_vulkan_1_3()) {
     rec.warning = "Shift Engine requires Vulkan 1.3; this driver reports Vulkan " + gpu.vulkan_version_string() +
                   ". Update your GPU driver.";
   }
 
+  // Apple Silicon unified-memory GPUs report discrete == false under MoltenVK,
+  // but offer high unified memory bandwidth and Metal 3 performance.
+  if (is_apple_gpu && !is_software) {
+    constexpr uint64_t kAppleUltraMem = 24ull << 30;
+    constexpr uint64_t kAppleHighMem = 12ull << 30;
+    if (gpu.vram_bytes >= kAppleUltraMem && info.logical_threads >= 8) {
+      rec.preset_id = (info.refresh_hz >= 119) ? "ultra_120" : "ultra_60";
+      rec.carview_preset = "ultra";
+      rec.label = (info.refresh_hz >= 119) ? "Ultra 120" : "Ultra 60";
+      rec.reason = "Apple Silicon unified memory (>=24 GB) with Metal 3 / MoltenVK.";
+      return rec;
+    }
+    if (gpu.vram_bytes >= kAppleHighMem) {
+      rec.preset_id = (info.refresh_hz >= 119) ? "performance_120" : "quality_60";
+      rec.carview_preset = "high";
+      rec.label = (info.refresh_hz >= 119) ? "Performance 120" : "Quality 60";
+      rec.reason = "Apple Silicon unified memory (>=12 GB) with Metal 3 / MoltenVK.";
+      return rec;
+    }
+    rec.preset_id = "smooth_60";
+    rec.carview_preset = "smooth-60";
+    rec.label = "Smooth 60";
+    rec.reason = "Apple Silicon unified memory (<12 GB): smooth 60 fps preset.";
+    return rec;
+  }
+
   constexpr uint64_t kCapableVram = 6ull << 30;
-  if (gpu.discrete && !gpu.software && gpu.vram_bytes >= kCapableVram &&
+  if (gpu.discrete && !is_software && gpu.vram_bytes >= kCapableVram &&
       info.logical_threads >= 6 && info.refresh_hz >= 119) {
     rec.preset_id = "performance_120";
     rec.carview_preset = "high";
@@ -1336,7 +1386,7 @@ HardwareRecommendation recommend_preset(const HardwareInfo& info) {
     rec.reason = "Discrete GPU (>=6 GB VRAM), 6+ CPU threads, and 120+ Hz display.";
     return rec;
   }
-  if (gpu.discrete && !gpu.software && gpu.vram_bytes >= (4ull << 30) && info.physical_cores >= 4) {
+  if (gpu.discrete && !is_software && gpu.vram_bytes >= (4ull << 30) && info.physical_cores >= 4) {
     rec.preset_id = "quality_60";
     rec.carview_preset = "high";
     rec.label = "Quality 60";
@@ -4054,6 +4104,743 @@ bool save_launcher_sounds_setting(const std::filesystem::path& settings_file,
   }
   for (const auto& l : lines) out << l << "\n";
   return bool(out);
+}
+
+int resolution_index_for_size(std::string_view size_str) {
+  const std::string s = lower_ascii(trim(size_str));
+  if (s.empty() || s == "auto") return 0;
+  unsigned w = 0, h = 0;
+  if (std::sscanf(s.c_str(), "%ux%u", &w, &h) != 2 || w == 0 || h == 0) return 0;
+  for (int i = 1; i < kResolutionPresetCount; ++i) {
+    if (kResolutionPresets[i].width == int(w) && kResolutionPresets[i].height == int(h)) return i;
+  }
+  return 0;
+}
+
+int vsync_index_for_name(std::string_view vsync) {
+  const std::string v = lower_ascii(trim(vsync));
+  if (v == "mailbox") return 1;
+  if (v == "immediate" || v == "off") return 2;
+  return 0;
+}
+
+const char* vsync_name_for_index(int index) {
+  return kVsyncChoices[std::clamp(index, 0, kVsyncChoiceCount - 1)].id;
+}
+
+int fps_cap_index_for_name(std::string_view fps_cap) {
+  const std::string v = lower_ascii(trim(fps_cap));
+  if (v == "display" || v == "0" || v == "unlimited" || v == "native") return 1;
+  if (v == "30") return 2;
+  if (v == "40") return 3;
+  if (v == "120") return 4;
+  if (v == "144") return 5;
+  if (v == "240") return 6;
+  return 0;
+}
+
+const char* fps_cap_name_for_index(int index) {
+  return kFpsCapChoices[std::clamp(index, 0, kFpsCapChoiceCount - 1)].id;
+}
+
+namespace {
+
+bool upsert_settings_keys(const std::filesystem::path& settings_file,
+                          const std::vector<std::string>& remove_keys,
+                          const std::optional<std::string>& new_line,
+                          std::string* error) {
+  std::vector<std::string> lines;
+  if (std::ifstream in(settings_file); in) {
+    for (std::string line; std::getline(in, line);) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      std::string t = trim(line);
+      if (!t.empty() && t[0] != '#') {
+        if (t.rfind("--", 0) == 0) t = t.substr(2);
+        const size_t sp = t.find(' ');
+        const std::string key = lower_ascii(sp == std::string::npos ? t : t.substr(0, sp));
+        bool drop = false;
+        for (const auto& rk : remove_keys) {
+          if (key == rk) {
+            drop = true;
+            break;
+          }
+        }
+        if (drop) continue;
+      }
+      lines.push_back(line);
+    }
+  }
+  if (new_line && !new_line->empty()) {
+    lines.push_back(*new_line);
+  }
+  std::error_code ec;
+  if (settings_file.has_parent_path()) std::filesystem::create_directories(settings_file.parent_path(), ec);
+  std::ofstream out(settings_file, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    if (error) *error = "Cannot write " + settings_file.string();
+    return false;
+  }
+  if (lines.empty()) {
+    out << "# shift-engine settings\n";
+  } else {
+    for (const auto& l : lines) out << l << "\n";
+  }
+  return bool(out);
+}
+
+std::filesystem::path backups_dir_for_profile(const LauncherPaths& paths, std::string_view name) {
+  if (paths.data_root.empty()) return {};
+  if (name.empty() || name == "default") return paths.data_root / "backups" / "saves";
+  return paths.data_root / "backups" / ("saves-" + std::string(name));
+}
+
+std::string format_file_mtime_utc(const std::filesystem::path& file) {
+  std::error_code ec;
+  const auto ft = std::filesystem::last_write_time(file, ec);
+  if (ec) return {};
+  const auto sys_now = std::chrono::system_clock::now();
+  const auto file_now = std::filesystem::file_time_type::clock::now();
+  const auto sys_tp = sys_now + std::chrono::duration_cast<std::chrono::system_clock::duration>(ft - file_now);
+  const int64_t secs = std::chrono::duration_cast<std::chrono::seconds>(sys_tp.time_since_epoch()).count();
+  return profile::backup::format_time(secs);
+}
+
+std::string make_unique_profile_name(const profile::profiles::Manager& mgr, std::string_view base_raw) {
+  std::string base = profile::profiles::name_from_gamertag(base_raw);
+  if (!profile::profiles::valid_profile_name(base)) base = "player";
+  if (base == "default") base = "driver";
+  if (!mgr.find(base)) return base;
+  for (int n = 2; n < 1000; ++n) {
+    const std::string suffix = "-" + std::to_string(n);
+    std::string cand = base;
+    if (cand.size() + suffix.size() > 24) cand.resize(24 - suffix.size());
+    while (!cand.empty() && cand.back() == '-') cand.pop_back();
+    cand += suffix;
+    if (profile::profiles::valid_profile_name(cand) && !mgr.find(cand)) return cand;
+  }
+  return base;
+}
+
+std::string sanitize_gamertag_copy(std::string_view src_tag, int copy_num) {
+  std::string base;
+  bool last_space = false;
+  for (char c : src_tag) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (std::isalnum(u)) {
+      base.push_back(c);
+      last_space = false;
+    } else if (c == ' ' && !base.empty() && !last_space) {
+      base.push_back(' ');
+      last_space = true;
+    }
+  }
+  while (!base.empty() && base.back() == ' ') base.pop_back();
+  if (base.empty() || !std::isalpha(static_cast<unsigned char>(base[0]))) base = "Driver";
+  const std::string suffix = copy_num <= 1 ? " Copy" : (" " + std::to_string(copy_num));
+  if (base.size() + suffix.size() > 15) base.resize(15 - suffix.size());
+  while (!base.empty() && base.back() == ' ') base.pop_back();
+  std::string out = base + suffix;
+  if (!profile::profiles::valid_gamertag(out)) out = "Driver " + std::to_string(std::max(2, copy_num));
+  return out;
+}
+
+std::filesystem::path make_unique_temp_work_dir(const char* prefix) {
+  std::error_code ec;
+  std::random_device rd;
+  const uint64_t r = (uint64_t(rd()) << 32) ^ uint64_t(rd());
+  char hex[20];
+  std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(r));
+  return std::filesystem::temp_directory_path(ec) / (std::string(prefix) + "-" + hex);
+}
+
+std::string format_credits_short(int64_t cr) {
+  std::string raw = std::to_string(cr < 0 ? -cr : cr);
+  std::string out;
+  for (size_t i = 0; i < raw.size(); ++i) {
+    if (i > 0 && (raw.size() - i) % 3 == 0) out.push_back(',');
+    out.push_back(raw[i]);
+  }
+  if (cr < 0) out.insert(out.begin(), '-');
+  return out + " CR";
+}
+
+}  // namespace
+
+int load_resolution_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return 0;
+  int found = 0;
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    const std::string key = lower_ascii(line.substr(0, sp));
+    if (key != "size") continue;
+    found = resolution_index_for_size(line.substr(sp + 1));
+  }
+  return found;
+}
+
+bool save_resolution_setting(const std::filesystem::path& settings_file,
+                             int resolution_index,
+                             std::string* error) {
+  const int idx = std::clamp(resolution_index, 0, kResolutionPresetCount - 1);
+  if (idx == 0) {
+    return upsert_settings_keys(settings_file, {"size"}, std::nullopt, error);
+  }
+  const auto& rp = kResolutionPresets[idx];
+  return upsert_settings_keys(settings_file, {"size"},
+                              "size " + std::to_string(rp.width) + "x" + std::to_string(rp.height), error);
+}
+
+bool load_fullscreen_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return false;
+  bool fs = false;
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    const std::string key = lower_ascii(sp == std::string::npos ? line : line.substr(0, sp));
+    if (key == "fullscreen") fs = true;
+    else if (key == "no-fullscreen") fs = false;
+  }
+  return fs;
+}
+
+bool save_fullscreen_setting(const std::filesystem::path& settings_file,
+                             bool fullscreen,
+                             std::string* error) {
+  return upsert_settings_keys(settings_file, {"fullscreen", "no-fullscreen"},
+                              std::string(fullscreen ? "fullscreen" : "no-fullscreen"), error);
+}
+
+std::string load_vsync_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return "fifo";
+  std::string found = "fifo";
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    if (lower_ascii(line.substr(0, sp)) != "vsync") continue;
+    found = vsync_name_for_index(vsync_index_for_name(line.substr(sp + 1)));
+  }
+  return found;
+}
+
+bool save_vsync_setting(const std::filesystem::path& settings_file,
+                        std::string_view vsync_id,
+                        std::string* error) {
+  const std::string val = vsync_name_for_index(vsync_index_for_name(vsync_id));
+  return upsert_settings_keys(settings_file, {"vsync"}, "vsync " + val, error);
+}
+
+std::string load_fps_cap_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return "60";
+  std::string found = "60";
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    if (lower_ascii(line.substr(0, sp)) != "fps-cap") continue;
+    found = fps_cap_name_for_index(fps_cap_index_for_name(line.substr(sp + 1)));
+  }
+  return found;
+}
+
+bool save_fps_cap_setting(const std::filesystem::path& settings_file,
+                          std::string_view fps_cap_id,
+                          std::string* error) {
+  const std::string val = fps_cap_name_for_index(fps_cap_index_for_name(fps_cap_id));
+  return upsert_settings_keys(settings_file, {"fps-cap"}, "fps-cap " + val, error);
+}
+
+std::string load_profile_setting(const std::filesystem::path& settings_file) {
+  std::ifstream in(settings_file);
+  if (!in) return {};
+  std::string found;
+  for (std::string line; std::getline(in, line);) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') continue;
+    if (line.rfind("--", 0) == 0) line = line.substr(2);
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    if (lower_ascii(line.substr(0, sp)) != "profile") continue;
+    found = trim(line.substr(sp + 1));
+  }
+  return found;
+}
+
+bool save_profile_setting(const std::filesystem::path& settings_file,
+                          std::string_view profile_name,
+                          std::string* error) {
+  const std::string val = trim(profile_name);
+  if (val.empty()) {
+    return upsert_settings_keys(settings_file, {"profile"}, std::nullopt, error);
+  }
+  return upsert_settings_keys(settings_file, {"profile"}, "profile " + val, error);
+}
+
+// ---- 3b. Save File Management & PinyonShift Read-Only Import ---------------
+
+std::vector<SaveProfileEntry> scan_save_profiles(const LauncherPaths& paths) {
+  std::vector<SaveProfileEntry> out;
+  if (paths.data_root.empty()) return out;
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  mgr.load();
+
+  std::string active_name = mgr.active().name;
+  const std::string settings_prof = load_profile_setting(paths.settings_file);
+  if (!settings_prof.empty() && mgr.find(settings_prof) != nullptr) {
+    active_name = settings_prof;
+  }
+
+  for (const auto& p : mgr.profiles()) {
+    SaveProfileEntry entry;
+    entry.name = p.name;
+    entry.gamertag = p.gamertag;
+    entry.save_dir = p.save_dir;
+    entry.active = (p.name == active_name);
+
+    const std::filesystem::path save_file = p.save_dir / "save.txt";
+    const std::filesystem::path garage_file = p.save_dir / "garage.txt";
+    drive::DriveSave ds;
+    if (drive::read_save(save_file, ds, nullptr)) {
+      entry.has_save = true;
+      entry.imported_career = ds.owned_garage;
+      entry.credits = ds.credits;
+      entry.xp = ds.wristband_points;
+      entry.level = ds.level;
+      entry.signs_found = int(ds.signs_found.size());
+      entry.current_car = ds.car;
+      entry.garage_cars = int(ds.garage.size());
+      entry.modified_label = format_file_mtime_utc(save_file);
+    }
+    garage::Garage g;
+    if (garage::read_garage(garage_file, g, nullptr) && !g.cars.empty()) {
+      entry.garage_cars = int(g.cars.size());
+    }
+
+    profile::backup::Config bcfg;
+    bcfg.save_dir = p.save_dir;
+    bcfg.backups_dir = backups_dir_for_profile(paths, p.name);
+    entry.backup_count = int(profile::backup::list(bcfg).size());
+
+    out.push_back(std::move(entry));
+  }
+  return out;
+}
+
+bool set_active_save_profile(const LauncherPaths& paths, std::string_view name, std::string* err) {
+  if (paths.data_root.empty()) {
+    if (err) *err = "Data folder is not configured.";
+    return false;
+  }
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(err)) return false;
+  if (!mgr.switch_to(name, err)) return false;
+  if (!paths.settings_file.empty()) {
+    if (!save_profile_setting(paths.settings_file, name, err)) return false;
+  }
+  return true;
+}
+
+bool create_save_profile(const LauncherPaths& paths, std::string_view gamertag, std::string* out_name,
+                         std::string* err) {
+  if (paths.data_root.empty()) {
+    if (err) *err = "Data folder is not configured.";
+    return false;
+  }
+  const std::string tag = trim(gamertag);
+  if (!profile::profiles::valid_gamertag(tag, err)) return false;
+
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(err)) return false;
+
+  const std::string name = make_unique_profile_name(mgr, tag);
+  if (!mgr.create(name, tag, err)) return false;
+  if (out_name) *out_name = name;
+  return true;
+}
+
+bool duplicate_save_profile(const LauncherPaths& paths, std::string_view src_name, std::string* out_name,
+                            std::string* err) {
+  if (paths.data_root.empty()) {
+    if (err) *err = "Data folder is not configured.";
+    return false;
+  }
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(err)) return false;
+
+  const auto* src = mgr.find(src_name);
+  if (!src) {
+    if (err) *err = "Profile not found: " + std::string(src_name);
+    return false;
+  }
+  const std::filesystem::path src_dir = src->save_dir;
+  const std::string src_tag = src->gamertag;
+  const std::string new_name = make_unique_profile_name(mgr, std::string(src_name) + "-copy");
+  std::string new_tag = sanitize_gamertag_copy(src_tag, 1);
+  if (!mgr.create(new_name, new_tag, err)) return false;
+
+  const auto* dst = mgr.find(new_name);
+  if (!dst) {
+    if (err) *err = "Created profile could not be located.";
+    return false;
+  }
+
+  std::error_code ec;
+  if (std::filesystem::is_directory(src_dir, ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(src_dir, ec)) {
+      if (!entry.is_regular_file(ec)) continue;
+      const std::string fname = entry.path().filename().string();
+      if (ends_with_ci(fname, ".tmp") || ends_with_ci(fname, ".pre-import") || ends_with_ci(fname, ".corrupt")) {
+        continue;
+      }
+      std::filesystem::copy_file(entry.path(), dst->save_dir / entry.path().filename(),
+                                 std::filesystem::copy_options::overwrite_existing, ec);
+      if (ec) {
+        if (err) *err = "Failed to copy " + fname + " into duplicated profile.";
+        return false;
+      }
+    }
+  }
+  if (out_name) *out_name = new_name;
+  return true;
+}
+
+bool backup_save_profile(const LauncherPaths& paths, std::string_view name, std::string* out_label,
+                         std::string* err) {
+  if (paths.data_root.empty()) {
+    if (err) *err = "Data folder is not configured.";
+    return false;
+  }
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(err)) return false;
+
+  const auto* prof = mgr.find(name);
+  if (!prof) {
+    if (err) *err = "Profile not found: " + std::string(name);
+    return false;
+  }
+
+  profile::backup::Config bcfg;
+  bcfg.save_dir = prof->save_dir;
+  bcfg.backups_dir = backups_dir_for_profile(paths, prof->name);
+  bcfg.keep = 10;
+
+  profile::backup::Entry snap;
+  bool skipped = false;
+  if (!profile::backup::snapshot(bcfg, "manual", &snap, err, -1, &skipped)) {
+    return false;
+  }
+  if (skipped) {
+    if (err) *err = "No save file yet to back up.";
+    return false;
+  }
+  if (out_label) *out_label = snap.id;
+  return true;
+}
+
+bool delete_save_profile(const LauncherPaths& paths, std::string_view name, std::string* err) {
+  if (paths.data_root.empty()) {
+    if (err) *err = "Data folder is not configured.";
+    return false;
+  }
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(err)) return false;
+  return mgr.remove(name, err);
+}
+
+std::vector<PinyonSaveSource> scan_pinyon_save_sources(const std::vector<std::filesystem::path>& extra_roots) {
+  std::vector<PinyonSaveSource> out;
+  std::set<std::string> seen_canon;
+  std::error_code ec;
+  const std::filesystem::path work_dir = make_unique_temp_work_dir("shift-pinyon-scan");
+
+  auto canonical_key = [&](const std::filesystem::path& p) {
+    std::error_code cec;
+    const auto c = std::filesystem::weakly_canonical(p, cec);
+    return lower_ascii((cec ? p : c).string());
+  };
+
+  auto probe_candidate = [&](const std::filesystem::path& cand, const std::string& label_hint) -> bool {
+    std::error_code pec;
+    if (!std::filesystem::exists(cand, pec)) return false;
+    const std::string key = canonical_key(cand);
+    if (seen_canon.count(key)) return false;
+
+    const auto det = profile::import::detect(cand, work_dir);
+    if (det.kind == profile::import::SourceKind::kNone) return false;
+
+    // Deduplicate resolved export directories as well so parent & child don't appear twice.
+    if (det.kind == profile::import::SourceKind::kExportFolder && !det.export_dir.empty()) {
+      const std::string exp_key = canonical_key(det.export_dir);
+      if (seen_canon.count(exp_key)) return false;
+      seen_canon.insert(exp_key);
+    }
+    seen_canon.insert(key);
+
+    PinyonSaveSource src;
+    src.path = (det.kind == profile::import::SourceKind::kExportFolder && !det.export_dir.empty()) ? det.export_dir : cand;
+    src.label = !label_hint.empty() ? label_hint : src.path.filename().string();
+    if (src.label.empty()) src.label = src.path.string();
+
+    if (det.kind == profile::import::SourceKind::kExportFolder) {
+      src.kind = PinyonSaveKind::kPlaintextExport;
+      src.importable = true;
+      src.detail = "Plaintext export folder (ForzaProfile.body + PlayerDatabase.sqlite)";
+    } else if (det.kind == profile::import::SourceKind::kExportZip) {
+      src.kind = PinyonSaveKind::kExportZip;
+      src.importable = true;
+      src.detail = "Plaintext export ZIP archive ready to import";
+    } else {
+      src.kind = PinyonSaveKind::kEncryptedPinyon;
+      src.importable = false;
+      src.detail = "Encrypted console profile — export plaintext in PinyonShift first";
+    }
+    out.push_back(std::move(src));
+    return true;
+  };
+
+  auto scan_pinyon_root = [&](const std::filesystem::path& root, const std::string& root_label) {
+    std::error_code rec;
+    if (!std::filesystem::exists(root, rec)) return;
+    if (std::filesystem::is_regular_file(root, rec)) {
+      probe_candidate(root, root_label);
+      return;
+    }
+    if (!std::filesystem::is_directory(root, rec)) return;
+
+    // 1. Check standard PinyonShift installed preview directories: source/<ver>/.local/preview/user
+    const auto source_dir = root / "source";
+    if (std::filesystem::is_directory(source_dir, rec)) {
+      std::vector<std::filesystem::path> versions;
+      for (const auto& v : std::filesystem::directory_iterator(source_dir, rec)) {
+        if (v.is_directory(rec)) versions.push_back(v.path());
+      }
+      std::sort(versions.begin(), versions.end());
+      for (const auto& ver : versions) {
+        const auto preview_user = ver / ".local" / "preview" / "user";
+        if (std::filesystem::is_directory(preview_user, rec)) {
+          probe_candidate(preview_user, "PinyonShift Preview (" + ver.filename().string() + ")");
+        }
+      }
+    }
+
+    // 2. Check top-level user/
+    const auto top_user = root / "user";
+    if (std::filesystem::is_directory(top_user, rec)) {
+      probe_candidate(top_user, root_label + " (user)");
+    }
+
+    // 3. Check direct plaintext export at root itself
+    if (std::filesystem::is_regular_file(root / "ForzaProfile.body", rec) &&
+        std::filesystem::is_regular_file(root / "PlayerDatabase.sqlite", rec)) {
+      probe_candidate(root, root_label);
+      return;
+    }
+
+    // 4. Scan immediate children (export folders, exports/, and .zip archives)
+    bool found_child = false;
+    std::vector<std::filesystem::path> children;
+    for (const auto& e : std::filesystem::directory_iterator(root, rec)) {
+      children.push_back(e.path());
+    }
+    std::sort(children.begin(), children.end());
+    for (const auto& child : children) {
+      const std::string cname = child.filename().string();
+      if (cname == "source" || cname == "user" || cname == "config" || cname == "logs") continue;
+      if (std::filesystem::is_regular_file(child, rec) && ends_with_ci(cname, ".zip")) {
+        if (probe_candidate(child, cname)) found_child = true;
+      } else if (std::filesystem::is_directory(child, rec)) {
+        if (std::filesystem::is_regular_file(child / "ForzaProfile.body", rec) &&
+            std::filesystem::is_regular_file(child / "PlayerDatabase.sqlite", rec)) {
+          if (probe_candidate(child, cname)) found_child = true;
+        } else if (lower_ascii(cname) == "exports" || lower_ascii(cname) == "export" ||
+                   lower_ascii(cname) == "saves") {
+          for (const auto& sub : std::filesystem::directory_iterator(child, rec)) {
+            if (sub.is_directory(rec) ||
+                (sub.is_regular_file(rec) && ends_with_ci(sub.path().filename().string(), ".zip"))) {
+              if (probe_candidate(sub.path(), sub.path().filename().string())) found_child = true;
+            }
+          }
+        }
+      }
+    }
+
+    // 5. Fallback: probe root directly (handles nested user/ForzaProfile.body or encrypted ForzaProfile trees).
+    if (!found_child) {
+      probe_candidate(root, root_label);
+    }
+  };
+
+  // Standard OS PinyonShift locations (strictly read-only).
+#ifdef _WIN32
+  if (const char* localapp = std::getenv("LOCALAPPDATA"); localapp && *localapp) {
+    scan_pinyon_root(std::filesystem::path(localapp) / "PinyonShift", "PinyonShift AppData");
+  }
+  if (const char* userprof = std::getenv("USERPROFILE"); userprof && *userprof) {
+    scan_pinyon_root(std::filesystem::path(userprof) / "Documents" / "PinyonShift", "Documents PinyonShift");
+  }
+#elif defined(__APPLE__)
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    scan_pinyon_root(std::filesystem::path(home) / "Library" / "Application Support" / "PinyonShift",
+                     "PinyonShift macOS");
+    scan_pinyon_root(std::filesystem::path(home) / "Documents" / "PinyonShift", "Documents PinyonShift");
+  }
+#else
+  if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+    scan_pinyon_root(std::filesystem::path(xdg) / "PinyonShift", "PinyonShift Data");
+  } else if (const char* home = std::getenv("HOME"); home && *home) {
+    scan_pinyon_root(std::filesystem::path(home) / ".local" / "share" / "PinyonShift", "PinyonShift Data");
+  }
+#endif
+
+  // Extra caller-supplied roots (e.g. browsed folders/ZIPs, drag-and-drop, or unit test temp dirs).
+  for (const auto& extra : extra_roots) {
+    if (extra.empty()) continue;
+    const std::string lbl = extra.filename().empty() ? extra.string() : extra.filename().string();
+    scan_pinyon_root(extra, lbl);
+  }
+
+  std::filesystem::remove_all(work_dir, ec);
+
+  std::stable_sort(out.begin(), out.end(), [](const PinyonSaveSource& a, const PinyonSaveSource& b) {
+    if (a.importable != b.importable) return a.importable && !b.importable;
+    return a.label < b.label;
+  });
+  return out;
+}
+
+bool import_pinyon_save(const LauncherPaths& paths,
+                        const std::filesystem::path& source,
+                        std::string_view target_profile_name,
+                        bool create_new_profile,
+                        bool replace_existing,
+                        std::string* out_summary,
+                        std::string* out_error) {
+  if (paths.data_root.empty()) {
+    if (out_error) *out_error = "Data folder is not configured.";
+    return false;
+  }
+  if (source.empty()) {
+    if (out_error) *out_error = "No import source selected.";
+    return false;
+  }
+
+  // Strictly read-only pre-flight detection before creating/modifying any profile.
+  std::error_code ec;
+  const std::filesystem::path probe_work = make_unique_temp_work_dir("shift-pinyon-probe");
+  const auto det = profile::import::detect(source, probe_work);
+  std::filesystem::remove_all(probe_work, ec);
+  if (!det.problem.empty()) {
+    if (out_error) *out_error = det.problem;
+    return false;
+  }
+
+  const std::filesystem::path default_drive =
+      paths.drive_dir.empty() ? (paths.data_root / "drive") : paths.drive_dir;
+  profile::profiles::Manager mgr(paths.data_root, default_drive);
+  if (!mgr.load(out_error)) return false;
+
+  std::string resolved_name;
+  std::filesystem::path target_dir;
+  bool created_here = false;
+
+  if (create_new_profile) {
+    std::string desired_tag = trim(target_profile_name);
+    if (!profile::profiles::valid_gamertag(desired_tag)) {
+      desired_tag = "Horizon Import";
+    }
+    resolved_name = make_unique_profile_name(mgr, desired_tag);
+    if (!mgr.create(resolved_name, desired_tag, out_error)) return false;
+    created_here = true;
+    const auto* created = mgr.find(resolved_name);
+    if (!created) {
+      if (out_error) *out_error = "Created profile could not be opened.";
+      return false;
+    }
+    target_dir = created->save_dir;
+  } else {
+    resolved_name = target_profile_name.empty() ? mgr.active().name : std::string(target_profile_name);
+    const auto* prof = mgr.find(resolved_name);
+    if (!prof) {
+      if (out_error) *out_error = "Target profile not found: " + resolved_name;
+      return false;
+    }
+    target_dir = prof->save_dir;
+  }
+
+  // Resolve v4 title update availability and car Data_Car.Id -> MediaName map when game root is configured.
+  PlayConfig play_cfg;
+  read_play_config(paths.play_dir, play_cfg);
+  const std::filesystem::path effective_state = !play_cfg.state_root.empty() ? play_cfg.state_root : paths.state_dir;
+  const bool v4_available =
+      !effective_state.empty() && std::filesystem::is_regular_file(effective_state / "title-update-v4" / "media.zip", ec);
+
+  std::map<int64_t, std::string> id_to_media;
+  if (play_cfg.game_root_valid && !play_cfg.game_root.empty()) {
+    cars::Install inst;
+    if (cars::discover_install(play_cfg.game_root, effective_state, {}, inst, nullptr)) {
+      cars::Database db;
+      if (cars::load_database(inst, db, nullptr)) {
+        for (const auto& car : db.cars) {
+          if (!car.media_name.empty()) id_to_media[car.id] = car.media_name;
+        }
+      }
+    }
+  }
+
+  profile::import::Options opts;
+  opts.save_dir = target_dir;
+  opts.replace_existing = replace_existing;
+  opts.v4_available = v4_available;
+  opts.backups.save_dir = target_dir;
+  opts.backups.backups_dir = backups_dir_for_profile(paths, resolved_name);
+  opts.backups.keep = 10;
+  if (!id_to_media.empty()) {
+    opts.media_of = [&id_to_media](int64_t id) -> std::string {
+      auto it = id_to_media.find(id);
+      return it != id_to_media.end() ? it->second : std::string{};
+    };
+  }
+
+  const auto res = profile::import::run(source, opts);
+  if (!res.ok) {
+    if (created_here) {
+      mgr.remove(resolved_name, nullptr);
+    }
+    if (out_error) *out_error = res.error;
+    return false;
+  }
+
+  if (out_summary) {
+    *out_summary = "Imported into '" + resolved_name + "': " + format_credits_short(res.credits) + ", " +
+                   std::to_string(res.garage_cars) + " car(s), " + std::to_string(res.signs) + " sign(s).";
+  }
+  return true;
 }
 
 std::string shell_quote_posix(std::string_view arg) {

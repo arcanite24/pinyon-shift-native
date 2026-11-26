@@ -435,7 +435,7 @@ static int carview_main(int argc, char** argv) {
   std::string car, out = "carview.png";
   int lod = 0;
   uint32_t width = 1280, height = 720, msaa = 4, max_frames = 0;
-  bool headless = false, validation = std::getenv("SHIFT_VALIDATION") != nullptr;
+  bool headless = false, fullscreen = false, validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   Camera camera;
   carview::LoadOptions load_options;
   float paint[3] = {0.62f, 0.05f, 0.04f};
@@ -444,6 +444,8 @@ static int carview_main(int argc, char** argv) {
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : nullptr; };
     const char* v = nullptr;
     if (a == "--headless") headless = true;
+    else if (a == "--fullscreen") fullscreen = true;
+    else if (a == "--no-fullscreen") fullscreen = false;
     else if (a == "--validation") validation = true;
     else if (a == "--no-cockpit") load_options.cockpit = false;
     else if (a == "--all-parts") load_options.all_parts = true;
@@ -520,9 +522,9 @@ static int carview_main(int argc, char** argv) {
     return 1;
   }
   carview::load_gamepad_mappings();
-  SDL_Window* window = SDL_CreateWindow(("carview - " + car).c_str(), int(width), int(height),
-                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
-                                            SDL_WINDOW_HIGH_PIXEL_DENSITY);
+  SDL_WindowFlags win_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+  if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN;
+  SDL_Window* window = SDL_CreateWindow(("carview - " + car).c_str(), int(width), int(height), win_flags);
   if (!window) {
     std::fprintf(stderr, "carview: SDL_CreateWindow: %s\n", SDL_GetError());
     SDL_Quit();

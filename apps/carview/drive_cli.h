@@ -71,6 +71,7 @@ struct DriveConfig {
   std::string car, out, run = "slalom", view = "chase";
   uint32_t width = 960, height = 540;
   bool size_given = false;
+  bool fullscreen = false;
   double seconds = 6, every = 1;
   bool headless = false;
   bool hud = false;

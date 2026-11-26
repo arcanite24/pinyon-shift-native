@@ -32,7 +32,7 @@ void drive_usage() {
                "  settings: --save-settings (keeps this run's look, sound, traffic and race options in the\n"
                "           user folder's settings.txt; the window reads it first) --no-settings\n"
                "  mods:    --mods <dir> (default: the user folder's mods/, the window only) --no-mods\n"
-               "  look:    --size WxH --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
+               "  look:    --size WxH --fullscreen | --no-fullscreen --msaa N --preset low|high --no-post --bloom | --no-bloom --exposure x\n"
                "           --shadows off|low|high --view chase|front --hud --no-reverse-z --language code\n"
                "  world:   --render-ground --flat-world --no-props --no-far --no-trees --async-stream\n"
                "  traffic: --traffic | --no-traffic --traffic-seed N\n"
@@ -198,6 +198,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     if (a == "--sync-folder") { sync_folder = next(); continue; }
     if (a == "--device-name") { device_name = next(); continue; }
     if (a == "--profile") { profile_name = next(); continue; }
+    if (a == "--fullscreen") { fullscreen = true; continue; }
+    if (a == "--no-fullscreen") { fullscreen = false; continue; }
     if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();

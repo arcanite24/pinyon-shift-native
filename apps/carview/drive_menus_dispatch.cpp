@@ -790,6 +790,10 @@ void DriveSession::open_settings(int tab) {
           if (!app.shadows_flag.empty()) snap.shadows = app.shadows_flag;
           if (app.bloom_flag >= 0) snap.bloom_mode = app.bloom_flag;
           if (!app.graphics_backend.empty()) snap.graphics_backend = app.graphics_backend;
+          snap.fullscreen = app.window ? ((SDL_GetWindowFlags(app.window) & SDL_WINDOW_FULLSCREEN) != 0) : app.fullscreen;
+          if (snap.window_size.empty() && app.size_given && app.width > 0 && app.height > 0) {
+            snap.window_size = std::to_string(app.width) + "x" + std::to_string(app.height);
+          }
           snap.graphics = host.active_graphics;
           settings_page.sync_from_live(snap);
           settings_page.open();
