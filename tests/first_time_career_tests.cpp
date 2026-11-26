@@ -241,10 +241,12 @@ void test_opening_commands() {
         "sat-nav to the diner, through CSetDestForInitialDrive's first point");
   race::FtcInput in;
   in.dt = 0.1;
-  // The controls screen does not leave on a button; it leaves once loaded.
+  // The controls screen holds briefly (kControlsMinHold = 2.0 s) while loading.
   c = ftc.update(in);
   check(ftc.stage() == FtcStage::kControls, "controls screen up for its first update");
-  c = ftc.update(in);
+  for (int i = 0; i < 18; ++i) c = ftc.update(in);
+  check(ftc.stage() == FtcStage::kControls, "controls screen holds through minimum display time");
+  for (int i = 0; i < 3 && ftc.stage() == FtcStage::kControls; ++i) c = ftc.update(in);
   check(ftc.stage() == FtcStage::kOpeningCutscene, "controls screen leaves when the opening has loaded");
   check(c.play_cutscene == "Opening_Cutscene" && c.play_movie.empty(), "Opening_Cutscene, no FMV");
   check(c.fades.size() == 2 && c.fades[0].kind == race::FtcFadeKind::kBlackOut &&
@@ -543,6 +545,22 @@ void test_stage_names_and_resume() {
   check(race::ftc_title_stage(FtcStage::kHeats) == 7 && race::ftc_title_stage(FtcStage::kShowcase) == 12 &&
             race::ftc_title_stage(FtcStage::kTravelToRaceCentral) == 8,
         "title stage values");
+
+  // FIRST30_AUDIT Rank 10: ENTER THE SHOWCASE EVENT must wait until the locked
+  // map actually closes (in.screen_open == false), not expire behind its 3 s close hold.
+  ftc.resume(FtcStage::kShowcase);
+  ftc.release_map_lock();
+  race::FtcInput in;
+  in.dt = 1.0;
+  in.screen_open = true;
+  ftc.update(in);
+  ftc.update(in);
+  check(ftc.hud_instruction().empty() && ftc.large_instruction_1().empty(),
+        "showcase banner waits while map is still closing");
+  in.screen_open = false;
+  ftc.update(in);
+  check(!ftc.hud_instruction().empty() && !ftc.large_instruction_1().empty(),
+        "showcase banner fires once the locked map closes");
 }
 
 }  // namespace

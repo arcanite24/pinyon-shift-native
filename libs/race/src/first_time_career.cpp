@@ -45,8 +45,9 @@ FtcFade fade(FtcFadeKind kind, double duration = 0.0, bool s = true) { return Ft
 
 constexpr double kOutroHold = 3.0;      // wait_3_sec after Festival_Race_Outro starts
 constexpr double kFadeOut2 = 2.0;       // fade_out_2_sec
-constexpr double kFadeOutHalf = 0.5;    // fade_out_half_sec
-constexpr double kOpeningFadeIn = 2.0;  // play_intro_camera: CFadeIn 2 s, S curve
+constexpr double kFadeOutHalf = 0.5;     // fade_out_half_sec
+constexpr double kOpeningFadeIn = 2.0;   // play_intro_camera: CFadeIn 2 s, S curve
+constexpr double kControlsMinHold = 2.0; // minimum controller-layout display before Opening_Cutscene (Q272)
 // Interim (Q62): when the race's sat-nav moves on to its next waypoint.
 constexpr double kWaypointRadius = 20.0;
 // The initial drive's next sat-nav leg starts here, short of the sat-nav's
@@ -678,8 +679,9 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   switch (stage_) {
     case FtcStage::kControls:
       // The screen leaves once the opening has loaded (the host does not
-      // update the career while its world is loading).
-      if (step_t_ > 0.0 && stage_t_ > dt) return go(FtcStage::kOpeningCutscene);
+      // update the career while its world is loading), after a brief hold so
+      // the controller layout is visible on fast SSDs (Q272).
+      if (step_t_ >= kControlsMinHold && stage_t_ > dt) return go(FtcStage::kOpeningCutscene);
       break;
 
     case FtcStage::kOpeningCutscene:
@@ -790,7 +792,7 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kShowcase:
-      if (!map_locked_ && instruction_.empty()) set_instruction(12);
+      if (!map_locked_ && !in.screen_open && instruction_.empty()) set_instruction(12);
       if (in.race_finished) awaiting_race_ = false;
       if (event_result(kMustangRace)) {
         FtcCommands n = go(FtcStage::kTravelToRaceCentral);
