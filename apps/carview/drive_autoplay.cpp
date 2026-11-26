@@ -2,6 +2,7 @@
 // SDL key events, ahead of the frame's poll, and the beat log records the
 // flow's observable state when it changes.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -38,6 +39,22 @@ bool autoplay_key(const std::string& name, SDL_Keycode& key, SDL_Scancode& sc) {
 void DriveSession::autoplay_frame() {
   auto& ap = app.autoplay;
   for (const std::string& name : ap.take_due_keys()) {
+    if (name == "mapto:heats") {
+      // The cursor onto the heats' sign-up place (the map pans as the stick
+      // would; the harness stands in for the player finding the marker).
+      std::array<double, 3> hp{};
+      if (map_open && app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp)) {
+        map_cam.reset(hp[0], hp[2], map_zoom);
+        map_cx = map_cam.cx();
+        map_cz = map_cam.cz();
+        map_dirty = true;
+        update_map_selection();
+        ap.note("mapto heats");
+      } else {
+        ap.note("mapto heats: no map or no heats");
+      }
+      continue;
+    }
     SDL_Keycode key = 0;
     SDL_Scancode sc = SDL_SCANCODE_UNKNOWN;
     if (!autoplay_key(name, key, sc)) {
@@ -116,6 +133,11 @@ void DriveSession::autoplay_frame() {
   std::snprintf(ovs, sizeof ovs, "%.2f rgb %.0f%.0f%.0f", a, ov.rgb[0], ov.rgb[1], ov.rgb[2]);
   ap.observe("overlay", a > 0.0f ? ovs : "0");
   ap.observe("race", app.race ? "on page " + std::to_string(results_page) : "off");
+  {
+    const auto tel = app.audio_host.telemetry();
+    ap.observe("radio", "station " + std::to_string(tel.radio_selected) + " clock10 " +
+                            std::to_string(int(tel.radio_clock / 10.0)) + (tel.user_music_active ? " user" : ""));
+  }
   ap.observe("radio_popup", radio_popup_gpu.alpha > 0.5f ? radio_popup_gpu.station_name + " / " + radio_popup_gpu.title : "");
   ap.observe("screens", std::string(map_open ? "map " : "") + (autoshow.is_open() ? "autoshow " : "") +
                             (hub_menu.open() ? "hub " : "") + (show_hud ? "hud" : ""));

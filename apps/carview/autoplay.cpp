@@ -39,7 +39,7 @@ bool Autoplay::load(const std::filesystem::path& script, const std::filesystem::
         if (error) *error = "line " + std::to_string(n) + ": every <seconds> <prefix>";
         return false;
       }
-    } else if (s.cmd == "key" || s.cmd == "capture" || s.cmd == "drive") {
+    } else if (s.cmd == "key" || s.cmd == "capture" || s.cmd == "drive" || s.cmd == "mapto") {
       if (!(row >> s.arg)) {
         if (error) *error = "line " + std::to_string(n) + ": " + s.cmd + " needs an argument";
         return false;
@@ -70,6 +70,7 @@ void Autoplay::advance() {
   while (next_ < steps_.size() && steps_[next_].t <= t) {
     const Step& s = steps_[next_++];
     if (s.cmd == "key") keys_.push_back(s.arg);
+    else if (s.cmd == "mapto") keys_.push_back("mapto:" + s.arg);
     else if (s.cmd == "capture") captures_.push_back(s.arg);
     else if (s.cmd == "every") every_s_ = s.num, next_every_ = s.t, every_prefix_ = s.arg;
     else if (s.cmd == "drive") {

@@ -9,6 +9,7 @@
 //   <t> capture <name>            the next presented frame -> <out>/<name>.png
 //   <t> every <seconds> <prefix>  periodic captures <prefix>_<ttttt>.png from t
 //   <t> drive <auto|off>          the player's input from the sat-nav autopilot
+//   <t> mapto heats               an open map's cursor onto the career's Horizon Heats
 //   <t> stop
 //
 // The beat log (<out>/beats.csv: t,field,value) records each observed field
