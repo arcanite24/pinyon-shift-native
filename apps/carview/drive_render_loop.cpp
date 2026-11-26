@@ -591,7 +591,10 @@ void DriveSession::run_window_loop() {
             const bool rf = app.race && app.race->player_finished();
             apply_story_action(app.story_intro.update(frame_dt, {vp.x, vp.z}, app.fmv_player.active(), rf));
           }
-          if (!app.show_title && !app.headless) {
+          // The career waits out the boot (the disclaimer and splashes): a
+          // save resumed at an event's sign-up place would otherwise launch
+          // its race under them.
+          if (!app.show_title && !app.headless && app.story_intro.stage() != carview::StoryStage::kBootSplash) {
             const drive::Vec3 vp = vehicle.position();
             // The campaign hears of the finish only once the banner is left and
             // the award committed (on_race_finished runs there and applies the

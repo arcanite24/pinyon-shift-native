@@ -30,6 +30,15 @@ inline constexpr std::array<FmvMovieId, 2> kBootSplashes = {FmvMovieId::kT10MsCo
 // press-start scene.
 inline constexpr FmvMovieId kAttractMovie = FmvMovieId::kForzaIntro;
 inline constexpr double kAttractIdleSeconds = 53.0;
+// The legal disclaimer before the first splash (BOOT-07, Q276): the
+// P_STA_Disclaimer texture (Textures.zip P_Map/P_STA/<language>/) full
+// screen on black. Its time is the capture's (about 3 s; interim).
+inline constexpr double kDisclaimerSeconds = 3.0;
+// The disclaimer's Textures.zip key for a language ("EN" when the language
+// has no copy of its own).
+std::string disclaimer_texture(std::string_view language);
+// Draws the disclaimer over the whole screen.
+void draw_boot_disclaimer(ui::List& l, float screen_w, float screen_h, std::string_view language);
 
 enum class StoryStage {
   kInactive = 0,
@@ -109,6 +118,7 @@ class StoryIntro {
   void reset() {
     stage_ = StoryStage::kInactive;
     splash_queue_.clear();
+    disclaimer_left_ = 0.0;
     beats_.clear();
     active_speaker_.clear();
     active_caption_.clear();
@@ -116,6 +126,8 @@ class StoryIntro {
   }
 
   StoryStage stage() const { return stage_; }
+  // The boot's legal disclaimer is up (before the first splash).
+  bool disclaimer_active() const { return stage_ == StoryStage::kBootSplash && disclaimer_left_ > 0.0; }
   bool active() const { return stage_ != StoryStage::kInactive && stage_ != StoryStage::kCompleted; }
   bool completed() const { return stage_ == StoryStage::kCompleted; }
   double stage_time() const { return stage_time_; }
@@ -160,6 +172,7 @@ class StoryIntro {
 
   std::vector<FmvMovieId> splash_queue_;
   int splash_idx_ = 0;
+  double disclaimer_left_ = 0.0;
 
   std::vector<StoryBeat> beats_;
   int beat_idx_ = 0;
