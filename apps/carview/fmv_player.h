@@ -77,6 +77,13 @@ std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_widt
 // smooth proportional drift correction outside +/-40 ms, never steps backwards).
 double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s);
 
+// The black veil's opacity (0..1) over a movie at `clock_s`: a cutscene fades
+// in over its first 0.55 s and out over its last 0.55 s. A looping backdrop
+// (the title's PressStart.wmv, the Rally hub's BgLoop.wmv) has none: its
+// clock runs on past the duration, and the fade-out once stayed on from the
+// first loop, so the Rally hub's backdrop drew black (Q211).
+float fmv_veil_alpha(double clock_s, double duration_s, bool loop);
+
 struct FmvProbeInfo {
   int width = 0;
   int height = 0;

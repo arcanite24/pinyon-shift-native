@@ -5030,13 +5030,18 @@ through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
   the popup. None of them is the original's.
 - The car select (`selectCar`), the purchase path (`purchaseCar`), the
   hub's radio and the ticket ColorScheme tints are not built.
-- The backdrop is black in the live window. BgLoop.wmv (in the Rally
-  package, 1280x720 wmv3) opens, loops and decodes real frames, and
-  `atlas_update("fmv.frame")` succeeds, but the frame's atlas texels
-  never show on screen: a plain image of that atlas entry, drawn last,
-  is black too, at 1280x720 and at 640x360. So the atlas entry reads
-  black on the GPU; the hub's scene does not cover it. Not diagnosed
-  further.
+- Fixed (WP5b): the backdrop drew black. The cause was not the atlas:
+  `FmvPlayer::draw` ends with the cutscenes' fade veil, and a looping
+  player's clock runs on past the movie's duration, so from BgLoop's
+  first loop the fade-out veil stayed fully black over the frame. The
+  player never set its loop flag from `open`, so the veil's loop guard
+  never fired. `e017714b` (the title's PressStart.wmv, the same fault)
+  set it; the veil is now `fmv_veil_alpha` (none on a looping player),
+  checked in `fmv_story_tests`. Reverting the flag reproduces the black
+  hub live (`rally_hub_black_repro_noloop_wp5b.png`); with it the
+  backdrop plays after a real switch to ColoradoDirt
+  (`rally_hub_bgloop_after_switch_wp5b.png`). The player also puts its
+  frame again when a new renderer has reset the atlas.
 
 Needed: the hub's button bar contents, whether locked tickets show, what
 fills BEST TIME and the points tape, and the restriction strings' table.

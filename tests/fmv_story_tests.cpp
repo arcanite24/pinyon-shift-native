@@ -548,6 +548,18 @@ void test_r3_fmv_subtitles_pll_hold_skip_and_story_units() {
   const double lag_step = carview::fmv_pll_step_clock(2.0, 0.016, 1.896);   // audio lags by -120 ms
   check(lag_step >= 2.0 && lag_step < 2.016, "PLL gently slows down without reversing when audio lags >40ms");
 
+  // The fade veil: a cutscene fades in and out; a looping backdrop never does,
+  // however far its clock runs past the duration (the Rally hub's BgLoop.wmv
+  // drew black after its first loop, Q211).
+  check(carview::fmv_veil_alpha(0.1, 20.0, false) > 0.5f, "veil: a cutscene fades in");
+  check(carview::fmv_veil_alpha(5.0, 20.0, false) == 0.0f, "veil: none mid-cutscene");
+  check(carview::fmv_veil_alpha(19.99, 20.0, false) > 0.9f, "veil: a cutscene fades out at its end");
+  check(carview::fmv_veil_alpha(45.0, 20.0, false) == 1.0f, "veil: a finished cutscene stays black");
+  check(carview::fmv_veil_alpha(0.1, 20.0, true) == 0.0f, "veil: none on a looping backdrop's start");
+  check(carview::fmv_veil_alpha(19.99, 20.0, true) == 0.0f, "veil: none at a looping backdrop's loop point");
+  check(carview::fmv_veil_alpha(45.0, 20.0, true) == 0.0f, "veil: none on a looping backdrop past its first loop");
+  check(carview::fmv_veil_alpha(1.0, 2.0, false) == 0.0f, "veil: none on a short clip");
+
   // A movie skips on a press (the original's boot splashes skip on a B tap):
   // a button going down, never a key's auto-repeat or a release.
   {
