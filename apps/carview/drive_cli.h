@@ -165,7 +165,7 @@ struct DriveConfig {
   bool skip_intro_movies = false;
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
-  bool metric_units = true;
+  bool metric_units = false;  // the original defaults to miles (Q277)
   bool story_intro_cli = false;
   std::string cli_campaign_stage;
   // Capture entry point: `--cutscene <name> [--cutscene-time <s>]` plays a

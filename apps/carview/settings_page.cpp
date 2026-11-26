@@ -501,7 +501,8 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"popularity and skills", {{"on", {}}, {"off", {"--no-hud-popularity-skills"}}}},
       {"tracked achievement", {{"off", {}}, {"on", {"--hud-tracked-achievement"}}}},
       {"barn find radar", {{"off", {}}, {"on", {"--hud-barn-radar"}}}},
-      {"units", {{"metric (km/h)", {}}, {"imperial (mph)", {"--units", "imperial"}}}},
+      // The original defaults to miles (an English-US profile; Q277).
+      {"units", {{"imperial (mph)", {}}, {"metric (km/h)", {"--units", "metric"}}}},
       {"steer deadzone in",
        {{"24%", {}},
         {"0%", {"--steer-dz-in", "0.00"}},
@@ -950,6 +951,20 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
           break;
         }
       }
+      ++i;
+      continue;
+    }
+    if (t == "--units" && has_value) {
+      // Miles are the default (Q277); "--units imperial" from an older
+      // settings file loads as the default.
+      std::string v = tokens[i + 1];
+      for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      const size_t pick = (v == "metric" || v == "kmh" || v == "km/h") ? 1 : 0;
+      for (Row& r : rows_)
+        if (std::string(r.name) == "units") {
+          r.pick = pick;
+          break;
+        }
       ++i;
       continue;
     }
@@ -1406,7 +1421,7 @@ LiveSettings SettingsPage::live_settings() const {
   ls.skip_intro_movies = pick_label("skip intro movies") == "on";
   ls.start_in_single_player = pick_label("start in single player") == "on";
   ls.skip_vo_with_a = pick_label("skip vo with a") != "off";
-  ls.metric_units = pick_val("units") != "imperial";
+  ls.metric_units = pick_val("units") == "metric";
   {
     const std::string sp = pick_val("speedometer");
     ls.hud_speedo_mode = (sp == "digital") ? 1 : (sp == "off") ? 2 : 0;
@@ -1674,7 +1689,7 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
   set_by_label("skip intro movies", live.skip_intro_movies ? "on" : "off");
   set_by_label("start in single player", live.start_in_single_player ? "on" : "off");
   set_by_label("skip vo with a", live.skip_vo_with_a ? "on" : "off");
-  set_by_val("units", live.metric_units ? "" : "imperial");
+  set_by_val("units", live.metric_units ? "metric" : "");
   set_by_val("speedometer", live.hud_speedo_mode == 1 ? "digital" : live.hud_speedo_mode == 2 ? "off" : "");
   set_by_val("minimap", live.minimap_mode == 1 ? "north-up" : live.minimap_mode == 2 ? "off" : "");
   set_by_label("lap time and position", live.hud.timers ? "on" : "off");
@@ -1909,10 +1924,10 @@ bool SettingsPage::metric_units_active() const {
   for (const Row& r : rows_) {
     if (std::string_view(r.name) == "units") {
       const auto& toks = r.choices[r.pick].tokens;
-      return !(toks.size() >= 2 && toks[1] == "imperial");
+      return toks.size() >= 2 && toks[1] == "metric";
     }
   }
-  return true;
+  return false;
 }
 
 std::string SettingsPage::format_row_name(const char* raw_name) const {

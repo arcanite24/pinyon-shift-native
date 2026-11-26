@@ -36,7 +36,7 @@ struct LiveSettings {
   bool skip_intro_movies = false;
   bool start_in_single_player = false;
   bool skip_vo_with_a = true;
-  bool metric_units = true;  // true: Metric (km/h, km/m), false: Imperial (MPH, mi/ft)
+  bool metric_units = false;  // true: Metric (km/h, km/m), false: Imperial (MPH, mi/ft)
   int hud_speedo_mode = 0;   // 0=Analog, 1=Digital, 2=Off
   int minimap_mode = 0;      // 0=Rotating, 1=North-Up, 2=Off
   HudToggles hud;            // the original's HUD options (hud_notify.h)

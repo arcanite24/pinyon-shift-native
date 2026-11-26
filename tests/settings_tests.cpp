@@ -263,15 +263,21 @@ int main() {
   // Pillar 6: Global Units setting (Metric km/h vs Imperial MPH) & mouse select_tab / select_row.
   carview::SettingsPage units_def;
   units_def.load({});
-  CHECK(units_def.value("units") == "metric (km/h)");
-  CHECK(units_def.live_settings().metric_units == true);
+  // Miles by default, as the original (Q277).
+  CHECK(units_def.value("units") == "imperial (mph)");
+  CHECK(units_def.live_settings().metric_units == false);
 
   carview::SettingsPage units_imp;
-  units_imp.load({"--units", "imperial"});
-  CHECK(units_imp.value("units") == "imperial (mph)");
-  CHECK(units_imp.live_settings().metric_units == false);
+  units_imp.load({"--units", "metric"});
+  CHECK(units_imp.value("units") == "metric (km/h)");
+  CHECK(units_imp.live_settings().metric_units == true);
   const auto ut = units_imp.tokens();
-  CHECK(has(ut, {"--units", "imperial"}));
+  CHECK(has(ut, {"--units", "metric"}));
+  // An older settings file's "--units imperial" is the default now.
+  carview::SettingsPage units_old;
+  units_old.load({"--units", "imperial"});
+  CHECK(units_old.value("units") == "imperial (mph)");
+  CHECK(units_old.tokens().empty());
   units_imp.select_tab(2);  // HUD & Gameplay tab
   CHECK(int(units_imp.active_tab()) == 2);
   const auto tab_rows = units_imp.display_rows();
@@ -336,12 +342,12 @@ int main() {
   {
     carview::SettingsPage leak;
     leak.load({"--damage", "simulation", "--shadow-pcss", "ultra", "--ssr", "full",
-               "--volumetric-fog", "half", "--units", "imperial"});
+               "--volumetric-fog", "half", "--units", "metric"});
     CHECK(leak.value("damage") == "simulation");
     CHECK(leak.value("shadow softness (pcss)") == "ultra");
     CHECK(leak.value("screen-space reflections") == "full-res");
     CHECK(leak.value("volumetric fog & beams") == "half-res");
-    CHECK(leak.value("units") == "imperial (mph)");
+    CHECK(leak.value("units") == "metric (km/h)");
     const auto toks = leak.tokens();
     CHECK(toks.size() == 10);
     // Resetting all of them back to default via reload must yield zero tokens.
@@ -712,7 +718,7 @@ int main() {
     // R3-UI-07: Metric vs Imperial formatting for chase height & chase distance camera offsets.
     {
       carview::SettingsPage cm;
-      cm.load({"--chase-height", "-0.50", "--chase-distance", "1.00"});
+      cm.load({"--units", "metric", "--chase-height", "-0.50", "--chase-distance", "1.00"});
       CHECK(cm.value("chase height") == "-0.50 m");
       CHECK(cm.value("chase distance") == "+1.00 m");
       carview::SettingsPage ci;
