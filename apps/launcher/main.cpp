@@ -1,7 +1,9 @@
 // Shift Engine Launcher (SDL3 + Vulkan / CPU headless screenshot mode).
 #include <SDL3/SDL.h>
 
+#define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image.h>
 #include <stb_image_write.h>
 
 #include <algorithm>
@@ -32,6 +34,7 @@
 
 #include <fh1data/archive.h>
 
+#include "launcher_brand_icon.h"
 #include "launcher_core.h"
 #include "launcher_font.h"
 #include "launcher_ui.h"
@@ -543,6 +546,17 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "shift-launcher: SDL_CreateWindow failed: %s\n", SDL_GetError());
     SDL_Quit();
     return 1;
+  }
+  {
+    int iw = 0, ih = 0, ich = 0;
+    if (stbi_uc* pixels = stbi_load_from_memory(launcher::kBrandIconPng, int(launcher::kBrandIconPngSize), &iw, &ih,
+                                                &ich, 4)) {
+      if (SDL_Surface* icon = SDL_CreateSurfaceFrom(iw, ih, SDL_PIXELFORMAT_RGBA32, pixels, iw * 4)) {
+        SDL_SetWindowIcon(window, icon);
+        SDL_DestroySurface(icon);
+      }
+      stbi_image_free(pixels);
+    }
   }
   const float min_scale = (SDL_GetWindowPixelDensity(window) <= 1.01f) ? std::max(1.0f, init_content_scale) : 1.0f;
   SDL_SetWindowMinimumSize(window, std::min(init_win_w, int(std::lround(960.0f * min_scale))),

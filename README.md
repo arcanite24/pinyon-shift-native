@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/shift-engine-banner.png" alt="Shift Engine" width="100%" />
+</p>
+
 # Shift Engine
 
 A native C++20 and Vulkan 1.3 clean-room engine for playing your own copy of *Forza Horizon* (2012, Xbox 360) on Windows, Linux, the Steam Deck, Apple Silicon Macs, and Android.

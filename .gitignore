@@ -6,6 +6,9 @@
 /_site/
 # Renders and reports come from the player's game data: never commit them.
 *.png
+!.github/shift-engine-*.png
+!assets/branding/*.png
+!apps/carview/android/res/mipmap-*/*.png
 *.log
 /corpus-report*.txt
 # Editors

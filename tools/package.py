@@ -48,6 +48,7 @@ def macos_info_plist(ver: str) -> str:
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>Shift Engine</string>
   <key>CFBundleExecutable</key><string>shift-launcher</string>
+  <key>CFBundleIconFile</key><string>ShiftEngine</string>
   <key>CFBundleIdentifier</key><string>net.shiftengine.launcher</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Shift Engine</string>
@@ -167,6 +168,9 @@ def main() -> int:
         gcdb = ROOT / "config" / "gamecontrollerdb.txt"
         if gcdb.is_file():
             shutil.copy2(gcdb, res_dir / gcdb.name)
+        icns = ROOT / "assets" / "branding" / "ShiftEngine.icns"
+        if icns.is_file():
+            shutil.copy2(icns, res_dir / icns.name)
     elif a.platform == "android":
         apk = a.out / "shift-drive-arm64.apk"
         if apk.is_file():

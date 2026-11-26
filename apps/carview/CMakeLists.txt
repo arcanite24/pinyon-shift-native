@@ -222,6 +222,9 @@ if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
   target_link_libraries(carview PRIVATE android log shift_setup)
 else()
   add_executable(carview ${carview_sources})
+  if(WIN32)
+    target_sources(carview PRIVATE carview.rc)
+  endif()
   if(APPLE)
     set_target_properties(carview PROPERTIES
       BUILD_RPATH "@executable_path/../Frameworks"

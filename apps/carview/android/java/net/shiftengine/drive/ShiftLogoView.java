@@ -1,5 +1,6 @@
-// Custom vector Shift Engine emblem view: geometric dark crest with the
-// winding S-road ribbon and crimson-magenta apex pin dot (#E8195E).
+// Custom vector Shift Engine emblem view matching the official Shift Engine
+// brand mark: 8-tooth precision gear silhouette with negative-space winding
+// S-road and shifter apex pin dot in Horizon crimson-magenta (#E8195E).
 package net.shiftengine.drive;
 
 import android.content.Context;
@@ -8,54 +9,30 @@ import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.view.View;
 
 public class ShiftLogoView extends View {
-    private static final int COL_CREST_TOP = Color.parseColor("#232838");
-    private static final int COL_CREST_BOT = Color.parseColor("#131722");
-    private static final int COL_BORDER = Color.parseColor("#384159");
+    private static final int COL_TILE_TOP = Color.parseColor("#211A22");
+    private static final int COL_TILE_BOT = Color.parseColor("#111318");
+    private static final int COL_BORDER = Color.parseColor("#342A36");
     private static final int COL_ACCENT = Color.parseColor("#E8195E");
-    private static final int COL_ACCENT_HI = Color.parseColor("#FF3B7F");
-    private static final int COL_ACCENT_GLOW = Color.parseColor("#44E8195E");
-    private static final int COL_ROAD_BASE = Color.parseColor("#2B3246");
 
-    private final Paint mCrestFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mCrestStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mRoadShadow = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mRoadPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mDotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint mDotCorePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Path mCrestPath = new Path();
-    private final Path mRoadPath = new Path();
+    private final Paint mTileFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mTileStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mMarkPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF mTileRect = new RectF();
+    private final Path mMarkPath = new Path();
+    private float mCornerRadius = 8f;
 
     public ShiftLogoView(Context context) {
         super(context);
-
-        mCrestFill.setStyle(Paint.Style.FILL);
-
-        mCrestStroke.setStyle(Paint.Style.STROKE);
-        mCrestStroke.setColor(COL_BORDER);
-        mCrestStroke.setStrokeJoin(Paint.Join.ROUND);
-
-        mRoadShadow.setStyle(Paint.Style.STROKE);
-        mRoadShadow.setColor(COL_ROAD_BASE);
-        mRoadShadow.setStrokeCap(Paint.Cap.ROUND);
-        mRoadShadow.setStrokeJoin(Paint.Join.ROUND);
-
-        mRoadPaint.setStyle(Paint.Style.STROKE);
-        mRoadPaint.setStrokeCap(Paint.Cap.ROUND);
-        mRoadPaint.setStrokeJoin(Paint.Join.ROUND);
-
-        mGlowPaint.setStyle(Paint.Style.FILL);
-        mGlowPaint.setColor(COL_ACCENT_GLOW);
-
-        mDotPaint.setStyle(Paint.Style.FILL);
-        mDotPaint.setColor(COL_ACCENT_HI);
-
-        mDotCorePaint.setStyle(Paint.Style.FILL);
-        mDotCorePaint.setColor(Color.parseColor("#FFE4EE"));
+        mTileFill.setStyle(Paint.Style.FILL);
+        mTileStroke.setStyle(Paint.Style.STROKE);
+        mTileStroke.setColor(COL_BORDER);
+        mMarkPaint.setStyle(Paint.Style.FILL);
+        mMarkPaint.setColor(COL_ACCENT);
     }
 
     @Override
@@ -66,67 +43,111 @@ public class ShiftLogoView extends View {
         float ox = (w - s) * 0.5f;
         float oy = (h - s) * 0.5f;
 
-        mCrestFill.setShader(new LinearGradient(
-                ox, oy, ox, oy + s, COL_CREST_TOP, COL_CREST_BOT, Shader.TileMode.CLAMP));
-        mRoadPaint.setShader(new LinearGradient(
-                ox + s * 0.25f, oy + s * 0.78f, ox + s * 0.75f, oy + s * 0.22f,
-                COL_ACCENT, COL_ACCENT_HI, Shader.TileMode.CLAMP));
+        float strokeW = Math.max(1f, s * 0.025f);
+        mTileStroke.setStrokeWidth(strokeW);
+        mTileRect.set(ox + strokeW * 0.5f, oy + strokeW * 0.5f,
+                ox + s - strokeW * 0.5f, oy + s - strokeW * 0.5f);
+        mCornerRadius = s * 0.22f;
 
-        // Geometric hexagonal shield crest
-        mCrestPath.reset();
-        float pad = s * 0.06f;
-        float x0 = ox + pad;
-        float x1 = ox + s - pad;
-        float cx = ox + s * 0.5f;
-        float yTop = oy + pad;
-        float yUpper = oy + s * 0.24f;
-        float yLower = oy + s * 0.72f;
-        float yBot = oy + s - pad;
+        mTileFill.setShader(new LinearGradient(
+                ox, oy, ox + s * 0.4f, oy + s, COL_TILE_TOP, COL_TILE_BOT, Shader.TileMode.CLAMP));
 
-        mCrestPath.moveTo(cx, yTop);
-        mCrestPath.lineTo(x1, yUpper);
-        mCrestPath.lineTo(x1, yLower);
-        mCrestPath.lineTo(cx, yBot);
-        mCrestPath.lineTo(x0, yLower);
-        mCrestPath.lineTo(x0, yUpper);
-        mCrestPath.close();
+        // Exact 512x512 vector geometry from assets/branding/shift-engine-mark.svg
+        float pad = s * 0.08f;
+        float k = (s - 2f * pad) / 512f;
+        float bx = ox + pad;
+        float by = oy + pad;
 
-        // Winding S-road inside the crest rising toward the top-right apex pin
-        mRoadPath.reset();
-        mRoadPath.moveTo(ox + s * 0.30f, oy + s * 0.76f);
-        mRoadPath.cubicTo(
-                ox + s * 0.66f, oy + s * 0.72f,
-                ox + s * 0.70f, oy + s * 0.55f,
-                ox + s * 0.49f, oy + s * 0.50f);
-        mRoadPath.cubicTo(
-                ox + s * 0.28f, oy + s * 0.45f,
-                ox + s * 0.34f, oy + s * 0.29f,
-                ox + s * 0.66f, oy + s * 0.26f);
-
-        mCrestStroke.setStrokeWidth(Math.max(1.5f, s * 0.042f));
-        mRoadShadow.setStrokeWidth(Math.max(3.5f, s * 0.145f));
-        mRoadPaint.setStrokeWidth(Math.max(2.2f, s * 0.095f));
+        mMarkPath.reset();
+        mMarkPath.moveTo(bx + 187.12f * k, by + 89.70f * k);
+        mMarkPath.lineTo(bx + 215.51f * k, by + 80.61f * k);
+        mMarkPath.lineTo(bx + 214.79f * k, by + 43.97f * k);
+        mMarkPath.lineTo(bx + 297.21f * k, by + 43.97f * k);
+        mMarkPath.lineTo(bx + 296.49f * k, by + 80.61f * k);
+        mMarkPath.lineTo(bx + 324.88f * k, by + 89.70f * k);
+        mMarkPath.lineTo(bx + 351.39f * k, by + 103.35f * k);
+        mMarkPath.lineTo(bx + 376.79f * k, by + 76.93f * k);
+        mMarkPath.lineTo(bx + 435.07f * k, by + 135.21f * k);
+        mMarkPath.lineTo(bx + 408.65f * k, by + 160.61f * k);
+        mMarkPath.lineTo(bx + 422.30f * k, by + 187.12f * k);
+        mMarkPath.lineTo(bx + 431.39f * k, by + 215.51f * k);
+        mMarkPath.lineTo(bx + 468.03f * k, by + 214.79f * k);
+        mMarkPath.lineTo(bx + 468.03f * k, by + 297.21f * k);
+        mMarkPath.lineTo(bx + 431.39f * k, by + 296.49f * k);
+        mMarkPath.lineTo(bx + 422.30f * k, by + 324.88f * k);
+        mMarkPath.lineTo(bx + 408.65f * k, by + 351.39f * k);
+        mMarkPath.lineTo(bx + 435.07f * k, by + 376.79f * k);
+        mMarkPath.lineTo(bx + 376.79f * k, by + 435.07f * k);
+        mMarkPath.lineTo(bx + 351.39f * k, by + 408.65f * k);
+        mMarkPath.lineTo(bx + 324.88f * k, by + 422.30f * k);
+        mMarkPath.lineTo(bx + 296.49f * k, by + 431.39f * k);
+        mMarkPath.lineTo(bx + 297.21f * k, by + 468.03f * k);
+        mMarkPath.lineTo(bx + 222.54f * k, by + 468.03f * k);
+        mMarkPath.cubicTo(
+                bx + 219.85f * k, by + 431.53f * k,
+                bx + 223.47f * k, by + 400.73f * k,
+                bx + 233.00f * k, by + 378.00f * k);
+        mMarkPath.cubicTo(
+                bx + 252.00f * k, by + 333.00f * k,
+                bx + 306.00f * k, by + 312.00f * k,
+                bx + 306.00f * k, by + 277.00f * k);
+        mMarkPath.cubicTo(
+                bx + 306.00f * k, by + 247.00f * k,
+                bx + 266.00f * k, by + 238.00f * k,
+                bx + 266.00f * k, by + 227.00f * k);
+        mMarkPath.lineTo(bx + 266.00f * k, by + 190.41f * k);
+        mMarkPath.cubicTo(
+                bx + 278.78f * k, by + 186.21f * k,
+                bx + 288.00f * k, by + 174.18f * k,
+                bx + 288.00f * k, by + 160.00f * k);
+        mMarkPath.cubicTo(
+                bx + 288.00f * k, by + 142.33f * k,
+                bx + 273.67f * k, by + 128.00f * k,
+                bx + 256.00f * k, by + 128.00f * k);
+        mMarkPath.cubicTo(
+                bx + 238.33f * k, by + 128.00f * k,
+                bx + 224.00f * k, by + 142.33f * k,
+                bx + 224.00f * k, by + 160.00f * k);
+        mMarkPath.cubicTo(
+                bx + 224.00f * k, by + 174.18f * k,
+                bx + 233.22f * k, by + 186.21f * k,
+                bx + 246.00f * k, by + 190.41f * k);
+        mMarkPath.lineTo(bx + 246.00f * k, by + 232.00f * k);
+        mMarkPath.cubicTo(
+                bx + 246.00f * k, by + 248.00f * k,
+                bx + 275.00f * k, by + 252.00f * k,
+                bx + 275.00f * k, by + 274.00f * k);
+        mMarkPath.cubicTo(
+                bx + 275.00f * k, by + 301.00f * k,
+                bx + 220.00f * k, by + 315.00f * k,
+                bx + 194.00f * k, by + 358.00f * k);
+        mMarkPath.cubicTo(
+                bx + 183.89f * k, by + 374.85f * k,
+                bx + 177.51f * k, by + 394.00f * k,
+                bx + 172.83f * k, by + 414.94f * k);
+        mMarkPath.lineTo(bx + 160.61f * k, by + 408.65f * k);
+        mMarkPath.lineTo(bx + 135.21f * k, by + 435.07f * k);
+        mMarkPath.lineTo(bx + 76.93f * k, by + 376.79f * k);
+        mMarkPath.lineTo(bx + 103.35f * k, by + 351.39f * k);
+        mMarkPath.lineTo(bx + 89.70f * k, by + 324.88f * k);
+        mMarkPath.lineTo(bx + 80.61f * k, by + 296.49f * k);
+        mMarkPath.lineTo(bx + 43.97f * k, by + 297.21f * k);
+        mMarkPath.lineTo(bx + 43.97f * k, by + 214.79f * k);
+        mMarkPath.lineTo(bx + 80.61f * k, by + 215.51f * k);
+        mMarkPath.lineTo(bx + 89.70f * k, by + 187.12f * k);
+        mMarkPath.lineTo(bx + 103.35f * k, by + 160.61f * k);
+        mMarkPath.lineTo(bx + 76.93f * k, by + 135.21f * k);
+        mMarkPath.lineTo(bx + 135.21f * k, by + 76.93f * k);
+        mMarkPath.lineTo(bx + 160.61f * k, by + 103.35f * k);
+        mMarkPath.close();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        float s = Math.min(getWidth(), getHeight());
-        if (s <= 0f) return;
-        float ox = (getWidth() - s) * 0.5f;
-        float oy = (getHeight() - s) * 0.5f;
-
-        canvas.drawPath(mCrestPath, mCrestFill);
-        canvas.drawPath(mCrestPath, mCrestStroke);
-
-        canvas.drawPath(mRoadPath, mRoadShadow);
-        canvas.drawPath(mRoadPath, mRoadPaint);
-
-        // Apex route pin dot
-        float pinX = ox + s * 0.67f;
-        float pinY = oy + s * 0.26f;
-        canvas.drawCircle(pinX, pinY, s * 0.135f, mGlowPaint);
-        canvas.drawCircle(pinX, pinY, s * 0.072f, mDotPaint);
-        canvas.drawCircle(pinX, pinY, s * 0.026f, mDotCorePaint);
+        if (mTileRect.isEmpty()) return;
+        canvas.drawRoundRect(mTileRect, mCornerRadius, mCornerRadius, mTileFill);
+        canvas.drawRoundRect(mTileRect, mCornerRadius, mCornerRadius, mTileStroke);
+        canvas.drawPath(mMarkPath, mMarkPaint);
     }
 }

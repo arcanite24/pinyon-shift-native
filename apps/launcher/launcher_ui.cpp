@@ -1921,10 +1921,31 @@ void build_launcher_ui(ui::List& l, const LauncherUiState& st, float width, floa
   l.rect(0.0f, 0.0f, sidebar_w, height, kBgSidebar);
   l.rect(sidebar_w - std::max(1.0f, std::round(d)), 0.0f, sidebar_w, height, kBorderSubtle);
 
-  // Brand header (clean, flat, zero marketing)
-  l.rect(18.0f * d, 21.0f * d, 21.5f * d, 47.0f * d, kAccent, 1.5f * d);
-  draw_text(l, 30.0f * d, 18.0f * d, "Shift Engine", FontFace::kSemiBold, 16.0f * d, kTextPrimary);
-  draw_text(l, 30.0f * d, 38.0f * d, "v" + st.current_version, FontFace::kRegular, 11.5f * d, kTextMuted);
+  // Brand header: Shift Engine 8-tooth gear + negative-space S-road emblem
+  {
+    const float cx = 29.0f * d;
+    const float cy = 34.0f * d;
+    const float r_body = 10.6f * d;
+    const float r_tooth_outer = 13.8f * d;
+    const float tooth_w = 4.6f * d;
+    // 8 precision gear teeth spaced every 45 deg
+    for (int ti = 0; ti < 8; ++ti) {
+      const float ang = float(ti) * 0.7853981634f;
+      const float dx = std::cos(ang);
+      const float dy = std::sin(ang);
+      l.line(cx + dx * (r_body - 1.2f * d), cy + dy * (r_body - 1.2f * d),
+             cx + dx * r_tooth_outer, cy + dy * r_tooth_outer, tooth_w, kAccent);
+    }
+    l.circle(cx, cy, r_body, kAccent);
+    // Signature Shift negative-space winding S-road + top shifter pin dot
+    l.circle(cx, cy - 5.4f * d, 2.3f * d, kBgSidebar);
+    l.line(cx, cy - 3.6f * d, cx, cy - 1.4f * d, 1.5f * d, kBgSidebar);
+    l.line(cx, cy - 1.4f * d, cx + 2.6f * d, cy + 1.0f * d, 1.9f * d, kBgSidebar);
+    l.line(cx + 2.6f * d, cy + 1.0f * d, cx - 1.6f * d, cy + 5.2f * d, 2.3f * d, kBgSidebar);
+    l.line(cx - 1.6f * d, cy + 5.2f * d, cx - 2.8f * d, cy + 11.4f * d, 2.8f * d, kBgSidebar);
+  }
+  draw_text(l, 48.0f * d, 18.0f * d, "Shift Engine", FontFace::kSemiBold, 16.0f * d, kTextPrimary);
+  draw_text(l, 48.0f * d, 38.0f * d, "v" + st.current_version, FontFace::kRegular, 11.5f * d, kTextMuted);
   draw_divider(l, 16.0f * d, 64.0f * d, sidebar_w - 16.0f * d, d);
 
   // Sidebar navigation items
