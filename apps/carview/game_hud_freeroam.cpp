@@ -82,13 +82,18 @@ void compute_world_marker_layout(const WorldMarkerHud* wm, const hud_detail::Lay
 }  // namespace
 
 NameTagLod compute_name_tag_lod(double distance_m) {
+  // Interim (Q361): read by eye from the Gauntlet race's 640x360 frames
+  // (first30d c03900..c04425) at estimated distances, the name's capitals
+  // are roughly 14 px at 12 m, 11 px at 18 m, 8 px at 40 m and 7 px past
+  // 90 m (720 lines; 18 px close in 30_skill_toast_orig.png), so the scale
+  // falls about as 0.33 + 5.8 / d, floored at 0.4. Tags still show on the
+  // pack about 100 m ahead; where they fade is not captured (full to 100 m,
+  // gone at 120 m).
   if (distance_m < 0.0) return {1.0f, 1.0f, true};
-  const float t_scale = smoothstep01(float((distance_m - 20.0) / 120.0));
-  const float scale = 1.0f - 0.22f * t_scale;  // 1.0x close -> 0.78x far
-  if (distance_m <= 45.0) return {scale, 1.0f, true};
-  if (distance_m >= 160.0) return {scale, 0.0f, false};
-  const float t_fade = smoothstep01(float((distance_m - 45.0) / 115.0));
-  const float alpha = 1.0f - t_fade;
+  const float scale = std::clamp(float(0.33 + 5.8 / std::max(distance_m, 1.0)), kNameTagMinScale, 1.0f);
+  if (distance_m <= kNameTagFullAlphaM) return {scale, 1.0f, true};
+  if (distance_m >= kNameTagMaxM) return {scale, 0.0f, false};
+  const float alpha = 1.0f - smoothstep01(float((distance_m - kNameTagFullAlphaM) / (kNameTagMaxM - kNameTagFullAlphaM)));
   return {scale, alpha, alpha > 0.03f};
 }
 

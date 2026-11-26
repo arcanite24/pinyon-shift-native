@@ -811,6 +811,8 @@ bool DriveApp::init(int& exit_code) {
   title.reset();
   if (cli_title_menu) title.show_menu();
   title.profile_error = save_read_error;
+  // No save yet: a new profile, whose Press Start leads to VIDEO (Q363).
+  title.first_profile = !have_saved && !save_read_error;
   if (!race_event.empty()) {
     if (world_dir.empty()) {
       std::fprintf(stderr, "carview: --event needs the world (--world)\n");

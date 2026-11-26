@@ -183,7 +183,7 @@ class StoryIntro {
   bool qualify_launched_ = false;
   bool ceremony_fmv_triggered_ = false;
   int convoy_passed_ = 0;
-  bool metric_units_ = true;
+  bool metric_units_ = false;  // miles by default (Q277)
 };
 
 }  // namespace carview

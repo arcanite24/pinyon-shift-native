@@ -421,6 +421,9 @@ inline constexpr float kNameTagPillH = 30.0f;
 inline constexpr float kNameTagPadL = 10.0f, kNameTagPadR = 12.0f;
 inline constexpr float kNameTagNotchW = 16.0f, kNameTagNotchH = 6.0f;
 inline constexpr uint32_t kNameTagPill = ui::rgba(33, 33, 33, 96);
+// The tag's size and reach with distance (compute_name_tag_lod, Q361).
+inline constexpr float kNameTagMinScale = 0.4f;
+inline constexpr double kNameTagFullAlphaM = 100.0, kNameTagMaxM = 120.0;
 
 struct NameTagLod {
   float scale = 1.0f;
@@ -638,7 +641,7 @@ struct DriveHud {
   std::string club_tag;               // optional 4-char Car Club [TAG]
   bool driving = true;
   bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
-  bool metric_units = true;       // true: km/h & km/m, false: MPH & mi/ft (global Units setting)
+  bool metric_units = false;      // true: km/h & km/m, false: MPH & mi/ft (global Units setting; miles by default, Q277)
   bool subtitle_active = false;   // true when bottom-center campaign subtitles are visible (lifts bottom banners)
   int subtitle_lines = 0;         // wrapped subtitle line count (0 = default 3-line clearance)
   float subtitle_box_h_canvas = 0.0f;  // exact subtitle box height in 720p canvas units (0 = derive from lines)
