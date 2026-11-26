@@ -1165,6 +1165,33 @@ int main() {
     arrow_d.gps = &uturn;
     hud_shot("hud_direction_arrow.png", "16_race_hud_orig.png", arrow_d);
 
+    // The chain's score through ScoreGroup's slides: SHOW as it starts,
+    // ABORT then HIDE as it is lost, HIDE as the banked total goes.
+    {
+      carview::SkillChainHud sk;
+      carview::DriveHud sk_d = roam;
+      sk_d.skills = &sk;
+      sk_d.time = 19.0;
+      hud_shot("hud_score_0_idle.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      sk.active = true, sk.chain_points = 400, sk.multiplier_f = 1.2f;
+      sk.last_skill = "DRIFT", sk.last_points = 400, sk.last_skill_at = 20.0;
+      int i = 1;
+      for (double t : {20.05, 20.1, 20.2, 20.4}) {
+        sk_d.time = t;
+        hud_shot("hud_score_" + std::to_string(i++) + "_show.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      }
+      sk.active = false, sk.lost_at = 21.0;
+      for (double t : {21.1, 21.5, 21.7, 21.9}) {
+        sk_d.time = t;
+        hud_shot("hud_score_" + std::to_string(i++) + "_lost.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      }
+      sk.lost_at = -1e9, sk.banked_at = 30.0, sk.banked_total = 1200;
+      for (double t : {32.9, 33.05, 33.25}) {
+        sk_d.time = t;
+        hud_shot("hud_score_" + std::to_string(i++) + "_banked.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      }
+    }
+
     // The speed trap panel (SpeedCamera) at NEWPB.
     {
       freeroam::SpeedActivityHud trap;

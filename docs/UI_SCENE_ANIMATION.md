@@ -298,15 +298,16 @@ off, the screens draw as before).
   popups, title tape and player bar) have no slides. The icons' own
   animations and the rumour reveal are profile animations ("Map profile
   animations" below), now played.
-- **The activity HUDs (ACT-02).** `947_HUD` has the slides:
-  - `MissionsDamage`: `BARFILL`;
-  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
-
-  The engine draws its own mission HUD, not these components. Playing the
-  slides waits on drawing those components first (Q187). The speed trap
-  panel (ACT-01) is played ("The speed trap panel" below); the `Icon`'s
-  `SPEEDCAM` / `AVERAGESPEEDCAM` slides belong to the activation prompt's
-  icon, which the engine draws with its own texture.
+- **The mission HUD (ACT-02).** `Missions/MissionsDamage`'s `BARFILL`
+  (1 s) is a gauge scrubbed by its time: `DAMAGEBAR.TGA`'s offset runs from
+  -0.049 to -0.79 and `FillBarGradient` widens from 0 to 1.71 over it, so
+  the damage's fraction is the time. The engine has no damage for the
+  photo shoots and draws its own mission HUD, not `MissionCountdown`,
+  `MissionsScoring` or `MissionsDamage` (Q187). The speed trap panel
+  (ACT-01) and the chain's score (`ScoreGroup`) are played ("The speed trap
+  panel" and "The skill chain's score" below); the `Icon`'s `SPEEDCAM` /
+  `AVERAGESPEEDCAM` slides belong to the activation prompt's icon, which
+  the engine draws with its own texture.
 
 ## The speed trap panel
 
@@ -347,6 +348,22 @@ has no leaderboard or rival times offline. The stackers are not run, so
 each row is placed on its `Stacker`'s line; the personal best goes one row
 below the title (Q242). Without the scene's timeline the engine's own
 drawn panel stays.
+
+## The skill chain's score
+
+`DrivingSkill/CompleteComponent/ScoreGroup` (the chain's total and
+multiplier) is its own component. Its slides move `anim_helper`:
+- `SHOW`: alpha 0 to 1 over 0.2 s while it grows from 0.9 to 1.05 and
+  settles at 1 by 0.3 s;
+- `HIDE`: alpha 1 to 0 over 0.2 s while it shrinks to 0.95;
+- `ABORT`: holds it (alpha 0.97 to 1 over 0.6 s) and starts a 0.6 s timer;
+- `DEFAULT`: down.
+
+`draw_hud_skills` plays `SHOW` from the chain's first skill, `ABORT` for
+0.6 s when the chain is lost and then `HIDE`, and `HIDE` 3 s after a bank
+(where the measured fade started). Before, a lost chain stayed 1.5 s and
+faded over 0.7 s, and a banked total faded over 0.5 s; those fades stay for
+the scenes without a timeline (Q243).
 
 ## Map profile animations
 

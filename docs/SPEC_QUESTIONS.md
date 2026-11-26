@@ -4884,13 +4884,12 @@ Still not played:
   `MapProfileFullscreen.xml` profile animations; they are now decoded and
   played (Q241). The perspective map itself and the career unlocks'
   `reveal_drop` are not.
-- **The activity HUDs (ACT-02).** `947_HUD` has the slides:
-  - `MissionsDamage`: `BARFILL`;
-  - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
-
-  The engine draws its own mission HUD, not these components (ACT-02
-  itself), so there is nothing to play them on yet. The speed trap panel,
-  `SpeedCamera` (ACT-01), is drawn and played (Q242).
+- **The mission HUD (ACT-02).** `MissionsDamage`'s `BARFILL` is a gauge
+  scrubbed by the damage's fraction. The engine draws its own mission HUD,
+  not `MissionsDamage` / `MissionsScoring` / `MissionCountdown`, and has no
+  photo shoot damage, so there is nothing to play it on yet. The speed trap
+  panel, `SpeedCamera` (ACT-01), is drawn and played (Q242), and so is the
+  chain's `ScoreGroup` (`SHOW` / `HIDE` / `ABORT`, Q243).
 
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).
@@ -5255,3 +5254,17 @@ rows' text, are not. No capture shows the panel. The engine's reading:
 Needed: a capture series of a speed trap pass (a new PB and not), a speed
 zone run (start, running, end, cancelled), and one with a friend's time on
 the leaderboard (the comparison slides).
+
+## Q243 (ACT-02, HUD, not blocking): when the chain's score plays its slides
+
+`ScoreGroup`'s `SHOW` / `HIDE` / `ABORT` are decoded ("The skill chain's
+score" in `docs/UI_SCENE_ANIMATION.md`); when the game goes to each is
+not. The engine plays `SHOW` from the chain's first skill, `ABORT` when the
+chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`; a banked total
+holds 3 s, then `HIDE`. The timer's event (what the game does when it
+fires) is not decoded; the 0.6 s hold is read from it, and shortens the
+lost total from the engine's earlier 2.2 s to 0.8 s. The 3 s bank hold is
+the engine's earlier measurement. The red of a lost total is the engine's.
+
+Needed: a capture series of a chain lost (a crash) and of one banked, from
+the last skill until the score is gone.
