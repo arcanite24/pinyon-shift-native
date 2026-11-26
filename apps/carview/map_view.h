@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace carview {
@@ -73,7 +74,39 @@ struct MapMarker {
   std::string points, money;
   std::vector<int> pips;
   std::string discount;  // an outpost's "0%"
+  // Event/hub icon status metadata (1:1 with MapProfileFullscreen / MapProfileMinimap):
+  int best_place = 0;         // 0 = not on podium, 1 = gold, 2 = silver, 3 = bronze
+  bool eligible = true;       // false -> show yellow '!' warning badge (*_career_note)
+  bool is_circuit = false;    // race: laps > 1 -> circuit icon (2,0) instead of P2P (1,0)
+  bool is_finale = false;     // Horizon Finale (style 6 / career_type 12) -> crown icon (7,1)
+  int wristband_level = -1;   // -1 = qualifier/white, 0..6 = Yellow..Gold
+  std::array<uint8_t, 4> ring_rgba{0, 0, 0, 0};  // optional explicit RGBA ring tint (a > 0 overrides level)
 };
+
+// Lightweight status bundle passed to MapView::resolve_icon_layer (shared by pause_map and minimap).
+struct MapIconState {
+  bool completed = false;
+  bool discovered = true;
+  bool eligible = true;
+  int best_place = 0;
+  bool is_circuit = false;
+  bool is_finale = false;
+  int wristband_level = -1;
+  std::array<uint8_t, 4> ring_rgba{0, 0, 0, 0};
+};
+
+inline MapIconState map_icon_state(const MapMarker& m) {
+  MapIconState st;
+  st.completed = m.completed;
+  st.discovered = m.discovered;
+  st.eligible = m.eligible;
+  st.best_place = m.best_place;
+  st.is_circuit = m.is_circuit;
+  st.is_finale = m.is_finale;
+  st.wristband_level = m.wristband_level;
+  st.ring_rgba = m.ring_rgba;
+  return st;
+}
 
 // The marker's filter row (map_filter.h); PR stunts have no icon.
 MapCategory map_marker_category(const MapMarker& m);
@@ -168,17 +201,45 @@ class MapView {
     double under_size = 0, line_size = 0;
     Rgba under, edge, core;  // the under-line; the line's ColourPrimary and ColourSecondary
   };
+  enum class IconRole {
+    kBase,          // drop shadow or standalone icon (always drawn)
+    kCareerBase,    // career activity base icon (*_career, nemesis (4,1), streetrace (2,1))
+    kCareerColour,  // wristband tier ring (*_career_colour: race (0,0), nemesis (5,0))
+    kCareerFinish,  // completion trophy cup (*_career_finish: (5,1); drawn only when completed)
+    kCareerNote,    // ineligible '!' warning badge (*_career_note: (6,1); drawn only when !eligible)
+  };
   struct IconStyle {
     int cell_x = 0, cell_y = 0;
     double size = 45;  // DynamicSize (or Size)
     Rgba colour;
+    IconRole role = IconRole::kBase;
+    int sort_order = 0;
     mapanim::Bindings anims;  // event -> animation name
     // VisibleRange (m from the player): shown to max_fade_distance, faded
     // out by max_distance; 0 = no range (always shown).
     double max_distance = 0, max_fade_distance = 0;
   };
+  struct ResolvedIconLayer {
+    bool visible = false;
+    int cell_x = 0, cell_y = 0;
+    Rgba colour;
+  };
+  // Classifies a MapProfile <Symbolizer> into its 1:1 status role.
+  static IconRole classify_icon_role(std::string_view symbolizer_type, std::string_view group_key, int cell_x,
+                                     int cell_y);
+  // Retail CareerWristbandLevels ring colour for wristband tier (-1 white, 0..6 Yellow..Gold).
+  static Rgba wristband_ring_colour(int wristband_level, std::array<uint8_t, 4> explicit_rgba);
+  // Completion trophy tint for best podium place (1 gold, 2 silver, 3 bronze; 0 defaults to gold).
+  static Rgba trophy_colour(int best_place);
+  // Resolves visibility, atlas cell, and colour for a single symbolizer layer (used by pause_map and minimap).
+  static ResolvedIconLayer resolve_icon_layer(const IconStyle& style, std::string_view group_key,
+                                              const MapIconState& state);
+  // True when a marker should display the pink NEW badge (never on completed markers or non-career icons).
+  static bool marker_shows_new_badge(std::string_view group_key, bool is_new, bool completed);
   // A symbolizer's VisibleRange alpha at `dist` m (1 inside, 0 past max).
   static float visible_range_alpha(const IconStyle& s, double dist);
+  const std::vector<IconStyle>* fullscreen_icon_styles(std::string_view key) const;
+  const std::vector<IconStyle>* minimap_icon_styles(std::string_view key) const;
   struct Profile {
     std::map<std::string, LineStyle> roads;               // by road_type
     std::map<std::string, std::vector<IconStyle>> icons;  // by filter value, drawn in order

@@ -150,6 +150,11 @@ MapScene DriveSession::map_scene() {
             sc.gps_dest_z = app.gps_nav.route().snapped_dest_z;
           }
           if (app.have_career_catalog) {
+          int64_t player_car_id = 0;
+          int player_class_id = 2;
+          current_car_info(player_car_id, player_class_id);
+          const auto class_names = app.class_name_list();
+          const bool any_car = slice12.trainer.effective_any_car();
           // Populate Festival sites, unlocked Street Hubs, and unlocked Career Events!
           for (const auto& site : app.career_catalog.sites) {
             MapMarker mm;
@@ -189,19 +194,38 @@ MapScene DriveSession::map_scene() {
             if (mm.popup_line.empty() || mm.popup_line.rfind("_&", 0) == 0) mm.popup_line = "HUB " + std::to_string(hub.id);
             mm.title = mm.popup_line;
             mm.subtitle = mm.popup_line;
+            int hub_total = 0;
+            int hub_done = 0;
+            int hub_worst_podium = 0;
+            int hub_open_uncompleted = 0;
+            bool hub_any_eligible = false;
             {
               const int rank_now = app.current_pop_rank();
               for (const auto& hev : app.career_catalog.events) {
                 if (hev.hub_id != hub.id || hev.style != 2) continue;
+                ++hub_total;
                 const int place = app.career_catalog.best_place(hev, app.career);
                 int pip = int(carview::MapPip::kUnavailable);
-                if (place >= 1 && place <= 3) pip = place;  // gold, silver, bronze
-                else if (app.career_catalog.is_event_unlocked(hev, app.career, app.collected_wristband, rank_now))
+                if (place >= 1 && place <= 3) {
+                  pip = place;  // gold, silver, bronze
+                  ++hub_done;
+                  hub_worst_podium = std::max(hub_worst_podium, place);
+                } else if (app.career_catalog.is_event_unlocked(hev, app.career, app.collected_wristband, rank_now)) {
                   pip = int(carview::MapPip::kAvailable);
-                mm.pips.push_back(pip);
-                if (mm.pips.size() >= 10) break;
+                  ++hub_open_uncompleted;
+                  if (app.career_catalog.check_eligibility(hev, player_car_id, player_class_id, class_names, any_car).eligible) {
+                    hub_any_eligible = true;
+                  }
+                }
+                if (mm.pips.size() < 10) mm.pips.push_back(pip);
               }
             }
+            // Street hubs show the trophy cup ONLY once every race in the hub is completed;
+            // NEW stays shown while uncompleted unlocked races remain (map_zoom_out_orig.png).
+            mm.completed = (hub_total > 0 && hub_done == hub_total);
+            mm.best_place = mm.completed ? std::clamp(hub_worst_podium, 1, 3) : 0;
+            mm.is_new = !mm.completed && (hub_open_uncompleted > 0);
+            mm.eligible = (hub_open_uncompleted == 0) || hub_any_eligible;
             mm.x = hub.trigger_pos[0], mm.z = hub.trigger_pos[2];
             mm.site_or_hub = hub.id;
             sc.markers.push_back(std::move(mm));
@@ -216,8 +240,22 @@ MapScene DriveSession::map_scene() {
             const std::string ename = carview::game_text(ev.name_ref);
             mm.title = (!ename.empty() && ename.rfind("_&", 0) != 0) ? ename : ev.horizon_id;
             const int bp = app.career_catalog.best_place(ev, app.career);
-            mm.completed = bp > 0;
-            mm.is_new = !mm.completed;
+            // Podium finish (1st..3rd) completes an event and places the trophy cup on the map icon.
+            mm.completed = (bp >= 1 && bp <= 3);
+            mm.best_place = mm.completed ? bp : 0;
+            mm.is_new = !mm.completed && bp == 0;
+            mm.eligible = (ev.player_car_id > 0) ||
+                          app.career_catalog.check_eligibility(ev, player_car_id, player_class_id, class_names, any_car).eligible;
+            mm.is_circuit = (ev.laps > 1);
+            mm.is_finale = (ev.style == 6 || ev.career_type == 12);
+            mm.wristband_level = ev.level;
+            for (const auto& wb : app.career_catalog.wristbands) {
+              if (wb.id == ev.level && wb.argb != 0) {
+                mm.ring_rgba = {uint8_t((wb.argb >> 16) & 0xFF), uint8_t((wb.argb >> 8) & 0xFF),
+                                uint8_t(wb.argb & 0xFF), 255};
+                break;
+              }
+            }
             mm.subtitle = std::string(race::CareerCatalog::event_style_label(ev)) + "  •  " +
                           carview::thousands(int64_t(ev.cash_prize)) + " Cr";
             std::string det;

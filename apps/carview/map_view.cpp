@@ -84,6 +84,8 @@ MapView::Profile read_profile(const audio::XmlNode& root) {
         s.anims = mapanim::parse_bindings(sym);
         s.cell_x = int(atlas->number("x"));
         s.cell_y = int(atlas->number("y"));
+        s.role = MapView::classify_icon_role(stype, value, s.cell_x, s.cell_y);
+        s.sort_order = int(sym.number("sort_order", 0));
         const audio::XmlNode* size = sym.child("DynamicSize");
         if (!size) size = sym.child("Size");
         s.size = size ? size->number("value", 45) : 45;
@@ -94,6 +96,10 @@ MapView::Profile read_profile(const audio::XmlNode& root) {
         }
         icons.push_back(s);
       }
+      // Preserve XML order on ties while honouring MapProfile sort_order
+      // (shadow -> base icon -> wristband ring -> trophy -> '!' warning).
+      std::stable_sort(icons.begin(), icons.end(),
+                       [](const MapView::IconStyle& a, const MapView::IconStyle& b) { return a.sort_order < b.sort_order; });
       // A filter value can head several groups (the pause map's layers):
       // the first group with icons wins.
       if (!icons.empty() && !out.icons.count(value)) out.icons[value] = std::move(icons);
@@ -600,23 +606,30 @@ struct FastCanvas {
 // The icons a scene shows, in drawing order (profile groups by filter value).
 struct Mark {
   std::string key;
-  double x, z;
+  double x = 0, z = 0;
   bool is_new = false;
-  bool completed = false;
-  bool discovered = true;
   int marker_index = -1;
+  MapIconState state;
 };
 
 std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
   std::vector<Mark> out;
+  auto push_collectible = [&](const char* key, double x, double z, bool completed) {
+    Mark mk;
+    mk.key = key;
+    mk.x = x;
+    mk.z = z;
+    mk.state.completed = completed;
+    out.push_back(std::move(mk));
+  };
   const bool show_signs = !apply_filter || s.filter.shows(MapCategory::kDiscountSign);
   const bool show_barns = !apply_filter || s.filter.shows(MapCategory::kBarnFind);
   if (s.data && s.progress) {
     if (show_signs) {
       for (const auto& sign : s.data->signs) {
         const bool found = s.progress->signs_found.count(sign.id) > 0;
-        if (found) out.push_back({"flyer_collected", sign.at.x, sign.at.z, false, true, true, -1});
-        else if (s.reveal) out.push_back({"flyer", sign.at.x, sign.at.z, false, false, true, -1});
+        if (found) push_collectible("flyer_collected", sign.at.x, sign.at.z, true);
+        else if (s.reveal) push_collectible("flyer", sign.at.x, sign.at.z, false);
       }
     }
     if (show_barns) {
@@ -628,25 +641,36 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
         // the rumour circles of map_open_orig.png), and the dark
         // "barnfind_collected" one that replaces it once the barn is found
         // (Q193).
-        if (freeroam::barn_discovered(status)) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, true, -1});
-        else if (status == freeroam::kBarnRumour || s.reveal)
-          out.push_back({"barnfind", b.at.x, b.at.z, false, false, true, -1});
+        if (freeroam::barn_discovered(status)) push_collectible("barnfind_collected", b.at.x, b.at.z, true);
+        else if (status == freeroam::kBarnRumour || s.reveal) push_collectible("barnfind", b.at.x, b.at.z, false);
       }
     }
   }
   for (size_t i = 0; i < s.markers.size(); ++i) {
     const auto& m = s.markers[i];
     if (apply_filter && !map_marker_matches_filter(m, s.filter)) continue;
-    out.push_back({m.icon_tag, m.x, m.z, m.is_new, m.completed, m.discovered, int(i)});
+    Mark mk;
+    mk.key = m.icon_tag;
+    mk.x = m.x;
+    mk.z = m.z;
+    mk.is_new = m.is_new;
+    mk.marker_index = int(i);
+    mk.state = map_icon_state(m);
+    out.push_back(std::move(mk));
   }
   return out;
 }
 
-// Groups carrying icon_up_career_new in MapProfileFullscreen.xml (speed
-// cameras and outposts never show the pink NEW badge).
+// Groups carrying icon_up_career_new / icon_facing_career_new in the retail
+// map profiles (speed cameras and outposts never show the pink NEW badge).
 bool marker_has_new_badge(std::string_view key) {
   return key == "race" || key == "exhibition" || key == "streetrace" || key == "nemesisrace" ||
          key == "workshop" || key == "racecentral";
+}
+
+bool ends_with_ci(std::string_view s, std::string_view suffix) {
+  if (s.size() < suffix.size()) return false;
+  return audio::iequals(s.substr(s.size() - suffix.size()), suffix);
 }
 
 // True when `m` sits at the cursor's icon (x, z).
@@ -685,6 +709,129 @@ mapanim::IconLook icon_look(const mapanim::Library& lib, const mapanim::Bindings
 }
 
 }  // namespace
+
+MapView::IconRole MapView::classify_icon_role(std::string_view symbolizer_type, std::string_view group_key, int cell_x,
+                                              int cell_y) {
+  if (ends_with_ci(symbolizer_type, "_career_colour")) return IconRole::kCareerColour;
+  if (ends_with_ci(symbolizer_type, "_career_finish")) return IconRole::kCareerFinish;
+  if (ends_with_ci(symbolizer_type, "_career_note")) return IconRole::kCareerNote;
+  if (ends_with_ci(symbolizer_type, "_career")) return IconRole::kCareerBase;
+  // MapProfileFullscreen uses type="icon_up" for nemesisrace (4,1), and
+  // MapProfileMinimap uses type="icon_facing" for streetrace (2,1) and nemesisrace (4,1).
+  if (group_key == "nemesisrace" && cell_x == 4 && cell_y == 1) return IconRole::kCareerBase;
+  if (group_key == "streetrace" && cell_x == 2 && cell_y == 1) return IconRole::kCareerBase;
+  return IconRole::kBase;
+}
+
+MapView::Rgba MapView::wristband_ring_colour(int wristband_level, std::array<uint8_t, 4> explicit_rgba) {
+  if (explicit_rgba[3] > 0) {
+    return {float(explicit_rgba[0]), float(explicit_rgba[1]), float(explicit_rgba[2]), float(explicit_rgba[3])};
+  }
+  // Exact CareerWristbandLevels.Color ARGB values from retail gamedb.slt.
+  switch (wristband_level) {
+    case 0: return {255.0f, 218.0f, 0.0f, 255.0f};    // Yellow (0xFFFFDA00)
+    case 1: return {66.0f, 204.0f, 2.0f, 255.0f};     // Green  (0xFF42CC02)
+    case 2: return {3.0f, 151.0f, 252.0f, 255.0f};    // Blue   (0xFF0397FC)
+    case 3: return {229.0f, 31.0f, 121.0f, 255.0f};   // Pink   (0xFFE51F79)
+    case 4: return {255.0f, 91.0f, 0.0f, 255.0f};     // Orange (0xFFFF5B00)
+    case 5: return {141.0f, 34.0f, 255.0f, 255.0f};   // Purple (0xFF8D22FF)
+    case 6: return {188.0f, 161.0f, 46.0f, 255.0f};   // Gold   (0xFFBCA12E)
+    default: return {255.0f, 255.0f, 255.0f, 255.0f}; // Qualifier / Festival white
+  }
+}
+
+MapView::Rgba MapView::trophy_colour(int best_place) {
+  if (best_place == 2) return {215.0f, 222.0f, 232.0f, 255.0f};  // Silver
+  if (best_place == 3) return {218.0f, 152.0f, 96.0f, 255.0f};   // Bronze
+  return {255.0f, 255.0f, 255.0f, 255.0f};                       // Gold (1st place / default)
+}
+
+MapView::ResolvedIconLayer MapView::resolve_icon_layer(const IconStyle& style, std::string_view group_key,
+                                                       const MapIconState& state) {
+  ResolvedIconLayer out;
+  out.cell_x = style.cell_x;
+  out.cell_y = style.cell_y;
+  out.colour = style.colour;
+  switch (style.role) {
+    case IconRole::kBase:
+      out.visible = true;
+      if (!state.discovered) {
+        out.colour = {140.0f, 145.0f, 155.0f, style.colour.a * 0.72f};
+      }
+      break;
+    case IconRole::kCareerBase:
+      out.visible = true;
+      if (group_key == "race") {
+        if (state.is_finale) {
+          out.cell_x = 7;
+          out.cell_y = 1;  // Horizon Finale crown
+        } else if (state.is_circuit) {
+          out.cell_x = 2;
+          out.cell_y = 0;  // Circuit oval + checkered flag
+        } else {
+          out.cell_x = 1;
+          out.cell_y = 0;  // Point-to-Point S-curve
+        }
+      }
+      if (state.completed) {
+        // Completed events stay 100% opaque with slightly muted RGB so the
+        // gold/silver/bronze trophy cup on top pops cleanly (08_world_map_orig.png).
+        out.colour.r *= 0.80f;
+        out.colour.g *= 0.80f;
+        out.colour.b *= 0.80f;
+      }
+      break;
+    case IconRole::kCareerColour:
+      out.visible = true;
+      if (state.completed) {
+        // Completed wristband rings turn opaque dark grey (08_world_map_orig.png).
+        out.colour = {100.0f, 102.0f, 108.0f, style.colour.a};
+      } else if (state.wristband_level == 6) {
+        // Gold wristband uses the dedicated gold metallic ring/star atlas cell untinted.
+        if (group_key == "nemesisrace" || (style.cell_x == 5 && style.cell_y == 0)) {
+          out.cell_x = 4;
+          out.cell_y = 5;
+        } else {
+          out.cell_x = 7;
+          out.cell_y = 0;
+        }
+        out.colour = {255.0f, 255.0f, 255.0f, style.colour.a};
+      } else {
+        Rgba rc = wristband_ring_colour(state.wristband_level, state.ring_rgba);
+        rc.a = style.colour.a;
+        out.colour = rc;
+      }
+      break;
+    case IconRole::kCareerFinish:
+      out.visible = state.completed;
+      if (out.visible) {
+        Rgba tc = trophy_colour(state.best_place);
+        tc.a = style.colour.a;
+        out.colour = tc;
+      }
+      break;
+    case IconRole::kCareerNote:
+      // Ineligible '!' warning badge shows only on uncompleted events that the
+      // current car cannot enter (08_world_map_orig.png, map_zoom_out_orig.png).
+      out.visible = !state.eligible && !state.completed;
+      break;
+  }
+  return out;
+}
+
+bool MapView::marker_shows_new_badge(std::string_view group_key, bool is_new, bool completed) {
+  return is_new && !completed && marker_has_new_badge(group_key);
+}
+
+const std::vector<MapView::IconStyle>* MapView::fullscreen_icon_styles(std::string_view key) const {
+  const auto it = full_.icons.find(std::string(key));
+  return it == full_.icons.end() ? nullptr : &it->second;
+}
+
+const std::vector<MapView::IconStyle>* MapView::minimap_icon_styles(std::string_view key) const {
+  const auto it = mini_.icons.find(std::string(key));
+  return it == mini_.icons.end() ? nullptr : &it->second;
+}
 
 float MapView::visible_range_alpha(const IconStyle& s, double dist) {
   if (s.max_distance <= 0 || dist <= s.max_fade_distance) return 1.0f;
@@ -1115,8 +1262,9 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     auto it = mini_.icons.find(m.key);
     if (it == mini_.icons.end()) it = mini_.icons.find("gas_station");
     if (it == mini_.icons.end()) continue;
-    const double range = it->second.empty() || it->second.front().max_distance <= 0 ? reach
-                                                                                     : it->second.front().max_distance;
+    double range = 0.0;
+    for (const auto& ic : it->second) range = std::max(range, ic.max_distance);
+    if (range <= 0.0) range = reach;
     if (dist > range) continue;
     const P p = project(m.x, m.z);
     if (p.depth < 1) continue;
@@ -1132,47 +1280,62 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     const auto& styles = mini_.icons.count(m.key) ? mini_.icons.at(m.key) : mini_.icons.at("gas_station");
     double top_y = p.y;
     for (const auto& ic : styles) {
-      Rgba tint = ic.colour;
+      const ResolvedIconLayer layer = resolve_icon_layer(ic, m.key, m.state);
+      if (!layer.visible) continue;
+      Rgba tint = layer.colour;
       tint.a *= visible_range_alpha(ic, mm.dist);
-      if (!m.discovered) tint = {145, 145, 155, tint.a * 0.72f};
-      else if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
+      if (tint.a <= 0.5f) continue;
       const double isz = kMiniIconGain * ic.size * u * persp(p.depth);
       const double iy = p.y - isz * 0.18;  // lifted about 12 px at the car (the fit)
       top_y = std::min(top_y, iy - isz * 0.45);
-      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, isz, 0, tint);
+      cv.icon(small_icons_, layer.cell_x, layer.cell_y, p.x, iy, isz, 0, tint);
     }
-    // Retail New.xds badge (or crisp FH1 pink "NEW" lettered badge fallback — never a blank line!).
-    if (m.is_new) {
-      const double sc = 1.25 * u * persp(p.depth);
-      if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
-        const double bh = 12.0 * sc;
-        const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
-        cv.blit(new_badge_, p.x, top_y - bh * 0.55, bh * aspect, bh, Rgba{255, 255, 255, 255});
-      } else {
-        const double bw = 20.0 * sc, bh = 8.5 * sc;
-        const double by = top_y - bh * 0.65;
-        cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
-        cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
-        // Crisp micro-stroke "N E W" letters inside the pink badge.
-        const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
-        const Rgba wh{255, 255, 255, 255};
-        // N
-        const double nx = p.x - 6.6 * sc;
-        cv.line(nx, by + h2, nx, by - h2, st, wh);
-        cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
-        cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
-        // E
-        const double ex = p.x - 1.6 * sc;
-        cv.line(ex, by - h2, ex, by + h2, st, wh);
-        cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
-        cv.line(ex, by, ex + gw * 0.85, by, st, wh);
-        cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
-        // W
-        const double wx = p.x + 3.4 * sc;
-        cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
-        cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
-        cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
-        cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
+    // Pink NEW badge (MapProfileMinimap.xml icon_facing_career_new: cell 3,4),
+    // shown only on uncompleted career/facility markers that carry a NEW badge.
+    if (marker_shows_new_badge(m.key, m.is_new, m.state.completed)) {
+      float badge_vis = 1.0f;
+      for (const auto& ic : styles) {
+        if (ic.max_distance > 0) {
+          badge_vis = visible_range_alpha(ic, mm.dist);
+          break;
+        }
+      }
+      if (badge_vis > 0.01f) {
+        const double sc = 1.25 * u * persp(p.depth);
+        if (!small_icons_.rgba.empty()) {
+          const double bsz = kMiniIconGain * (m.key == "nemesisrace" ? 40.0 : 45.0) * u * persp(p.depth);
+          const double by = top_y - bsz * 0.08;
+          cv.icon(small_icons_, 3, 4, p.x, by, bsz, -3.0 * kPi / 180.0, Rgba{255, 255, 255, 255.0f * badge_vis});
+        } else if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
+          const double bh = 12.0 * sc;
+          const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
+          cv.blit(new_badge_, p.x, top_y - bh * 0.55, bh * aspect, bh, Rgba{255, 255, 255, 255.0f * badge_vis});
+        } else {
+          const double bw = 20.0 * sc, bh = 8.5 * sc;
+          const double by = top_y - bh * 0.65;
+          cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220.0f * badge_vis});
+          cv.line(p.x - bw * 0.5, by, p.x + bw * 0.5, by, bh, Rgba{249, 0, 100, 250.0f * badge_vis});
+          // Crisp micro-stroke "N E W" letters inside the pink badge.
+          const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
+          const Rgba wh{255, 255, 255, 255.0f * badge_vis};
+          // N
+          const double nx = p.x - 6.6 * sc;
+          cv.line(nx, by + h2, nx, by - h2, st, wh);
+          cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
+          cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
+          // E
+          const double ex = p.x - 1.6 * sc;
+          cv.line(ex, by - h2, ex, by + h2, st, wh);
+          cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
+          cv.line(ex, by, ex + gw * 0.85, by, st, wh);
+          cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
+          // W
+          const double wx = p.x + 3.4 * sc;
+          cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
+          cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
+          cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
+          cv.line(wx + gw, by + h2, wx + gw * 1.3, by - h2, st, wh);
+        }
       }
     }
   }
@@ -1799,24 +1962,25 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
                        (sel_hover && m.marker_index == scene.selected_marker),
                    near(scene.has_prev_hover, scene.prev_hover_x, scene.prev_hover_z, m));
     for (const auto& ic : it->second) {
+      const ResolvedIconLayer layer = resolve_icon_layer(ic, m.key, m.state);
+      if (!layer.visible) continue;
       const mapanim::IconLook look = icon_look(full_.anims, ic.anims, ev, scene.anim_time);
-      Rgba tint = ic.colour;
-      if (!m.discovered) tint = {140, 145, 155, tint.a * 0.7f};
-      else if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
+      Rgba tint = layer.colour;
       tint.a *= std::clamp(look.alpha, 0.0f, 1.0f);
       const double sz = ic.size * unit * 0.5 * double(look.scale_x + look.scale_y);
       if (tint.a <= 0.5f || sz <= 0.5) continue;
-      cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, look.angle_deg * kPi / 180, tint);
+      cv.icon(large_icons_, layer.cell_x, layer.cell_y, p[0], p[1], sz, look.angle_deg * kPi / 180, tint);
     }
     const mapanim::IconLook badge = icon_look(full_.anims, full_.new_badge, ev, scene.anim_time);
-    if (m.is_new && marker_has_new_badge(m.key) && badge.alpha > 0.002f) {
+    if (marker_shows_new_badge(m.key, m.is_new, m.state.completed) && badge.alpha > 0.002f) {
       // MapProfileFullscreen.xml icon_up_career_new: MapIconSheet.xds atlas
-      // cell (3, 4), DynamicSize 45, Angle 3 deg, sitting directly above the icon.
-      const double oy = 24.0 * unit;
+      // cell (3, 4), DynamicSize 45 (55 for nemesisrace), Angle 3 deg, sitting directly above the icon.
+      const bool is_nem = (m.key == "nemesisrace");
+      const double oy = (is_nem ? 36.0 : 24.0) * unit;
       const double sc = 0.5 * double(badge.scale_x + badge.scale_y);
       const float alpha = 255.0f * std::clamp(badge.alpha, 0.0f, 1.0f);
       if (!large_icons_.rgba.empty()) {
-        const double sz = 45.0 * unit * sc;
+        const double sz = (is_nem ? 55.0 : 45.0) * unit * sc;
         cv.icon(large_icons_, 3, 4, p[0], p[1] - oy, sz, -3.0 * kPi / 180.0, Rgba{255, 255, 255, alpha});
       } else if (badge.alpha >= 0.5f) {
         const double vsc = std::max(0.95, unit * 1.10);
