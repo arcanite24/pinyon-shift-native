@@ -1698,8 +1698,16 @@ bool DriveSession::commit_race_award() {
   if (app.legacy_fm4_progression && app.have_prog_tables) {
     const int drv_xp = slice12.trainer.pacing.scale_points(a->driver_xp);
     const int aff_xp = slice12.trainer.pacing.scale_points(a->affinity_xp);
-    const auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp,
-                                               app.prog_tables);
+    // IsCarInstalledAndPurchased: a car the disc and its packages carry.
+    const auto installed = [&](int64_t cid) {
+      return (app.have_career_catalog && app.career_catalog.find_car(cid)) || app.baked_ids.count(cid) > 0;
+    };
+    auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp, app.prog_tables,
+                                         installed);
+    // A pick-one list (two or more cars): the engine has no pick screen yet
+    // and gives the list's first (interim, SPEC_QUESTIONS Q254).
+    for (const auto& pick : pu.gift_picks)
+      if (!pick.empty()) pu.gift_cars.push_back(pick.front());
     for (int64_t gcid : pu.gift_cars) {
       const std::string gnm = app.award_garage_car(gcid, 0, false, /*is_prize=*/true);
       if (!gnm.empty()) {
