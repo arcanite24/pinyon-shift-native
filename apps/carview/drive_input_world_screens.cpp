@@ -106,17 +106,20 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 notice_until = vehicle.time() + 3.0;
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
               } else if (app.fmv_player.active() && (adv_key || adv_pad || mouse_adv)) {
-                // A story movie (confirmskip): Start skips it; another press
-                // shows the SKIP bubble with the Start glyph (FMV_01 in the
-                // original: A every 5 s neither skipped it nor the outro;
-                // first30a captures, Q274). Tab stays a dev skip.
-                const bool start = (e.type == SDL_EVENT_KEY_DOWN && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_TAB)) ||
+                // A story movie (confirmskip): a press shows the SKIP bubble
+                // with the Start glyph, and Start while it is up skips (FMV_01
+                // in the original: A then Start 0.5 s later skipped it, Start
+                // with no bubble up and B, X, Y, Back, LB or RB after A did
+                // not; first30e r3-r5, Q274). Tab stays a dev skip.
+                const double now_s = double(SDL_GetTicksNS()) * 1e-9;
+                const bool start = (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) ||
                                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
-                if (start) {
+                const bool dev_skip = e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_TAB;
+                if (dev_skip || (start && now_s < fmv_skip_prompt_until)) {
                   fmv_skip_prompt_until = -1.0;
                   queued_campaign_actions.push_back(app.campaign.advance_or_skip(app.fmv_player, &app.audio_host));
                 } else {
-                  fmv_skip_prompt_until = double(SDL_GetTicksNS()) * 1e-9 + kFmvSkipPromptSeconds;
+                  fmv_skip_prompt_until = now_s + kFmvSkipPromptSeconds;
                 }
               } else if (adv_key || adv_pad || mouse_adv) {
                 queued_campaign_actions.push_back(app.campaign.advance_or_skip(app.fmv_player, &app.audio_host));
