@@ -87,6 +87,7 @@ struct DriveConfig {
   std::string race_event;
   RaceView::Options race_options;
   int race_auto = -1;
+  bool race_auto_menus = false;  // --race-auto-menus: the AI drives, the race screens still show
   std::filesystem::path play_dir;
   int traffic_flag = -1;
   double hour = 12;
