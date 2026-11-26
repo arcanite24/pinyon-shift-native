@@ -552,7 +552,17 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& 
     const float pulse = 0.72f + 0.28f * float(std::sin(r.clock * 6.2831853 * 3.5));
     const float cx = 0.5f * g.w;
     const float wy0 = g.T(142);
-    const float bw = 420.0f * s;
+    char cbuf[64];
+    std::snprintf(cbuf, sizeof cbuf, "RETURNING TO TRACK IN %.1f", std::max(0.0, r.missed_checkpoint_countdown_s));
+    const TextStyle cts = font(ui::Font::kE, 14.0f * s, ui4::kAmber);
+    const std::string rw_lbl = str("HelpButtons", "IDS_Mulligan", "REWIND");
+    const TextStyle rts = font(ui::Font::kE, 13.5f * s, ui4::kWhite, Align::kRight);
+    const float cbuf_w = ui::List::measure(cbuf, cts);
+    const float rw_w = ui::List::measure(rw_lbl, rts);
+    // Size banner dynamically from measured countdown + [Y] REWIND widths so they never collide.
+    constexpr float kGap = 28.0f;
+    constexpr float kGlyphSpan = 26.0f;
+    const float bw = std::max(460.0f * s, cbuf_w + rw_w + (28.0f + kGap + kGlyphSpan + 24.0f) * s);
     const float x0 = cx - 0.5f * bw, x1 = cx + 0.5f * bw;
     {
       Turn mt(l, cx, wy0 + 38.0f * s, ui4::kTiltRad * 0.35f);
@@ -567,14 +577,9 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& 
       const float sy0 = wy0 + 44.0f * s, sy1 = sy0 + 36.0f * s;
       l.rect(x0 + 12.0f * s, sy0, x1 - 12.0f * s, sy1, rgba(12, 14, 20, 232));
       l.rect(x0 + 12.0f * s, sy0, x0 + 16.0f * s, sy1, ui4::kAmber);
-      char cbuf[64];
-      std::snprintf(cbuf, sizeof cbuf, "RETURNING TO TRACK IN %.1f", std::max(0.0, r.missed_checkpoint_countdown_s));
-      l.text(x0 + 28.0f * s, sy0 + 9.0f * s, cbuf, font(ui::Font::kE, 14.0f * s, ui4::kAmber));
+      l.text(x0 + 28.0f * s, sy0 + 9.0f * s, cbuf, cts);
 
       // [Y] Rewind prompt on right side of banner.
-      const std::string rw_lbl = str("HelpButtons", "IDS_Mulligan", "REWIND");
-      const TextStyle rts = font(ui::Font::kE, 13.5f * s, ui4::kWhite, Align::kRight);
-      const float rw_w = ui::List::measure(rw_lbl, rts);
       l.text(x1 - 24.0f * s, sy0 + 9.5f * s, rw_lbl, rts);
       ui4::button_glyph(l, x1 - 24.0f * s - rw_w - 14.0f * s, sy0 + 16.5f * s, 9.5f * s, "Y");
 
@@ -1309,28 +1314,9 @@ void results(ui::List& l, const RaceHud& r, const DriveHud& st, const Layout& g)
 }
 
 
-void showcase_hud(ui::List& l, const RaceHud& r, const Layout& g, bool metric_units) {
-  if (!r.showcase || r.phase != RaceHud::kRacing) return;
-  const float s = g.s;
-  const float cx = 0.5f * g.w;
-  const float bw = 440 * s, bh = 54 * s;
-  const float x0 = cx - 0.5f * bw, x1 = cx + 0.5f * bw;
-  const float y0 = g.T(24), y1 = y0 + bh;
-  ui4::panel(l, x0, y0, x1, y1, s, ui4::kCharcoalDark, ui4::kPink, 0, true);
-  const std::string gap_str =
-      (r.showcase_gap_m >= 0 ? std::string("AHEAD ") : std::string("BEHIND ")) +
-      format_distance_unit(std::fabs(r.showcase_gap_m), metric_units);
-  l.text(x0 + 12 * s, y0 + 10 * s, "SHOWCASE  //  VS " + r.showcase_aircraft, font(ui::Font::kB, 13 * s, kText));
-  l.text(x1 - 12 * s, y0 + 10 * s, gap_str,
-         font(ui::Font::kE, 14 * s, r.showcase_gap_m >= 0 ? ui4::kGreen : ui4::kAmber, Align::kRight));
-  const float tx0 = x0 + 14 * s, tx1 = x1 - 14 * s, ty = y0 + 35 * s, th = 8 * s;
-  l.rect(tx0, ty, tx1, ty + th, rgba(255, 255, 255, 35));
-  const float ax = tx0 + float(std::clamp(r.showcase_progress, 0.0, 1.0)) * (tx1 - tx0);
-  const float px = tx0 + float(std::clamp(r.progress, 0.0, 1.0)) * (tx1 - tx0);
-  l.rect(tx0, ty, ax, ty + 4 * s, ui4::kAmber);
-  l.rect(tx0, ty + 4 * s, px, ty + th, ui4::kPink);
-  l.circle(ax, ty + 2 * s, 5 * s, ui4::kYellow);
-  l.circle(px, ty + 6 * s, 5 * s, kText);
+void showcase_hud(ui::List&, const RaceHud&, const Layout&, bool) {
+  // Retail Showcase races use the standard 947_HUD sprint layout (progress %,
+  // race clock, PLACE 1/2, standings pill) with no top-center aircraft bar.
 }
 
 }  // namespace carview::hud_detail
