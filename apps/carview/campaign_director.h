@@ -58,6 +58,12 @@ class CampaignDirector {
   };
   void set_ftc_frame_input(const FtcFrameInput& in) { ftc_in_ = in; }
   bool ftc_active() const { return ftc_.active(); }
+  // Active, or a save's career stage waiting to resume (after the title):
+  // the car the save loads with is already the career's.
+  bool ftc_active_or_resuming() const {
+    return ftc_.active() || (ftc_resume_pending_ && ftc_resume_stage_ != race::FtcStage::kNotStarted &&
+                             ftc_resume_stage_ != race::FtcStage::kComplete);
+  }
   // The timed autosave (an engine extra, --timed-autosave, off by default):
   // the original saves only at the career's checkpoints, and never on a timer
   // inside the first-time career.
