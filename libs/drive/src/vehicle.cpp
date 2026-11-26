@@ -827,11 +827,12 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     // The scale: 1 below 2 m/s forward, and while the wheel is turned back
     // through centre; CounterSteerScale while countersteering; otherwise
     // SteerScale0 to SteerScale1 over |velocity| from SteerSpeed0 to 1.
-    // Interim: the countersteer state stays off. The original tests the
-    // road wheels' angle against a front-wheel field that is not decoded,
-    // and a guess would switch the 900-degree table's 1.5 scale on.
+    // The countersteer state (82D2FD30, the same test as the pad's, Q231):
+    // a front wheel's normalised slip against the road wheels' angle, wheel
+    // 0 when the angle is positive and wheel 1 otherwise. The engine's
+    // slip_angle has the other sign from the original's.
     const double forward = rotate_inverse(rot_, vel_).z;
-    constexpr bool countersteer = false;
+    const bool countersteer = steer_angle_ > 0 ? w_[0].slip_angle > 0 : w_[1].slip_angle < 0;
     const bool back_through_centre = (steer_angle_ > 0 && in <= 0) || (steer_angle_ < 0 && in >= 0) ||
                                      (steer_angle_ == 0 && in == 0);
     double scale = 1.0;
