@@ -312,7 +312,13 @@ int main() {
     check(carview::options_value_text("damage", "cosmetic") == "ON", "COSMETIC DAMAGE ON");
     check(carview::options_value_text("rewind", "on") == "ON", "REWIND ON");
     check(carview::options_value_text("units", "imperial (mph)") == "ENGLISH", "UNITS ENGLISH");
-    check(carview::options_value_text("camera", "chase low") == "CHASE LOW", "an engine value, upper-cased");
+    check(carview::options_value_text("camera", "default") == "CHASE", "CAMERA VIEW CHASE");
+    check(carview::options_value_text("camera", "chase high") == "CHASE FAR", "CAMERA VIEW CHASE FAR");
+    check(carview::options_value_text("minimap", "rotating") == "ON", "MAP ON");
+    check(carview::options_value_text("speedometer", "analog") == "ON", "SPEEDOMETER ON");
+    check(carview::options_value_text("speedometer", "digital") == "DIGITAL", "an engine mode keeps its name");
+    check(carview::options_value_text("radio station", "horizon bass arena") == "HORIZON BASS ARENA",
+          "an engine value, upper-cased");
     for (const auto& r : carview::options_rows(carview::OptionsPage::kDifficulty))
       check(!carview::text_of(r.description).empty(), std::string("a description for ") + r.id);
   }
