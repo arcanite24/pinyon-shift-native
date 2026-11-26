@@ -240,7 +240,9 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     if (cs.level_name.rfind("_&", 0) == 0) cs.level_name = std::to_string(li);
     cs.level = li;
     cs.signs_found = int(saved.signs_found.size());
-    cs.barns = int(saved.barns.size());
+    // Every barn on the disc (barnfinds.xml), as the free roam counts them;
+    // the save lists only the barns it has a state for.
+    cs.barns = int(std::max(saved.barns.size(), collectibles.barns.size()));
     for (const auto& b : saved.barns) cs.barns_found += freeroam::barn_discovered(b.status);
     cs.wristband_points = career.wristband_points, cs.credits = career.credits;
     cs.total_winnings = career.total_winnings, cs.races = career.num_races;
