@@ -823,7 +823,9 @@ struct DriveSession {
   // the workshop map, the Red Rock showcase after the heats (first30e r10:
   // "Please set a route to the Showcase event."). event_id 0: none.
   struct FtcMapTarget {
-    int64_t event_id = 0;
+    int64_t event_id = 0;   // the career event, or -1 for Race Central
+    bool have_pos = false;  // where A routes to (the event's sign-up place)
+    std::array<double, 3> pos{};
     const char* tip_id = "";
     const char* tip = "";
     const char* gps_label = "";

@@ -456,13 +456,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                   // them), or the cursor on its sign-up place (the engine's
                   // map may not list the career's event).
                   const FtcMapTarget target = ftc_map_target();
-                  std::array<double, 3> hp{};
-                  const bool have_hp = app.campaign.ftc().event_trigger(target.event_id, hp);
+                  const std::array<double, 3> hp = target.pos;
+                  const bool have_hp = target.have_pos;
                   bool heats = false;
                   if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
                     const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
-                    heats = m.kind == MapMarker::kEvent &&
-                            (m.id == std::to_string(target.event_id) ||
+                    heats = (m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite) &&
+                            ((target.event_id > 0 && m.id == std::to_string(target.event_id)) ||
                              (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
                   }
                   if (!heats && have_hp) heats = std::hypot(map_px - hp[0], map_pz - hp[2]) < 40.0;

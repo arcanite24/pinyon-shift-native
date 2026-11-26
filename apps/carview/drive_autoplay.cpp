@@ -42,9 +42,10 @@ void DriveSession::autoplay_frame() {
   // asks for (the heats, then the showcase; the map pans as the stick would;
   // the harness stands in for the player finding the marker).
   auto cursor_to_career_event = [&]() {
-    std::array<double, 3> hp{};
-    const int64_t target = ftc_map_target().event_id;
-    if (!map_open || !target || !app.campaign.ftc().event_trigger(target, hp)) return false;
+    const FtcMapTarget t = ftc_map_target();
+    const int64_t target = t.event_id;
+    const std::array<double, 3> hp = t.pos;
+    if (!map_open || !t.have_pos) return false;
     map_cam.reset(hp[0], hp[2], map_zoom);
     map_cx = map_cam.cx();
     map_cz = map_cam.cz();

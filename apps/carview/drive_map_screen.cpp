@@ -86,9 +86,21 @@ void DriveSession::map_screen_open() {
 DriveSession::FtcMapTarget DriveSession::ftc_map_target() const {
   FtcMapTarget t;
   if (!app.campaign.ftc_active()) return t;
-  // Only the two captured maps: the disc's IDS_MapTip_SetRouteToRaceCentral
-  // suggests a third (the first autoshow's), not captured yet.
   const auto stage = app.campaign.ftc().stage();
+  if (stage == race::FtcStage::kFirstAutoshow) {
+    // The map after the wristband (map_flow_with_race_central_vo). Interim:
+    // not captured; the disc's IDS_MapTip_SetRouteToRaceCentral suggests a
+    // route to Race Central lets it go, as the other two do (Q313). The
+    // English fallback is ours; the disc's string table supplies its text.
+    t.event_id = -1;
+    t.have_pos = true;
+    t.pos = app.campaign.ftc().race_central();
+    t.tip_id = "IDS_MapTip_SetRouteToRaceCentral";
+    t.tip = "Please set a route to Race Central.";
+    t.gps_label = "IDS_HudMsg_RaceCentral";
+    t.gps_kind = traffic::GpsDestKind::kRaceCentral;
+    return t;
+  }
   if (stage == race::FtcStage::kShowcase) {
     t.event_id = race::FirstTimeCareer::kMustangRace;
     t.tip_id = "IDS_MapTip_SetRouteToShowcase";
@@ -103,6 +115,7 @@ DriveSession::FtcMapTarget DriveSession::ftc_map_target() const {
     t.gps_label = "IDS_HudMsg_HorizonHeats";
     t.gps_kind = traffic::GpsDestKind::kFestivalRace;
   }
+  if (t.event_id > 0) t.have_pos = app.campaign.ftc().event_trigger(t.event_id, t.pos);
   return t;
 }
 
