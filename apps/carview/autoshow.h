@@ -261,6 +261,7 @@ class Autoshow {
   std::vector<AutoshowCar> catalog_;
   std::vector<AutoshowMake> makes_;
   std::vector<AutoshowCar> visible_;
+  std::vector<AutoshowComparisonStats> garage_meta_;  // full DB metadata for owned cars filtered out of catalog_
   std::set<int64_t> owned_car_ids_;
   AutoshowComparisonStats comparison_car_;
   int64_t last_garage_selected_id_ = -1;

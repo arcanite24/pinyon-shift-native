@@ -251,12 +251,6 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                         if (!vis.empty()) autoshow.select_index(best_idx);
                       }
                     }
-                    if (ready) {
-                      notice = autoshow.tutorial_mode()
-                                   ? "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS READY IN MY GARAGE. BROWSE STARTER RIDES WITH YOUR 15,000 CR BONUS OR EXIT TO COLORADO FREE ROAM."
-                                   : "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS IN MY GARAGE (+15,000 CR). PICK AN AFFORDABLE RIDE OR EXIT TO START YOUR YELLOW WRISTBAND EVENTS.";
-                      notice_until = vehicle.time() + 14.0;
-                    }
                   }
                 } else {
                   ready = shop.open(*db, app.career_garage,

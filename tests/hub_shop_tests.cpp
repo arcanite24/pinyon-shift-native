@@ -971,6 +971,43 @@ void test_disc_hub_shops_and_garage() {
       CHECK(!autoshow.buy_confirm_open());
       CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
     }
+
+    // 7. WP-E First Autoshow parity: tutorial mode resolves the real active garage car name
+    //    (never "CURRENT CAR"), uses retail "HORIZON RECOMMENDS" copy (never invented "FIRST CAR"),
+    //    and docks notices on the button bar without overlapping the finish/caliper strip.
+    {
+      garage::Garage fg;
+      garage::Car corrado{};
+      corrado.id = 1;
+      corrado.car_id = 309;  // 1995 VW Corrado VR6 (not in the 2-car starter catalog 1323/1009)
+      corrado.performance_index = 0.524381;
+      corrado.class_id = 3;
+      fg.cars = {corrado};
+      fg.selected = 1;
+      fg.last_id = 1;
+      carview::Autoshow first_show;
+      std::string fwhy;
+      CHECK(first_show.open(db, {}, fwhy, 40000, /*tutorial_first=*/true, false, 1.0, &fg));
+      CHECK(first_show.tutorial_mode());
+      CHECK(first_show.comparison_car().valid);
+      CHECK(!first_show.comparison_car().display_name.empty());
+      CHECK(first_show.comparison_car().display_name != "CURRENT CAR");
+      CHECK(first_show.breadcrumb_text().find("FIRST CAR") == std::string::npos);
+      CHECK(first_show.breadcrumb_text().find("HORIZON RECOMMENDS") != std::string::npos);
+      first_show.set_step(carview::AutoshowStep::kColorSelect);
+      const auto lo_c = carview::compute_autoshow_layout(1280.0f, 720.0f, carview::AutoshowStep::kColorSelect, true, false);
+      carview::ui::List l_base, l_notice;
+      carview::draw_autoshow_hud(l_base, 1280.0f, 720.0f, first_show, bands, 40000);
+      carview::draw_autoshow_hud(l_notice, 1280.0f, 720.0f, first_show, bands, 40000, "CONFIRM PURCHASE FOR 32,000 CR");
+      CHECK(l_notice.items().size() > l_base.items().size());
+      // Notice draw items sit strictly below finish_strip (zero CALIPERS overlap) and outside hero_car_viewport.
+      for (size_t i = l_base.items().size(); i < l_notice.items().size(); ++i) {
+        const auto& it = l_notice.items()[i];
+        carview::AutoshowRect r{it.rect[0], it.rect[1], it.rect[2], it.rect[3]};
+        CHECK(!r.intersects(lo_c.finish_strip));
+        CHECK(!r.intersects(lo_c.hero_car_viewport));
+      }
+    }
   }
 }
 

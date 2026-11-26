@@ -1667,12 +1667,14 @@ void draw_autoshow_spec_card(ui::List& list, const AutoshowLayout& lo, const Aut
 
   // 3. Subtitle / Comparison Baseline Header
   std::string sub_txt;
-  if (delta.has_baseline) {
-    sub_txt = "VS CURRENT: " + autoshow.comparison_car().display_name;
+  const std::string& cmp_name = autoshow.comparison_car().display_name;
+  const bool show_cmp_name = delta.has_baseline && !cmp_name.empty() && cmp_name != "CURRENT CAR";
+  if (show_cmp_name) {
+    sub_txt = "VS CURRENT: " + cmp_name;
   } else {
     sub_txt = std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name + "  •  FACTORY SPECS";
   }
-  ui::TextStyle subs = ui4::style(ui::Font::kB, 10.5f * s, delta.has_baseline ? ui4::kYellow : ui4::kDim);
+  ui::TextStyle subs = ui4::style(ui::Font::kB, 10.5f * s, show_cmp_name ? ui4::kYellow : ui4::kDim);
   ui4::fit_text(sub_txt, subs, rw - 24.0f * s, 8.5f * s);
   list.text(rx0 + 12.0f * s, cy + 2.0f * s, sub_txt, subs);
   cy += 18.0f * s;
@@ -1866,8 +1868,8 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     const float ty0 = lo.top_bar.y0;
     const float tx1 = lo.top_bar.x1;
 
-    // Magenta-accented HORIZON AUTOSHOW title header
-    const std::string hdr_title = autoshow.tutorial_mode() ? "HORIZON AUTOSHOW  //  FIRST CAR" : "HORIZON AUTOSHOW";
+    // Magenta-accented HORIZON AUTOSHOW / HORIZON RECOMMENDS title header
+    const std::string hdr_title = autoshow.tutorial_mode() ? "HORIZON RECOMMENDS" : "HORIZON AUTOSHOW";
     ui::TextStyle hts = ui4::style(ui::Font::kE, 20.0f * s, ui4::kWhite);
     const float hdr_w = std::min(380.0f * s, std::max(240.0f * s, ui::List::measure(hdr_title, hts) + 34.0f * s));
     ui4::fit_text(hdr_title, hts, hdr_w - 24.0f * s, 12.0f * s);
@@ -1961,7 +1963,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     std::string rail_title =
         (step == AutoshowStep::kMakeSelect)  ? "MANUFACTURERS"
         : (step == AutoshowStep::kColorSelect) ? "FACTORY PAINT  &  FINISH"
-                                               : (autoshow.tutorial_mode() ? "FIRST CAR MODELS" : (active_make + "  MODELS"));
+                                               : (autoshow.tutorial_mode() ? "HORIZON RECOMMENDS" : (active_make + "  MODELS"));
     list.rect(rx0, hy0, rx0 + 230.0f * s, hy1, ui::rgba(16, 18, 24, 216));
     list.rect(rx0, hy0, rx0 + 4.0f * s, hy1, ui4::kPink);
     ui::TextStyle rts = ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite);
@@ -2219,11 +2221,11 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     draw_autoshow_confirm_modal(list, w, h, lo, autoshow, bands, credits);
   }
 
-  // ---- 6. Optional Toast Notice (docked cleanly above bottom button bar — zero overlap) ----
+  // ---- 6. Optional Toast Notice (docked right on the bottom button bar — zero overlap with finish/caliper strip) ----
   if (!notice.empty()) {
-    const float nw = std::min(w - 80.0f * s, 520.0f * s);
-    const float ny1 = lo.button_bar.y0 - 8.0f * s;
-    const float ny0 = ny1 - 26.0f * s;
+    const float nw = std::min(w - 80.0f * s, 400.0f * s);
+    const float ny0 = lo.button_bar.y0 + 3.0f * s;
+    const float ny1 = lo.button_bar.y1 - 3.0f * s;
     ui4::brush(list, w - nw - 40.0f * s, ny0, w - 40.0f * s, ny1, ui4::kPink);
     ui::TextStyle ns = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kRight);
     ui4::fit_text(notice, ns, nw - 24.0f * s, 8.5f * s);
