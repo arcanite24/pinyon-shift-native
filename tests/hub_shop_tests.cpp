@@ -113,6 +113,85 @@ void test_hub_stage_and_camera() {
             std::fabs(eye[2] + 3.833663f) < 0.01f);
       for (int i = 0; i < 40; ++i) cam.step(0.1f);
       CHECK(std::fabs(cam.fov_deg - 23.5f) < 0.05f);
+      // The move to a preset: a cubic Hermite over 0.75 s (half way at
+      // half time, there at the end), the yaw the short way round.
+      carview::HubCamera b;
+      b.yaw = b.target_yaw = 0.0f;
+      b.set_preset(*main_p);
+      const float y0 = b.yaw, y1 = b.target_yaw;
+      b.step(0.375f);
+      CHECK(std::fabs(b.yaw - (y0 + 0.5f * (y1 - y0))) < 1e-4f);
+      b.step(0.1f);
+      const float u = 0.475f / 0.75f;
+      CHECK(std::fabs(b.yaw - (y0 + u * u * (3.0f - 2.0f * u) * (y1 - y0))) < 1e-4f);
+      b.step(0.3f);
+      CHECK(std::fabs(b.yaw - y1) < 1e-5f && std::fabs(b.distance - b.target_dist) < 1e-5f);
+      carview::HubCamera w;
+      w.yaw = 3.0f;
+      carview::CarCameraPreset back{};
+      back.pos[2] = -4.0f, back.face[2] = 1.0f, back.fov = 30.0f;  // behind the car: yaw pi
+      w.set_preset(back);
+      CHECK(std::fabs(w.target_yaw - 3.14159f) < 1e-3f);
+      w.yaw = -3.0f;
+      w.set_preset(back);
+      CHECK(std::fabs(w.target_yaw + 3.14159f) < 1e-3f);  // -pi, not round through 0
+      // HorizonAutoshow's path snaps.
+      carview::HubCamera s;
+      s.set_preset(*main_p, true);
+      CHECK(s.yaw == s.target_yaw && s.distance == s.target_dist && s.fov_deg == s.target_fov_deg);
+    }
+    // The animated sequences (camera.zip): HomeSpaceCams' <Cams> root, the
+    // eye in the car's body axes mirrored into the model's frame and lifted
+    // to its ground; the loop wraps at the ResetPlayback cam.
+    {
+      const char* cams =
+          "<Cams CutQueueType=\"Time\" NumCams=\"2\">"
+          "<Cam Version=\"3\" Group=\"0\" Type=\"Animateable\" StartCut=\"0\" duration=\"0\">"
+          "<Anim PosAnimType=\"CarSpace\" RotAnimType=\"CarSpace\" NumKeys=\"1\">"
+          "<Key Time=\"0\" PosX=\"-3\" PosY=\"0.5\" PosZ=\"6\" Yaw=\"150\" Pitch=\"0\" Roll=\"0\" FOV=\"19\"/>"
+          "</Anim></Cam>"
+          "<Cam Version=\"3\" Group=\"1\" Type=\"ResetPlayback\" StartCut=\"10\"/></Cams>";
+      cutscene::Library lib;
+      std::string err;
+      CHECK(cutscene::parse_camera_sequences(cams, lib, &err));
+      const cutscene::Cutscene* seq = lib.find("");
+      CHECK(seq && seq->cams.size() == 1 && std::fabs(seq->duration - 10.0) < 1e-9 &&
+            std::fabs(seq->cams[0].duration - 10.0) < 1e-9);
+      if (seq) {
+        carview::HubCamera c;
+        c.ground_y = -0.3f;
+        c.play(seq);
+        c.step(12.0f);  // wraps
+        const auto v = c.view();
+        CHECK(std::fabs(v.eye[0] + 3.0f) < 1e-4f && std::fabs(v.eye[1] - 0.2f) < 1e-4f &&
+              std::fabs(v.eye[2] + 6.0f) < 1e-4f);
+        CHECK(std::fabs(v.fov_deg - 19.0f) < 1e-4f && std::fabs(c.sequence_t - 12.0) < 1e-9);
+        // Body yaw 150: forward (sin, 0, cos) = (0.5, 0, -0.866), z mirrored.
+        CHECK(std::fabs(v.forward[0] - 0.5f) < 1e-3f && std::fabs(v.forward[2] - 0.866f) < 1e-3f);
+        // A preset from a sequence starts its blend at the sequence's view.
+        carview::CarCameraPreset p{};
+        p.pos[0] = 4.0f, p.face[0] = -1.0f, p.fov = 30.0f;
+        c.set_preset(p);
+        CHECK(!c.sequence && std::fabs(c.fov_deg - 19.0f) < 1e-4f);
+      }
+      CHECK(!cutscene::parse_camera_sequences("<Foo/>", lib, &err));
+    }
+    {
+      using carview::HubRoom;
+      auto shot = carview::hub_camera_shot(HubRoom::kPaintShop, -1, false, 0, false);
+      CHECK(shot.sequence_member == "HomeSpaceCams.xml" && shot.preset.empty());
+      shot = carview::hub_camera_shot(HubRoom::kPaintShop, -1, true, 4, false);
+      CHECK(shot.sequence_member.empty() && shot.preset == "LiveryPaintMenu_Rims");
+      shot = carview::hub_camera_shot(HubRoom::kWorkshop, 34, false, 0, false);
+      CHECK(shot.sequence_member == "WorkshopCams.xml" && shot.sequence == "Upgrade_Part_FRONT");
+      shot = carview::hub_camera_shot(HubRoom::kWorkshop, -1, false, 0, false);
+      CHECK(shot.sequence_member == "HomeSpaceCams.xml");
+      shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, true);
+      CHECK(shot.preset == "CarColorSel");
+      shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, false);
+      CHECK(shot.sequence_member == "HomeSpaceCams.xml");
+      shot = carview::hub_camera_shot(HubRoom::kGarage, -1, false, 0, false);
+      CHECK(shot.sequence_member.empty() && shot.preset.empty());
     }
     using carview::HubRoom;
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 34, false, false) == "Upgrades_FrontBumper");

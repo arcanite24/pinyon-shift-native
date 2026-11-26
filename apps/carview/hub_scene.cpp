@@ -256,28 +256,175 @@ std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor
   }
 }
 
-void HubCamera::set_preset(const CarCameraPreset& p) {
+std::string_view workshop_part_sequence(int part_enum) {
+  // UpgradeAreas' slots (cars/database.cpp upgrade_slots) on the seven
+  // sequences' names; the engine and drivetrain parts take the hood's and
+  // the rear wheel's (interim: the original's choice for them is not
+  // traced, Q221).
+  if (part_enum == 34) return "Upgrade_Part_FRONT";
+  if (part_enum == 35 || part_enum == 18) return "Upgrade_Part_REAR";
+  if (part_enum == 9) return "Upgrade_Part_WING";
+  if (part_enum == 36 || (part_enum >= 12 && part_enum <= 29)) return "Upgrade_Part_HOOD";
+  if (part_enum == 37) return "Upgrade_Part_SIDE";
+  if (part_enum == 4 || part_enum == 5 || part_enum == 8 || part_enum == 10 || part_enum == 11 || part_enum == 38 ||
+      part_enum == 39 || part_enum == 43)
+    return "Upgrade_Part_FRONTWHEEL";
+  if (part_enum >= 30 && part_enum <= 33) return "Upgrade_Part_REARWHEEL";
+  return "";
+}
+
+HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int paint_region, bool colour_select) {
+  static constexpr std::string_view kHomeSpace = "HomeSpaceCams.xml";
+  HubCameraShot s;
+  switch (room) {
+    case HubRoom::kAutoshow:
+      if (colour_select) s.preset = "CarColorSel";
+      else s.sequence_member = kHomeSpace;
+      break;
+    case HubRoom::kPaintShop:
+      if (editor_open) {
+        // CPaintMenu's six presets; the calipers take the disc's unused
+        // LiveryPaintMenu_Brakes (the original's menu has no calipers row).
+        static constexpr std::string_view kRegion[7] = {
+            "LiveryPaintMenu_Body", "LiveryPaintMenu_Hood",   "LiveryPaintMenu_Wing",       "LiveryPaintMenu_Mirrors",
+            "LiveryPaintMenu_Rims", "LiveryPaintMenu_Brakes", "LiveryPaintMenu_TintWindows"};
+        s.preset = kRegion[std::clamp(paint_region, 0, 6)];
+      } else {
+        s.sequence_member = kHomeSpace;
+      }
+      break;
+    case HubRoom::kWorkshop:
+      if (const std::string_view seq = workshop_part_sequence(part_enum); !seq.empty()) {
+        s.sequence_member = "WorkshopCams.xml";
+        s.sequence = seq;
+      } else {
+        s.sequence_member = kHomeSpace;
+      }
+      break;
+    default: break;
+  }
+  return s;
+}
+
+namespace {
+
+// An eye and look direction (the car model's frame) as the orbit's yaw,
+// pitch and distance about the ray's nearest point to the origin; a ray past
+// the origin's back keeps a short distance.
+void orbit_from_ray(const float eye[3], const float fwd[3], float& yaw, float& pitch, float& dist, float target[3]) {
+  dist = std::max(0.5f, -(eye[0] * fwd[0] + eye[1] * fwd[1] + eye[2] * fwd[2]));
+  for (int i = 0; i < 3; ++i) target[i] = eye[i] + dist * fwd[i];
+  pitch = std::asin(std::clamp(-fwd[1], -1.0f, 1.0f));
+  yaw = std::atan2(-fwd[0], fwd[2]);
+}
+
+float nearest_turn(float to, float from) {
+  while (to - from > kPi) to -= 2.0f * kPi;
+  while (to - from < -kPi) to += 2.0f * kPi;
+  return to;
+}
+
+}  // namespace
+
+void HubCamera::set_preset(const CarCameraPreset& p, bool snap) {
   const float fl = std::sqrt(p.face[0] * p.face[0] + p.face[1] * p.face[1] + p.face[2] * p.face[2]);
   if (fl < 1e-4f) return;
-  const float fx = p.face[0] / fl, fy = p.face[1] / fl, fz = p.face[2] / fl;
-  // The ray's nearest point to the car's origin is the aim; a ray past the
-  // origin's back keeps a short distance.
-  const float dist = std::max(0.5f, -(p.pos[0] * fx + p.pos[1] * fy + p.pos[2] * fz));
-  target_pos[0] = p.pos[0] + dist * fx;
-  target_pos[1] = p.pos[1] + dist * fy;
-  target_pos[2] = -(p.pos[2] + dist * fz);  // the game's +Z front is the engine's -Z
-  target_dist = dist;
-  target_pitch = std::asin(std::clamp(-fy, -1.0f, 1.0f));
-  // The nearest turn to the current one, so the car does not spin round.
-  float to = std::atan2(-fx, -fz);
-  while (to - target_yaw > kPi) to -= 2.0f * kPi;
-  while (to - target_yaw < -kPi) to += 2.0f * kPi;
-  target_yaw = to;
+  // The game's +Z front is the engine's -Z.
+  const float eye[3] = {p.pos[0], p.pos[1], -p.pos[2]};
+  const float fwd[3] = {p.face[0] / fl, p.face[1] / fl, -p.face[2] / fl};
+  // From the view on screen now: a sequence's, else the orbit's.
+  if (sequence) {
+    const View v = view();
+    orbit_from_ray(v.eye, v.forward, yaw, pitch, distance, target);
+    if (v.fov_deg > 1.0f) fov_deg = v.fov_deg;
+    sequence = nullptr;
+  }
+  float to = 0.0f;
+  orbit_from_ray(eye, fwd, to, target_pitch, target_dist, target_pos);
+  // The short way round, so the car does not spin.
+  target_yaw = nearest_turn(to, yaw);
   target_fov_deg = p.fov;
   if (fov_deg <= 1.0f) fov_deg = p.fov;
   auto_orbit = false;
   user_orbited = false;
   manual_idle_s = 0.0f;
+  if (snap) {
+    yaw = target_yaw;
+    pitch = target_pitch;
+    distance = target_dist;
+    std::copy_n(target_pos, 3, target);
+    fov_deg = target_fov_deg;
+    blend_len = 0.0f;
+    return;
+  }
+  from_yaw = yaw;
+  from_pitch = pitch;
+  from_dist = distance;
+  from_fov = fov_deg;
+  std::copy_n(target, 3, from_pos);
+  blend_t = 0.0f;
+  blend_len = kPresetBlendSeconds;
+}
+
+void HubCamera::play(const cutscene::Cutscene* seq) {
+  if (seq == sequence) return;
+  if (!seq) {
+    // The orbit takes over where the sequence's view is.
+    const View v = view();
+    orbit_from_ray(v.eye, v.forward, yaw, pitch, distance, target);
+    target_yaw = yaw;
+    target_pitch = pitch;
+    target_dist = distance;
+    std::copy_n(target, 3, target_pos);
+    fov_deg = target_fov_deg = v.fov_deg;
+    sequence = nullptr;
+    return;
+  }
+  sequence = seq;
+  sequence_t = 0.0;
+  blend_len = 0.0f;
+  auto_orbit = false;
+  user_orbited = false;
+}
+
+HubCamera::View HubCamera::view() const {
+  View v{};
+  if (sequence && !sequence->cams.empty() && sequence->duration > 0.0) {
+    const double t = std::fmod(std::max(0.0, sequence_t), sequence->duration);
+    const cutscene::Sample s = cutscene::sample(*sequence, t);
+    if (s.cam_index >= 0) {
+      const cutscene::Cam& cam = sequence->cams[size_t(s.cam_index)];
+      cutscene::Frame frame;  // the car's body axes
+      if (cam.pos_space == cutscene::AnimSpace::kPartSpace && !cam.keys.empty()) {
+        std::array<double, 3> part{};
+        if (cutscene::find_part(parts, cam.keys[0].car_part, part)) frame = cutscene::part_frame(frame, part);
+      }
+      const cutscene::WorldCamera w = cutscene::to_world(s.pose, frame, cam.in_cockpit);
+      // Body axes to the model's frame: z mirrored, the ground at ground_y.
+      v.eye[0] = float(w.eye[0]);
+      v.eye[1] = float(w.eye[1]) + ground_y;
+      v.eye[2] = -float(w.eye[2]);
+      v.forward[0] = float(w.forward[0]);
+      v.forward[1] = float(w.forward[1]);
+      v.forward[2] = -float(w.forward[2]);
+      v.up[0] = float(w.up[0]);
+      v.up[1] = float(w.up[1]);
+      v.up[2] = -float(w.up[2]);
+      v.fov_deg = float(w.fov_deg);
+      return v;
+    }
+  }
+  const float cp = std::cos(pitch), sp = std::sin(pitch);
+  const float off[3] = {cp * std::sin(yaw), sp, -cp * std::cos(yaw)};
+  for (int i = 0; i < 3; ++i) {
+    v.eye[i] = target[i] + distance * off[i];
+    v.forward[i] = -off[i];
+  }
+  v.up[0] = 0.0f;
+  v.up[1] = 1.0f;
+  v.up[2] = 0.0f;
+  v.fov_deg = fov_deg;
+  return v;
 }
 
 void HubCamera::set_focus(HubCameraFocus focus) {
@@ -398,6 +545,8 @@ void HubCamera::set_framing(float shift_x, float shift_y) {
 }
 
 void HubCamera::nudge_orbit(float dyaw, float dpitch, float ddist) {
+  if (sequence) play(nullptr);
+  blend_len = 0.0f;
   auto_orbit = false;
   user_orbited = true;
   manual_idle_s = 0.0f;
@@ -422,12 +571,28 @@ void HubCamera::step(float dt) {
     target_yaw += orbit_speed * orbit_blend * safe_dt;
   }
   const float alpha = 1.0f - std::exp(-7.0f * safe_dt);
+  lens_shift_x += (target_lens_shift_x - lens_shift_x) * alpha;
+  lens_shift_y += (target_lens_shift_y - lens_shift_y) * alpha;
+  if (sequence) {
+    sequence_t += safe_dt;
+    return;
+  }
+  if (blend_t < blend_len) {
+    // The preset move: a cubic Hermite with zero end tangents.
+    blend_t = std::min(blend_len, blend_t + safe_dt);
+    const float u = blend_t / blend_len;
+    const float s = u * u * (3.0f - 2.0f * u);
+    yaw = from_yaw + (target_yaw - from_yaw) * s;
+    pitch = from_pitch + (target_pitch - from_pitch) * s;
+    distance = from_dist + (target_dist - from_dist) * s;
+    for (int i = 0; i < 3; ++i) target[i] = from_pos[i] + (target_pos[i] - from_pos[i]) * s;
+    if (target_fov_deg > 1.0f) fov_deg = from_fov + (target_fov_deg - from_fov) * s;
+    return;
+  }
   yaw += (target_yaw - yaw) * alpha;
   pitch += (target_pitch - pitch) * alpha;
   distance += (target_dist - distance) * alpha;
   for (int i = 0; i < 3; ++i) target[i] += (target_pos[i] - target[i]) * alpha;
-  lens_shift_x += (target_lens_shift_x - lens_shift_x) * alpha;
-  lens_shift_y += (target_lens_shift_y - lens_shift_y) * alpha;
   if (target_fov_deg > 1.0f) fov_deg += (target_fov_deg - fov_deg) * alpha;
 }
 
@@ -658,23 +823,34 @@ WorldTriangles build_hub_stage(HubRoom room, float car_half_w, float car_half_l,
 void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_t height, ShowroomFrame& out,
                      bool reverse_z) {
   out = ShowroomFrame{};
-  const float cp = std::cos(cam.pitch), sp = std::sin(cam.pitch);
-  const float eye[3] = {
-      cam.target[0] + cam.distance * cp * std::sin(cam.yaw),
-      cam.target[1] + cam.distance * sp,
-      cam.target[2] - cam.distance * cp * std::cos(cam.yaw),
-  };
+  const HubCamera::View cv = cam.view();
+  const float* eye = cv.eye;
   float view[16], proj[16], vp[16];
-  build_look_at(eye, cam.target, view);
+  if (cam.sequence) {
+    // The sequence's own roll: the view from its forward and up.
+    float f[3] = {cv.forward[0], cv.forward[1], cv.forward[2]};
+    float r[3] = {f[1] * cv.up[2] - f[2] * cv.up[1], f[2] * cv.up[0] - f[0] * cv.up[2], f[0] * cv.up[1] - f[1] * cv.up[0]};
+    const float rl = std::max(1e-6f, std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]));
+    for (float& c : r) c /= rl;
+    const float u[3] = {r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]};
+    view[0] = r[0], view[4] = r[1], view[8] = r[2], view[12] = -(r[0] * eye[0] + r[1] * eye[1] + r[2] * eye[2]);
+    view[1] = u[0], view[5] = u[1], view[9] = u[2], view[13] = -(u[0] * eye[0] + u[1] * eye[1] + u[2] * eye[2]);
+    view[2] = -f[0], view[6] = -f[1], view[10] = -f[2], view[14] = f[0] * eye[0] + f[1] * eye[1] + f[2] * eye[2];
+    view[3] = 0.0f, view[7] = 0.0f, view[11] = 0.0f, view[15] = 1.0f;
+  } else {
+    build_look_at(eye, cam.target, view);
+  }
   const float aspect = height > 0 ? float(width) / float(height) : (16.0f / 9.0f);
   // A disc preset's own field of view, else the room's.
-  const float fov_deg = cam.fov_deg > 1.0f ? cam.fov_deg : (room == HubRoom::kAutoshow) ? 36.0f : 38.0f;
+  const float fov_deg = cv.fov_deg > 1.0f ? cv.fov_deg : (room == HubRoom::kAutoshow) ? 36.0f : 38.0f;
   build_perspective(fov_deg * (kPi / 180.0f), aspect, 0.1f, 120.0f, reverse_z, proj);
 
   // Subtle architectural shift-lens framing in the Autoshow pavilion keeps the hero car
   // cleanly elevated above the bottom carousel rail and balanced left of the right spec card
-  // without tilting vertical lines.
-  if (room == HubRoom::kAutoshow) {
+  // without tilting vertical lines (the engine's own camera only: a disc
+  // sequence frames itself).
+  if (cam.sequence) {
+  } else if (room == HubRoom::kAutoshow) {
     const float sx = cam.has_explicit_framing ? cam.lens_shift_x : 0.11f;
     const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.16f;
     proj[8] += sx;

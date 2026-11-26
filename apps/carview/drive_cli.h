@@ -43,6 +43,17 @@ struct DriveConfig {
   bool near_given = false, have_spawn = false, cli_spawn_given = false, fast_travel = false, render_ground = false,
        async_stream = false, flat_world = false, no_props = false, no_far = false, no_trees = false;
   bool cli_title_screen = false, cli_title_menu = false;
+  // The hub rooms (MENU-02): --hub-studio keeps the engine's studio stage in
+  // place of the rooms' own tracks; --hub-shot <room> <png> (a harness: autoshow,
+  // workshop, paintshop, garage) opens the room's first screen once free roam is
+  // up, captures it after --hub-shot-delay seconds and quits; with
+  // --hub-shot-round-trip it then closes the room, captures free roam
+  // (<png>_roam.png), opens the room again and captures <png>_again.png.
+  bool cli_hub_studio = false;
+  std::string cli_hub_shot_room;
+  std::filesystem::path cli_hub_shot_png;
+  double cli_hub_shot_delay = 4.0;
+  bool cli_hub_shot_round_trip = false;
   bool bench = false;
   bench::Scenario bench_scenario = bench::Scenario::kCustom;
   bool bench_scenario_set = false;
