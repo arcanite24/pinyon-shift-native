@@ -291,7 +291,8 @@ ClubMenu::Action ClubMenu::press(Button b, ClubMenuData& d) {
 }
 
 std::vector<StringRef> rally_entry_text_refs() {
-  return {rally_text::kGateTitle, rally_text::kGateMsg, rally_text::kConfirmTitle, rally_text::kConfirmMsg};
+  return {rally_text::kGateTitle,    rally_text::kGateMsg,   rally_text::kConfirmTitle,
+          rally_text::kConfirmMsg,  rally_text::kQuitTitle, rally_text::kQuitMsg};
 }
 
 std::vector<StringRef> club_text_refs() {

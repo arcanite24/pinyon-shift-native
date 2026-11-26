@@ -7,6 +7,7 @@
 
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "pause_screen.h"
 #include "scene_screen.h"
 #include "ui4_chrome.h"
 
@@ -255,163 +256,229 @@ void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w,
   }
 }
 
-void build_rally_hub_screen(ui::List& out, const RallyHubState& st, float w, float h) {
-  if (!st.active) return;
-  const float u = h / 720.0f;
-  const SceneFrame f{0.5f * w - 640.0f * u, 0.5f * h - 360.0f * u, u};
-  ui4::subtle_vignette(out, w, h, 0.28f);
+// The hub (game_rally_free_roam_flow's rally_hub: CShowUIScreen_RallyHub on
+// H_RALLY_HUB over BgLoop.wmv, the player car removed). The scene is the
+// street race hub's: seven ticket slots, StreetRaceTicket4 the focused one,
+// a title tape, the player bar and the help bar. interim (SPEC_QUESTIONS
+// Q211; no capture of the original hub): the tickets are the unlocked
+// championships in MultiStageSeries order, centred on the focused slot.
+namespace {
 
-  // Drive from H_STREET_RACE_HUB (+3.0 deg horizontal tilted Event Ticket cards,
-  // clean open Colorado behind, ZERO rounded kPanelAlt boxes!).
-  const fh1::UiScene* hub_sc = ui_scene("H_STREET_RACE_HUB");
-  (void)hub_sc;
+constexpr std::string_view kRallyHubScene = "H_RALLY_HUB";
+constexpr int kTicketSlots = 7, kFocusSlot = 4;
 
-  // Top-right Career Strip (Wristband + Car + Credits).
-  ui4::CareerStripData csd;
-  csd.band_name = st.wristband_name.empty() ? "YELLOW WRISTBAND" : st.wristband_name;
-  csd.band_next = st.rally_level >= 1 ? "" : "RALLY CHAMPION";
-  csd.band_level = std::max(1, st.rally_level);
-  csd.band_points = st.rally_xp;
-  csd.band_hi = st.next_level_xp;
-  csd.car_name = resolve_rally_car_name(st.car_name);
-  csd.car_class = st.car_class;
-  csd.car_pi = st.car_pi;
-  csd.credits = st.credits;
-  ui4::career_strip(out, csd, w, h);
+namespace hub_text {
+constexpr StringRef kTitle{"rally", {}, 0x2794, "HORIZON RALLY"};
+constexpr StringRef kWinnerTakes{"CareerEventUI", {}, 0x4293, "WINNER TAKES"};
+constexpr StringRef kNew{"CareerEventUI", "IDS_New", 0, "NEW"};
+constexpr StringRef kTrackLayout{"rally", {}, 0x2E2A, "TRACK LAYOUT"};
+constexpr StringRef kEntryRestrictions{"CareerEventUI", {}, 0x4953, "ENTRY RESTRICTIONS:"};
+constexpr StringRef kNoRestrictions{"InGame", {}, 0x8C7F, "There are no restrictions for this event."};
+constexpr StringRef kCurrentCarEligible{"Calendar", {}, 0x8FCA, "CURRENT CAR ELIGIBLE"};
+constexpr StringRef kClassOrBelow{"CareerEventUI", {}, 0x7013, "Car Class must be {0} or below."};
+constexpr StringRef kCredits{"UnitStrings", "IDS_Units_Credits", 0, "{0} Cr"};
+constexpr StringRef kEnterEvent{"HelpButtons", {}, 0x494B, "ENTER EVENT"};
+constexpr StringRef kBack{"HelpButtons", "IDS_Back", 0, "BACK"};
+constexpr StringRef kSelect{"HelpButtons", "IDS_Select", 0, "SELECT"};
+// The engine's own (no table has them).
+constexpr StringRef kExtras{{}, {}, 0, "EXTRAS", true};
+constexpr StringRef kReplayHeats{{}, {}, 0, "REPLAY HORIZON RALLY HEATS", true};
+constexpr StringRef kFitKit{{}, {}, 0, "FIT RALLY KIT", true};
+constexpr StringRef kKitFitted{{}, {}, 0, "RALLY KIT FITTED", true};
+constexpr StringRef kFreeRoam{{}, {}, 0, "FREE ROAM COLORADO DIRT", true};
+constexpr StringRef kReturn{{}, {}, 0, "RETURN TO COLORADO", true};
+constexpr StringRef kRivals{{}, {}, 0, "RALLY RIVALS (TIME TRIAL)", true};
+}  // namespace hub_text
 
-  // Tilted +3.0 deg H_STREET_RACE_HUB title + horizontal ticket carousel.
-  {
-    ui4::TiltScope tilt(out, f.x(640.0f), f.y(380.0f), ui4::kTiltRad);
+std::string hub_upper(std::string s) {
+  for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
+  return s;
+}
 
-    // TitleTapeText ("HORIZON RALLY HUB")
-    ui4::brush(out, f.x(84.0f), f.y(104.0f), f.x(560.0f), f.y(162.0f), ui4::kPink, true);
-    out.text(f.x(106.0f), f.y(115.0f), "HORIZON RALLY", ui4::style(ui::Font::kE, 38.0f * u, kWhite));
+int hub_child(const SceneDraw& sd, int parent, std::string_view name) {
+  for (int c : sd.children_of(parent))
+    if (sd.object_name(c) == name) return c;
+  return -1;
+}
 
-    // Horizontal tilted Event Ticket cards (up to 4 visible, centered around selected).
-    const int n = int(st.items.size());
-    const int vis = std::min(4, n);
-    const int start = std::clamp(st.selected - 1, 0, std::max(0, n - vis));
-    const float card_w = 264.0f * u;
-    const float card_h = 286.0f * u;
-    const float gap = 20.0f * u;
-    const float row_x0 = f.x(88.0f);
-    const float row_y0 = f.y(194.0f);
+void show_all(SceneScreen& sc, int node) {
+  if (node < 0) return;
+  sc.show(node);
+  for (int c : sc.scene().children_of(node)) show_all(sc, c);
+}
 
-    std::array<float, 4> dirt_top{}, shadow_uv{}, largetape{};
-    const bool has_dirt_top = ui_texture("KITPARTS/TICKETDIRTTOPSR", dirt_top);
-    const bool has_shadow = ui_texture("KITPARTS/DROPSHADOW", shadow_uv);
-    const bool has_ltape = ui_texture("KITPARTS/LARGETAPE", largetape);
-
-    for (int k = 0; k < vis; ++k) {
-      const int idx = start + k;
-      const auto& it = st.items[size_t(idx)];
-      const bool sel = (idx == st.selected);
-      const float cx0 = row_x0 + float(k) * (card_w + gap);
-      const float cy0 = row_y0;
-      const float cx1 = cx0 + card_w;
-      const float cy1 = cy0 + card_h;
-      out.add_hit(cx0, cy0, cx1, cy1, ui::kHitRow, idx);
-
-      if (has_shadow) {
-        out.image(cx0 - 8.0f * u, cy0 + 8.0f * u, cx1 + 10.0f * u, cy1 + 14.0f * u, shadow_uv,
-                  ui::rgba(0, 0, 0, sel ? 185 : 120));
-      } else {
-        out.rect(cx0 + 5.0f * u, cy0 + 7.0f * u, cx1 + 5.0f * u, cy1 + 7.0f * u, ui::rgba(0, 0, 0, 125));
-      }
-
-      // Ticket body (#0E0E0E sharp distressed card).
-      out.rect(cx0, cy0, cx1, cy1, ui4::kCharcoalDark);
-
-      // Top artwork zone: real RallyTickets/00N or EventTickets/FestivalRaces artwork!
-      const float art_h = 128.0f * u;
-      std::array<float, 4> art_uv{};
-      char rtk[64];
-      std::snprintf(rtk, sizeof rtk, "EVENTTICKETS/RALLYTICKETS/%03d", (idx % 8) + 1);
-      const bool has_art = ui_texture(rtk, art_uv) ||
-                           ui_texture("EVENTTICKETS/STREETRACES/SR_0" + std::to_string((idx % 9) + 1), art_uv) ||
-                           ui_texture("LOADING/BGLOADINGIMAGES/IMAGE" + std::to_string((idx % 10) + 1), art_uv);
-      if (has_art) {
-        out.image(cx0, cy0, cx1, cy0 + art_h, art_uv, it.unlocked ? kWhite : ui::rgba(110, 114, 122, 220));
-      } else {
-        out.rect(cx0, cy0, cx1, cy0 + art_h, sel ? ui::rgba(58, 22, 38, 255) : ui::rgba(32, 34, 40, 255));
-      }
-      if (has_dirt_top) {
-        out.image(cx0, cy0, cx1, cy0 + art_h, dirt_top, ui::rgba(255, 255, 255, 90));
-      }
-
-      // LARGETAPE header banner across ticket midpoint (#F90064 selected / #212121 unselected).
-      const float ty0 = cy0 + art_h - 14.0f * u;
-      const float ty1 = ty0 + 38.0f * u;
-      const uint32_t tape_col = sel ? ui4::kPink : ui4::kPillGrey;
-      if (has_ltape) {
-        out.image(cx0 - 4.0f * u, ty0, cx1 + 4.0f * u, ty1, largetape, tape_col);
-      } else {
-        ui4::brush(out, cx0 - 4.0f * u, ty0, cx1 + 4.0f * u, ty1, tape_col, false);
-      }
-      ui::TextStyle tt = ui4::style(ui::Font::kE, 16.0f * u, kWhite);
-      ui4::fit_text(it.title, tt, card_w - 20.0f * u, 10.0f * u);
-      out.text(cx0 + 10.0f * u, ty0 + 0.5f * (ty1 - ty0 - tt.size), it.title, tt);
-
-      // Class badge + Prize + Stages + Status strip (all sharp, zero rounded boxes).
-      if (!it.class_badge.empty()) {
-        out.rect(cx0 + 10.0f * u, ty1 + 10.0f * u, cx0 + 66.0f * u, ty1 + 32.0f * u,
-                 it.unlocked ? kRallyOrange : ui::rgba(80, 84, 92, 230));
-        out.text(cx0 + 38.0f * u, ty1 + 15.0f * u, it.class_badge,
-                 ui4::style(ui::Font::kE, 12.5f * u, kWhite, ui::Align::kCenter));
-      }
-      if (!it.status_badge.empty()) {
-        const uint32_t scol = !it.unlocked ? kRallyRed : (!it.eligible ? kRallyOrange : ui4::kYellow);
-        out.text(cx1 - 10.0f * u, ty1 + 15.0f * u, it.status_badge,
-                 ui4::style(ui::Font::kE, 12.0f * u, scol, ui::Align::kRight));
-      }
-      if (it.cash_prize > 0) {
-        out.text(cx0 + 10.0f * u, ty1 + 44.0f * u, thousands(it.cash_prize) + " Cr",
-                 ui4::style(ui::Font::kE, 19.0f * u, ui4::kYellow, ui::Align::kLeft, true));
-      }
-      if (it.stages > 0) {
-        char sbuf[48];
-        std::snprintf(sbuf, sizeof sbuf, "%d STAGE%s", it.stages, it.stages == 1 ? "" : "S");
-        out.text(cx1 - 10.0f * u, ty1 + 48.0f * u, sbuf,
-                 ui4::style(ui::Font::kB, 12.0f * u, kMuted, ui::Align::kRight));
-      }
-      if (!it.stage_names.empty()) {
-        ui::TextStyle ss = ui4::style(ui::Font::kB, 11.5f * u, kWhite);
-        ui4::fit_text(it.stage_names.front(), ss, card_w - 20.0f * u, 8.5f * u);
-        out.text(cx0 + 10.0f * u, ty1 + 76.0f * u, it.stage_names.front(), ss);
-      }
-      if (it.kind == RallyHubItem::kRivals) {
-        const std::string pb_txt =
-            it.pb_time_s > 0.0 ? ("PB: " + race::format_rivals_time(it.pb_time_s)) : "PB: --:--.---";
-        const std::string tgt_txt = it.rival_name + "  " + race::format_rivals_time(it.target_time_s);
-        ui::TextStyle pbs = ui4::style(ui::Font::kB, 10.5f * u, kRallyCyan);
-        ui4::fit_text(pb_txt, pbs, card_w - 20.0f * u, 8.0f * u);
-        out.text(cx0 + 10.0f * u, ty1 + 94.0f * u, pb_txt, pbs);
-        ui::TextStyle tgs = ui4::style(ui::Font::kB, 10.5f * u, kRallyGold);
-        ui4::fit_text(tgt_txt, tgs, card_w - 20.0f * u, 8.0f * u);
-        out.text(cx0 + 10.0f * u, cy1 - 24.0f * u, tgt_txt, tgs);
-      } else if (!it.lock_reason.empty()) {
-        ui::TextStyle ws = ui4::style(ui::Font::kB, 10.5f * u, kRallyRed);
-        ui4::fit_text(it.lock_reason, ws, card_w - 20.0f * u, 8.0f * u);
-        out.text(cx0 + 10.0f * u, cy1 - 24.0f * u, it.lock_reason, ws);
-      }
-      if (sel) {
-        out.rect(cx0, cy0, cx1, cy0 + 4.0f * u, ui4::kPink);
-        out.rect(cx0, cy1 - 4.0f * u, cx1, cy1, ui4::kPink);
-      }
+void bind_rally_ticket(SceneScreen& sc, int slot, const RallyHubItem& it) {
+  const int tk = sc.node("VisibilityGroup/Ticket", slot);
+  if (tk < 0) return;
+  if (const int bg = sc.node("bg", tk); bg >= 0 && !it.ticket.empty())
+    sc.at(bg).texture = "EVENTTICKETS/RALLYTICKETS/" + hub_upper(it.ticket);
+  // interim (Q211): no championship best time is kept, so the time tape
+  // (BEST TIME: {0}) is hidden; the points tape is the scene's HIDE_POINTS.
+  sc.hide(sc.node("Tape", tk));
+  sc.hide(sc.node("TEXT_RACE_TIME", tk));
+  sc.hide(sc.node("Points", tk));
+  sc.text(sc.node("TEXT_CASH_AVAILABLE", tk), text_of(hub_text::kWinnerTakes));
+  const int credits = sc.node("TEXT_CREDITS", tk);
+  sc.text(credits, format1(text_of(hub_text::kCredits), thousands(it.cash_prize)));
+  // The stackers are not run: the prize sits on its own tape, under WINNER
+  // TAKES (the scene rests it over the cash tape).
+  const SceneDraw& sd = sc.scene();
+  if (const int tape = sc.node("Credits/Tape", tk); tape >= 0 && credits >= 0)
+    if (const int mid = hub_child(sd, tape, "Centre"); mid >= 0) {
+      const auto r = sd.rect(mid);
+      sc.at(credits).dy = 0.5f * (r[1] + r[3]) - sd.at(credits)[1];
     }
-
-    // Compact bottom-tilted Rally Readiness PILL02 strip (no rounded boxes!).
-    const float ry0 = f.y(510.0f);
-    ui4::pill(out, f.x(88.0f), ry0, f.x(1188.0f), ry0 + 36.0f * u, ui4::kPillGrey, ui4::PillKind::kHud01);
-    const std::string ready_txt =
-        st.kit_status.is_rally_upgraded
-            ? ("RALLY SPEC READY  •  " + resolve_rally_car_name(st.car_name) + "  •  TIRES / SUSPENSION / TRANS")
-            : ("RALLY KIT REQUIRED  •  FIT RALLY KIT (TIRES/SUSP/GEARBOX) (" + thousands(st.rally_kit_cost) + " Cr)");
-    out.text(f.x(104.0f), ry0 + 11.0f * u, ready_txt,
-             ui4::style(ui::Font::kB, 13.5f * u, st.kit_status.is_rally_upgraded ? kRallyGreen : kRallyOrange));
+  if (const int icon = sc.node("CarClass/ClassIcon", tk); icon >= 0) {
+    if (it.class_badge.empty()) sc.hide(icon);
+    else sc.at(icon).texture = "PICLASS/CLASS_" + hub_upper(it.class_badge) + "_SM";
   }
+  const int el = sc.node("TEXT_ELIGIBILITY", tk);
+  if (it.eligible) sc.text(el, text_of(hub_text::kCurrentCarEligible));
+  else sc.hide(el);
+  if (it.best_place > 0) {
+    sc.text(sc.node("CompleteSticker/TEXT_POS", tk), std::to_string(it.best_place) + place_suffix(it.best_place));
+    sc.hide(sc.node("NewSticker", tk));
+  } else {
+    sc.hide(sc.node("CompleteSticker", tk));
+    show_all(sc, sc.node("NewSticker", tk));
+    sc.text(sc.node("NewSticker/TEXT_NEW", tk), text_of(hub_text::kNew));
+  }
+}
 
-  ui4::button_bar(out, {{"A", "SELECT"}, {"DPAD_LR", "BROWSE"}, {"B", "BACK"}}, w, h);
+void bind_track_layout(SceneScreen& sc, int slot, const RallyHubItem& it) {
+  const int rs = sc.node("Restrictions");
+  if (rs < 0) return;
+  show_all(sc, rs);
+  sc.hide(sc.node("VisibilityGroup/Ticket", slot));
+  sc.hide(sc.node("VisibilityGroup/Shadow", slot));
+  const std::string t = hub_upper(it.ticket);
+  if (const int bg = sc.node("bg", rs); bg >= 0) sc.at(bg).texture = "EVENTTICKETS/RALLYTICKETS/REVERSE/" + t;
+  if (const int map = sc.node("Rectangle", rs); map >= 0) sc.at(map).texture = "EVENTTICKETS/RALLYTICKETS/TRACKS/" + t;
+  sc.text(sc.node("TEXT_RESTRICTIONS_TITLE", rs), text_of(hub_text::kEntryRestrictions));
+  const int rv = sc.node("TEXT_RESTRICTIONS_VALUE", rs);
+  sc.text(rv, sc.wrap(rv, it.restriction.empty() ? text_of(hub_text::kNoRestrictions) : it.restriction));
+  sc.text(sc.node("TEXT_RESTRICTIONS_TRACK", rs), text_of(hub_text::kTrackLayout));
+}
+
+// The engine's EXTRAS: a plain list over the dimmed hub, outside the
+// original's layout.
+void draw_hub_extras(ui::List& out, const RallyHubState& st, float w, float h) {
+  const float u = h / 720.0f;
+  out.rect(0, 0, w, h, ui::rgba(0, 0, 0, 170));
+  const float x0 = 0.5f * w - 260.0f * u, x1 = 0.5f * w + 260.0f * u;
+  float y = 0.5f * h - 150.0f * u;
+  ui4::brush(out, x0, y, x0 + 220.0f * u, y + 44.0f * u, ui4::kPink, true);
+  out.text(x0 + 16.0f * u, y + 9.0f * u, text_of(hub_text::kExtras), ui4::style(ui::Font::kE, 26.0f * u, kWhite));
+  y += 60.0f * u;
+  const int n = int(st.items.size()) - st.tickets;
+  for (int i = 0; i < n; ++i) {
+    const RallyHubItem& it = st.items[size_t(st.tickets + i)];
+    const bool sel = i == st.extras_selected;
+    out.add_hit(x0, y, x1, y + 34.0f * u, ui::kHitRow, st.tickets + i);
+    ui4::pill(out, x0, y, x1, y + 34.0f * u, sel ? ui4::kPink : ui4::kPillGrey, ui4::PillKind::kHud01);
+    ui::TextStyle ts = ui4::style(ui::Font::kB, 16.0f * u, kWhite);
+    out.text(x0 + 14.0f * u, y + 8.0f * u, rally_hub_extra_label(it), ts);
+    if (!it.status_badge.empty())
+      out.text(x1 - 14.0f * u, y + 9.0f * u, it.status_badge,
+               ui4::style(ui::Font::kB, 13.0f * u, sel ? kWhite : ui4::kYellow, ui::Align::kRight));
+    y += 40.0f * u;
+  }
+  if (!st.notice.empty()) {
+    ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * u, ui4::kYellow);
+    ui4::fit_text(st.notice, ns, x1 - x0, 9.0f * u);
+    out.text(x0, y + 8.0f * u, st.notice, ns);
+  }
+  ui4::button_bar(out, {{"A", text_of(hub_text::kSelect)}, {"B", text_of(hub_text::kBack)}}, w, h);
+}
+
+}  // namespace
+
+std::string rally_hub_extra_label(const RallyHubItem& it) {
+  switch (it.kind) {
+    case RallyHubItem::kHeats: return text_of(hub_text::kReplayHeats);
+    case RallyHubItem::kRivals: return text_of(hub_text::kRivals);
+    case RallyHubItem::kFitRallyKit: return text_of(it.eligible ? hub_text::kFitKit : hub_text::kKitFitted);
+    case RallyHubItem::kFreeRoam: return text_of(hub_text::kFreeRoam);
+    case RallyHubItem::kReturnColorado: return text_of(hub_text::kReturn);
+    case RallyHubItem::kChampionship: return it.title;
+  }
+  return it.title;
+}
+
+const std::vector<const char*>& rally_hub_nodes() {
+  static const std::vector<const char*> k = {
+      "TitleTape/Group/TitleTapeText", "ScrollingList", "StreetRaceTicket1", "StreetRaceTicket4", "StreetRaceTicket7",
+      "VisibilityGroup/Ticket/bg", "TEXT_RACE_TIME", "TEXT_CASH_AVAILABLE", "TEXT_CREDITS", "TEXT_POINTS",
+      "CarClass/ClassIcon", "TEXT_ELIGIBILITY", "NewSticker/TEXT_NEW", "CompleteSticker/TEXT_POS", "Restrictions",
+      "TEXT_RESTRICTIONS_TITLE", "TEXT_RESTRICTIONS_VALUE", "TEXT_RESTRICTIONS_TRACK", "PlayerBar", "TopRow/SP/Wristband",
+      "TEXT_CAR", "TEXT_CR", "ButtonBar"};
+  return k;
+}
+
+std::vector<StringRef> rally_hub_text_refs() {
+  return {hub_text::kTitle,      hub_text::kWinnerTakes, hub_text::kNew,       hub_text::kTrackLayout,
+          hub_text::kEntryRestrictions, hub_text::kNoRestrictions, hub_text::kCurrentCarEligible, hub_text::kEnterEvent,
+          hub_text::kBack};
+}
+
+bool build_rally_hub_screen(ui::List& out, const DriveHud* hud, const RallyHubState& st, float w, float h) {
+  if (!st.active) return false;
+  SceneScreen sc(kRallyHubScene);
+  if (!sc.ok()) return false;
+  sc.bindings().fit_text = false;
+  sc.hide(sc.node("ButtonBar"));
+  sc.text(sc.node("TitleTape/Group/TitleTapeText"), text_of(hub_text::kTitle));
+  const int sel = std::clamp(st.selected, 0, std::max(0, st.tickets - 1));
+  int focus_slot = -1;
+  for (int k = 1; k <= kTicketSlots; ++k) {
+    const int slot = sc.node("StreetRaceTicket" + std::to_string(k));
+    const int idx = sel + (k - kFocusSlot);
+    if (slot < 0) continue;
+    if (idx < 0 || idx >= st.tickets) {
+      sc.hide(slot);
+      continue;
+    }
+    bind_rally_ticket(sc, slot, st.items[size_t(idx)]);
+    if (k == kFocusSlot) focus_slot = slot;
+  }
+  if (st.track_layout && focus_slot >= 0) bind_track_layout(sc, focus_slot, st.items[size_t(sel)]);
+  if (hud) {
+    // The player bar shows the rally wristband (Next_Level / Points: the
+    // rally XP to the next one).
+    DriveHud bar = *hud;
+    bar.band_name = st.wristband_name;
+    bar.band_next = st.band_next;
+    bar.band_points = st.rally_xp;
+    bar.band_hi = st.next_level_xp;
+    bar.band_collect_ready = false;
+    bar.credits = st.credits;
+    bind_player_bar(sc, bar, st.band_texture);
+  } else {
+    sc.hide(sc.node("PlayerBar"));
+  }
+  sc.draw(out, SceneScreen::frame(w, h));
+  if (st.extras_open) {
+    draw_hub_extras(out, st, w, h);
+    return true;
+  }
+  if (!st.help_hidden) {
+    // interim (Q211): CShowUIScreen_RallyHub's exits are okCareer, okRivals,
+    // selectCar, purchaseCar, return and outpost; the buttons are not in the
+    // data. A enters the ticket, Y its reverse (TRACK LAYOUT), B returns;
+    // BACK opens the engine's EXTRAS.
+    ui4::button_bar(out,
+                    {{"A", text_of(hub_text::kEnterEvent)},
+                     {"B", text_of(hub_text::kBack)},
+                     {"Y", text_of(hub_text::kTrackLayout)},
+                     {"BACK", text_of(hub_text::kExtras)}},
+                    w, h);
+    if (!st.notice.empty()) {
+      const float u = h / 720.0f;
+      ui::TextStyle ns = ui4::style(ui::Font::kB, 13.0f * u, ui4::kYellow, ui::Align::kCenter);
+      out.text(0.5f * w, h - 92.0f * u, st.notice, ns);
+    }
+  }
+  return true;
 }
 
 // rally.str's STAGE RESULTS and the common CONTINUE.
@@ -695,25 +762,17 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
     return 0;
   };
 
-  // 1. RALLY_HEATS intro (always accessible with loaned WRX Rally twin).
-  {
-    RallyHubItem it;
-    it.kind = RallyHubItem::kHeats;
-    it.event_id = catalog.heats.event_id;
-    it.title = catalog.heats.name;
-    it.class_badge = "LOAN";
-    it.unlocked = true;
-    it.eligible = true;
-    it.cash_prize = catalog.heats.cash_prize;
-    it.stages = 1;
-    it.stage_names = {"Horizon Rally Heats Qualifier (Subaru WRX Rally)"};
-    const int bp = best_place_of(catalog.heats.event_id);
-    it.status_badge = bp > 0 ? (std::to_string(bp) + place_suffix(bp)) : "START HERE";
-    st.items.push_back(std::move(it));
+  // The rally wristband in the player bar.
+  for (const auto& wb : catalog.wristbands) {
+    if (wb.level == save.rally_level && !wb.thumbnail.empty()) st.band_texture = "WRISTBANDS/" + hub_upper(wb.thumbnail);
+    if (wb.level == save.rally_level + 1) st.band_next = wb.name;
   }
 
-  // 2. All 7 x 4-stage championships in hub order.
+  // 1. The tickets: the unlocked championships in hub order.
   for (const auto& ch : catalog.championships) {
+    if (!catalog.is_championship_unlocked(ch.event_id, save.rally_xp, heats_done, save.event_unlocks,
+                                          save.event_results))
+      continue;
     RallyHubItem it;
     it.kind = RallyHubItem::kChampionship;
     it.event_id = ch.event_id;
@@ -722,128 +781,84 @@ RallyHubState make_rally_hub_state(const race::RallyCatalog& catalog, const driv
     it.cash_prize = ch.cash_prize;
     it.stages = int(ch.stages.size());
     for (const auto& s : ch.stages) it.stage_names.push_back(s.name);
-    it.unlocked = catalog.is_championship_unlocked(ch.event_id, save.rally_xp, heats_done, save.event_unlocks,
-                                                   save.event_results);
+    it.ticket = ch.event_ticket;
+    // The reverse's restriction as the event summary's (the championships'
+    // RestrictionDescription ids are in no loaded table; Q211).
+    it.restriction = !ch.restriction.empty() ? ch.restriction
+                                             : format1(text_of(hub_text::kClassOrBelow), it.class_badge);
+    it.unlocked = true;
     const bool class_ok = (car_class_id <= ch.target_class);
     const bool rally_ok = st.kit_status.is_rally_upgraded;
-    it.eligible = it.unlocked && class_ok && rally_ok;
-    const int bp = best_place_of(ch.event_id);
-    if (!it.unlocked) {
-      it.status_badge = "LOCKED";
-      if (!heats_done) it.lock_reason = "COMPLETE HORIZON RALLY HEATS FIRST";
-      else if (save.rally_xp < ch.unlock_points_req)
-        it.lock_reason = "NEEDS " + std::to_string(ch.unlock_points_req) + " RALLY XP";
-      else
-        it.lock_reason = "COMPLETE PREVIOUS RALLY CHAMPIONSHIP";
-    } else if (!rally_ok) {
+    it.eligible = class_ok && rally_ok;
+    it.best_place = best_place_of(ch.event_id);
+    if (!rally_ok) {
       it.status_badge = "NEEDS RALLY KIT";
       it.lock_reason = "FIT RALLY KIT (TIRES/SUSP/GEARBOX)";
     } else if (!class_ok) {
       it.status_badge = "CLASS > " + it.class_badge;
       it.lock_reason = "CAR EXCEEDS CLASS " + it.class_badge + " LIMIT";
-    } else {
-      it.status_badge = bp > 0 ? (std::to_string(bp) + place_suffix(bp)) : "READY";
+    } else if (it.best_place > 0) {
+      it.status_badge = std::to_string(it.best_place) + place_suffix(it.best_place);
     }
     st.items.push_back(std::move(it));
   }
+  st.tickets = int(st.items.size());
 
-  // 2b. Rally Rivals / Time Trials (offline Bronze/Silver/Gold .shgh target ghosts & PB tracking).
+  // 2. The engine's EXTRAS. RALLY_HEATS again with the loaned WRX Rally twin.
   {
-    int rival_route = catalog.heats.route_id > 0 ? catalog.heats.route_id : 24;
-    std::string stage_title = catalog.heats.name.empty() ? "Horizon Rally Stage" : catalog.heats.name;
-    double base_stage_time = 0.0;
-    for (double seg : catalog.heats.track.best) base_stage_time += seg;
-    if (!catalog.championships.empty() && !catalog.championships.front().stages.empty()) {
-      const auto& stg = catalog.championships.front().stages.front();
-      if (stg.route_id > 0) {
-        rival_route = stg.route_id;
-        stage_title = stg.name;
-        double sum = 0.0;
-        for (double seg : stg.track.best) sum += seg;
-        if (sum > 10.0) base_stage_time = sum;
-      }
-    }
-    if (base_stage_time < 15.0) base_stage_time = 95.0;
-    const std::string stage_eid = "stage:" + std::to_string(rival_route);
     RallyHubItem it;
-    it.kind = RallyHubItem::kRivals;
+    it.kind = RallyHubItem::kHeats;
     it.event_id = catalog.heats.event_id;
-    it.route_id = rival_route;
-    it.title = "RALLY RIVALS / TIME TRIAL";
-    it.class_badge = "RIVAL";
-    it.unlocked = true;
-    it.eligible = true;
+    it.title = catalog.heats.name;
+    it.class_badge = "LOAN";
+    it.cash_prize = catalog.heats.cash_prize;
     it.stages = 1;
-    it.stage_names = {stage_title};
-    it.rival_tiers = race::generate_rivals_targets(stage_eid, base_stage_time, 15000, true);
-    if (!ghosts_dir.empty()) {
-      race::GhostRun pb;
-      if (race::load_personal_best_ghost(ghosts_dir, stage_eid, pb, nullptr) && pb.total_time > 0.0) {
-        it.pb_time_s = pb.total_time;
-        it.pb_clean = pb.clean;
-      }
-    }
-    int tier_idx = 1;
-    if (it.pb_time_s > 0.0) {
-      if (it.pb_time_s < it.rival_tiers[2].target_time_s) tier_idx = 0;
-      else if (it.pb_time_s < it.rival_tiers[1].target_time_s) tier_idx = 3;
-      else if (it.pb_time_s < it.rival_tiers[0].target_time_s) tier_idx = 2;
-    }
-    it.rival_tier_index = tier_idx;
-    if (tier_idx == 0 && it.pb_time_s > 0.0) {
-      it.rival_name = "PERSONAL BEST";
-      it.target_time_s = it.pb_time_s;
-      it.bounty_cr = it.rival_tiers[2].bounty_cr;
-      it.status_badge = "GOLD+";
-    } else {
-      const auto& rt = it.rival_tiers[size_t(std::clamp(tier_idx - 1, 0, 2))];
-      it.rival_name = rt.rival_name;
-      it.target_time_s = rt.target_time_s;
-      it.bounty_cr = rt.bounty_cr;
-      it.status_badge = rt.tier_label;
-    }
-    it.cash_prize = it.bounty_cr;
+    const int bp = best_place_of(catalog.heats.event_id);
+    it.best_place = bp;
+    it.status_badge = bp > 0 ? (std::to_string(bp) + place_suffix(bp)) : "";
     st.items.push_back(std::move(it));
   }
-
-  // 3. One-click Fit Rally Kit conversion.
+  // The one-press rally kit (the original's rally conversion is the car
+  // select's popup).
   {
     RallyHubItem it;
     it.kind = RallyHubItem::kFitRallyKit;
-    it.title = st.kit_status.is_full_kit ? "RALLY KIT INSTALLED" : "FIT HORIZON RALLY KIT";
-    it.class_badge = "KIT";
-    it.unlocked = true;
+    it.title = "FIT RALLY KIT";
     it.eligible = !st.kit_status.is_full_kit;
-    it.status_badge = st.kit_status.is_full_kit ? "FITTED" : (thousands(st.rally_kit_cost) + " CR");
+    it.status_badge = st.kit_status.is_full_kit ? "" : (thousands(st.rally_kit_cost) + " CR");
     st.items.push_back(std::move(it));
   }
-
-  // 4. Free Roam ColoradoDirt.
+  // Driving ColoradoDirt (the original has no free roam there).
   {
     RallyHubItem it;
     it.kind = RallyHubItem::kFreeRoam;
     it.title = "FREE ROAM COLORADO DIRT";
-    it.class_badge = "DIRT";
-    it.unlocked = true;
-    it.eligible = true;
-    it.status_badge = "DRIVE";
     st.items.push_back(std::move(it));
   }
-
-  // 5. Return to Colorado Festival.
+  // Back to the festival without the quit popup.
   {
     RallyHubItem it;
     it.kind = RallyHubItem::kReturnColorado;
-    it.title = "RETURN TO COLORADO FESTIVAL";
-    it.class_badge = "EXIT";
-    it.unlocked = true;
-    it.eligible = true;
-    it.status_badge = "COLORADO";
+    it.title = "RETURN TO COLORADO";
     st.items.push_back(std::move(it));
   }
+  (void)ghosts_dir;
 
-  st.selected = std::clamp(selected, 0, std::max(0, int(st.items.size()) - 1));
+  st.selected = std::clamp(selected, 0, std::max(0, st.tickets - 1));
   return st;
+}
+
+int rally_hub_ticket_index(const race::RallyCatalog& catalog, const drive::DriveSave& save, int64_t event_id) {
+  const bool heats_done = race::is_rally_heats_completed(save);
+  int idx = 0;
+  for (const auto& ch : catalog.championships) {
+    if (!catalog.is_championship_unlocked(ch.event_id, save.rally_xp, heats_done, save.event_unlocks,
+                                          save.event_results))
+      continue;
+    if (ch.event_id == event_id) return idx;
+    ++idx;
+  }
+  return 0;
 }
 
 RallyServiceAreaState make_rally_service_state(const race::RallyChampionshipSession& session,
@@ -899,6 +914,11 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
   st.total_credits = reward.total_credits;
   st.new_balance = new_balance;
   st.standings = session.overall_standings();
+  for (const auto& ch : catalog.championships) st.final_xp_req = std::max(st.final_xp_req, ch.unlock_points_req);
+  for (const auto& wb : catalog.wristbands) {
+    if (wb.level == reward.new_rally_level) st.band_thumb = wb.thumbnail;
+    if (wb.level == reward.new_rally_level + 1) st.band_next_thumb = wb.thumbnail;
+  }
   if (reward.is_heats) {
     st.unlocked_text = "BEAUMONT RALLY CHAMPIONSHIP & ALL 28 STAGES";
   } else if (reward.champion_unlocked) {
@@ -908,6 +928,13 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
       st.unlocked_text = next->name + " (" + race::rally_class_name(next->target_class) + " CLASS)";
   }
   return st;
+}
+
+std::vector<RallyPostStep> rally_post_steps(const RallyChampResultsState& st) {
+  if (st.is_heats) return {RallyPostStep::kTable};
+  std::vector<RallyPostStep> s{RallyPostStep::kBanner, RallyPostStep::kPoints};
+  if (st.champion_unlocked) s.push_back(RallyPostStep::kChampion);
+  return s;
 }
 
 }  // namespace carview

@@ -586,6 +586,45 @@ ToTheAutoshow VO and opens the first Autoshow, then the hub tutorial
 (`drive_app.cpp`, `drive_input_hub_screens.cpp`; Q145 has the flow and its
 interims).
 
+## The Rally hub (`H_RALLY_HUB`)
+
+The original's Rally "free roam" is a menu, not a drive:
+`game_rally_free_roam_flow` removes the car, plays
+`Splash_Intros/BgLoop.wmv` looped and shows `CShowUIScreen_RallyHub` on
+`H_RALLY_HUB` until a ticket, the car select or the quit popup takes over.
+`build_rally_hub_screen` (`rally_hub.cpp`) draws that scene over BgLoop
+(`drive_render_loop.cpp` plays it; for now the backdrop shows black, Q211):
+
+- **Tickets.** The scrolling list's seven `StreetRaceTicket` slots, slot 4
+  focused, carry the unlocked championships in the database's order, each
+  on its `EventTickets/RallyTickets/<EventTicket>` artwork: WINNER TAKES
+  and the prize on the Credits tape, the class badge, NEW until the event
+  is finished, then the best place on the complete sticker. BEST TIME and
+  the points tape stay hidden.
+- **Track layout (Y).** The focused slot flips to `Restrictions`: the
+  `REVERSE/<n>` card, the `TRACKS/<n>` map, TRACK LAYOUT and ENTRY
+  RESTRICTIONS with the class line.
+- **Player bar.** Level, car, class and credits as on the pause menu, with
+  the Rally wristband in the band slot.
+- **Buttons.** A ENTER EVENT, B BACK (the QUIT HORIZON RALLY popup, A OK,
+  B CANCEL), Y TRACK LAYOUT, and BACK EXTRAS: the engine's list of replay
+  heats, fit rally kit, free roam ColoradoDirt and return to Colorado.
+  With no ticket unlocked the extras stay open.
+- **First visit.** `first_time_hub_flow` hides the help bar and takes no
+  input while `ChampionshipStructure`, a 0.5 s pause and `CoDriverIntro`
+  play, each waited on; then `rally_flow` 4 is saved.
+
+`club_rally_corpus_tests` renders it (the captures folder's
+`rally_hub_*_offline_wp5.png`); the live captures are
+`rally_hub_*_live_wp5.png`. Interims and guesses are Q211.
+
+A championship's end (`rally_post_steps`) shows the Rally's own banner
+(`H_POST_RACE_RALLY_FINISHED`, drawn as the festival one; X shows the
+engine's standings page), points (`H_POST_RACE_RALLY_POINTS`, the Rally
+bands; the points-to-final line is set but hidden under the bar) and,
+once, `H_HORIZON_RALLY_CHAMPION`
+(`race_screens.cpp`; Q212).
+
 ## The hub's menus and car lists
 
 - **Option lists on `H_GENERIC`** (`hub_menus.h`). MY PROFILE, OPTIONS,

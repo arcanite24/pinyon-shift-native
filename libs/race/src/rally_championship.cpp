@@ -372,8 +372,8 @@ bool load_rally_catalog(const std::filesystem::path& state_root, const cars::Par
         {}, [&](sqlite3_stmt* st) { split_map[sqlite3_column_int64(st, 0)].push_back(sqlite3_column_double(st, 1)); });
 
   // 6. MultiStageSeriesEvents (7 championships in hub order).
-  if (!query("select m.Id, m.EventId, e.HorizonEventID, e.Name, e.TargetClass, e.CashPrize, e.UnlockPointsReq "
-             "from MultiStageSeriesEvents m join Events e on e.Id = m.EventId order by m.Id",
+  if (!query("select m.Id, m.EventId, e.HorizonEventID, e.Name, e.TargetClass, e.CashPrize, e.UnlockPointsReq, "
+             "e.EventTicket, e.RestrictionDescription from MultiStageSeriesEvents m join Events e on e.Id = m.EventId order by m.Id",
              {}, [&](sqlite3_stmt* st) {
                RallyChampionshipDef ch;
                ch.series_id = sqlite3_column_int(st, 0);
@@ -383,6 +383,8 @@ bool load_rally_catalog(const std::filesystem::path& state_root, const cars::Par
                ch.target_class = sqlite3_column_int(st, 4);
                ch.cash_prize = sqlite3_column_int64(st, 5);
                ch.unlock_points_req = sqlite3_column_int(st, 6);
+               ch.event_ticket = col_text(st, 7);
+               ch.restriction = resolve_text(strings, col_text(st, 8), {});
                if (auto it = unlock_map.find(ch.event_id); it != unlock_map.end()) ch.unlocks_event_id = it->second;
                out.championships.push_back(std::move(ch));
              })) {

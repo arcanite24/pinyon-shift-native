@@ -3471,8 +3471,7 @@ The rest of the first visit now runs, with `rally_flow` as its step
 All four triggers are in `Rally_DialogueScript_EN.xml`. Interims: the
 heats start from the engine's pre-race menu, where the original runs a
 rolling start under AI control with the pep talk and the heats' intro
-cutscene; the VO is queued, not waited on; the hub's help bar is not
-disabled during the tutorial; and the Autoshow's restriction is the Rally
+cutscene; and the Autoshow's restriction is the Rally
 cars only, though the behaviour's actual contents are unknown. In the
 harness's play bake none of the five Rally cars (nor the heats' loaner)
 is baked, so the restricted Autoshow is empty and the hub opens straight
@@ -3480,12 +3479,17 @@ away ("no cars to buy"). The five are on sale at a price
 (`club_rally_corpus_tests` checks the dealer list; 7,000 to 240,000 Cr),
 so a bake with them lists them (checked with a baked stand-in accepted by
 the filter: the Autoshow listed that one car and its exit opened the
-hub). The VO lines queue behind each other
-(`VoPlayer::trigger` without interrupt).
+hub).
+
+Changed (WP5): the hub tutorial now follows `first_time_hub_flow`: the
+help bar is hidden and the hub takes no input while `ChampionshipStructure`
+plays (waited on), a 0.5 s pause, and `CoDriverIntro` (waited on); then
+the help bar returns and step 4 is saved. A line that never starts
+(no Rally VO bank) gives up after 2 s. The two post-race lines still
+queue behind each other (`VoPlayer::trigger` without interrupt).
 
 Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
-classes, credits), the heats' rolling start and cutscene, and whether
-the flow waits for each VO line before the hub takes input.
+classes, credits) and the heats' rolling start and cutscene.
 
 ## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
 
@@ -3799,12 +3803,10 @@ string). The champion part plays once: `DriveSave::rally_end_seen`
 the podium, with VO `HorizonRallyChampion`. Inferred: that trigger as
 `CPlayRallyChampionDialogue`'s line (the behaviour takes no parameter;
 the dialogue script also has `ChampionAgain` and `PlayerWonRally`).
-Interims: the page is still the engine's layout, not
-`h_post_race_rally_finished` / `h_post_race_rally_points` (both load from
-the v4 overlay); `h_horizon_rally_champion` (a title tape, a position
-tape and a timer over `Rally_Champion_Cutscene`) is not drawn and the
-cutscene is not played; the champion strip's "HORIZON RALLY CHAMPION!"
-is the engine's. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
+Changed (WP5, Q212): a championship's end now shows
+`H_POST_RACE_RALLY_FINISHED`, `H_POST_RACE_RALLY_POINTS` and, once,
+`H_HORIZON_RALLY_CHAMPION`; the engine's page is X on the banner and the
+heats' end. Still interim: `Rally_Champion_Cutscene` is not played. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
 read "NEW EVENT UNLOCKED", "NOW GET OVER TO THE", "NOW GET TO THE",
 "YOU'VE UNLOCKED THE" / "HORIZON RALLY FINAL": the final's unlock
 notice, not the champion screen.
@@ -3837,16 +3839,12 @@ which the reference save confirms).
 
 ## Q149 (V4-11, V4-21, V4-23, not blocking): the Rally world, the co-driver's lines and level-up gifts
 
-V4-11, the hub as free roam: not built. The original's Rally is
-ColoradoDirt free roam: `game_rally_free_roam_flow` with event tickets
-from the package's `career_event_activations.xml`,
-`rally_event_activations.xml` and `gas_stations.xml`, map icons from
-`rallymapprofile*.xml` and the hub's radio. The engine switches to
-ColoradoDirt and opens its hub overlay (with a FREE ROAM COLORADO DIRT
-row that closes it). Building it needs the free-roam ticket trigger and
-popup, the world markers and the map's Rally profile, which belong with
-the event-activation and map work, not with this branch's screens. Kept
-as the interim: the overlay.
+V4-11, the hub as free roam: settled (Q211). The reading above, that
+the Rally is ColoradoDirt free roam, was wrong: `game_rally_free_roam_flow`
+removes the car and shows `CShowUIScreen_RallyHub` on `H_RALLY_HUB` over
+BgLoop.wmv, a paused menu. The engine now draws that scene. Driving
+ColoradoDirt (the FREE ROAM COLORADO DIRT extra, its world triggers and
+speed traps) is the engine's own, kept off the hub's main layout.
 
 V4-21, the co-driver and Alice: the first visit now plays
 `PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
@@ -3868,6 +3866,10 @@ ownership filter for DLC cars. In v4's `pause.xml` the Message Centre
 (`CShowMessageCentreScreen`) has `onGiftCarPrepare` /
 `onGiftCarUnprepare` transitions, so a gift is claimed from a message,
 which suggests a choice among the level's rows (`MaxGiftCars` 5 to 7).
+The UI archive also has `UI4/BuyCar/GiftCarChoice.xds` (the recomp's UI
+catalogue), more support for a choice. WP5 searched the recomp's derived
+source for `CCoDriverPepTalk`, `CRallyStageIntro` and the gift message
+and found no decompiled body, so V4-21's and V4-23's rules stay open.
 
 Needed: which line each of `CCoDriverPepTalk`, `CRallyStageIntro` and
 the finish picks; the gift message's rule (one of N or all N) and its
@@ -4994,3 +4996,87 @@ Open:
 
 Needed: the writers of those two bytes, or a map capture with a found but
 uncollected barn.
+
+## Q211 (V4-11, not blocking): the Rally hub's guesses and interims
+
+V4-11 is settled against Q149's reading: the Rally's "free roam" is not
+a drive. `game_rally_free_roam_flow` removes the car, shows BgLoop.wmv
+and `CShowUIScreen_RallyHub` on `H_RALLY_HUB`, and its exits are
+`okCareer` (a ticket), `okRivals`, `selectCar`, `purchaseCar`, `outpost`
+and `return` (the QUIT HORIZON RALLY popup, which unloads to the title
+through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
+"The Rally hub"). Guessed or kept as the engine's:
+
+- The buttons. The scene's button bar is filled at run time; the engine
+  shows A ENTER EVENT, B BACK, Y TRACK LAYOUT (the bgf's Restrictions
+  reverse) and BACK EXTRAS. No X RIVALS: the Rally rivals entry
+  (`okRivals`) is not built (Q147's V4-12).
+- The tickets: only the unlocked championships, in the
+  `MultiStageSeriesEvents` order (tickets 005, 004, 003, 001, 006, 007,
+  002). Whether the original also lists locked
+  tickets, and its order, is unmeasured.
+- The ticket's texts: WINNER TAKES and the prize, the class badge, NEW
+  while the event has never been finished, then its best place. BEST
+  TIME (`TEXT_RACE_TIME`) and the points tape are hidden; the original
+  fills them from data the engine does not keep per championship.
+- ENTRY RESTRICTIONS: the `RestrictionDescription` ids (`_&2027516xx`,
+  table 3093) resolve in no loaded string table, so the reverse shows
+  "Car Class must be <class> or below." (CareerEventUI 0x7013).
+- B's popup reads "return to the main menu" as in the original, but OK
+  goes back to Colorado, not to the title.
+- The engine's EXTRAS (BACK): replay the heats, fit the rally kit in one
+  press (the original converts a car through the car select's RALLY
+  CONVERSION popup), drive ColoradoDirt, and return to Colorado without
+  the popup. None of them is the original's.
+- The car select (`selectCar`), the purchase path (`purchaseCar`), the
+  hub's radio and the ticket ColorScheme tints are not built.
+- The backdrop is black in the live window. BgLoop.wmv (in the Rally
+  package, 1280x720 wmv3) opens, loops and decodes real frames, and
+  `atlas_update("fmv.frame")` succeeds, but the frame's atlas texels
+  never show on screen: a plain image of that atlas entry, drawn last,
+  is black too, at 1280x720 and at 640x360. So the atlas entry reads
+  black on the GPU; the hub's scene does not cover it. Not diagnosed
+  further.
+
+Needed: the hub's button bar contents, whether locked tickets show, what
+fills BEST TIME and the points tape, and the restriction strings' table.
+
+## Q212 (V4-14, RACE-23, not blocking): the Rally final's screens
+
+After a championship's last stage the engine now runs
+`game_rally_race_flow`'s end on the Rally's own scenes
+(`rally_post_steps`, drawn by `game_hud_core.cpp`):
+
+1. `H_POST_RACE_RALLY_FINISHED`: FINISHED and the place, as the festival
+   banner. A CONTINUE; X RACE RESULTS shows the engine's standings page
+   (B or A closes it).
+2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP and the Rally
+   level bar with the Rally wristbands' art. `TEXT_POINTS_TO_NEXT` is set
+   to PostRaceFlow's "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY
+   FINAL" / "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the
+   final's `UnlockPointsReq` (none once champion), but it does not show:
+   at the scene's rest it sits under the bar, as the career line does
+   (`17c_results_points_engine_wp2.png` shows only its last digits).
+3. Once, `H_HORIZON_RALLY_CHAMPION`, with `HorizonRallyChampion` (moved
+   from the finish to this screen). A returns to the hub.
+
+The intro heats keep the engine's results page (`game_rally_intro_flow`
+ends differently). `club_rally_corpus_tests` renders the three (the
+captures folder's `rally_{finished,points,champion}_offline_wp5.png`) and
+checks the lines and the steps. `carview --demo-rally-final` opens the
+sequence after a won first championship; the live captures are
+`rally_{finished,finished_results,points,champion,final_after}_live_wp5.png`.
+
+Interims: no earnings screen (the credits are on X's page); the prize-car
+step is not in the sequence; `Rally_Champion_Cutscene` is not played, so
+black is behind the champion screen; its texts are guesses, the title
+CareerEventUI's "HORIZON RALLY CHAMPION 2012" (0x2DD1) and the place on
+the position tape; the banner's help bar is guessed (no RESTART or
+REPLAY); the points line is hidden under the bar (above; Q96's scene
+rest); the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
+before the champion screen shows. Between stages the engine's STAGE
+RESULTS page stays (Q147). `race_flow::post_steps` is unchanged: the
+sequence runs on the results state.
+
+Needed: the final's help bars, the champion screen's texts and timing
+against the cutscene, and whether the earnings come before the points.

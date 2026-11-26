@@ -1111,7 +1111,27 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                                      e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST)) ||
                                    (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
                                     (e.button.button == SDL_BUTTON_LEFT || e.button.button == SDL_BUTTON_RIGHT));
-              if (confirm) {
+              auto& rs = app.rally_results_state;
+              const auto rsteps = carview::rally_post_steps(rs);
+              const auto rstep = rsteps[size_t(std::clamp(rs.step, 0, int(rsteps.size()) - 1))];
+              // X on the banner: the engine's standings page (RACE RESULTS).
+              const bool results_x = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_X) ||
+                                     (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                                      e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST);
+              if (results_x && rstep == carview::RallyPostStep::kBanner) {
+                rs.show_table = !rs.show_table;
+                app.audio_host.trigger_ui(rs.show_table ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
+              } else if (confirm && rs.show_table && rstep != carview::RallyPostStep::kTable) {
+                rs.show_table = false;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              } else if (confirm && rs.step + 1 < int(rsteps.size())) {
+                app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                ++rs.step;
+                // CPlayRallyChampionDialogue with the champion's screen (the
+                // line is inferred, Q147).
+                if (rsteps[size_t(rs.step)] == carview::RallyPostStep::kChampion)
+                  app.audio_host.trigger_vo("HorizonRallyChampion", false);
+              } else if (confirm) {
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 app.rally_results_open = false;
                 // The intro race's end (game_rally_intro_flow): to the first
@@ -1167,7 +1187,14 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
 }
 
 bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
-            if (app.rally_hub_open && app.rally_catalog.loaded) {
+            // The Rally hub (H_RALLY_HUB): left/right the tickets, A enters, Y the
+            // track layout, B the QUIT HORIZON RALLY popup, BACK the engine's
+            // EXTRAS (Q211). The popup takes the input while it is up.
+            if (app.rally_hub_open && app.rally_catalog.loaded && rally_entry == carview::RallyEntryPopup::kNone) {
+              const bool consumed = (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED &&
+                                     e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              // first_time_hub_flow: no input while the help bar is off.
+              if (app.rally_hub_tutorial != 0) return consumed;
               int64_t cid = 0;
               int clid = 4;
               current_car_info(cid, clid);
@@ -1176,24 +1203,27 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
               const auto hst = carview::make_rally_hub_state(app.rally_catalog, app.saved, app.have_garage ? &app.career_garage : nullptr,
                                                              db_ptr.get(), app.class_bands, app.car, clid, 0, disc,
                                                              app.rally_hub_selected, app.rally_notice);
-              const int n_items = std::max(1, int(hst.items.size()));
-              auto activate_rally = [&]() {
-                if (app.rally_hub_selected < 0 || size_t(app.rally_hub_selected) >= hst.items.size()) return;
-                const auto& it = hst.items[size_t(app.rally_hub_selected)];
+              const int tickets = hst.tickets;
+              const int extras = int(hst.items.size()) - tickets;
+              // No ticket yet (the intro heats quit): the EXTRAS stay open.
+              if (tickets == 0) app.rally_hub_extras = true;
+              auto activate_item = [&](const carview::RallyHubItem& it) {
                 if (it.kind == carview::RallyHubItem::kHeats) {
                   if (const std::string id = app.start_rally_heats(); !id.empty()) {
+                    app.rally_hub_extras = false;
                     app.next_event = id;
                     running = false;
                   }
                 } else if (it.kind == carview::RallyHubItem::kChampionship) {
-                  if (!it.unlocked || !it.eligible) {
+                  if (!it.eligible) {
                     app.rally_notice = it.lock_reason;
                     return;
                   }
                   if (app.rally_session.start_championship(app.rally_catalog, it.event_id, int(app.race_options.difficulty),
-                                                       app.race_options.seed)) {
+                                                           app.race_options.seed)) {
                     if (const auto* stg = app.rally_session.current_stage()) {
                       app.rally_hub_open = false;
+                      app.rally_hub_track_layout = false;
                       app.race_options.stage_title = stg->name;
                       app.next_event = "stage:" + std::to_string(stg->route_id);
                       running = false;
@@ -1221,53 +1251,120 @@ bool DriveSession::handle_rally_career_club_event(const SDL_Event& e) {
                     }
                   }
                 } else if (it.kind == carview::RallyHubItem::kFreeRoam) {
+                  app.rally_hub_extras = false;
                   app.rally_hub_open = false;
                 } else if (it.kind == carview::RallyHubItem::kReturnColorado) {
+                  app.rally_hub_extras = false;
                   app.rally_hub_open = false;
                   app.rally_world_switch = -1;
                   running = false;
                 }
               };
-              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_ESCAPE) { app.rally_hub_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
-                else if (e.key.key == SDLK_UP || e.key.key == SDLK_W || e.key.key == SDLK_LEFT || e.key.key == SDLK_A) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_S || e.key.key == SDLK_RIGHT || e.key.key == SDLK_D) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) { app.audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
+              enum class Press { kNone, kAccept, kBack, kPrev, kNext, kY, kExtras };
+              Press p = Press::kNone;
+              if (e.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode k = e.key.key;
+                if (k == SDLK_UP || k == SDLK_W || k == SDLK_LEFT || k == SDLK_A) p = Press::kPrev;
+                else if (k == SDLK_DOWN || k == SDLK_S || k == SDLK_RIGHT || k == SDLK_D) p = Press::kNext;
+                else if (!e.key.repeat) {
+                  if (k == SDLK_ESCAPE || k == SDLK_BACKSPACE) p = Press::kBack;
+                  else if (k == SDLK_RETURN || k == SDLK_KP_ENTER || k == SDLK_SPACE) p = Press::kAccept;
+                  else if (k == SDLK_Y) p = Press::kY;
+                  else if (k == SDLK_M || k == SDLK_TAB) p = Press::kExtras;
+                }
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST || e.gbutton.button == SDL_GAMEPAD_BUTTON_START) { app.rally_hub_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_UP || e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_DOWN || e.gbutton.button == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items; app.audio_host.trigger_ui(audio::UiCue::kMove); }
-                else if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) { app.audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
-              } else if (e.type == SDL_EVENT_MOUSE_MOTION) {
+                const auto b = e.gbutton.button;
+                if (b == SDL_GAMEPAD_BUTTON_EAST) p = Press::kBack;
+                else if (b == SDL_GAMEPAD_BUTTON_SOUTH) p = Press::kAccept;
+                else if (b == SDL_GAMEPAD_BUTTON_NORTH) p = Press::kY;
+                else if (b == SDL_GAMEPAD_BUTTON_BACK) p = Press::kExtras;
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP || b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) p = Press::kPrev;
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN || b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) p = Press::kNext;
+              } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
+                p = e.wheel.y > 0 ? Press::kPrev : e.wheel.y < 0 ? Press::kNext : Press::kNone;
+              } else if (e.type == SDL_EVENT_MOUSE_MOTION && app.rally_hub_extras) {
                 carview::ui::HitZone hz{};
-                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow &&
-                    hz.index >= 0 && hz.index < n_items && app.rally_hub_selected != hz.index) {
-                  app.rally_hub_selected = hz.index;
+                if (ui_mouse_hit(e.motion.x, e.motion.y, hz) && hz.group == carview::ui::kHitRow && hz.index >= tickets &&
+                    hz.index - tickets < extras && app.rally_hub_extra_selected != hz.index - tickets) {
+                  app.rally_hub_extra_selected = hz.index - tickets;
                   app.audio_host.trigger_ui(audio::UiCue::kMove);
                 }
               } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                if (e.button.button == SDL_BUTTON_RIGHT) {
-                  app.rally_hub_open = false;
-                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
-                } else if (e.button.button == SDL_BUTTON_LEFT) {
+                if (e.button.button == SDL_BUTTON_RIGHT) p = Press::kBack;
+                else if (e.button.button == SDL_BUTTON_LEFT) {
                   carview::ui::HitZone hz{};
                   if (ui_mouse_hit(e.button.x, e.button.y, hz)) {
-                    if (hz.group == carview::ui::kHitRow && hz.index >= 0 && hz.index < n_items) {
-                      app.rally_hub_selected = hz.index;
-                      app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                      activate_rally();
+                    if (hz.group == carview::ui::kHitRow && app.rally_hub_extras && hz.index >= tickets &&
+                        hz.index - tickets < extras) {
+                      app.rally_hub_extra_selected = hz.index - tickets;
+                      p = Press::kAccept;
                     } else if (hz.group == carview::ui4::kHitButton) {
-                      if (hz.index == 0) { app.audio_host.trigger_ui(audio::UiCue::kAccept); activate_rally(); }
-                      else if (hz.index == 2) { app.rally_hub_open = false; app.audio_host.trigger_ui(audio::UiCue::kCancel); }
+                      static constexpr Press kBar[] = {Press::kAccept, Press::kBack, Press::kY, Press::kExtras};
+                      if (hz.index >= 0 && hz.index < 4) p = kBar[hz.index];
                     }
                   }
                 }
-              } else if (e.type == SDL_EVENT_MOUSE_WHEEL) {
-                if (e.wheel.y > 0) app.rally_hub_selected = (app.rally_hub_selected + n_items - 1) % n_items;
-                else if (e.wheel.y < 0) app.rally_hub_selected = (app.rally_hub_selected + 1) % n_items;
-                app.audio_host.trigger_ui(audio::UiCue::kMove);
               }
-              return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
+              if (app.rally_hub_extras) {
+                const int n = std::max(1, extras);
+                if (p == Press::kPrev) app.rally_hub_extra_selected = (app.rally_hub_extra_selected + n - 1) % n;
+                else if (p == Press::kNext) app.rally_hub_extra_selected = (app.rally_hub_extra_selected + 1) % n;
+                else if ((p == Press::kBack || p == Press::kExtras) && tickets == 0) {
+                  if (p == Press::kBack) rally_entry = carview::RallyEntryPopup::kQuit;
+                  p = Press::kNone;
+                } else if (p == Press::kBack || p == Press::kExtras) app.rally_hub_extras = false;
+                else if (p == Press::kAccept && extras > 0) {
+                  app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                  activate_item(hst.items[size_t(tickets + std::clamp(app.rally_hub_extra_selected, 0, extras - 1))]);
+                }
+                if (p == Press::kPrev || p == Press::kNext) app.audio_host.trigger_ui(audio::UiCue::kMove);
+                if (p == Press::kBack || p == Press::kExtras) app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                return consumed;
+              }
+              switch (p) {
+                case Press::kPrev:
+                case Press::kNext: {
+                  const int to = std::clamp(app.rally_hub_selected + (p == Press::kNext ? 1 : -1), 0, std::max(0, tickets - 1));
+                  if (to != app.rally_hub_selected) {
+                    app.rally_hub_selected = to;
+                    app.rally_hub_track_layout = false;
+                    app.rally_notice.clear();
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                  break;
+                }
+                case Press::kAccept:
+                  if (tickets > 0) {
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    activate_item(hst.items[size_t(std::clamp(app.rally_hub_selected, 0, tickets - 1))]);
+                  }
+                  break;
+                case Press::kY:
+                  if (tickets > 0) {
+                    app.rally_hub_track_layout = !app.rally_hub_track_layout;
+                    app.audio_host.trigger_ui(audio::UiCue::kMove);
+                  }
+                  break;
+                case Press::kBack:
+                  if (app.rally_hub_track_layout) {
+                    app.rally_hub_track_layout = false;
+                  } else {
+                    // rally_event_entry_flow's return: the QUIT HORIZON RALLY popup.
+                    rally_entry = carview::RallyEntryPopup::kQuit;
+                    app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+                    break;
+                  }
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  break;
+                case Press::kExtras:
+                  app.rally_hub_extras = true;
+                  app.rally_hub_extra_selected = 0;
+                  app.rally_notice.clear();
+                  app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+                  break;
+                case Press::kNone: break;
+              }
+              return consumed;
             }
             // Horizon Rally's entry popups (A OK, B CANCEL).
             if (rally_entry != carview::RallyEntryPopup::kNone) {

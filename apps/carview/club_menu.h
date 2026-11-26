@@ -255,10 +255,15 @@ inline constexpr StringRef kConfirmTitle{"rally", "IDS_QuitHorizonToRally_Title"
 inline constexpr StringRef kConfirmMsg{"rally", "IDS_QuitHorizonToRally_Msg", 0,
                                        "Are you sure you want to quit Horizon Single Player and enter Horizon "
                                        "Rally?"};
+// The hub's B (rally_event_entry_flow's return).
+inline constexpr StringRef kQuitTitle{"rally", {}, 0xBA8F, "QUIT HORIZON RALLY"};
+inline constexpr StringRef kQuitMsg{"rally", {}, 0xAAF4,
+                                    "Are you sure you want to quit Horizon Rally and return to the main menu?"};
 }  // namespace rally_text
 // The Rally entry's popups: the yellow-wristband gate (A OK) and the
-// confirmation (A OK, B CANCEL; rally_confirm.png).
-enum class RallyEntryPopup : uint8_t { kNone, kGate, kConfirm };
+// confirmation (A OK, B CANCEL; rally_confirm.png); the hub's QUIT HORIZON
+// RALLY (A OK, B CANCEL).
+enum class RallyEntryPopup : uint8_t { kNone, kGate, kConfirm, kQuit };
 bool draw_rally_entry_popup(ui::List& l, RallyEntryPopup p, float w, float h);
 
 // The nodes the club screens bind (checked by the corpus test).
