@@ -1043,6 +1043,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         if (!app.show_title && !app.headless)
           carview::ftc_ui::draw_overlay(list, app.campaign.screen_overlay(), float(width), float(height));
         static double s_loading_fade_last_t = -1.0;
+        if (std::exchange(app.loading_hand_off, false) && !loading_screen.active())
+          loading_screen.fade_in_from_black();
         if (loading_screen.active()) {
           s_loading_fade_last_t = d.time;
           list.clear();

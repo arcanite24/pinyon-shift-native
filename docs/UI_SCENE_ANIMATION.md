@@ -287,6 +287,38 @@ off, the screens draw as before).
     (the ButtonBar stays at 100); the captures show the menu opening and
     closing at once.
 
+## Screen fades
+
+The flows' fades are not scene slides: they are the `CFadeIn` behaviour of
+`gamemodes.zip`'s `state_definitions.xml`, with a `FadeOptions` block
+(parser 8285F3A8; `CFadeIn`'s loader 829080C0 keeps it at offset +64). The
+block reads `Duration`, `HoldDuration`, `CurveType` (the names `Linear`
+= 0 and `S` = 1) and `Color`. The disc's global fades:
+
+| State | Duration | Hold | Curve | Colour |
+|---|---|---|---|---|
+| `global.fade_in` | 1.0 s | 0 | S | black |
+| `global.fade_out` | 1.0 s | 0 | S | black |
+| `global.fade_out_half_sec` | 0.5 s | 0 | S | black |
+
+The free-roam flow after a load blacks out and ends on `global.fade_in`.
+The engine keeps the three in `race/screen_fade.h` (the S curve taken as
+smoothstep, Q244), and `cutscene_corpus_tests` checks them against the
+disc's file. One fade now serves every screen:
+
+- **The load hand-off.** The load screen's close is `global.fade_in`: black,
+  then 1 s of S curve back to the game (`LoadingScreen::kFadeOutSec`). The
+  boot load and the world loads (fast travel, into and out of events) draw
+  their own load screens, so they hand the fade to the session's
+  (`DriveApp::loading_hand_off`); before this, only the title's load faded,
+  over 0.25 s. Capture: `load_handoff_fade_sheet_anim2.png` (0.25 s apart).
+- **The campaign's stage changes.** Every `TransitionKind` draws the black
+  fade: `fade_out_half_sec` to black, then `fade_in` (it was 0.55 s in
+  all, a cubic ease each way). The engine's pink brush wipe, its two slides and
+  the "HORIZON COLORADO" card on the wipe are gone.
+- **The reset.** Reset-to-road keeps its `GameTunableSettings.ini` timings
+  on the same black S-curve fade.
+
 ## Decoded, not yet played
 
 - **`H_GENERIC` / `H_GENERIC_TITLE`.** `INTRO` is 300 / 600 ms with no

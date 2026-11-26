@@ -37,7 +37,7 @@ add_executable(cutscene_tests cutscene_tests.cpp)
 target_link_libraries(cutscene_tests PRIVATE shift_cutscene)
 add_test(NAME cutscene_tests COMMAND cutscene_tests)
 add_executable(cutscene_corpus_tests cutscene_corpus_tests.cpp)
-target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene)
+target_link_libraries(cutscene_corpus_tests PRIVATE shift_cutscene shift_race shift_audio fh1data)
 add_test(NAME cutscene_corpus_tests COMMAND cutscene_corpus_tests)
 set_tests_properties(cutscene_corpus_tests PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120 LABELS corpus)
 

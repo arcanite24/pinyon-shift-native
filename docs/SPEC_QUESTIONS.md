@@ -5268,3 +5268,23 @@ the engine's earlier measurement. The red of a lost total is the engine's.
 
 Needed: a capture series of a chain lost (a crash) and of one banked, from
 the last skill until the score is gone.
+
+## Q244 (FE-02, not blocking): the flow fades' S curve and where they play
+
+`state_definitions.xml`'s `global.fade_in`, `fade_out` (1 s) and
+`fade_out_half_sec` (0.5 s) are black `CFadeIn` fades with `CurveType` S
+("Screen fades" in `docs/UI_SCENE_ANIMATION.md`). Not decoded:
+
+- **The S curve's shape.** The engine takes it as smoothstep (as Q61 (d)
+  does for the cutscene fades); the evaluator behind `CurveType` 1 is not
+  read.
+- **Which fades the campaign's stage changes run.** The engine's stage
+  changes now run `fade_out_half_sec`, then `fade_in`, from the free-roam
+  flow's fades; which states each original screen change passes through is
+  not traced, and some may cut.
+- **The load hand-off.** The flow blacks out after a load and runs
+  `fade_in`; the engine starts that fade on the frame the load screen
+  closes, and also after the boot load when there is no title.
+
+Needed: a capture series at 30 fps from a load screen closing into free
+roam and from a festival stage change, to fit the curve and the order.
