@@ -1244,6 +1244,26 @@ void main() {
     }
   }
 
+  // The hub rooms' interiors (day_night_post -1; Q222, decoded H_INT_*
+  // pixel shaders): no sun, the light baked in the Light_Map at TEXCOORD2
+  // over the AO's green channel lifting the room's LightAmbient,
+  // albedo x c0.z x (LM + (AO + 0.05) x ambient); the emissive surfaces add
+  // their EmissiveMap (at the diffuse's UV) x c0.z. params.w holds (c0.z,
+  // c2.x); the cube reflection (c2.x, lit by the absent sun and the
+  // ambient) is left out. H_INT_ROAD (the paint shop's floor) lifts by a
+  // sky / ground hemisphere instead; both take the frame's ambient here.
+  if (frame.ground_color.w < -0.5 && (has_lm || has_em)) {
+    vec2 ip = unpackHalf2x16(floatBitsToUint(draw.params.w));
+    vec3 amb = frame.ambient_color.rgb;
+    if (has_lm) {
+      float ao_i = (flags & kFlagAoMap) != 0u ? texture(ao_map, v_uv2).g : 1.0;
+      colour = t.rgb * ip.x * (texture(light_map, v_uv2).rgb + (ao_i + 0.05) * amb);
+    } else {
+      colour = t.rgb * ip.x * amb + texture(light_map, v_uv0 * draw.tint.xy).rgb * ip.x;
+    }
+    colour *= draw.up.w;
+  }
+
   colour = apply_haze(colour, v_position, up, sun);
 
   float alpha = 1.0;

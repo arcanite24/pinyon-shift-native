@@ -432,6 +432,34 @@ ResolvedMaterialSlots resolve_effect_material(
       mm.decal_noise_c4 = {track_settings.lightmap_scale, track_settings.lightmap_ao_floor};
     }
   }
+  // The hub rooms' interior effects (H_INT_*, uiautoshow / uiworkshop /
+  // uipaintshop; Q222, decoded from their pixel shaders): c0.xy tiles the
+  // diffuse, c0.z scales it and c2.x the cube reflection; NormalMap is
+  // slot 1. H_INT_ROAD_DIFF2 (the paint shop's floor) blends Blend_A and
+  // Blend_B by vertex colour, tiled by c0. world_frag.glsl's interior
+  // branch reads (c0.z, c2.x) from decal_noise_c4.
+  if (starts("H_INT_")) {
+    const auto c0 = constant(0);
+    auto tile = [](float v) { return (std::isfinite(v) && std::fabs(v) > 1e-4f) ? v : 1.0f; };
+    if (has_tok("_ROAD_")) {
+      mm.tiling = {tile(c0[0]), tile(c0[1]), tile(c0[2]), tile(c0[3])};
+      if (has_tok("DIFF2") && file_slot_records[1] != kNoTexture) {
+        mm.layers = Layers::kVertexBlend;
+        mm.layer_b = file_slot_records[1];
+      }
+      mm.decal_noise_c4 = {1.0f, 0.0f};
+    } else {
+      mm.tiling = {tile(c0[0]), tile(c0[1]), 1.0f, 1.0f};
+      const float diffuse = std::isfinite(c0[2]) ? std::max(c0[2], 0.0f) : 1.0f;
+      const float reflect = std::isfinite(constant(2)[0]) ? std::max(constant(2)[0], 0.0f) : 0.0f;
+      mm.decal_noise_c4 = {diffuse, has_lm ? reflect : 0.0f};
+      if (has_norm) mm.normal_map = file_slot_records[1];
+      // A Light_Map that is a stub record (no file; the paint booth's door
+      // glass, whose c0.z of 0 leaves it black anyway) takes the AO map,
+      // so the draw keeps the interior light (ours).
+      if (has_lm && mm.light_map == kNoTexture && mm.ao_map != kNoTexture) mm.light_map = mm.ao_map;
+    }
+  }
   if (has_emis) {
     // Staggered dusk/dawn EmissiveMapSampler (slot 3 on prop emissive shaders, SKY_AND_TOD §6.2).
     // Preserve BOTH Light_Map (slot 7 -> light_map) and EmissiveMapSampler (slot 3 -> layer_c)

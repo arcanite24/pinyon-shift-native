@@ -826,11 +826,15 @@ void DriveSession::place_world() {
                                    ? 1.0f
                                    : float(1.0 - std::exp(-tod_frame_dt / double(tau)));
             }
+            // A hub room drawn as the world (MENU-02) has its own post chain
+            // (Q222).
+            const carview::HubRoomScenery* room_post = host.room_world_scenery();
+            if (room_post) carview::apply_hub_room_post(*room_post, ps);
             if (photo_mode.active()) {
               ps = photo_mode.effects().apply_to_post(ps);
             }
             host.renderer.set_post_settings(ps);
-            if (!host.user_lut_active) {
+            if (!host.user_lut_active && !room_post) {
               static const DriveWorldHost* s_lut_host = nullptr;
               static world::ColorLutBlender s_lut_blender;
               const bool reset_lut = (s_lut_host != &host || !have_post_lut || app.headless || tod_frame_dt <= 0.0);

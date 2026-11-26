@@ -1201,20 +1201,38 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   0.0f, lift, 0.0f, 1.0f,
               };
               host.showroom.set_world_transform(room_xf);
-              const float room_sun[3] = {0.45f, 0.78f, -0.42f};
+              // The car's key light comes from the room's ShadowLightDirection
+              // (the game frame, the way the light travels; z mirrored as
+              // in room_xf).
+              float room_sun[3] = {0.45f, 0.78f, -0.42f};
+              if (rs) {
+                const auto& d = rs->light_travel;
+                const float x = -(cy * d[0] + sy * d[2]), y = -d[1], z = -(sy * d[0] - cy * d[2]);
+                const float len = std::sqrt(x * x + y * y + z * z);
+                if (len > 1e-4f) {
+                  room_sun[0] = x / len;
+                  room_sun[1] = y / len;
+                  room_sun[2] = z / len;
+                }
+              }
               const float room_up[3] = {0.0f, 1.0f, 0.0f};
               host.showroom.set_world_light(room_sun, room_up, 1.0f);
-              // The room's light (hub_room.h): no sun, no fog, the lightmap in
-              // the AO slot under a white hemisphere and the room's own.
+              // The room's light (hub_room.h): no sun, no fog; the surfaces
+              // take their lightmaps through world_frag.glsl's interior
+              // branch (day_night_post -1 selects it), the car the room's
+              // key light.
               if (rs) {
                 world::TodState& t = host.showroom.tod_state();
                 t.sun_color = {0.0f, 0.0f, 0.0f};
-                const float gain = carview::kHubRoomLightmapGain;
                 for (int k = 0; k < 3; ++k) {
-                  t.hl_top[size_t(k)] = gain + rs->hemi_top[size_t(k)];
-                  t.hl_bottom[size_t(k)] = gain + rs->hemi_bottom[size_t(k)];
-                  t.ambient_color[size_t(k)] = rs->ambient[size_t(k)];
+                  t.hl_top[size_t(k)] = rs->hemi_top[size_t(k)];
+                  t.hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
+                  t.ambient_color[size_t(k)] = rs->ibl_ambient[size_t(k)];
+                  t.car_sun_color[size_t(k)] = rs->car_key[size_t(k)];
+                  t.car_hl_top[size_t(k)] = rs->hemi_top[size_t(k)];
+                  t.car_hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
                 }
+                t.day_night_post = -1.0f;
                 t.ibl_ambient_scale = 1.0f;
                 t.switch_on_lights = 0.0f;
                 t.fog_density = 0.0f;
