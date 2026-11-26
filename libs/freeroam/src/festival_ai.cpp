@@ -1197,7 +1197,7 @@ bool FestivalManager::step(double dt, double time, const traffic::P3& player_pos
 
 HeadToHeadHud FestivalManager::hud(double time) const {
   HeadToHeadHud h;
-  if (!h2h_active_ && prompt_id_ != 0) {
+  if (challenges_enabled_ && !h2h_active_ && prompt_id_ != 0) {
     for (const auto& c : cars_) {
       if (c.id == prompt_id_) {
         h.prompt_visible = true;

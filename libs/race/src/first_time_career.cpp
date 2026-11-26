@@ -309,6 +309,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
   timed_.clear();
   set_instruction(-1);
   in_trigger_ = false;
+  sign_up_event_ = 0;
   awaiting_race_ = false;
   skills_cutscene_ = false;
   FtcCommands c;
@@ -428,6 +429,9 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       c.heading_deg = kWorkshopHeading;
       c.set_civilian_traffic = true;
       c.civilian_traffic = false;
+      // The tip card (the freeroam tips, PLEASE WAIT) comes first, the map
+      // behind it (first30a f01272, first30e r5 g00135-g00190).
+      c.show_loading = true;
       c.open_map = true;
       map_locked_ = true;
       controls_ = false;
@@ -472,24 +476,25 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       break;
 
     case FtcStage::kShowcase:
-      // Stages 10 and 12: placed by the heats, 15:48, the Red Rock showcase
-      // as the destination. Save 12.
+      // Stages 10 and 12: placed by the heats, 15:48. Save 12. The locked
+      // map asks for a route to the Red Rock showcase, and A on it sets the
+      // destination (first30e r10: results, a loading tip, then the map with
+      // "Please set a route to the Showcase event." and no route yet).
       c.save_requested = true;
       c.place_car = true;
       c.pos = kHeatsFinalPlace;
       c.heading_deg = kHeatsFinalHeading;
       c.set_time_of_day = true;
       c.time_of_day_s = kHeatsFinalTimeOfDay;
+      c.open_map = true;
+      map_locked_ = true;
       controls_ = true;
       ai_ = false;
       hud_ = true;
-      set_instruction(12);
-      for (const auto& t : triggers_)
-        if (t.id == kMustangRace) {
-          c.set_destination = true;
-          c.destination_label = "IDS_HudMsg_ShowcaseEvent";
-          c.destination_xz = {t.pos[0], t.pos[2]};
-        }
+      // Stage 12's instruction (ENTER THE SHOWCASE EVENT) once the map lets
+      // go (update); the engine's large line drew over the heats' rewards
+      // (first30e e15). Interim: when the original's appears is not captured.
+      set_instruction(0);
       break;
 
     case FtcStage::kTravelToRaceCentral:
@@ -604,8 +609,12 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   auto event_result = [&](int64_t id) {
     return in.race_finished && in.race_event_id == id && in.race_place >= 1 && in.race_place <= kCutoffPlace;
   };
-  // Drive to an event's sign-up sphere, then start it (each new entry; the
-  // host's own event marker can start it too).
+  // Drive to an event's sign-up sphere, then sign up with X: the
+  // activation's banner asks SIGN ME UP! and driving in does not start it
+  // (first30e r7: five minutes in and round the heats' sphere with A
+  // presses never started them). The host's own event marker can start it
+  // too.
+  sign_up_event_ = 0;
   auto sign_up = [&](int64_t id) {
     if (in.racing) {
       raced_ = true;
@@ -635,9 +644,16 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       launch();
       return;
     }
-    if (d <= radius && !in_trigger_) launch();
-    if (d <= radius) in_trigger_ = true;
-    else if (d > radius + kRearmMargin) in_trigger_ = false;
+    if (d <= radius) {
+      in_trigger_ = true;
+      sign_up_event_ = id;
+      if (in.sign_up) {
+        sign_up_event_ = 0;
+        launch();
+      }
+    } else if (d > radius + kRearmMargin) {
+      in_trigger_ = false;
+    }
   };
 
   // The time-of-day zones, on entry, up to the festival arrival.
@@ -774,6 +790,7 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kShowcase:
+      if (!map_locked_ && instruction_.empty()) set_instruction(12);
       if (in.race_finished) awaiting_race_ = false;
       if (event_result(kMustangRace)) {
         FtcCommands n = go(FtcStage::kTravelToRaceCentral);

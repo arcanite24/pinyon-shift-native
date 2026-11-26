@@ -333,6 +333,10 @@ struct DriveApp : DriveConfig {
   // at no cost (Rewards_EventPrizes.RewardCarUpgradeClass).
   std::string award_garage_car(int64_t car_id, int colour_seq, bool select_it, bool is_prize = false,
                                int upgrade_class = -1);
+  // The first-time career's Corrado (GlobalRegistry HeroCar): owned and
+  // selected, fitted with the HeroCar upgrades on its first award (C 400 on
+  // the locked map, Q280). True when the garage holds it.
+  bool ensure_hero_car();
   // Starts the RALLY_HEATS session in its loaner car; the stage's event id
   // ("stage:<route>"), empty when it cannot start.
   std::string start_rally_heats();

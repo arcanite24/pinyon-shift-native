@@ -399,7 +399,9 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev, const std::strin
 void DriveSession::start_new_career() {
           race::set_campaign_text_resolver([](std::string_view ref) { return carview::game_text(std::string(ref)); });
           app.career = race::CareerRecord{};
-          app.career.credits = 0;
+          // A new profile's credits (ForzaProfile.sch Credits; the original's
+          // player bar shows 500 Cr on the workshop's locked map, Q280).
+          app.career.credits = race::FirstTimeCareer::kNewProfileCredits;
           app.career.wristband_points = 0;
           // Retail FH1 starts pre-wristband (-1, matching FESTIVAL_SECOND Level = -1);
           // Yellow Wristband (0) and the starter Corrado VR6 are awarded upon Festival registration.
@@ -661,6 +663,7 @@ void DriveSession::open_map() {
 
 void DriveSession::close_map() {
           map_open = false;
+          map_heats_close_left = -1.0;
           // A rumour reveal's forced Barn Finds filter ends with the map.
           map_reveal_anim = nullptr;
           map_reveal_locked = false;
@@ -1163,6 +1166,22 @@ void DriveSession::open_menu() {
 
 bool DriveSession::activate_world_trigger() {
           if (app.race) return false;
+          // The first-time career's events (the heats final, the showcase):
+          // X in their sign-up sphere signs up (SIGN ME UP!).
+          // Its ticket shows with PLEASE WAIT, and the race launches under
+          // it (feed_first_time_career).
+          if (const int64_t fe = app.campaign.ftc_sign_up_event(); fe > 0) {
+            if (ftc_ticket_at < 0.0) {
+              ftc_ticket_hud = EventSummaryHud{};
+              for (const auto& ev : app.career_catalog.events)
+                if (ev.event_id == fe) ftc_ticket_hud = event_ticket(ev, nullptr);
+              ftc_ticket_hud.please_wait = true;
+              ftc_ticket_at = vehicle.time();
+              ftc_ticket_signed = false;
+              app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            }
+            return true;
+          }
           // ColoradoDirt free roam: drive into Rally Championship world trigger markers
           // (MS_RALLY_01..07 parsed from rally_event_activations.xml).
           if (!app.colorado_world() && app.rally_catalog.loaded) {

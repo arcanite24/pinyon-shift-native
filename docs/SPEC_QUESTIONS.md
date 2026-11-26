@@ -3458,6 +3458,15 @@ right during the race to the festival (`f00417`, `f00537`
 `_first30a_orig.png`). Its scene and trigger are not traced, and the
 engine shows none (Q280).
 
+Update (first30e): statically, it is the HUD scene's `SHOW_SAVING` /
+`HIDE_SAVING` labels, held at least 3 s while a profile save is busy
+(driven by the title's own save code, not by `global.save_profile`). The engine now
+draws "SAVING" (`Main/IDS_Saving_Short`, upper-cased) and the load
+spinner left of the speedometer for 3 s from each save, placed to
+`f00417` (spinner centre 1020, 647 at 720p). Interim: the HUD scene's own
+element and animation are not played, and the engine shows it on every
+save, timed autosaves included.
+
 ## Q143 (V4-02..V4-07, not blocking): the 1000 Club screens' unmeasured parts
 
 The 1000 Club now runs on the title update's scenes (`H_CAR_CHALLENGE_HUB`,
@@ -6054,6 +6063,18 @@ Open:
 
 Needed: one Start press during FMV_01, and two A presses 1 s apart.
 
+Update (first30e, recomp probes `E:\first30e\r3`-`r5`, hidden, fresh profile):
+- r3: A at 3 s showed the bubble (`g00035`); A again at 4 s did not skip; Start alone at 12 s, with no bubble up, did not skip.
+- r4: A then, 1 s later, B, X, Y, Back, RB and LB in turn (7 s apart): none skipped. The bubble (`g00305`-`g00395`, `r4c_g00315.png`) is a dark box reading "SKIP" beside the Start glyph.
+- r5: A at 12 s, then Start held 8 frames 0.5 s later, skipped (`g00120` the movie, `g00130` black, then the tip card). The same pair at 3 s, with Start held 4 frames, did not.
+- r6: A at 3 s, then Start held 8 frames 0.5 s later, skipped. So the movie's first seconds do take the skip, and r5's miss at 3 s was the short hold.
+
+The r3 and r4 negatives (Start alone, and the other buttons) all used 4-frame presses, so they do not show that those presses cannot skip; they only show that a 4-frame press did not. What the probes do show: a press brings up the bubble, and an 8-frame Start while it is up skips. That agrees with the static two-step reading (`confirmskip="true"`: the first press asks, Start confirms).
+
+The engine now does that: Start or Esc skips only while the bubble is up, and any other press (or Start/Esc with none up) shows it. Tab stays a dev skip.
+
+Still open: whether Start alone (held long enough) skips with no bubble up, and whether a second A confirms; the bubble's time on screen (interim 3 s; hidden-mode timing is too slow to measure). Needed: 8-frame probes of Start alone and of A, A.
+
 ## Q275 (INTRO-05, MAP, not blocking): the workshop's locked map
 
 After FMV_01 and a STREET RACES loading screen (`f01272`), the original opens the map locked (`map_locked_for_first_time_career` loops `map.map_screen` while `CLockMapScreenForFirstTimeCareer` says locked). In the capture (`f01281`, `f01290`, through `f02397`):
@@ -6081,6 +6102,15 @@ Engine run `eng6` shows these (`lockmap_route_first30a_engine_final.png`, `lockm
 
 Needed: a capture with the cursor moved onto the heats marker, then A, then B.
 
+Update (first30e): what releases the lock is settled, from the title's code and recomp probes (`E:\first30e\r5`, `r6`, hidden, fresh profile, FMV_01 skipped).
+- Statically: `CLockMapScreenForFirstTimeCareer` lets go once a route is set to an `ActivityCareerEventActivation` or `ActivityRaceCentral` target (the lock's check, reached through the map's route toggle). B then leaves the map. Setting the route does not close it. While locked, the help bar has no BACK slot.
+- r5 and r6: A on a plain point routes there and leaves the map open, and B then does nothing (`o*` frames).
+- r6 `m0`-`m5`: the map opens zoomed out, then zooms in onto the festival (`g00135`-`g00145`). The cursor moved 12 frames right (LX 20000) snaps onto the heats marker. There it shows the "HORIZON Heats" tooltip with 1,000 Cr, the event's route in red, and A SET ROUTE plus a DETAILS button (`m1`).
+
+- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker at 33 s, then B at 37 s. `m0` (before A) has the help bar A SET ROUTE, DETAILS, LB FILTER, MOVE, ZOOM. From `n0` (35 s, before B) the help bar is gone and a spinner with PLEASE WAIT sits bottom left; the route is drawn and the marker's tooltip reads 3,000 Cr. `o00`-`o05` and `h00042` are the same, and the map is gone by `h00045` (black), so it closed about 10 s after A in hidden mode. r9 settles it: A on the heats at 33 s (8-frame hold), no B until 60 s. PLEASE WAIT is up from `n034`, and the map is gone by `n039` (black, 5-6 s after A in hidden mode). So A alone closes it after a load, and B plays no part. Then (r9 `n041`-`n048`) come a cockpit shot and a car shot at the Bose stage with the radio hint, and the HUD returns at `n049`. In r7, the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
+
+The engine now routes to the heats on A over them and releases the lock. It then replaces the help bar with the spinner and PLEASE WAIT, takes no input, and closes the map by itself after 3 s. The delay is interim: hidden mode cannot time it. It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
+
 ## Q276 (BOOT-04, BOOT-07, not blocking): the first profile's VIDEO screen and the boot disclaimer
 
 On a fresh profile, Press Start leads to the `830_GAMMA_ADJUST` screen before the menu (orig1 `f00027`-`f00039`). It is titled VIDEO and has:
@@ -6094,6 +6124,8 @@ Before `T10_MS_Combined` the original also shows a legal disclaimer for about 3 
 The engine has neither: it goes from the splashes to Press Start, and from Press Start to the menu. Not fixed: the VIDEO screen needs `830_GAMMA_ADJUST` as a SceneScreen and a brightness and subtitle setting behind it.
 
 Needed: the gamma screen's bindings and whether it shows only on a new profile; the disclaimer's duration and scene.
+
+Update (first30e): the disclaimer is drawn. The boot now opens on `T:P_Map/P_STA/<LANG>/P_STA_Disclaimer` full screen (EN when the profile's language has no folder) for 3 s, and the splash queue starts after it; a skip of the boot skips it too. The recomp's render tests show it on their first frame (`r1 f00001`). Its scene and exact duration are still not read (interim 3 s). The VIDEO screen is still not built.
 
 ## Q277 (HUD-03, INTRO-08, not blocking): the hand-over HUD's units, pin and name tags
 
@@ -6112,6 +6144,8 @@ Not changed here:
 - The pin is the engine's sat-nav marker, used everywhere.
 
 Needed: the title's default units by region, and whether any sat-nav world pin exists in the original.
+
+Update (first30e): the engine's default is now miles (settings page, `--units metric` opts into km/h; an old saved `--units imperial` loads as the default). The pin and the name tags are unchanged.
 
 ## Q278 (ACT-01, INTRO-10, not blocking): skills in the career's opening, and PopularitySkillsFlow
 
@@ -6137,6 +6171,13 @@ Answers Q186's "Needed: a capture of the opening titles". The capture's 20 frame
 Diner timing: the XML durations (6.7 + 59 + 2.5 = 68.2 s) match the original's about 66-69 s. The engine's wall clock ran 79.2 s (`eng2`: 11.8 / 60.4 / 7.1 s), 85.8 s (`eng3`) and 72.7 s (`eng4`: 9.4 / 58.8 / 4.5 s). The overrun sits on the first and third cutscenes each time (3 to 5 s each), with the second near its 59 s. The cutscene player ends at the XML durations, so the likely cause is the blocking world prime at those cuts (the diner's teleport in, and the car placed for the race out) stalling the step. Unverified: the logs carry no wall time for the primes. Not a flow difference.
 
 Needed: whether the title's code sets the cards' opacity (no scene action does).
+
+Update (first30e): the primes now log their wall time (`f6c8e836`). First30e `e8` confirms the stall:
+- The diner's cutscene placements took 1813 ms (1843, -1657) and 1020 ms (1547, -1957). The car's placement for the race out took 2 ms.
+- So about 2.8 s of the first cutscene's overrun is the world prime, on the main thread.
+- The workshop's placement and its cutscene preload, at nearly the same spot, took 3853 ms and 3852 ms. The second waits on a gather the first already did.
+
+e3 (20.8 / 62.5 / 5.3 s) and e5 (12.9 / 60.2 / 5.7 s) ran with other captures on the machine. Not fixed: priming those places before the cut (asynchronously, as the diner's own `preload_cutscene` does for its first place) is the remedy.
 
 ## Q280 (M6/INTRO, not blocking): the first-time career past the workshop map, not captured
 
@@ -6166,6 +6207,25 @@ Seen up to the map and not resolved:
 - The driving tutor. The original showed only PRESS RT TO ACCELERATE on the initial drive (with the AI holding the car). The engine shows the brake, rewind and e-brake hints too. The AI-driven capture cannot tell whether a human's input would have raised them.
 
 Needed: a capture that resumes at the heats checkpoint (the recomp seeded from the first pass's save), with the map passed by a cursor move onto the heats.
+
+Update (first30e): settled from the title's data and new recomp probes (`E:\first30e\r5`, `m*` frames: "Volkswagen Corrado VR6", C 400, 500 Cr on the locked map).
+- Credits: 500 is the new profile's default (`media/profileschema/ForzaProfile.sch`, Credits = 500). The engine's new career now starts with 500 (`FirstTimeCareer::kNewProfileCredits`).
+- PI: the Corrado is GlobalRegistry's `HeroCar`: car 309, colour 2, wheel style 640 and 19 upgrades (`HeroCar/Upgrades/*`: Brakes, SpringDamper and Transmission 3; Differential, Flywheel, Ignition, OilCooling, RearBumper and both tyre widths 2; Camshaft, ChassisStiffness, Clutch, Intake, PistonsCompression, both rim sizes, SideSkirts and SuperchargerCSC 1). The engine now owns, selects and fits that car when the career swaps to the Corrado (or resumes in it). It reads C 396 (Q311).
+- The loading screen: a tip card from the freeroam group with PLEASE WAIT, then the map (r5 `g00135`-`g00190`). r5's tip was HORIZON PULSE and first30a's STREET RACES, so the tip is picked at random from the group. The engine now shows the freeroam group's card before the locked map (Q312).
+- The resume under the boot splashes: the career no longer updates during the boot. A save resumed at the heats now waits in free roam (`e2`) instead of launching the race under the T10 splash (`e1`, 24.6 s).
+- The resumed Corrado was black: its colour rule now also holds while a resume is pending.
+- PRESS RT TO ACCELERATE under `--race-auto`: the race autopilot's throttle now counts as the player's for the tutor (a harness fix).
+- The head-to-head offer between the heats: festival racers make no head-to-head offer while the first-time career runs.
+- The access violation on the session restart after a failed launch: not reproduced on this tip. An autoplay `launch` of an unknown event (77 twice, then NO_SUCH_EVENT) from a resumed heats save restarts the session each time ("gamedb: no event 77"), and the engine runs on for 70 s after the last one without a fault (`E:\first30e\c1`). The career itself no longer launches by `Events.Id`. The original crash's build (before `6ffa82bb`) was not rebuilt, so its cause is still unknown.
+
+Update (first30e, past the heats): the recomp now reaches the heats final and its rewards (Q313, r9-r12), but no capture gets past the showcase's locked map. The engine now runs from the heats to the first autoshow end to end. It resumes e15's showcase save under `--race-ai-hold 30` (e16-e18). The order:
+- The showcase's locked map (Q313).
+- The drive to Red Rock and SIGN ME UP!.
+- The showcase in the provided Mustang Boss 429: 1st, 6,875 Cr, YOU WON A CAR.
+- Skills_Unlock (drawn broken, Q313), then DRIVE TO RACE CENTRAL.
+- At Race Central: FMV_02, Wristband_Intro, the rewards (3 s of black), then the first autoshow's locked map.
+
+That last map stalled the engine. It had no tip and no way to let go, so the career waited for good (e17 `f_00584` on). It now asks for a route to Race Central under the disc's `IDS_MapTip_SetRouteToRaceCentral`, and A there lets it go as the other two maps do. That is an interim: the original's map at this point is not captured.
 
 ## Q291 (first30c, physics, not blocking): the rest hold's speed and delay
 
@@ -6508,3 +6568,109 @@ Still open:
 - whether a split cascades more than one first-order section;
 - the FMOD Distortion for the other cars (not modelled: no capture);
 - the 6 dB idle-to-full difference left in the solo groups' top end.
+
+## Q311 (INTRO-05, GARAGE, not blocking): the HeroCar reads C 396, not C 400
+
+The original's locked map shows the career's Corrado at C 400 (first30a `f01281`, first30e r5 `m*`). The engine fits GlobalRegistry's `HeroCar/Upgrades` (`garage::fit_upgrade_levels`) and its PI model reads C 396 (`progression_tests --corpus`, "hero car: stock D 282 -> C 396").
+
+How a value maps to a row: upgrade N is the slot's non-stock row at Level N, else its Nth non-stock row in (Level, Id) order. The rows this gives all have Id = base + value (309003 springs, 309002 rear bumper, 62003 transmission, 63001 supercharger), which suggests the title keys them the same way. Two slots need the fallback or the level reading:
+- RearBumper 2: the Corrado's rear bumpers are one stock row and five level-1 styles, so 2 is the second style (309002). The five styles give the same PI.
+- SpringDamper 3: its rows are levels 1 (stock), 2 and 3, so 3 is the level.
+
+Not settled:
+- The 4 points. Candidates: the PI model's reading of the supercharger or wheel style 640 (with no wheel: 394), or a row picked differently.
+- `HeroCar/Colours/LiveryPaintSection_Rims` (4210752, 0x404040) is not applied. The engine has no rim paint.
+- When the title fits the HeroCar. The engine does it at the diner's swap to the Corrado. The first frame showing the PI is the locked map after FMV_01, so fitting it later (after FMV_01) is not ruled out. It shows only on the drive from the diner to the workshop.
+
+Needed: the title's code that applies `HeroCar/Upgrades` (row choice), and its PI for the fitted car.
+
+## Q312 (INTRO-05, LOAD, not blocking): the loading screen before the locked map
+
+The original shows a loading card after FMV_01 and before the map (first30a `f01272`, first30e r5 `g00135`-`g00190`). Statically, it is `CShowLoadingScreen resource_package="Loading"`, and the tips are `media/ui/LoadingDefs.xml`'s. r5 showed HORIZON PULSE and first30a STREET RACES. Both are in the freeroam group (line 9, displaytime 8, tipcount 2, random); STREET RACES is also in festivalevent (line 97).
+
+The engine now starts the freeroam group's card when the career enters the workshop map. It holds it for `LoadingScreen::kEventMinSeconds` (3 s) and until the world is in, with the map open behind it.
+
+Open:
+- How the group is chosen. The engine uses freeroam.
+- How long the card stays up. The hidden render test showed it for about 6 s, but hidden mode slows the title's timing, so it cannot be measured there.
+
+Needed: a visible (not hidden) capture of the FMV_01 skip to the map, with timestamps.
+
+## Q313 (INTRO-05, FESTIVAL, not blocking): signing up for the heats
+
+In the original, after the locked map, the Corrado reaches the Horizon Heats with the tip "Head to the Horizon Heats". The heats' banner reads HORIZON HEATS with SIGN ME UP! and the X glyph (first30e r7 `h00318`). Five minutes in and around the sphere with A every 5 s never started the heats (r7 `h00042`-`h00357`).
+
+The engine launched the heats final as soon as the car entered its 27 m sign-up sphere. It now waits in the sphere for X (or Enter). It shows the event's banner, in range, with SIGN ME UP!. The showcase (event 101) takes the same rule.
+
+Update, first30e r9 (X held 8 frames every 2 s from 62.5 s):
+- The car stops at the RACE SIGN UP stage (`h00069`-`h00075`).
+- X brings up the event's ticket over the car (`h00078`-`h00090`, `r9_h00081.png`), with no buttons and the spinner and PLEASE WAIT bottom left. The ticket reads:
+  - FESTIVAL RACE;
+  - HORIZON presents HEATS;
+  - HORIZON HEATS, ASPHALT POINT-TO-POINT;
+  - FINISH 3RD OR ABOVE TO WIN YELLOW WRISTBAND, 3,000 Cr;
+  - C OPEN, CURRENT CAR ELIGIBLE.
+  The player bar shows Volkswagen Corrado VR6, C 400 and 500 Cr.
+- Then come the loading tips (DRIVING LINE, ASSISTS, with PLEASE WAIT; `h00093`-`h00102`).
+- Then the race's intro shots, titled FESTIVAL RACE / HORIZON HEATS (`h00105`-`h00120`).
+- Then the pre-race menu: START RACE, DIFFICULTY, OPTIONS, QUIT RACE (`h00123`-`h00135`).
+- Then the race (`h00141`-`h00258`). The recomp's Corrado won it, 1st in 1:57.736 against Charger '69 at 2:01.470. The field: Charger '69, Lancia Delta, DS3 R, Integra R, MINI Cooper, CR-X and BMW 2002 Turbo, all C 393-398.
+- An X press after the finish opened RACE RESULTS (B BACK), and the A presses never left it (`h00261` on). So the reward screens after the final are not captured yet.
+
+The engine now shows the event's ticket with PLEASE WAIT in place of its help bar for an interim 3 s. Then it launches the race. Its ticket is the engine's own event ticket: its prize line is not the career's "FINISH 3RD OR ABOVE TO WIN YELLOW WRISTBAND".
+
+Still open:
+- The ticket's career prize line.
+- The loading tips' group: the original's are the race tips.
+- Whether the engine's race intro and pre-race menu match.
+- The showcase's sign-up: no capture reaches it.
+- Who drives the Corrado in r7/r9: the route has no throttle or stick, yet the car drives, and won the race.
+
+Update, first30e r10 (X only to 100 s, then A held 8 frames every 5 s): the Corrado finished 3rd this time. After the finish:
+- FINISHED 3RD PLACE over the finish line (`h00300`).
+- CASH REWARD, built up line by line (`h00303`, `h00306`; `r10_h00303.png`, `r10_h00306.png`):
+  - FINISHED 3RD 2,300 Cr;
+  - MILEAGE BONUS 400 Cr;
+  - DIFFICULTY & ASSISTS BONUS +25%;
+  - TOTAL 3,375 Cr, BALANCE: 3,875 Cr.
+- The Corrado under the FINISH gantry with no text (`h00309`).
+- A loading tip, HORIZON ROCKS, with PLEASE WAIT bottom right (`h00312`-`h00315`).
+- The locked map again (`h00318` on, `r10_h00321.png`). The tip reads "Please set a route to the Showcase event." The player bar shows the Corrado, C 400 and 3,875 Cr. No route is set yet, and the Red Rock showcase marker carries a NEW tag. A pressed off the marker set a waypoint, and the map stayed locked with A CLEAR ROUTE and LB FILTER (`h01122`, `r10_last.png`).
+- No wristband, Race Central or FMV comes between the heats and the showcase map.
+
+r11 (2nd, 3,750 Cr) and r12 (1st, 4,250 Cr) show the same order. Their loading tips were HORIZON PULSE and DARIUS FLYNT, so the tip comes at random from the free-roam group. The map opens zoomed in, with the spinner and PLEASE WAIT bottom left in place of the help bar, then the help bar comes up (r11 `h00279`-`h00288`).
+
+The engine's award matches. e15 (1st with `--race-ai-hold 30`) paid 4,250 Cr: base 3,000, mileage 400, then 25%. That is r12's TOTAL. e13 (6th) paid 1,875 Cr and 20 wristband points; what the original pays for a finish outside the top 3 is not captured. The e13-e17 runs resume e8's save, so their balances (1,475 Cr before the final) are not the new profile's 500.
+
+The engine before this pass set the showcase's route itself and never opened the map. Now, after a top-3 final, it opens the locked map once the race is gone (e19 `f_00421`-`f_00422`). The map has this tip and no route. A on the showcase routes there (HORIZON Presents Mustang vs Mustang, 5,000 Cr), PLEASE WAIT shows for 3 s, the map closes, and ENTER THE SHOWCASE EVENT follows (e19 `f_00424`-`f_00426`).
+
+e19 runs the whole stretch in one go on this branch's tip. It seeds from e8's heats save under `--race-ai-hold 30`; the frames and beat log are in `E:\first30e\evidence` (`e19_*`). Seconds from the run's start:
+- 404: the heats final ends 1st.
+- 408-415: FINISHED 1ST PLACE, CASH REWARD 4,250 Cr (balance 5,725), POINTS EARNED +70.
+- 416-420: black load.
+- 421: the locked map fades in.
+- 425: the route is set.
+- 426: ENTER THE SHOWCASE EVENT.
+- 583: the showcase starts.
+- 765-769: 1st, 6,875 Cr, YOU WON A CAR.
+- 775-792: Skills_Unlock, still broken.
+- 793: DRIVE TO RACE CENTRAL.
+- 853-929: FMV_02.
+- 929-953: Wristband_Intro.
+- 954-956: rewards, black.
+- 957: the first autoshow's locked map.
+- 960: the route to Race Central.
+- 966-978: the autoshow.
+- 980: satnav_tutorial.
+- 983: complete.
+
+The e9-e18 frame folders were deleted for disk space, apart from the frames copied into evidence.
+
+The first autoshow's locked map is an interim; Q280 has the stall it fixes. Its tip is the disc's `IDS_MapTip_SetRouteToRaceCentral` with an English fallback of ours, and a route to Race Central lets it go (`ftc_map_target`, `drive_map_screen.cpp`). The original's map at that point is not captured. The career's result now waits for the race's reward pages; the engine had DRIVE TO RACE CENTRAL and the Skills_Unlock cutscene over YOU WON A CAR (e16 `f_00385`-`f_00405`).
+
+The showcase's ticket reads CAR PROVIDED Ford Mustang Boss 429. The engine's career launch raced it in the Corrado (e16); it now hands over the provided car, as the events page's launch does.
+
+Still open:
+- What A on the showcase does on the original's map. r11 and r12 moved the cursor blind and never landed on the marker; r11 stopped on Discount Sign 73 next to it.
+- The showcase race, its rewards and everything after it in the original: no capture reaches them.
+- The engine's Skills_Unlock cutscene after the showcase draws a broken scene: the sky and black shapes (e16 `f_00388`-`f_00403`).

@@ -58,12 +58,24 @@ class CampaignDirector {
   };
   void set_ftc_frame_input(const FtcFrameInput& in) { ftc_in_ = in; }
   bool ftc_active() const { return ftc_.active(); }
+  // Active, or a save's career stage waiting to resume (after the title):
+  // the car the save loads with is already the career's.
+  bool ftc_active_or_resuming() const {
+    return ftc_.active() || (ftc_resume_pending_ && ftc_resume_stage_ != race::FtcStage::kNotStarted &&
+                             ftc_resume_stage_ != race::FtcStage::kComplete);
+  }
   // The timed autosave (an engine extra, --timed-autosave, off by default):
   // the original saves only at the career's checkpoints, and never on a timer
   // inside the first-time career.
   static constexpr double kTimedAutosaveInterval = 30.0;
   bool timed_autosave_allowed(bool option_on) const { return option_on && !ftc_.active(); }
   const race::FirstTimeCareer& ftc() const { return ftc_; }
+  void ftc_release_map_lock() { ftc_.release_map_lock(); }
+  // The career event whose sign-up sphere the player is in (SIGN ME UP!
+  // with X); 0 when none. ftc_sign_up() is the press: the next update
+  // launches it.
+  int64_t ftc_sign_up_event() const { return ftc_.active() ? ftc_.sign_up_event() : 0; }
+  void ftc_sign_up() { ftc_sign_up_ = true; }
   // The career catalogue the first-time career takes its event sign-up
   // spheres (the heats final, the showcase) and Race Central from.
   void set_career_catalog(const race::CareerCatalog* catalog) { catalog_ = catalog; }
@@ -176,6 +188,7 @@ class CampaignDirector {
   race::FtcStage ftc_last_stage_ = race::FtcStage::kNotStarted;
   race::FtcStage ftc_resume_stage_ = race::FtcStage::kNotStarted;
   bool ftc_confirm_ = false;
+  bool ftc_sign_up_ = false;
   bool ftc_race_finished_ = false;
   int64_t ftc_race_event_ = 0;
   int ftc_race_place_ = 0;

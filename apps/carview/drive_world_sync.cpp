@@ -1387,6 +1387,7 @@ namespace {
 // frame it where they were authored; the road search below would move it.
 void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos, double target_heading,
                                bool authored) {
+  const auto t0 = std::chrono::steady_clock::now();
   double px = target_pos[0];
   double py = target_pos[1];
   double pz = target_pos[2];
@@ -1502,8 +1503,9 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
   s.rewind_buf.reset_history(s.vehicle.time());
   s.world_rewind_snaps.clear();
   s.place_world();
-  std::printf("campaign teleport: primed world at (%.2f, %.2f, %.2f) heading %.4f rad%s\n", px, py, pz, ph,
-              authored ? " (as authored)" : "");
+  std::printf("campaign teleport: primed world at (%.2f, %.2f, %.2f) heading %.4f rad%s in %.0f ms\n", px, py, pz, ph,
+              authored ? " (as authored)" : "",
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
 }  // namespace
@@ -1521,6 +1523,7 @@ void prime_world_at(DriveSession& s, double x, double z) {
   // Streams the world around (x, z) without moving the car: a cutscene's
   // places, before it plays (the original's CPrepareCutscene).
   if (!s.host.streamer) return;
+  const auto t0 = std::chrono::steady_clock::now();
   bool any_changed = false;
   for (int wait_i = 0; wait_i < 2000 && s.host.streamer->gathering(); ++wait_i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1539,7 +1542,8 @@ void prime_world_at(DriveSession& s, double x, double z) {
     s.host.follower.set_ground(&s.host.streamer->ground());
     s.host.set_staged_world();
   }
-  std::printf("cutscene preload: primed world at (%.1f, %.1f)\n", x, z);
+  std::printf("cutscene preload: primed world at (%.1f, %.1f) in %.0f ms\n", x, z,
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
 }
 
 }  // namespace carview

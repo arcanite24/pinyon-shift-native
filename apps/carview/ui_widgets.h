@@ -175,6 +175,13 @@ class LoadingScreen {
   uint32_t rng_ = 0;
 };
 
+// The HUD's SAVING notice (SHOW_SAVING / HIDE_SAVING): "SAVING" and the load
+// spinner bottom right, left of the speedometer (first30a f00417, f00537),
+// up for at least kSavingMinSeconds from a save's start. The scene's own
+// layout is not read: placed to the capture (Q142).
+inline constexpr double kSavingMinSeconds = 3.0;
+void draw_saving_indicator(ui::List& l, float screen_w, float screen_h, double t);
+
 // ------------------------------------------------ Virtual On-Screen Keyboard
 
 class OnScreenKeyboard {

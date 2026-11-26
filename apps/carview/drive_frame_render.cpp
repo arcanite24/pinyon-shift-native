@@ -1320,6 +1320,19 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             if (app.have_career_catalog) {
               active_trigger = carview::select_world_trigger(app.career_catalog, app.career, app.collected_wristband,
                                                              app.current_pop_rank(), at.x, at.z);
+              // In the first-time career's sign-up sphere its event is the
+              // one in range (not the workshop or paint shop beside it).
+              if (const int64_t fe = app.campaign.ftc_sign_up_event(); fe > 0) {
+                for (const auto& ev : app.career_catalog.events) {
+                  if (ev.event_id != fe) continue;
+                  active_trigger = carview::WorldTrigger{};
+                  active_trigger.kind = carview::WorldTrigger::kEvent;
+                  active_trigger.event = &ev;
+                  active_trigger.in_range = true;
+                  active_trigger.dist = std::hypot(ev.trigger_pos[0] - at.x, ev.trigger_pos[2] - at.z);
+                  break;
+                }
+              }
             }
             if (app.have_outposts) {
               for (const auto& op : app.outposts.outposts) {
@@ -1406,6 +1419,18 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                 world_marker.screen_x = on_screen ? sx : 0.5f * float(w);
                 world_marker.screen_y = on_screen ? sy : 0.32f * float(h);
                 world_marker.distance_m = active_trigger.dist;
+              }
+              // The first-time career's event in its sign-up sphere: the
+              // banner asks SIGN ME UP! and X signs up (first30e r7 h00318).
+              if (const int64_t fe = app.campaign.ftc_sign_up_event();
+                  fe > 0 && active_trigger.event && active_trigger.event->event_id == fe) {
+                world_marker.visible = true;
+                world_marker.in_range = true;
+                if (!on_screen) {
+                  world_marker.screen_x = 0.5f * float(w);
+                  world_marker.screen_y = 0.32f * float(h);
+                }
+                world_marker.prompt = carview::text_of(carview::hud_text::kSignMeUp);
               }
             }
           }

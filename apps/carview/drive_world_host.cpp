@@ -226,6 +226,11 @@ bool same_showroom_options(const ShowroomOptions& a, const ShowroomOptions& b) {
 ShowroomOptions DriveWorldHost::build_car_options() {
       ShowroomOptions opts;
       opts.game_root = app.game_root_of();
+      // A career resumed in the Corrado from a save made before it was owned:
+      // the HeroCar is awarded now, so its paint and parts load with it.
+      if (app.campaign.ftc_active_or_resuming() &&
+          lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kCorradoMedia))
+        app.ensure_hero_car();
       // The garage car's paint & fitted visual upgrades (body kits, wing, rims, brakes, stance).
       if (app.have_garage)
         if (const garage::Car* gc = app.career_garage.selected_car())
@@ -246,11 +251,11 @@ ShowroomOptions DriveWorldHost::build_car_options() {
       // The opening's Viper (CSetCarForInitialDrive) is yellow with black
       // stripes in the original (recomp capture, first30a): Combo_Colors
       // sequence 7 of car 1544.
-      if (opts.match_sequence < 0 && (app.campaign_new_career_pending || app.campaign.ftc_active()) &&
+      if (opts.match_sequence < 0 && (app.campaign_new_career_pending || app.campaign.ftc_active_or_resuming()) &&
           lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kViperMedia))
         opts.match_sequence = race::FirstTimeCareer::kViperColourSequence;
       // The Corrado the career hands over is red (sequence 2 of car 309).
-      if (opts.match_sequence < 0 && app.campaign.ftc_active() &&
+      if (opts.match_sequence < 0 && app.campaign.ftc_active_or_resuming() &&
           lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kCorradoMedia))
         opts.match_sequence = race::FirstTimeCareer::kCorradoColourSequence;
       // A colour picked in the pause menu's paint page for this car.

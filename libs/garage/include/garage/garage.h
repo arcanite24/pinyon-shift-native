@@ -190,6 +190,18 @@ bool load_class_bands(const cars::PartsDb& db, std::vector<ClassBand>& out, std:
 bool load_class_bands(const std::filesystem::path& game_root, std::vector<ClassBand>& out, std::string* error,
                       const std::filesystem::path& state_root = {}, const cars::PartsDb* shared_db = nullptr);
 
+// Fits, free of charge, upgrade N of each named Career_Garage column (its
+// non-stock row at Level N, else its Nth non-stock row in Level, Id order,
+// as the body kits' styles; 0 keeps the slot as it is),
+// conversions first, and the wheel style when > 0:
+// the title's preset cars (GlobalRegistry HeroCar/Upgrades, the Corrado the
+// first-time career hands over). False, naming the levels it found no row
+// for, when any is missing; the rest are still fitted.
+bool fit_upgrade_levels(Garage& g, const cars::PartsDb& db, int64_t garage_id,
+                        const std::map<std::string, int>& levels, int64_t wheel_style,
+                        const cars::PhysicsSettings* phys_settings = nullptr, const PiConfig* pi_cfg = nullptr,
+                        const std::vector<ClassBand>* bands = nullptr, std::string* error = nullptr);
+
 std::string to_text(const Garage& g);
 bool from_text(const std::string& text, Garage& out, std::string* error);
 bool read_garage(const std::filesystem::path& path, Garage& out, std::string* error);  // false, empty error: no file

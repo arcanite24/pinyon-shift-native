@@ -1223,6 +1223,22 @@ void LoadingScreen::draw(ui::List& l, float screen_w, float screen_h) const {
     l.rect(0.0f, 0.0f, screen_w, screen_h, ui::rgba(8, 10, 14, uint8_t(std::lround(entry_veil * 255.0f))));
 }
 
+void draw_saving_indicator(ui::List& l, float screen_w, float screen_h, double t) {
+  // Main/IDS_Saving_Short ("Saving") in the HUD's capitals; the spinner's
+  // centre at (1020, 647) and the word ending 8 px left of it at 720p.
+  static constexpr StringRef kSaving{"Main", "IDS_Saving_Short", 0, "Saving"};
+  const float s = screen_h / 720.0f;
+  const SceneFrame f{0.5f * screen_w - 640.0f * s, 0.5f * screen_h - 360.0f * s, s};
+  const float cx = f.x(1020.0f), cy = f.y(647.0f);
+  std::array<float, 4> uv{};
+  if (ui_texture("COMMON/LOADSPINNER", uv))
+    l.image_rotated(cx, cy, 11.0f * s, 11.0f * s, float(std::fmod(t * loading_layout::kSpinnerRate, 6.2831853)), uv,
+                    ui4::kWhite);
+  std::string word = text_of(kSaving);
+  for (char& c : word) c = char(std::toupper(static_cast<unsigned char>(c)));
+  l.text(f.x(1004.0f), cy - 9.0f * s, word, ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite, ui::Align::kRight));
+}
+
 // ------------------------------------------------ Virtual On-Screen Keyboard
 
 void OnScreenKeyboard::open(std::string title, std::string initial_text, int max_length, Purpose purpose) {

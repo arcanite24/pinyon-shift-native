@@ -136,6 +136,16 @@ void DriveSession::feed_first_time_career() {
   auto& c = app.campaign;
   if (!c.ftc_active() && !c.tutor().active()) return;
   if (app.have_career_catalog) c.set_career_catalog(&app.career_catalog);
+  // The sign-up ticket's time up: the career launches the event.
+  if (ftc_ticket_at >= 0.0) {
+    const double shown = vehicle.time() - ftc_ticket_at;
+    if (!ftc_ticket_signed && shown >= kFtcTicketSeconds) {
+      c.ftc_sign_up();
+      ftc_ticket_signed = true;
+    } else if (ftc_ticket_signed && shown >= kFtcTicketSeconds + 10.0) {
+      ftc_ticket_at = -1.0;  // the launch did not happen: drop the ticket
+    }
+  }
   CampaignDirector::FtcFrameInput in;
   const drive::Vec3 vp = vehicle.position();
   in.player_pos = {vp.x, vp.y, vp.z};
@@ -229,9 +239,28 @@ void DriveSession::apply_first_time_career() {
       }
       if (!found) std::fprintf(stderr, "carview: first-time career: no achievement \"%s\"\n", want.c_str());
     }
-    if (cmd.open_map) open_map();
+    if (cmd.show_loading && !app.headless) {
+      // CShowLoadingScreen: the freeroam group's tip card, held the event
+      // load's minimum (interim: the original's hold is not timed, Q312).
+      loading_screen.load_definitions(app.game_root_of(), "freeroam", app.state_root);
+      loading_screen.start({});
+      loading_min_until = carview::LoadingScreen::kEventMinSeconds;
+    }
+    if (cmd.open_map) ftc_open_map_pending = true;
     if (cmd.place_car || cmd.swap_car || cmd.set_destination) ftc_autopilot.reset();
     // show_map_hint: drawn by FirstTimeCareerUi from the career's state.
+  }
+  // The career's map opens once nothing is over it: after the heats the
+  // stage moves on at the award, under the race's reward pages, and the
+  // original shows the rewards, a loading tip, then the map (first30e r10).
+  // The race's way back to free roam restarts the session, so the
+  // showcase's map is also opened whenever its lock is on and it is not up
+  // (that covers a resume at the showcase too).
+  const bool showcase_map = c.ftc_active() && c.ftc().stage() == race::FtcStage::kShowcase && c.ftc().map_locked();
+  if ((ftc_open_map_pending || showcase_map) && !app.race && !app.fmv_player.active() && !loading_screen.active() &&
+      !host.showroom.has_pending_world() && !app.show_title) {
+    ftc_open_map_pending = false;
+    if (!map_open) open_map();
   }
 }
 

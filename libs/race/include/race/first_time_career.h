@@ -133,6 +133,7 @@ struct FtcCommands {
   // Screens and rewards.
   bool activate_tutor = false;   // CActivateDrivingTutor
   bool open_map = false;         // the map, locked to viewing (no fast travel)
+  bool show_loading = false;     // CShowLoadingScreen resource_package="Loading" (the freeroam tips)
   bool open_autoshow = false;
   // CSetRestrictionsForFirstAutoshow: the Autoshow lists only these cars,
   // previews the first, hides Back and skips the "keep shopping?" prompt.
@@ -163,6 +164,7 @@ struct FtcInput {
   int64_t race_event_id = 0;
   int race_place = 0;  // 1-based
   bool racing = false;  // the player is in a race (the heats triggers wait)
+  bool sign_up = false;  // X / Enter pressed this frame (the activation's SIGN ME UP!)
 };
 
 // A sphere trigger (the activity's CTriggerZone, shape 1).
@@ -269,6 +271,10 @@ class FirstTimeCareer {
   // original's diner and race to the festival; Q271).
   static constexpr int64_t kCorradoColourSequence = 2;
   static constexpr int64_t kStartingMoney = 40000;  // CGivePlayerMoney
+  // A new profile's credits: the profile schema's default
+  // (media/profileschema/ForzaProfile.sch, Credits = 500). The career pays
+  // nothing before the wristband bonus.
+  static constexpr int64_t kNewProfileCredits = 500;
   // The first Autoshow's car list (Subaru WRX STi 2011, Mitsubishi Lancer Evo X GSR 2008).
   static constexpr std::array<int64_t, 2> kFirstAutoshowCars = {1323, 1009};
   static constexpr const char* kRecaroRush = "FR02";
@@ -291,6 +297,7 @@ class FirstTimeCareer {
     return false;
   }
   void set_race_central(const std::array<double, 3>& pos, double radius);
+  const std::array<double, 3>& race_central() const { return race_central_; }
   // Route 170's waypoints (route_waypoint_NN in order). The route is the
   // race to the festival's: its grid is at the diner and its waypoints run
   // through the toll booth into the festival. When the AI takes the car at
@@ -320,6 +327,9 @@ class FirstTimeCareer {
   bool show_opening_credits() const { return credits_; }
   double opening_credits_time() const { return credits_ ? credits_t_ : 0.0; }
   bool map_locked() const { return map_locked_; }
+  // CLockMapScreenForFirstTimeCareer lets go once a route is set to a
+  // career event or Race Central: B then leaves the map.
+  void release_map_lock() { map_locked_ = false; }
   // Driving skills score: not in the career's opening, from the end of
   // PopularitySkillsFlow (after the showcase) on, and outside the career.
   bool skills_unlocked() const { return !active() || (stage_ > FtcStage::kShowcase && !skills_cutscene_); }
@@ -331,6 +341,9 @@ class FirstTimeCareer {
   const std::string& large_instruction_2() const { return large2_; }
   // The heats places counter (-1 when not shown).
   int tickets_remaining() const { return stage_ == FtcStage::kRaceToFestival ? tickets_ : -1; }
+  // The event whose sign-up sphere the player is in, waiting for X (the
+  // activation's SIGN ME UP!, first30e r7 h00318); 0 when none.
+  int64_t sign_up_event() const { return sign_up_event_; }
 
  private:
   FtcCommands enter(FtcStage next);
@@ -362,6 +375,7 @@ class FirstTimeCareer {
   int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
   int drive_leg_ = 0;           // the initial drive's sat-nav point (kInitialDrivePoints)
   bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)
+  int64_t sign_up_event_ = 0;   // the sphere's event while the player is in it
   bool awaiting_race_ = false;  // an event was launched and has not reported
   bool raced_ = false;          // ...and the player has been in it since
   double launch_t_ = 0.0;

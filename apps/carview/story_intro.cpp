@@ -1,8 +1,10 @@
 #include "story_intro.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 
 #include "hud_scene.h"
 #include "ui4_chrome.h"
@@ -42,6 +44,7 @@ StoryAction StoryIntro::begin_boot(const std::filesystem::path& game_root, bool 
     }
   }
   if (!splash_queue_.empty()) {
+    disclaimer_left_ = kDisclaimerSeconds;
     return enter_stage(StoryStage::kBootSplash);
   }
   if (start_sp_) {
@@ -122,6 +125,8 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
     case StoryStage::kBootSplash:
       objective_title_ = "BOOT SPLASH";
       objective_detail_.clear();
+      // The legal disclaimer comes first; the splashes start when it ends.
+      if (disclaimer_left_ > 0.0) break;
       if (splash_idx_ < int(splash_queue_.size())) {
         act.play_fmv = true;
         act.fmv_id = splash_queue_[size_t(splash_idx_)];
@@ -210,6 +215,14 @@ StoryAction StoryIntro::update(double dt, std::array<double, 2> player_xz, bool 
   StoryAction act;
   switch (stage_) {
     case StoryStage::kBootSplash:
+      if (disclaimer_left_ > 0.0) {
+        disclaimer_left_ = std::max(0.0, disclaimer_left_ - dt);
+        if (disclaimer_left_ <= 0.0 && splash_idx_ < int(splash_queue_.size())) {
+          act.play_fmv = true;
+          act.fmv_id = splash_queue_[size_t(splash_idx_)];
+        }
+        return act;
+      }
       if (!fmv_active) {
         ++splash_idx_;
         if (splash_idx_ < int(splash_queue_.size())) {
@@ -295,6 +308,7 @@ StoryAction StoryIntro::update(double dt, std::array<double, 2> player_xz, bool 
 StoryAction StoryIntro::skip_stage() {
   switch (stage_) {
     case StoryStage::kBootSplash:
+      disclaimer_left_ = 0.0;
       splash_idx_ = int(splash_queue_.size());
       if (start_sp_) {
         if (pending_career_intro_) return begin_new_career(game_root_, skip_movies_, festival_gate_);
@@ -416,6 +430,16 @@ void StoryIntro::draw_hud(ui::List& l, float screen_w, float screen_h, bool metr
     l.rect(cx0, cy0, cx0 + 4.0f * s, cy0 + box_h, ui4::kPink);
     l.text(cx0 + 16.0f * s, cy0 + 10.0f * s, wrapped, cap_ts);
   }
+}
+
+std::string disclaimer_texture(std::string_view language) {
+  // P_Map/P_STA's language folders.
+  static constexpr std::string_view kLanguages[] = {"BR", "CHT", "CZ", "DA", "DE", "EN", "ES", "FI", "FR", "GB",
+                                                    "HU", "IT",  "JP", "KO", "MX", "NB", "NL", "PL", "RU", "SV"};
+  std::string up(language);
+  for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
+  const bool known = std::find(std::begin(kLanguages), std::end(kLanguages), std::string_view(up)) != std::end(kLanguages);
+  return "T:P_Map/P_STA/" + (known ? up : std::string("EN")) + "/P_STA_Disclaimer";
 }
 
 }  // namespace carview

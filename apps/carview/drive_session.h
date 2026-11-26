@@ -550,6 +550,7 @@ struct DriveSession {
   bool show_hud = true;
   PauseMenu menu;
   double next_save = 30;
+  double saving_shown_at = -1e9;  // wall seconds of the last save (the HUD's SAVING notice)
   bool map_open = false, map_dirty = false, map_dragging = false, map_drag_moved = false;
   float map_drag_start_x = 0.0f, map_drag_start_y = 0.0f;
   double map_zoom = 2, map_cx = 0, map_cz = 0;
@@ -818,6 +819,33 @@ struct DriveSession {
   drive::Input ftc_autopilot_input();
   double ftc_last_impact_seen = -10.0;
   void close_map();
+  // The career's locked map after A on the heats: PLEASE WAIT, then it closes
+  // by itself. r7 closed about 10 s after A in hidden mode, which runs the
+  // title slow; interim 3 s (Q275). -1: not counting.
+  static constexpr double kMapHeatsCloseSeconds = 3.0;
+  double map_heats_close_left = -1.0;
+  // The career event the locked map asks a route to: the Horizon Heats from
+  // the workshop map, the Red Rock showcase after the heats (first30e r10:
+  // "Please set a route to the Showcase event."). event_id 0: none.
+  struct FtcMapTarget {
+    int64_t event_id = 0;   // the career event, or -1 for Race Central
+    bool have_pos = false;  // where A routes to (the event's sign-up place)
+    std::array<double, 3> pos{};
+    const char* tip_id = "";
+    const char* tip = "";
+    const char* gps_label = "";
+    traffic::GpsDestKind gps_kind = traffic::GpsDestKind::kFestivalRace;
+  };
+  FtcMapTarget ftc_map_target() const;
+  // The career asked for its map; it opens when no race, movie or load is up.
+  bool ftc_open_map_pending = false;
+  // The career's sign-up: X shows the event's ticket with PLEASE WAIT, and
+  // the race launches under it (r9: the ticket about 12 s in hidden mode,
+  // then the loading tips; interim 3 s). -1: no ticket.
+  static constexpr double kFtcTicketSeconds = 3.0;
+  double ftc_ticket_at = -1.0;
+  bool ftc_ticket_signed = false;
+  EventSummaryHud ftc_ticket_hud;
   // The scene-driven pause map (drive_map_screen.cpp).
   void map_screen_open();
   void map_screen_step(double dt, float sx, float sy, float zoom_axis);

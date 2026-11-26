@@ -221,7 +221,11 @@ void DriveSession::init_session() {
         }
       }
       // R3-CAM-23: Reconcile intro_completed & campaign_stage vehicle selection on Continue Career reload.
-      if (app.have_saved && !app.race) {
+      // Not while the first-time career runs: it swaps the car itself, and
+      // the save its swap carries still has the stage before the swap (the
+      // diner's swap to the Corrado says the initial drive, so this queued
+      // the Viper, and the queued swap fired at the heats launch).
+      if (app.have_saved && !app.race && !app.campaign.ftc_active()) {
         std::string selected_garage_media;
         if (app.have_garage) {
           if (const garage::Car* gc = app.career_garage.selected_car()) {
@@ -1359,6 +1363,14 @@ void DriveSession::reload_mod_textures() {
 
 void DriveSession::save_now(const char* why) {
         if (app.save_path.empty() || app.status != 0 || save_page.reload_pending()) return;
+        {
+          // The SAVING notice for a save the game makes as it goes (the career's
+          // checkpoints, an award, a purchase), not the engine's own timed or
+          // background autosaves, its settings or the session's end.
+          const std::string_view w = why ? why : "";
+          if (w != "timer" && w != "background" && w != "end" && w != "settings" && w != "title")
+            saving_shown_at = double(SDL_GetTicksNS()) * 1e-9;
+        }
         drive::DriveSave s;
         s.car = !app.pre_loaner_car.empty() ? app.pre_loaner_car : app.car;
         const drive::Vec3 at = vehicle.position();

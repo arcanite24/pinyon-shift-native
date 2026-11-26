@@ -16,6 +16,7 @@
 #include "drive_helpers.h"
 #include "frontend_screens.h"
 #include "gamepad_db.h"
+#include "freeroam/tunables.h"
 #include "garage/rally_kit.h"
 #include "platform_support.h"
 #include "profile/drive_save.h"
@@ -206,6 +207,47 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
     write_career_garage();
     note_car_obtained(car_id, false);
     return carview::car_name(media);
+}
+
+bool DriveApp::ensure_hero_car() {
+    // The registry is read once (this runs with every car load in the opening).
+    static const freeroam::HeroCarPreset hero = [&] {
+      freeroam::Registry reg;
+      std::string why;
+      if (!world_dir.empty() && freeroam::load_registry(game_root_of(), reg, &why))
+        return freeroam::HeroCarPreset::from(reg);
+      return freeroam::HeroCarPreset::disc();
+    }();
+    for (const auto& gc : career_garage.cars)
+      if (gc.car_id == hero.car_id) {
+        if (career_garage.selected != gc.id) {
+          career_garage.selected = gc.id;
+          write_career_garage();
+        }
+        return true;
+      }
+    if (award_garage_car(hero.car_id, hero.colour_index, true).empty()) return false;
+    const auto db = parts_db.valid() ? parts_db.get() : nullptr;
+    if (!db) return true;
+    if (!race_pi_cfg_loaded && !world_dir.empty()) {
+      race_pi_cfg_loaded = true;
+      const auto pzip = cars::mods::resolve(game_root_of() / "media" / "physics.zip");
+      std::error_code pec;
+      if (std::filesystem::exists(pzip, pec)) {
+        cars::load_physics_settings(pzip, race_phys_settings, nullptr);
+        garage::load_pi_config(pzip, race_pi_cfg, nullptr);
+      }
+    }
+    std::string why;
+    const int64_t gid = career_garage.cars.back().id;
+    if (!garage::fit_upgrade_levels(career_garage, *db, gid, hero.upgrades, hero.wheel_style, &race_phys_settings,
+                                    &race_pi_cfg, class_bands.empty() ? nullptr : &class_bands, &why))
+      std::fprintf(stderr, "carview: hero car %lld: %s\n", (long long)hero.car_id, why.c_str());
+    if (const garage::Car* gc = career_garage.find(gid))
+      std::printf("hero car: %lld fitted, PI %.4f class %d\n", (long long)hero.car_id, gc->performance_index,
+                  gc->class_id);
+    write_career_garage();
+    return true;
 }
 
 std::string DriveApp::start_rally_heats() {

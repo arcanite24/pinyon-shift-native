@@ -41,7 +41,10 @@ void drive_usage() {
                "  race:    --event <id> (FR22, FR16, ...): the event's race on its route, grid and opponents;\n"
                "           --difficulty easy|med|hard|pro --no-rubberband --race-auto (the AI drives the\n"
                "           player's car; the default headless; no grid menu) --race-auto-menus (the AI\n"
-               "           drives, the race screens still show and wait for A) --race-seed N\n"
+               "           drives, the race screens still show and wait for A) --race-auto-skill N (the\n"
+               "           autopilot drives at AI skill row N, 1-80, not the event's; a capture harness)\n"
+               "           --race-ai-skill N (the opponents too) --race-ai-hold s (the opponents braked on\n"
+               "           the grid s seconds after GO; a capture harness) --race-seed N\n"
                "           --race-replay <csv> (the player on an oracle path by race time; the M5 gate)\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad;\n"
@@ -140,6 +143,10 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       continue;
     }
     if (a == "--save-settings") { save_settings = true; continue; }
+    if (a == "--race-ai-hold") {
+      race_options.opponent_hold_s = std::clamp(std::atof(next()), 0.0, 600.0);
+      continue;
+    }
     if (a == "--no-title") { no_title = true; continue; }
     if (a == "--hub-studio") { cli_hub_studio = true; continue; }
     if (a == "--hub-shot") { cli_hub_shot_room = next(); cli_hub_shot_png = next(); continue; }
@@ -291,6 +298,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     else if (a == "--race-auto") race_auto = 1;
     else if (a == "--race-auto-menus") race_auto = 1, race_auto_menus = true;
+    else if (a == "--race-auto-skill") race_options.autopilot_skill = std::clamp(std::atoi(next()), 1, 80);
+    else if (a == "--race-ai-skill") race_options.opponent_skill = std::clamp(std::atoi(next()), 1, 80);
     else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--radio-press") radio_press_every = std::atof(next());

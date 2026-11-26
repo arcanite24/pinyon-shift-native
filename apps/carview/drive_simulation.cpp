@@ -875,6 +875,11 @@ bool DriveSession::step(const drive::Input& user_in) {
         // location, out of the AI's hands (PrepareForRewardsFlow). The race
         // still steps its field.
         drive::Input in = app.race ? app.race->player_input(vehicle, eff_user_in, traffic.get()) : eff_user_in;
+        // Under --race-auto the race's autopilot is the player's hands: the
+        // driving tutor hears its throttle, so PRESS RT TO ACCELERATE goes
+        // as it would for a player who accelerates.
+        if (app.race && app.race_options.autopilot && (app.campaign.ftc_active() || app.campaign.tutor().active()))
+          ftc_throttle = std::max(ftc_throttle, in.throttle);
         // Handbrake and a light pedal: a held brake at a stop would select
         // reverse.
         if (app.race && results_page > 0) in = drive::Input{}, in.brake = 0.4, in.handbrake = true;
@@ -949,6 +954,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             app.sponsor_banner_at = vehicle.time();
           }
           freeroam::HeadToHeadResult hres;
+          festival_mgr->set_challenges_enabled(!app.campaign.ftc_active());
           if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
                                  &hres, traffic ? traffic->cars() : nullptr)) {
             club_pending.encounter_completed = true;

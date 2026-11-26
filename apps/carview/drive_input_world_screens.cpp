@@ -106,17 +106,20 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 notice_until = vehicle.time() + 3.0;
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
               } else if (app.fmv_player.active() && (adv_key || adv_pad || mouse_adv)) {
-                // A story movie (confirmskip): Start skips it; another press
-                // shows the SKIP bubble with the Start glyph (FMV_01 in the
-                // original: A every 5 s neither skipped it nor the outro;
-                // first30a captures, Q274). Tab stays a dev skip.
-                const bool start = (e.type == SDL_EVENT_KEY_DOWN && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_TAB)) ||
+                // A story movie (confirmskip): a press shows the SKIP bubble
+                // with the Start glyph, and Start while it is up skips (FMV_01
+                // in the original: A then Start 0.5 s later skipped it, Start
+                // with no bubble up and B, X, Y, Back, LB or RB after A did
+                // not; first30e r3-r5, Q274). Tab stays a dev skip.
+                const double now_s = double(SDL_GetTicksNS()) * 1e-9;
+                const bool start = (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) ||
                                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_START);
-                if (start) {
+                const bool dev_skip = e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_TAB;
+                if (dev_skip || (start && now_s < fmv_skip_prompt_until)) {
                   fmv_skip_prompt_until = -1.0;
                   queued_campaign_actions.push_back(app.campaign.advance_or_skip(app.fmv_player, &app.audio_host));
                 } else {
-                  fmv_skip_prompt_until = double(SDL_GetTicksNS()) * 1e-9 + kFmvSkipPromptSeconds;
+                  fmv_skip_prompt_until = now_s + kFmvSkipPromptSeconds;
                 }
               } else if (adv_key || adv_pad || mouse_adv) {
                 queued_campaign_actions.push_back(app.campaign.advance_or_skip(app.fmv_player, &app.audio_host));
@@ -420,11 +423,21 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                    e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL))
                 return true;
+              // After A on the heats the map shows PLEASE WAIT and closes by
+              // itself; it takes no input meanwhile (first30e r7: B 4 s
+              // after A did nothing visible).
+              if (map_heats_close_left >= 0.0 &&
+                  (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                   e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_WHEEL))
+                return true;
               // The career's locked map (CLockMapScreenForFirstTimeCareer):
               // B, X and Y do nothing; A elsewhere sets and clears a route
               // with the map left open (the original's workshop map,
               // f01281/f01290_first30a_orig.png); A on the Horizon Heats
-              // routes there and closes it (interim, Q275).
+              // routes there and lets go of the lock (on a route to a career event,
+              // Q275). The help bar then gives way
+              // to PLEASE WAIT and the map closes by itself (first30e r7
+              // n0-h00045; interim delay kMapHeatsCloseSeconds).
               if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
                 const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
                 const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
@@ -439,29 +452,34 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST ||
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH));
                 if (a) {
-                  // The heats' marker, or the cursor on its sign-up place
-                  // (the engine's map may not list the career's event).
-                  std::array<double, 3> hp{};
-                  const bool have_hp = app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp);
+                  // The target's marker (the heats, or the showcase after
+                  // them), or the cursor on its sign-up place (the engine's
+                  // map may not list the career's event).
+                  const FtcMapTarget target = ftc_map_target();
+                  const std::array<double, 3> hp = target.pos;
+                  const bool have_hp = target.have_pos;
                   bool heats = false;
                   if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
                     const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
-                    heats = m.kind == MapMarker::kEvent &&
-                            (m.id == std::to_string(race::FirstTimeCareer::kAllComerFinal) ||
+                    heats = (m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite) &&
+                            ((target.event_id > 0 && m.id == std::to_string(target.event_id)) ||
                              (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
                   }
                   if (!heats && have_hp) heats = std::hypot(map_px - hp[0], map_pz - hp[2]) < 40.0;
                   if (heats && have_hp && app.gps_solver.ready()) {
                     const drive::Vec3 at = vehicle.position();
-                    fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], traffic::GpsDestKind::kFestivalRace,
-                                                                  "IDS_HudMsg_HorizonHeats",
+                    fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], target.gps_kind, target.gps_label,
                                                                   at.x, at.z));
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                    close_map();
+                    app.campaign.ftc_release_map_lock();
+                    map_heats_close_left = kMapHeatsCloseSeconds;
+                    map_dirty = true;
                     return true;
                   } else if (heats) {
                     map_route_to_selected();
-                    close_map();
+                    app.campaign.ftc_release_map_lock();
+                    map_heats_close_left = kMapHeatsCloseSeconds;
+                    map_dirty = true;
                     return true;
                   }
                   // Not the heats: the map's own A (route / clear route).

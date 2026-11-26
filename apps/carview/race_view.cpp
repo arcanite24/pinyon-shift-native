@@ -526,6 +526,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     c.setup = race::assign_driver_for_mode(event_.event_skill, event_.event_temperament, event_.event_rubberband,
                                            c.who.skill_modifier, c.who.aggro_modifier, c.who.rubberband_modifier,
                                            o.difficulty, o.ai_mode, event_);
+    if (o.opponent_skill > 0) c.setup.skill = o.opponent_skill;  // the capture harness's override
     const race::SkillRow* sk = event_.skill(c.setup.skill);
     // SPEC-RACE-AI, Steering: the line controller's grip level, 1 + 0.025 x
     // the AISkills nominal cheat level (0 on every row of the disc, so 1;
@@ -545,7 +546,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     c.start_progress = field_->progress(k);
   }
   {
-    const race::SkillRow* sk = event_.skill(std::clamp(event_.event_skill, 1, 80));
+    const int player_skill = o.autopilot_skill > 0 ? o.autopilot_skill : event_.event_skill;
+    const race::SkillRow* sk = event_.skill(std::clamp(player_skill, 1, 80));
     player_ai_.init(sk ? *sk : race::SkillRow{}, nullptr, o.seed * 7919u, false);
     const auto& s = slots_[size_t(player_slot_)];
     field_->place_near(cars_.size(), s.x, s.z, from, line_.gate_progress + 1);
@@ -1180,6 +1182,8 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   race::dls_update(line_.line, dls_cars_, n, lane_params_, dls_settings_, drive::Vehicle::kStep, dls_state_, lanes_, caps_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
+  if (o_.opponent_hold_s > 0.0 && session_->started() && session_->clock() < o_.opponent_hold_s)
+    for (size_t k = 0; k < n; ++k) inputs_[k] = countdown_grid_input({}, false, session_->clock());
   // Held on the grid in first until GO while passing player throttle through for launch revving.
   if (!session_->started()) return countdown_grid_input(user, o_.autopilot, session_->clock());
   if (o_.autopilot || session_->finished(n)) return inputs_[n];

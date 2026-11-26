@@ -163,6 +163,11 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
 
             // Check whether a car swap requires restarting the session loop.
             std::string swap_target;
+            // The first-time career hands over the HeroCar Corrado (upgraded,
+            // C 400 on the locked map, Q280): owned and selected before the
+            // swap, so the next session loads it with its fitted parts.
+            if (ca.swap_car && ca.car_id == race::FirstTimeCareer::kCorradoCarId && app.campaign.ftc_active())
+              app.ensure_hero_car();
             if (ca.swap_car && !ca.car_media.empty()) {
               swap_target = find_baked_car(ca.car_media, ca.car_id);
               if (swap_target.empty()) {
@@ -218,6 +223,19 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                                                         ca.gps_label, at.x, at.z));
             }
             if (ca.launch_event && (!ca.event_id.empty() || ca.route_id > 0)) {
+              // A career launch of an event with a car provided (the Red
+              // Rock showcase's Mustang Boss 429: its ticket says CAR
+              // PROVIDED) races in that car, as the events page's launch does.
+              if (const race::CareerEvent* lev =
+                      app.have_career_catalog && !ca.event_id.empty() ? app.career_catalog.find_event(ca.event_id) : nullptr) {
+                int64_t cid = 0;
+                int clid = 2;
+                current_car_info(cid, clid);
+                const auto elig = app.career_catalog.check_eligibility(*lev, cid, clid, app.class_name_list(), false);
+                if (elig.uses_loaner && elig.loaner_car_id > 0)
+                  if (auto it = app.baked_ids.find(elig.loaner_car_id); it != app.baked_ids.end())
+                    app.pending_event_loaner_car = it->second;
+              }
               app.next_event = !ca.event_id.empty() ? ca.event_id : std::to_string(ca.route_id);
               app.next_event_fallback =
                   (!ca.event_id.empty() && ca.route_id > 0) ? std::to_string(ca.route_id) : std::string{};
@@ -569,7 +587,10 @@ void DriveSession::run_window_loop() {
             const bool rf = app.race && app.race->player_finished();
             apply_story_action(app.story_intro.update(frame_dt, {vp.x, vp.z}, app.fmv_player.active(), rf));
           }
-          if (!app.show_title && !app.headless) {
+          // The career waits out the boot (the disclaimer and splashes): a
+          // save resumed at an event's sign-up place would otherwise launch
+          // its race under them.
+          if (!app.show_title && !app.headless && app.story_intro.stage() != carview::StoryStage::kBootSplash) {
             const drive::Vec3 vp = vehicle.position();
             // The campaign hears of the finish only once the banner is left and
             // the award committed (on_race_finished runs there and applies the

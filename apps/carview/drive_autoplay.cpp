@@ -38,33 +38,68 @@ bool autoplay_key(const std::string& name, SDL_Keycode& key, SDL_Scancode& sc) {
 
 void DriveSession::autoplay_frame() {
   auto& ap = app.autoplay;
+  // The cursor onto the sign-up place of the event the career's locked map
+  // asks for (the heats, then the showcase; the map pans as the stick would;
+  // the harness stands in for the player finding the marker).
+  auto cursor_to_career_event = [&]() {
+    const FtcMapTarget t = ftc_map_target();
+    const int64_t target = t.event_id;
+    const std::array<double, 3> hp = t.pos;
+    if (!map_open || !t.have_pos) return false;
+    map_cam.reset(hp[0], hp[2], map_zoom);
+    map_cx = map_cam.cx();
+    map_cz = map_cam.cz();
+    map_cursor.reset();
+    if (map_w > 64 && map_h > 64) {
+      const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
+      const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+      map_cursor.absorb(float((0.5 * map_w + (hp[0] - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
+                        float((0.5 * map_h - (hp[2] - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
+    }
+    map_dirty = true;
+    update_map_selection();
+    ap.note("mapto event " + std::to_string(target));
+    return true;
+  };
   for (const std::string& name : ap.take_due_keys()) {
-    if (name == "mapto:heats") {
-      // The cursor onto the heats' sign-up place (the map pans as the stick
-      // would; the harness stands in for the player finding the marker).
-      std::array<double, 3> hp{};
-      if (map_open && app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp)) {
-        map_cam.reset(hp[0], hp[2], map_zoom);
-        map_cx = map_cam.cx();
-        map_cz = map_cam.cz();
-        map_cursor.reset();
-        if (map_w > 64 && map_h > 64) {
-          const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
-          const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
-          map_cursor.absorb(float((0.5 * map_w + (hp[0] - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
-                            float((0.5 * map_h - (hp[2] - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
-        }
-        map_dirty = true;
-        update_map_selection();
-        ap.note("mapto heats");
-      } else {
-        ap.note("mapto heats: no map or no heats");
-      }
+    if (name == "mapto:heats" || name == "mapto:career") {
+      if (!cursor_to_career_event()) ap.note("mapto: no map or no career event");
       continue;
+    }
+    if (name.rfind("launch:", 0) == 0) {
+      app.next_event = name.substr(7);
+      app.next_event_fallback.clear();
+      running = false;
+      ap.note("launch " + app.next_event);
+      continue;
+    }
+    std::string send = name;
+    if (name == "advance") {
+      // Return where a press moves the career on (a race and its results, a
+      // movie, a blocking career beat, controls held by the career, the
+      // career's SIGN ME UP! and locked map), not in free roam, where it would open the
+      // festival's hub.
+      const bool held = app.campaign.ftc_active() && !app.campaign.ftc().controls_enabled();
+      const bool sign_up = !app.race && app.campaign.ftc_sign_up_event() > 0;
+      // The career's locked map: the cursor onto the event it asks for,
+      // then A (the route there lets the map go).
+      const bool locked_map = map_open && map_heats_close_left < 0.0 && app.campaign.ftc_active() &&
+                              app.campaign.ftc().map_locked() && cursor_to_career_event();
+      if (!(app.race || app.fmv_player.active() || app.campaign.is_blocking_gameplay() || held || app.show_title ||
+            sign_up || locked_map))
+        continue;
+      send = "return";
+    }
+    if (name == "mapclose") {
+      // B on an open map that lets the player out (not the career's locked
+      // one); nothing when no map is up.
+      if (!map_open || (app.campaign.ftc_active() && app.campaign.ftc().map_locked())) continue;
+      ap.note("mapclose");
+      send = "escape";
     }
     SDL_Keycode key = 0;
     SDL_Scancode sc = SDL_SCANCODE_UNKNOWN;
-    if (!autoplay_key(name, key, sc)) {
+    if (!autoplay_key(send, key, sc)) {
       ap.note("unknown key " + name);
       continue;
     }
@@ -88,7 +123,31 @@ void DriveSession::autoplay_frame() {
     const bool driving = ap.drive_auto() && !app.race && !app.show_title && !app.fmv_player.active() &&
                          !app.campaign.is_blocking_gameplay() &&
                          (!app.campaign.ftc_active() || app.campaign.ftc().controls_enabled());
-    if (!driving || vehicle.speed() > 1.0 || !route.valid || route.points.size() < 2) {
+    // The career's event to sign up for, and where: with the sat-nav's
+    // DESTINATION REACHED short of the sign-up sphere the route is gone, so
+    // a car stuck near it is put on the sign-up place (a harness nudge).
+    std::array<double, 3> sign_pos{};
+    const auto ftc_stage = app.campaign.ftc().stage();
+    const int64_t sign_id = ftc_stage == race::FtcStage::kHeats      ? race::FirstTimeCareer::kAllComerFinal
+                            : ftc_stage == race::FtcStage::kShowcase ? race::FirstTimeCareer::kMustangRace
+                                                                     : 0;
+    const drive::Vec3 vp = vehicle.position();
+    const bool near_sign_up = app.campaign.ftc_active() && sign_id && app.campaign.ftc_sign_up_event() == 0 &&
+                              app.campaign.ftc().event_trigger(sign_id, sign_pos) &&
+                              std::hypot(sign_pos[0] - vp.x, sign_pos[2] - vp.z) < 400.0;
+    const bool sign_up_stuck = ap.drive_auto() && !app.race && !app.fmv_player.active() && near_sign_up &&
+                               app.campaign.ftc().controls_enabled() && std::abs(vehicle.speed()) <= 1.0;
+    if (sign_up_stuck) {
+      if (stuck_since < 0.0) {
+        stuck_since = now;
+      } else if (now - stuck_since > 6.0) {
+        stuck_since = -1.0;
+        const double h = std::atan2(sign_pos[0] - vp.x, sign_pos[2] - vp.z);
+        vehicle.reset({sign_pos[0], sign_pos[1] + 1.0, sign_pos[2]}, h);
+        ap.note("autoplay unstuck onto the sign-up place");
+        std::printf("autoplay: unstuck onto the sign-up place of event %lld\n", (long long)sign_id);
+      }
+    } else if (!driving || vehicle.speed() > 1.0 || !route.valid || route.points.size() < 2) {
       stuck_since = -1.0;
     } else if (stuck_since < 0.0) {
       stuck_since = now;

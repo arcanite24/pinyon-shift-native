@@ -493,6 +493,9 @@ bool draw_map_screen(ui::List& l, const DriveHud& st, const MapScreenHud& ms, fl
       ui4::button_bar(l, {{"A", text_of(map_text::kOk)}, {"B", text_of(map_text::kCancel)}}, w, h);
     else
       ui4::button_bar(l, {{"A", text_of(map_text::kOk)}}, w, h);
+  } else if (!overlay && ms.please_wait) {
+    draw_please_wait_corner(l, w, h, ms.age);
+    ui4::draw_info_tip(l, ms.tip, w, h);
   } else if (!overlay) {
     ui4::button_bar(l, prompts_of(ms.prompts, keep), w, h);
     ui4::draw_info_tip(l, ms.tip, w, h);
