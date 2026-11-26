@@ -638,6 +638,8 @@ void DriveSession::open_map() {
           }
           map_open = map_dirty = true;
           picking = false;
+          if (hub_menu.open()) hub_menu.close();
+          outpost_hub_open = false;
           int win_w = int(app.width), win_h = int(app.height);
           if (app.window) SDL_GetWindowSizeInPixels(app.window, &win_w, &win_h);
           if (win_w > 64 && win_h > 64) {
@@ -1184,6 +1186,10 @@ bool DriveSession::activate_world_trigger() {
             }
             return true;
           }
+          // During the first-time career (or while a loading screen / career map
+          // handoff is pending), festival sites, street hubs and H2H encounters
+          // stay suppressed so Confirm never opens Dak's Workshop over the map.
+          if (app.campaign.ftc_active() || loading_screen.active() || ftc_open_map_pending) return false;
           // ColoradoDirt free roam: drive into Rally Championship world trigger markers
           // (MS_RALLY_01..07 parsed from rally_event_activations.xml).
           if (!app.colorado_world() && app.rally_catalog.loaded) {
