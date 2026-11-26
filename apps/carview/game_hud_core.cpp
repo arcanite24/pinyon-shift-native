@@ -403,10 +403,11 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
 // unreadable text and a stray yellow rectangle above the banner).
 bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
-  if (st.popup_title.empty() || age < 0.0 || age > kPopupSeconds) return false;
+  const double life = notify_seconds(st.popup_kind, kPopupSeconds);
+  if (st.popup_title.empty() || age < 0.0 || age > life) return false;
   const float s = g.s;
   const float in = ease_in_time(age, 0.0, 0.28);
-  const float out = 1.0f - clamp01((age - (kPopupSeconds - 0.5)) / 0.5);
+  const float out = 1.0f - clamp01((age - (life - 0.5)) / 0.5);
   const float a = in * out;
   if (a <= 0.01f) return false;
 
@@ -1104,7 +1105,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       NotifyView n;
       n.kind = st.popup_kind, n.icon = st.popup_icon;
       n.tag = st.popup_tag, n.title = st.popup_title, n.message = st.popup_text, n.logo = st.popup_logo;
-      n.age = st.time - st.popup_at, n.life = kPopupSeconds;
+      n.age = st.time - st.popup_at, n.life = notify_seconds(st.popup_kind, kPopupSeconds);
       bottom_lift += draw_hud_notification(l, n, g.w, g.h, g.s, bottom_lift);
     } else if (popup_card(l, st, g, bottom_lift)) {
       bottom_lift += 72.0f;

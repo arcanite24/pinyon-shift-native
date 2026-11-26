@@ -525,6 +525,14 @@ void test_stage_names_and_resume() {
   c = ftc.resume(FtcStage::kRewards);
   check(ftc.stage() == FtcStage::kRewards && c.radio_dj && !c.silent_idents && c.radio_switching,
         "the rewards resume with the radio's own");
+  {
+    // first_time_career.xml: the award's behaviours run back to back after
+    // blackout_1 and the map opens at once (no 3 s of black).
+    race::FtcInput rin;
+    rin.dt = 1.0 / 60.0;
+    const auto rc = ftc.update(rin);
+    check(ftc.stage() == FtcStage::kFirstAutoshow && rc.open_map, "the rewards go straight to the map");
+  }
   c = ftc.resume(FtcStage::kRadioUnlock);
   check(ftc.checkpoint() == FtcStage::kHeats, "the festival arrival resumes at the heats (save 7)");
   c = ftc.resume(FtcStage::kWristbandIntro);

@@ -194,7 +194,8 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                 app.spawn[2] = ca.pos[2];
                 app.spawn[3] = ca.heading;
                 app.have_spawn = true;
-                app.fast_travel = true;
+                app.fast_travel =
+                    std::hypot(ca.pos[0] - host.showroom.world_origin_x(), ca.pos[2] - host.showroom.world_origin_z()) > 120.0;
               }
               if (ca.set_gps) {
                 app.pending_handoff.has_gps = true;

@@ -67,7 +67,14 @@ struct SkillsData {
   double min_speed_to_cancel = 10.0;  // mph
   double delay_after_cancel = 3.0;    // s
   double tag_award_interval = 0.3;    // s
-  double bank_timeout = 3.0;          // s without a new skill -> bank
+  // s without a new skill -> bank. The original banks when the HUD's feat
+  // display lets the chain go: 947_HUD's SHOWCOMBO slide (1.0 s), then
+  // UI/RaceFeats/Animation/Shown_Duration (0.5 s), then FadeOut_Duration
+  // (3.0 s while chaining), each restarted by a new award (Q302).
+  static constexpr double kShowComboSeconds = 1.0;
+  static constexpr double kShownSeconds = 0.5;
+  static constexpr double kFadeOutChainingSeconds = 3.0;
+  double bank_timeout = kShowComboSeconds + kShownSeconds + kFadeOutChainingSeconds;
 
   SkillConfig burnout, donut, turn180, jturn, air, drift, edrift, draft, two_wheels;
   SkillConfig clean_speed, near_miss, sketchy_overtake, trading_paint, pass, destruction;

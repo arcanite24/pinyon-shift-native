@@ -1532,10 +1532,13 @@ void prime_world_at(DriveSession& s, double x, double z) {
     any_changed = any_changed || ch;
   }
   s.host.streamer->set_async(false);
-  s.host.streamer->set_hidden(s.host.hidden_sent);
-  bool ch = false;
-  s.host.streamer->update(x, z, &ch, &s.app.error);
-  any_changed = any_changed || ch;
+  const double dist_centre = std::hypot(x - s.host.streamer->centre_x(), z - s.host.streamer->centre_z());
+  if (s.host.streamer->gathers() == 0 || dist_centre > 100.0) {
+    s.host.streamer->set_hidden(s.host.hidden_sent);
+    bool ch = false;
+    s.host.streamer->update(x, z, &ch, &s.app.error);
+    any_changed = any_changed || ch;
+  }
   s.host.streamer->set_async(s.host.streamer_async);
   if (any_changed && s.host.streamer->prepared().has_value()) {
     s.host.ground = &s.host.streamer->ground();

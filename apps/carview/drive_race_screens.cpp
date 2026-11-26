@@ -378,6 +378,7 @@ void DriveSession::race_continue() {
       f.career_xp_event = hi.wristband > 0 && f.kind != race_flow::Kind::kRivals;
       f.reward_car = !won_car_name.empty();
       f.event_car = !app.event_car_name.empty();
+      f.first_time_career = app.campaign.ftc_active();
       race_screens.start(race_flow::post_steps(f));
       race_screens.next();  // past the banner
       results_page = 1;

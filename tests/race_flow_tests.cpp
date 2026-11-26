@@ -91,6 +91,10 @@ void post_race() {
   CHECK(has(post_steps(on), S::kRivalOffer));
   on.first_time_career = true;
   CHECK(!has(post_steps(on), S::kRivalOffer));
+  // The first-time career's heats: the cash, then out (no points page).
+  PostFacts ftc = f;
+  ftc.first_time_career = true;
+  CHECK((post_steps(ftc) == std::vector<S>{S::kFinishBanner, S::kCashReward, S::kBlackOut, S::kDone}));
   // Showcase: cash then the car, no points. Headline: no points.
   PostFacts sc = f;
   sc.kind = Kind::kShowcase;

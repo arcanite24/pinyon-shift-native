@@ -55,6 +55,8 @@
 
 namespace carview {
 
+class LoadingScreen;
+
 struct DriveApp : DriveConfig {
   struct PendingCampaignHandoff {
     bool active = false;
@@ -225,6 +227,9 @@ struct DriveApp : DriveConfig {
   // A boot or world load's screen just closed: the session's loading screen
   // runs the hand-off fade (global.fade_in) next frame.
   bool loading_hand_off = false;
+  // Out of an event: the hot load's tip card, which the session keeps up
+  // until its world is in (the original goes from the card to the map).
+  std::shared_ptr<LoadingScreen> loading_hand_off_card;
   // The next race is a restart (PreRace_restart: the grid menu only).
   bool race_restart = false;
   // The car chosen on the event's car select (STAY IN CAR? after the race).

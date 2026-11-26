@@ -299,7 +299,7 @@ int main() {
     CHECK(got_landscaping);
     CHECK(!got_sponsor_unbanked);
     // 2. Bank chain after timeout at speed -> commits deferred AnySkill sponsor tier & updates MaxSkillsCarOrdinal!
-    in.time = 5.0;
+    in.time = 6.0;  // >= 4.5 s bank_timeout after t=1.4
     auto e3 = tr.step(in);
     bool got_banked = false, got_sponsor_banked = false;
     for (const auto& ev : e3) {
@@ -311,7 +311,7 @@ int main() {
     CHECK(tr.max_skills_score() >= 1100 && tr.max_skills_car() == 1219);
     // 3. R3-CAM-05: Braking to a stop (< 10 mph for > 1 s) must NOT destroy the unbanked Skill Chain;
     //    the chain lets bank_timeout expire and banks cleanly!
-    in.time = 6.0;
+    in.time = 7.0;
     in.car_impact_ms = 2.0;  // Trading Paint (below 12 m/s crash threshold)
     in.nearest_car_dist = 2.0;
     auto e4 = tr.step(in);
@@ -320,13 +320,13 @@ int main() {
     in.nearest_car_dist = 100.0;
     in.speed_ms = 2.0;  // ~4.5 mph (< 10 mph)
     in.forward_speed_ms = 2.0;
-    in.time = 7.5;
+    in.time = 8.5;
     auto e5 = tr.step(in);
     bool lost_on_brake = false;
     for (const auto& ev : e5)
       if (ev.kind == SkillEvent::kChainLost) lost_on_brake = true;
     CHECK(!lost_on_brake && tr.hud().active);
-    in.time = 9.2;  // >= 3.0 s bank_timeout after t=6.0 -> banks cleanly while stopped!
+    in.time = 11.6;  // >= 4.5 s bank_timeout after t=7.0 -> banks cleanly while stopped!
     auto e6 = tr.step(in);
     bool banked_on_stop = false;
     for (const auto& ev : e6)
@@ -335,12 +335,12 @@ int main() {
     // Hard collision (>= 12 m/s) still cancels an active chain!
     in.speed_ms = 30.0;
     in.forward_speed_ms = 30.0;
-    in.time = 10.0;
+    in.time = 12.5;
     in.smashed_object = true;
     in.smashed_type = SmashObjectType::kGeneric;
     CHECK(!tr.step(in).empty());
     in.smashed_object = false;
-    in.time = 10.5;
+    in.time = 13.0;
     in.world_impact_ms = 15.0;
     auto e7 = tr.step(in);
     CHECK(!e7.empty() && e7[0].kind == SkillEvent::kChainLost);
@@ -842,7 +842,7 @@ int main() {
     tr.award_named("Air", 4, 1.0);
     SkillInput bank_in;
     bank_in.dt = 0.1;
-    bank_in.time = 5.0;
+    bank_in.time = 6.0;  // >= 4.5 s bank_timeout after the award
     bank_in.speed_ms = 25.0;
     bank_in.forward_speed_ms = 25.0;
     bool got_rank_meta = false;
