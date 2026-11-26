@@ -18,6 +18,8 @@
 #include "hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
+#include "map_anim.h"
+#include "audio/xml.h"
 #include "pause_screen.h"
 #include "ui.h"
 #include "ui4_chrome.h"
@@ -726,10 +728,113 @@ void test_hud_abs_tcs_lamps() {
   }
 }
 
+// The map profile animations: frames, keys, eases, loops and triggers as
+// the title reads them (MapProfileFullscreen.xml).
+void check_map_animations() {
+  namespace ma = carview::mapanim;
+  const char* xml =
+      "<animations>"
+      "<animation name=\"ghost\"><frame advance=\"0\"><key type=\"alpha\" value=\"1\" ease=\"none\"/></frame>"
+      "<frame advance=\"0.3\"><key type=\"alpha\" value=\"0.3\" ease=\"none\"/></frame></animation>"
+      "<animation name=\"radar\" loop=\"loop\"><frame advance=\"1.2\"><key type=\"alpha\" value=\"0.5\"/>"
+      "<key type=\"scaleX\" value=\"0\"/><trigger type=\"audio\" value=\"Map_Radar\"/></frame>"
+      "<frame advance=\"0.6\"><key type=\"alpha\" value=\"0\"/><key type=\"scaleX\" value=\"8\" ease=\"in\"/></frame>"
+      "<frame advance=\"1.2\"/></animation>"
+      "<animation name=\"pulse\" loop=\"pingpong\" speed=\"0.5\"><frame><key type=\"scaleY\" value=\"1\"/></frame>"
+      "<frame advance=\"1\"><key type=\"scaleY\" value=\"2\"/></frame></animation>"
+      "<animation name=\"pulse\"><frame><key type=\"scaleY\" value=\"9\"/></frame></animation>"
+      "<animation name=\"smooth\"><frame><key type=\"angle\" value=\"0\" ease=\"smooth\"/></frame>"
+      "<frame advance=\"1\"><key type=\"angle\" value=\"1\" ease=\"smooth\"/></frame>"
+      "<frame advance=\"1\"><key type=\"angle\" value=\"2\" ease=\"smooth\"/></frame>"
+      "<frame advance=\"1\"><key type=\"angle\" value=\"3\" ease=\"smooth\"/></frame></animation>"
+      "<animation name=\"barn_find_region1_unlock\"><frame advance=\"0.6\"><key type=\"alpha\" value=\"0\"/>"
+      "<key type=\"scaleY\" value=\"0.2\"/><key type=\"posX\" value=\"1310\"/><key type=\"posY\" value=\"-4921\"/></frame>"
+      "<frame advance=\"1.5\"><key type=\"alpha\" value=\"1\"/><trigger type=\"set_cursor\" value=\"set\"/></frame>"
+      "</animation></animations>";
+  audio::XmlNode root;
+  CHECK(audio::parse_xml(xml, root, nullptr));
+  ma::Library lib;
+  ma::parse_animations(root, lib);
+  CHECK(lib.by_name.size() == 5);
+
+  // Linear keys ("none"): straight between them, held after the last.
+  const ma::Animation* ghost = lib.find("ghost");
+  CHECK(ghost && ghost->loop == ma::kStop && std::fabs(ghost->duration - 0.3f) < 1e-5f);
+  if (ghost) {
+    CHECK(std::fabs(ghost->sample(ma::kAlpha, 0.15f, 1) - 0.65f) < 1e-4f);
+    CHECK(ghost->sample(ma::kAlpha, 5, 1) == 0.3f);
+    CHECK(!ghost->done(0.2f) && ghost->done(0.3f));
+    ma::IconLook look;
+    ma::apply(*ghost, 1, look);
+    CHECK(look.alpha == 0.3f && look.scale_x == 1 && look.scale_y == 1);
+  }
+
+  // The default ease is flat at both keys: the midpoint is halfway and the
+  // value barely moves just after the start.
+  const ma::Animation* radar = lib.find("radar");
+  CHECK(radar && radar->loop == ma::kLoop && std::fabs(radar->duration - 3.0f) < 1e-5f);
+  if (radar) {
+    CHECK(radar->sample(ma::kAlpha, 0.5f, 1) == 0.5f);  // before the first key
+    CHECK(std::fabs(radar->sample(ma::kAlpha, 1.5f, 1) - 0.25f) < 1e-4f);
+    CHECK(radar->sample(ma::kAlpha, 1.26f, 1) > 0.48f);
+    CHECK(std::fabs(radar->wrap(4.5f) - 1.5f) < 1e-4f);
+    // The audio trigger fires once a pass.
+    CHECK(radar->crossed(0, 1.3f).size() == 1);
+    CHECK(radar->crossed(1.3f, 4.0f).empty());
+    CHECK(radar->crossed(1.3f, 4.3f).size() == 1);
+    CHECK(radar->crossed(0, 7.3f).size() == 3);
+    CHECK(radar->triggers.size() == 1 && radar->triggers[0].value == "Map_Radar");
+  }
+
+  // The speed scales the key times; ping-pong runs back. The second
+  // "pulse" does not replace the first.
+  const ma::Animation* pulse = lib.find("pulse");
+  CHECK(pulse && pulse->loop == ma::kPingPong && std::fabs(pulse->duration - 0.5f) < 1e-5f);
+  if (pulse) {
+    CHECK(std::fabs(pulse->wrap(0.75f) - 0.25f) < 1e-5f);
+    CHECK(std::fabs(pulse->sample(ma::kScaleY, pulse->wrap(0.75f), 1) - 1.5f) < 1e-4f);
+    CHECK(pulse->sample(ma::kScaleY, 0.5f, 1) == 2);
+  }
+
+  // "smooth" runs through the neighbours (a straight line here).
+  const ma::Animation* smooth = lib.find("smooth");
+  CHECK(smooth != nullptr);
+  if (smooth) CHECK(std::fabs(smooth->sample(ma::kAngle, 1.5f, 0) - 1.5f) < 1e-4f);
+
+  // The barn rumour camera move: blend 0 -> 1 between 0.6 s and 2.1 s, then
+  // the cursor trigger.
+  const ma::Animation* barn = lib.find("barn_find_region1_unlock");
+  CHECK(barn && std::fabs(barn->duration - 2.1f) < 1e-5f);
+  if (barn) {
+    ma::CameraMove m = ma::camera_at(*barn, 0.3f);
+    CHECK(m.has_target && m.has_zoom && m.x == 1310 && m.z == -4921 && m.weight == 0);
+    m = ma::camera_at(*barn, 1.35f);
+    CHECK(std::fabs(m.weight - 0.5) < 1e-4 && std::fabs(m.zoom - 0.2) < 1e-6);
+    CHECK(ma::camera_at(*barn, 3).weight == 1);
+    const auto tr = barn->crossed(2.0f, 2.2f);
+    CHECK(tr.size() == 1 && tr[0]->type == "set_cursor");
+    CHECK(std::fabs(ma::map_distance(0.2) - (200 + 7452 * 0.2)) < 1e-6);
+  }
+
+  CHECK(ma::ease_of("", false) == ma::kBoth && ma::ease_of("bogus", true) == ma::kSmooth);
+  ma::Channel c;
+  CHECK(ma::channel_of("posX2", c) && c == ma::kScaleX && ma::channel_of("zoom", c) && c == ma::kScaleY);
+  CHECK(!ma::channel_of("width", c));
+
+  // A symbolizer's event bindings.
+  audio::XmlNode sym;
+  CHECK(audio::parse_xml("<Symbolizer><animation event=\"hover\" animation=\"bulge\"/>"
+                         "<animation event=\"ghost\" animation=\"ghost\"/></Symbolizer>",
+                         sym, nullptr));
+  const ma::Bindings b = ma::parse_bindings(sym);
+  CHECK(b.size() == 2 && b.at("hover") == "bulge");
+}
+
 }  // namespace
 
 int main() {
   // Every letter and digit has strokes.
+  check_map_animations();
   CHECK(!font_segments().empty());
   TextStyle s;
   s.size = 20;
