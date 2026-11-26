@@ -5369,8 +5369,14 @@ which has no capture) with the pause popups' backdrop blur
 (`DriveSession::page_backdrop`;
 `24_options_difficulty_wp3b.png`, `26_my_profile_stats_wp3b.png`).
 
-Needed: which screens turn on the blur (a scene flag or the screen's
-code), its strength and its fade in and out.
+The prebuilt `post.frag.spv` had not been rebuilt since the backdrop flag
+went in, so before WP3b neither these pages nor the pause popups blurred
+in a built engine.
+
+Still open: the blur is the engine's eight-tap gather (about 5 px at
+720p), softer and grainier than the original's; which screens turn it on
+in the title (a scene flag or the screen's code); its strength; and its
+fade in and out.
 
 ## Q241 (MAP-05, HUD-11, not blocking): the map profile animations as the engine plays them
 
@@ -5511,15 +5517,6 @@ Open:
 
 Needed: a recorded title session with its audio, from Press Start into the
 menu and into a load.
-
-The prebuilt `post.frag.spv` had not been rebuilt since the backdrop flag
-went in, so before WP3b neither these pages nor the pause popups blurred
-in a built engine.
-
-Still open: the blur is the engine's eight-tap gather (about 5 px at
-720p), softer and grainier than the original's; which screens turn it on
-in the title (a scene flag or the screen's code); its strength; and its
-fade in and out.
 
 ## Q261 (MENU-02, VIS-20, not blocking): the car's light in the hub rooms
 
