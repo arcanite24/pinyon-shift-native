@@ -531,6 +531,68 @@ bool draw_encounter_intro(ui::List& l, const RaceHud& r, float w, float h) {
 // wristband art and the COLLECT panel's packing are not reproduced.
 constexpr float kPointsTitleY = 168.0f;
 
+// A wristband reached (points_collect_first30d_orig.png, the recomp at
+// rest): POINTS EARNED, the new band's large wristband on the dark tape
+// (ink 95,222-454,361), COLLECT IT FROM RACE CENTRAL on the light pill
+// under it (100,355-440,395), and PLEASE WAIT with the spinner bottom left
+// (60,638-227,687) in place of the help bar; no points tape and no bar.
+// The page moves on by itself (race_flow::timing::kPointsCollect).
+constexpr float kCollectBandX = 274.5f, kCollectBandY = 291.5f;  // the ink's middle
+constexpr float kCollectBandStretchY = 0.86f;                    // 230 tall in the scene, ~198 with margins
+constexpr float kCollectPillX = 100.0f, kCollectPillY = 375.0f;  // the pill's left and middle
+
+std::string band_xl_texture(const std::string& band_name) {
+  std::string colour = upper(band_name.substr(0, band_name.find(' ')));
+  if (colour.empty()) return {};
+  return "WRISTBANDS/" + colour + (colour == "PLATINUM" ? "" : "XL");
+}
+
+bool draw_points_collect(ui::List& l, SceneScreen& sc, const RaceHud& r, float w, float h) {
+  const SceneDraw& sd = sc.scene();
+  sc.hide(sc.node("MainTape"));
+  sc.hide(sc.node("LevelBar"));
+  show_tree(sc, sc.node("LargeTape"));
+  const int car = sc.node("CarName");
+  show_tree(sc, car);
+  for (const char* n : {"Next_Wrsitband", "CollectTape", "RaceIcon"}) sc.hide(child(sd, sc.node("CollectWristband"), n));
+  if (const int band = sc.node("WristbandLarge"); band >= 0) {
+    place_at(sc, band, kCollectBandX, kCollectBandY);
+    sc.at(band).stretch_y = kCollectBandStretchY;
+    if (const std::string tex = band_xl_texture(r.band_name); !tex.empty()) sc.at(band).texture = tex;
+  }
+  const int xp = child(sd, car, "XPRemainingText");
+  const int text = child(sd, xp, "TEXT_COLLECT"), pill = child(sd, xp, "Pill");
+  const std::string collect = text_of(race_text::kCollectIt);
+  sc.text(text, collect);
+  if (xp >= 0 && pill >= 0 && text >= 0) {
+    const auto pr = sd.rect(pill);
+    sc.at(xp).dx = kCollectPillX - pr[0];
+    sc.at(xp).dy = kCollectPillY - 0.5f * (pr[1] + pr[3]);
+    const float tw = sd.measure(text, collect);
+    sc.at(pill).visible_width = tw + 24.0f;
+    // The text sits on the pill's left, a pad in.
+    sc.at(text).dx = (pr[0] + 12.0f + tw) - sd.at(text)[0];  // right-aligned: its anchor is its end
+  }
+  for (const char* n : {"Crisp_Tape", "Smudge_Tape", "dirt"}) sc.hide(child(sd, xp, n));
+  const SceneFrame f = SceneScreen::frame(w, h);
+  // The wristband over the dark tape (the scene's order puts the tape on
+  // top, which leaves the band dim; the capture shows it bright).
+  const int band = sc.node("WristbandLarge");
+  sc.hide(band);
+  sc.draw(l, f);
+  if (band >= 0) {
+    sc.show(band);
+    sc.draw(l, f, band);
+  }
+  // PLEASE WAIT bottom left, the spinner before it.
+  std::array<float, 4> uv{};
+  if (ui_texture("COMMON/LOADSPINNER", uv))
+    l.image_rotated(f.x(82.0f), f.y(662.0f), 20.0f * f.s, 20.0f * f.s,
+                    float(std::fmod(r.screen_t * 6.2831853, 6.2831853)), uv, ui4::kWhite);
+  l.text(f.x(112.0f), f.y(653.0f), text_of(race_text::kPleaseWait), ui4::style(ui::Font::kE, 18.0f * f.s, ui4::kWhite));
+  return true;
+}
+
 bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_view scene = kPointsScene,
                  const std::string* to_next = nullptr) {
   SceneScreen sc(scene);
@@ -560,9 +622,7 @@ bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_vi
     sc.text(sc.node("TEXT_POINTS_TO_NEXT"),
             format1(text_of(left == 1 ? race_text::kPointToNext : race_text::kPointsToNext), std::to_string(left)));
   }
-  if (r.band_up) {
-    sc.text(sc.node("TEXT_POINTS_TO_NEXT"), text_of(race_text::kCollectIt));
-  }
+  if (r.band_up && !to_next) return draw_points_collect(l, sc, r, w, h);
   if (to_next) sc.text(sc.node("TEXT_POINTS_TO_NEXT"), *to_next);
   if (!r.band_name.empty())
     if (const int wc = sc.node("WristbandCurrent/Rectangle"); wc >= 0)

@@ -217,6 +217,10 @@ void DriveSession::update_race_screens(double dt) {
     return;
   }
   race_screens.update(dt);
+  // A wristband to collect: the points page waits (PLEASE WAIT), then moves on.
+  if (race_screens.screen() == S::kPoints && wristband_to_collect() &&
+      race_screens.elapsed() >= race_flow::timing::kPointsCollect)
+    race_screens.next();
   // The pre-race: the count starts when the flow reaches it.
   if (grid_menu_open && race_screens.screen() == S::kCountdown) {
     grid_menu_open = false;
@@ -400,6 +404,8 @@ void DriveSession::race_continue() {
       if (!race_screens.ready()) return;
       [[fallthrough]];
     case S::kPoints:
+      if (race_screens.screen() == S::kPoints && wristband_to_collect()) return;  // no A: PLEASE WAIT
+      [[fallthrough]];
     case S::kRewardCar:
     case S::kTombola:
     case S::kRivalOffer:
@@ -415,6 +421,12 @@ void DriveSession::race_continue() {
       return;
     default: return;
   }
+}
+
+bool DriveSession::wristband_to_collect() const {
+  // As the points page's band_up (drive_hud_sync).
+  return app.have_career_catalog && !app.wristbands.levels.empty() &&
+         app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband) >= 0;
 }
 
 bool DriveSession::popup_backdrop() const {

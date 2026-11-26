@@ -763,6 +763,8 @@ struct DriveSession {
   // A message popup over the game (STAY IN CAR, the pause menu's
   // confirmations): the frame behind it is blurred.
   bool popup_backdrop() const;
+  // A wristband reached and not yet collected (the points page's COLLECT IT).
+  bool wristband_to_collect() const;
   // The OPTIONS pages (CONTROLS, DIFFICULTY, HUD, AUDIO) and MY PROFILE's
   // STATS: the world behind them is blurred as behind a popup (Q224,
   // captures 23 to 26); the lists that open them are not (22, 31).
