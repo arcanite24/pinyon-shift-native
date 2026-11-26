@@ -451,6 +451,32 @@ void test_colorado_corpus_optional() {
         if (std::abs(int(mid_ping.rgba[o]) - int(before_ping.rgba[o])) > 8) ++ring_px;
       }
     check(ring_px > 200, "the radar ping's ring shows mid-pass");
+
+    // Each rumour reveal ends with the rumour's circle in view: the camera
+    // on the animation's target at its zoom fraction (zoom ~ 1 / distance
+    // from the opening's Zoom_Default distance), at 1280x720.
+    freeroam::Collectibles col;
+    if (freeroam::load_collectibles(game_root, col, &err) && col.barns.size() == 9) {
+      const double base = std::max(2.0, mv.min_zoom(1280, 720));
+      const double d_open = carview::mapanim::map_distance(carview::mapanim::kZoomDefault);
+      int in_view = 0;
+      for (const auto& b : col.barns) {
+        const auto* a = mv.animation(b.map_animation);
+        if (!a) continue;
+        const auto m = carview::mapanim::camera_at(*a, 100);
+        const double zoom = base * d_open / carview::mapanim::map_distance(m.zoom);
+        double cx = m.x, cz = m.z;
+        mv.clamp_camera(1280, 720, zoom, cx, cz);
+        const double mpp = mv.map_scale(1280, 720, zoom);
+        const double hx = 640 * mpp, hz = 360 * mpp;
+        const double dx = std::max(0.0, std::fabs(b.hint_x - cx) - hx), dz = std::max(0.0, std::fabs(b.hint_z - cz) - hz);
+        const bool centre_in = std::fabs(b.hint_x - cx) <= hx && std::fabs(b.hint_z - cz) <= hz;
+        std::printf("reveal %s: zoom %.2fx, view %.0f x %.0f m, circle centre %s (%.0f m off)\n", b.name.c_str(),
+                    zoom / base, 2 * hx, 2 * hz, centre_in ? "in view" : "out", std::hypot(dx, dz));
+        in_view += std::hypot(dx, dz) < b.hint_rx;
+      }
+      check(in_view == 9, "every barn rumour reveal ends with its circle in view");
+    }
   }
 
   // PT-35: Minimap at bug_001 (2303.92, 548.02) and bug_023 (-3025.10, -1727.87) with active

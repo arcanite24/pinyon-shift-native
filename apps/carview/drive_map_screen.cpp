@@ -154,10 +154,10 @@ void DriveSession::map_anim_fill(MapScene& ms) {
       if (tr->type == "audio" && !tr->value.empty()) app.audio_host.play_ui(tr->value);
   map_anim_drawn = t;}
 
-// The original's camera distance when the map opens, taken as the engine's
-// opening zoom: the map zooms out to Map_Distance_Max, about 1/6 past its
-// opening view (map_zoom_out_orig.png), so 7652 / (7/6). Inferred (Q241).
-constexpr double kOpeningDistance = mapanim::kMapDistanceMax * 6.0 / 7.0;
+// The original's camera distance when the map opens (Zoom_Default's share
+// of Map_Distance_Min..Max, 2808 m), taken as the engine's opening zoom; the
+// zoom follows 1 / distance (Q241).
+const double kOpeningDistance = mapanim::map_distance(mapanim::kZoomDefault);
 
 void DriveSession::map_reveal_start(size_t index) {
   if (index >= app.collectibles.barns.size() || map_open) return;

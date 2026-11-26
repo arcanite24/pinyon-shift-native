@@ -116,6 +116,11 @@ CameraMove camera_at(const Animation& a, float elapsed);
 inline constexpr double kMapDistanceMin = 200.0;
 inline constexpr double kMapDistanceMax = 7652.0;
 inline double map_distance(double fraction) { return kMapDistanceMin + (kMapDistanceMax - kMapDistanceMin) * fraction; }
+// UI/Map/Zoom_Default (0.35) and UI/Map/Cursor_Zoom_Min / _Max (0.1, 0.4):
+// the fraction the map opens at and, as read here, the player's zoom range
+// (2.97 times in, 1.13 out from the opening distance; the captures measured
+// about 2.6 in and 1/6 out). Q241.
+inline constexpr double kZoomDefault = 0.35, kCursorZoomMin = 0.1, kCursorZoomMax = 0.4;
 
 // The title advances a map animation by the frame's time, at most 1/30 s.
 inline constexpr float kMaxStep = 1.0f / 30.0f;
