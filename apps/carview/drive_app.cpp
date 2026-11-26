@@ -1223,6 +1223,7 @@ void DriveApp::start_world_assets_async(bool init_anim) {
     });
     fut_smash_ = std::async(std::launch::async, [this, media, wdir]() {
       std::string sm_err;
+      smashables.set_render_model_barriers(true);
       return smashables.load(media, wdir, &sm_err);
     });
   }

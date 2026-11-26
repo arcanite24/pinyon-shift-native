@@ -1915,33 +1915,70 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
 
     // Offset crowd cluster cleanly off the asphalt shoulder (~9.5 m laterally), facing inward toward the site.
     const float lateral = is_festival ? 10.5f : 9.2f;
-    const int count = is_festival || is_race_node ? 10 : (is_outpost ? 9 : 7);  // ~10 at FR06 (first30b)
-    const float spacing = is_festival ? 1.15f : 1.18f;
+    int count = is_festival || is_race_node ? 10 : (is_outpost ? 9 : 7);  // ~10 at FR06 (first30b)
+    float spacing = is_festival ? 1.15f : 1.18f;
     const float half_span = 0.5f * float(count - 1) * spacing;
     float cx = ox + xx * lateral - zx * half_span;
     float cz = oz + xz * lateral - zz * half_span;
-    // interim (SPEC_QUESTIONS Q285): a festival race site is one kit of 18
-    // slots (FR<n>_00..17) around FR<n>_NODE; the original's crowd stands
-    // behind the site's barriers past the start (idle_cam0_first30b_orig.png:
-    // the Gauntlet's, 7-14 m past FR06_NODE, behind the barrier line at 6 m).
-    // Which slot carries it is not decoded; the engine centres it between
-    // the slots _06 and _02 that bound that stretch on every site.
+    // Festival race sites (FR<n>_NODE) share a kit of 17 slots (FR<n>_00..16),
+    // but slot numbering differs per site (e.g. FR05 places the RACE SIGN UP
+    // stage trailer at _00/_02/_16 while FR06 places it at _01/_16).
+    // Locate the stage trailer from _16 (fallback along=0) and place the crowd
+    // strictly inside the open fenced spectator pen clear of the trailer's
+    // +/-6.4 m along-road footprint, behind the barrier line (lat >= 5.5 m).
     if (is_race_node) {
       const std::string site = gid.substr(0, gid.size() - 5);  // "FR06" of "FR06_NODE"
-      float ax = 0, az = 0, bx = 0, bz = 0;
-      if (find_slot(site + "_06", ax, az) && find_slot(site + "_02", bx, bz)) {
-        const float mx = 0.5f * (ax + bx), mz = 0.5f * (az + bz);
-        // Face the road: from the slots back to the node, across the line.
-        float lx = mx - ox, lz = mz - oz;
-        const float along = lx * zx + lz * zz;
-        lx -= along * zx;
-        lz -= along * zz;
-        if (const float ll = std::hypot(lx, lz); ll > 0.5f) {
-          xx = lx / ll;
-          xz = lz / ll;
-          cx = mx - zx * half_span;
-          cz = mz - zz * half_span;
+      float sx = 0.0f, sz = 0.0f;
+      float stage_along = 0.0f;
+      float stage_side = 1.0f;
+      if (find_slot(site + "_16", sx, sz)) {
+        const float dx = sx - ox, dz = sz - oz;
+        stage_along = dx * zx + dz * zz;
+        const float sl = dx * xx + dz * xz;
+        if (std::fabs(sl) > 1.0f) stage_side = sl >= 0.0f ? 1.0f : -1.0f;
+      }
+      if (stage_side < 0.0f) {
+        xx = -xx;
+        xz = -xz;
+      }
+      struct PenSlot {
+        float along;
+        float lat;
+      };
+      std::vector<PenSlot> pos_pen, neg_pen;
+      for (int k = 0; k <= 15; ++k) {
+        char sfx[8];
+        std::snprintf(sfx, sizeof sfx, "_%02d", k);
+        float px = 0.0f, pz = 0.0f;
+        if (!find_slot(site + sfx, px, pz)) continue;
+        const float dx = px - ox, dz = pz - oz;
+        const float along = dx * zx + dz * zz;
+        const float lat = dx * xx + dz * xz;
+        if (lat < 5.5f || lat > 11.5f) continue;
+        if (along >= stage_along + 6.4f) pos_pen.push_back({along, lat});
+        else if (along <= stage_along - 6.4f) neg_pen.push_back({along, lat});
+      }
+      const auto& pen = !pos_pen.empty() ? pos_pen : neg_pen;
+      if (!pen.empty()) {
+        float min_a = pen[0].along, max_a = pen[0].along;
+        float sum_lat = 0.0f;
+        for (const auto& s : pen) {
+          min_a = std::min(min_a, s.along);
+          max_a = std::max(max_a, s.along);
+          sum_lat += s.lat;
         }
+        const float mean_lat = std::clamp(sum_lat / float(pen.size()), 6.8f, 9.2f);
+        // Keep every spectator inside the open pen and clear of the stage trailer.
+        const float pen_lo = !pos_pen.empty() ? std::max(min_a, stage_along + 6.6f) : min_a;
+        const float pen_hi = !pos_pen.empty() ? std::max(max_a, pen_lo + 4.2f)
+                                              : std::min(max_a, stage_along - 6.6f);
+        const float span = std::max(2.0f, pen_hi - pen_lo);
+        spacing = 0.95f;
+        count = std::clamp(int(std::floor(span / spacing)) + 1, 4, 8);
+        const float actual_span = float(count - 1) * spacing;
+        const float start_along = 0.5f * (pen_lo + pen_hi) - 0.5f * actual_span;
+        cx = ox + xx * mean_lat + zx * start_along;
+        cz = oz + xz * mean_lat + zz * start_along;
       }
     }
     if (too_close(cx, cz, 22.0f)) continue;
