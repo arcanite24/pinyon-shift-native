@@ -184,9 +184,10 @@ std::vector<std::string> wrap_words(std::string_view text, const ui::TextStyle& 
 // with its three boxes (NOT / BARELY / EASILY VISIBLE, dark text on darker
 // fills), BRIGHTNESS's slider and SUBTITLES's spinner under it on the pink
 // and dark bars, the DESCRIPTION panel right, A SAVE and Y RESET TO DEFAULT.
-// The whole block is turned 3 degrees as the scene's is. The scene itself is
-// not drawn: its rest layout is the entry animation's start (as 831's is,
-// options_screen.cpp), so the places are the capture's.
+// The whole block is turned 3 degrees as the scene's is. Interim: drawn by
+// hand at the capture's places. The scene's text nodes rest where the
+// capture has them (Text_Label 231,551, TEXT_DESCRIPTION 820,179), so the
+// follow-up is to bind 830 through SceneScreen as 837's sliders are.
 bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
   namespace t = title_text;
   const SceneFrame f = SceneScreen::frame(w, h);

@@ -6954,9 +6954,10 @@ tags (first30j `roam-map`).
 
 The engine passed no distance with its tags, so its size-and-fade by
 distance never ran. Now each tag carries its distance, and the scale falls
-about as 0.33 + 5.8 / d (floored at 0.4), full to 150 m and gone at 200 m;
-the race tags reach those 200 m (they were cut at 110 m). Interim: the
-sizes are eyeballed and the fade distances are not captured.
+about as 0.33 + 5.8 / d (floored at 0.4), full to 100 m and gone at 120 m,
+and a race tag reads the surname only, as the original's do. Interim: the
+sizes are eyeballed and the fade distances are not captured. Engine
+frames: `out/first30j/tmpb/race-after2.png` (the Gauntlet, `--event FR06`).
 
 Open:
 - The free-roam festival drivers' tags: the engine tags them with class,
@@ -6979,10 +6980,12 @@ arrow stays at (180-184, 520) at rest and moving, and seven icon positions
 
 in the 180 px panel (a m ahead, c m right; icons are drawn about 12 px over
 their point). So the panel's top shows about 1.4 km ahead, its bottom
-280 m behind, its sides 170 m either way at the car. The profile's sizes
-are pixels at the car's depth and shrink with it as 857 / (a + 857): the
-event ring (DynamicSize 45) is 46 px at the car, the b roads' line (Size
-14) 14 px.
+280 m behind, its sides 170 m either way at the car. Lines and icons
+shrink with depth as 857 / (a + 857). A line's Size is its width in px at
+the car (the b roads' 14 px). An icon's cell is about 1.5 px per
+DynamicSize unit at the car: the event ring (45) is 47 px across there and
+the gas station's H 28 px at about 460 m. The player's arrow (also 45) is
+smaller, its glyph about 35 px.
 
 The engine now uses this camera and scale (`MapView::minimap`): roads are
 gathered from a disc centred 560 m ahead, icons and lines shrink with
@@ -6991,8 +6994,9 @@ original `rest-1500`, `d1880`, `d2000`; engine before `map-before`,
 after `map-after2`), the far roads, the rumour ellipse and the icons now
 sit where the original's do.
 
-Open: the far icons (the gas station H at about 400 m) draw about 30%
-smaller than the original's (20 px against 28 px).
+Open: the fit rests on one place (eight points in three frames); a check
+at a second place, and the original's minimap in a race (route, opponents,
+checkpoint), are not captured.
 
 ## Q363 (first30j, BOOT, settled in part): a new profile's VIDEO screen
 
@@ -7010,10 +7014,11 @@ PLEASE WAIT bottom left) straight to the menu (first30j `boot-profile2`,
 The engine now has the screen (`TitleMenu::Phase::kVideo`,
 `draw_video_screen`): with no save, Press Start leads to it; up/down pick
 the row, left/right change it, Y resets, B does nothing, A saves and goes
-to the menu, and it does not come again in the session. The places are
-the capture's (the scene's rest layout is its entry animation's start, as
-831's is); the strings are MyProfile.str's (BARELY VISIBLE and ENABLE by
-raw key). Side by side: `out/first30j/tmpb/video-cmp4.png` (original
+to the menu, and it does not come again in the session. Interim: it is
+drawn by hand at the capture's places; the scene's text nodes rest where
+the capture has them, so binding `830_GAMMA_ADJUST` through SceneScreen
+(as 837's sliders are) is the follow-up. The strings are MyProfile.str's
+(BARELY VISIBLE and ENABLE by raw key). Side by side: `out/first30j/tmpb/video-cmp4.png` (original
 `f00030`, engine `runs/video-after4/video.png`; the run's other frames
 show the controls and the menu after A).
 
