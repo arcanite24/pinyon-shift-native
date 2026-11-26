@@ -254,6 +254,9 @@ class FirstTimeCareer {
   static constexpr std::array<double, 3> kRaceCentral = {-832.17, -6.02, -254.29};
   static constexpr const char* kViperMedia = "VIP_Viper_13";
   static constexpr int64_t kViperCarId = 1544;
+  // The opening Viper's paint: yellow (0xFDCF03) with a black stripe,
+  // Combo_Colors sequence 7 (read from the original's opening; Q271).
+  static constexpr int64_t kViperColourSequence = 7;
   static constexpr const char* kCorradoMedia = "VW_Corrado_95";
   static constexpr int64_t kCorradoCarId = 309;
   static constexpr int64_t kStartingMoney = 40000;  // CGivePlayerMoney

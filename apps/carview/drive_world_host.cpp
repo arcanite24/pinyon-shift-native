@@ -243,6 +243,12 @@ ShowroomOptions DriveWorldHost::build_car_options() {
               }
             }
           }
+      // The opening's Viper (CSetCarForInitialDrive) is yellow with black
+      // stripes in the original (recomp capture, first30a): Combo_Colors
+      // sequence 7 of car 1544.
+      if (opts.match_sequence < 0 && (app.campaign_new_career_pending || app.campaign.ftc_active()) &&
+          lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kViperMedia))
+        opts.match_sequence = race::FirstTimeCareer::kViperColourSequence;
       // A colour picked in the pause menu's paint page for this car.
       if (app.paint_sequence >= 0 && lower_ascii(app.paint_car) == lower_ascii(app.car)) opts.match_sequence = app.paint_sequence;
       return opts;
