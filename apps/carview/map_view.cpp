@@ -911,6 +911,9 @@ constexpr double kMiniLineGain = 14.0 / 12.6 / (kMiniS / kMiniR);
 constexpr double kMiniNearA = -340.0;     // m behind: past the panel's bottom
 constexpr double kMiniAheadMid = 560.0, kMiniGather = 960.0;  // the roads' gather disc
 constexpr double kMiniReach = 1500.0;     // m: the panel's top corners
+// An icon's cell, px per DynamicSize unit at the car: the event ring (45)
+// is 47 px across at the car and the gas station's H 28 px at 460 m.
+constexpr double kMiniIconGain = 1.5;
 }  // namespace
 
 HudImage MapView::minimap(const MapScene& scene, int size) const {
@@ -1029,14 +1032,13 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // Wide crisp road ribbons with dark outline casing (SPEC-UI-LAYOUTS a), wide
   // enough that the centered GPS/race route always leaves visible grey/white
   // road shoulders and dark casing on both sides.
-  double widest = 1;
-  for (const auto& [k, ls] : mini_.roads) widest = std::max(widest, double(ls.line_size));
   for (int pass = 0; pass < 2; ++pass)
     for (int style = 0; style < kRoadTypeCount; ++style) {
       const auto st = mini_.roads.find(kRoadTypes[style]);
       if (st == mini_.roads.end()) continue;
       const LineStyle& ls = st->second;
-      const double road_world_w = 12.6 * std::max(0.55, ls.line_size / widest);
+      // The profile's line Size is its width in px at the car (b roads 14).
+      const double road_world_w = 12.6 * double(ls.line_size) / 14.0;
       for (const auto& [r, s] : segs) {
         if (roads_[r].style != style) continue;
         const auto& a = roads_[r].points[s];
@@ -1127,8 +1129,8 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       tint.a *= visible_range_alpha(ic, mm.dist);
       if (!m.discovered) tint = {145, 145, 155, tint.a * 0.72f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
-      const double isz = ic.size * u * persp(p.depth);  // DynamicSize: px at the car
-      const double iy = p.y - isz * 0.27;  // lifted about 12 px at the car (the fit)
+      const double isz = kMiniIconGain * ic.size * u * persp(p.depth);
+      const double iy = p.y - isz * 0.18;  // lifted about 12 px at the car (the fit)
       top_y = std::min(top_y, iy - isz * 0.45);
       cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, isz, 0, tint);
     }
@@ -1174,7 +1176,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (std::hypot(x - scene.x, z - scene.z) > reach) return;
     const P p = project(x, z);
     if (p.depth < 1) return;
-    cv.icon(small_icons_, 5, 3, p.x, p.y, 45.0 * u * persp(p.depth), 0, Rgba{255, 255, 255, 255});
+    cv.icon(small_icons_, 5, 3, p.x, p.y, kMiniIconGain * 45.0 * u * persp(p.depth), 0, Rgba{255, 255, 255, 255});
   };
   for (const auto& t : scene.traffic) vehicle(t[0], t[1]);
   for (const auto& f : scene.festival_ai) vehicle(f[0], f[1]);
@@ -1253,9 +1255,10 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
     const double player_angle = scene.north_up ? scene.heading : 0.0;
-    // DynamicSize 45 at the car: the glyph about 30 px at 720 lines, as the frames show.
+    // The arrow's glyph about 35 px at 720 lines, as the frames show (its own
+    // size: the event icons' gain would draw it 50 px).
     for (const auto& ic : it->second)
-      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * u, player_angle, ic.colour);
+      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, 1.08 * ic.size * u, player_angle, ic.colour);
   }
   // No frame (SPEC-UI-LAYOUTS a).
   HudImage img = cv.image();
