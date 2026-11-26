@@ -6598,7 +6598,12 @@ Still open:
   fixed in first30h: the FocusCar gain is on the voices ahead of the chain,
   and `kFocusPreScale` is now 0.1 / 0.35 per unit of it;
 - the descriptor float behind s (two engine tunings on one car measured);
-- the MX-5's closed-throttle level at mid rpm (3 dB quiet);
+- the MX-5's closed-throttle level at mid rpm (3 dB quiet). Tried in
+  first30h and rejected: feeding NegTorque as the torque over the
+  closed-throttle peak (2.63 x ZeroThrottleTorqueScale, as the physics
+  trace's load field is normalised) instead of the torque over the
+  closed-throttle torque at that rpm makes it about 2 dB quieter still
+  (`out/first30h/runs/nomix-negnorm`);
 - whether a split cascades more than one first-order section;
 - the FMOD Distortion for the other cars (not modelled: no capture);
 - the 6 dB idle-to-full difference left in the solo groups' top end.
@@ -6983,13 +6988,19 @@ Re-measured through the live mixer on the c3 route against `first30f-base`
 
 | state | original | before | after |
 |---|---|---|---|
-| rest (clean idle) | -42.3 dB, 121 Hz | -48.8 dB, 89 Hz, 96 % under 150 Hz | -42.5 dB, 133 Hz, 94 % |
-| load, 5,000 to 5,600 rpm | -22.4 dB, 727 Hz, 7 % under 150 Hz | -28.2 dB, 621 Hz, 40 % | -21.5 dB, 963 Hz, 1 % |
-| limiter | -21.8 dB, 934 Hz, 1 %, 77 % in 500 Hz to 2 kHz | -27.8 dB, 596 Hz, 47 %, 44 % | -21.7 dB, 1,024 Hz, 1 %, 83 % |
+| rest (clean idle, median) | -42.3 dB | -48.8 dB, 89 Hz, 96 % under 150 Hz | -42.5 dB, 133 Hz, 94 % |
+| load (orig 4,907 rpm, engine 5,612) | -22.4 dB, 727 Hz, 7 % under 150 Hz, 19 % in 150 to 500 Hz | -28.2 dB, 621 Hz, 40 %, 3 % | -21.5 dB, 963 Hz, 1 %, 4 % |
+| limiter (orig 7,585 rpm, engine 7,187) | -21.8 dB, 934 Hz, 1 %, 77 % in 500 Hz to 2 kHz | -27.8 dB, 596 Hz, 47 %, 44 % | -21.7 dB, 1,024 Hz, 1 %, 83 % |
 
-The live mixer now matches the engine-only render within 0.7 dB in every
-state, and the bands within 2 %. Left: the top end is about 10 % brighter
-than the original (the Q322 gaps); the limiter rpm differs (Q341).
+The live mixer now matches the engine-only render within 0.9 dB in every
+state (idle -42.5 against -41.6), with the bands within 2 %, and the boom
+is gone. The levels meet the 1 dB target. The spectra are not like for like:
+the load windows sit 700 rpm apart and the limiter 400 rpm apart (Q341). At
+load the engine is darker in 150 to 500 Hz (4 % against 19 %) and brighter
+overall (963 against 727 Hz); at the limiter the centroid is 90 Hz high.
+Repeatability: `first30h-snaphalf` (a mod's snapshot edit, overridden by
+the generated file, so effectively a second base run) reads within about
+0.5 dB of `first30f-base` at idle and the limiter.
 
 ## Q341 (first30h, physics, not blocking): the MX-5's rev limiter lets the engine run about 600 rpm over the redline
 
@@ -7007,9 +7018,13 @@ upshift lands. The engine cuts at the redline (`rev_cut_active_` at
 0.065 s) and reads 7,045 to 7,313 rpm (mean 7,166) on the same route
 (`out/first30h/runs/before-c3-mix`).
 
-So the limiter's ceiling is about 7,900 rpm, roughly halfway from
-`RedlineRPM` to `TorqueCurveMaxRPM` (7,900 = lerp(7,300, 8,500, 0.5)), or
-a cut that lets the engine overshoot by about 8 %. SPEC-CAR-PHYSICS gives
+So the limiter's ceiling is about 7,900 rpm (the highest sample is 7,925
+in `first30f-base`, 7,879 in `first30h-eng50` and 7,910 in
+`first30h-trace1`). One candidate fits a ceiling just under 8,000 with a
+cut: the limiter reads a different camshaft row from the dial's. Row
+558001 points at torque curve 558002, and the neighbouring rows' redlines
+are 7,700 (558002) and 8,000 (558003); a stock car cannot tell these apart.
+Not verified. SPEC-CAR-PHYSICS gives
 `k_limiter` 0.05 while the limiter cuts (the engine uses 0) and says the
 traced clamp sits about 1.0 x the redline, which this trace does not show
 for the MX-5. The engine's physics is unchanged: the threshold and the
