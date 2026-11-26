@@ -822,6 +822,7 @@ struct DriveSession {
   void try_trigger_rewind();
   void poll_sdl_events();
   void sample_driving_input(drive::Input& in, double& rig_look);
+  bool pad_was_driving_ = false;  // last frame's pad drove the car (glyph switch on the edge)
 
   // Interactive window loop (drive_render_loop.cpp)
   void poll_async_guest_loads();
