@@ -289,6 +289,47 @@ void test_parts_and_nodes() {
   check(near(cutscene::place_speed_mps(e), 44.704, 1e-9), "initialSpeed 100 mph is 44.704 m/s");
 }
 
+// A node parented to the placed car (Skills_Unlock's CameraTargetNode_0 on
+// PlacePlayerCar_0): its x/y/z and rotation are in the car's frame.
+void test_parented_node() {
+  static const char* kParented = R"(<CutsceneManager>
+  <Cutscene name="Parented" PlaybackMode="Normal" Duration="4.0" LoopFrom="0.0">
+    <Cams CutQueueType="Cutscene" NumCams="1">
+      <Cam Version="3" Type="Animateable" StartCut="0.0" TargetName="Node_0" duration="4.0">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" NumKeys="1">
+          <Key Time="0.0" PosX="0" PosY="1" PosZ="-5" Yaw="0" Pitch="0" Roll="0" FOV="40"/>
+        </Anim>
+      </Cam>
+    </Cams>
+    <Events>
+      <Event time="0.0"><EventTrigger name="PlacePlayerCar_0" id="CCutscenePlaceCarTrigger" x="100" y="10" z="200" rotation="90" parent=""/></Event>
+      <Event time="0.5"><EventTrigger name="Node_0" id="CCutsceneCameraNodeTrigger" x="0" y="0" z="2" rotation="10" parent="PlacePlayerCar_0"/></Event>
+    </Events>
+  </Cutscene>
+</CutsceneManager>)";
+  cutscene::Library lib;
+  std::string err;
+  check(cutscene::parse_cutscenes(kParented, lib, &err), "parented-node document parses");
+  const auto* cs = lib.find("Parented");
+  if (!cs) return;
+  cutscene::Player pl;
+  pl.start(cs);
+  pl.step(0.0);
+  // Before the node fires, found by name; after, the fired frame: the car
+  // faces +X (90), so 2 m ahead is (102, 10, 200), heading 100.
+  const cutscene::Frame far_car{{0, 0, 0}, 0};
+  for (double dt : {0.1, 1.0}) {
+    pl.step(dt);
+    cutscene::WorldCamera w;
+    const cutscene::Frame f = pl.frame_for(cs->cams[0], far_car);
+    check(near(f.origin[0], 102.0, 1e-9) && near(f.origin[1], 10.0, 1e-9) && near(f.origin[2], 200.0, 1e-9) &&
+              near(f.heading_deg, 100.0, 1e-9),
+          "a node parented to the placed car is in the car's frame");
+    check(pl.world_camera(far_car, w) && std::abs(w.eye[0] - 102.0) < 6.0 && std::abs(w.eye[2] - 200.0) < 6.0,
+          "the camera sits by the placed car, not by the world origin");
+  }
+}
+
 // The race's cutscenes: a Follow cut hands the view to the game's camera,
 // a node the cutscene does not place comes from the scene (the route), and
 // race_specific names resolve to the track's own copy first.
@@ -345,6 +386,7 @@ int main() {
   test_post_and_fades();
   test_player_and_world();
   test_parts_and_nodes();
+  test_parented_node();
   if (g_failures) {
     std::fprintf(stderr, "cutscene_tests: %d failure(s)\n", g_failures);
     return 1;

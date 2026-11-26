@@ -316,8 +316,14 @@ class Player {
   // when the cutscene places none of that name. Kept across start().
   void set_scene_nodes(std::vector<std::pair<std::string, Frame>> nodes) { scene_nodes_ = std::move(nodes); }
 
+  // A placing trigger's frame (a camera node, a PlacePlayerCar): its x/y/z
+  // and rotation, which are in its parent's frame when it names one (Skills_Unlock's
+  // CameraTargetNode_0 sits on PlacePlayerCar_0), else the world's.
+  Frame event_frame(const Event& e) const;
+
  private:
   void fire_range(double t0, double t1, bool inclusive_start, std::vector<const Event*>& out);
+  Frame event_frame(const Event& e, int depth) const;
 
   const Cutscene* cs_ = nullptr;
   double t_ = 0.0;

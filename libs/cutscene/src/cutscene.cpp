@@ -505,7 +505,7 @@ void Player::fire_range(double t0, double t1, bool inclusive_start, std::vector<
     fired_[i] = true;
     const Event& ev = cs_->events[i];
     if (ev.type == EventType::kCameraNode) {
-      Frame f{ev.position(), ev.rotation_deg()};
+      const Frame f = event_frame(ev);
       bool replaced = false;
       for (auto& [n, fr] : nodes_) {
         if (ieq(n, ev.name)) {
@@ -521,6 +521,31 @@ void Player::fire_range(double t0, double t1, bool inclusive_start, std::vector<
     }
     out.push_back(&ev);
   }
+}
+
+Frame Player::event_frame(const Event& e) const { return event_frame(e, 0); }
+
+Frame Player::event_frame(const Event& e, int depth) const {
+  const Frame local{e.position(), e.rotation_deg()};
+  const std::string parent = e.attr("parent");
+  if (parent.empty() || depth > 4 || !cs_) return local;
+  // The parent: a node already fired under that name, else the cutscene's
+  // placing trigger of that name (a node or the placed car).
+  Frame pf{};
+  bool found = false;
+  for (const auto& [n, f] : nodes_)
+    if (ieq(n, parent)) pf = f, found = true;
+  if (!found)
+    for (const auto& p : cs_->events)
+      if (&p != &e && ieq(p.name, parent) &&
+          (p.type == EventType::kCameraNode || p.type == EventType::kPlacePlayerCar)) {
+        pf = event_frame(p, depth + 1);
+        found = true;
+        break;
+      }
+  if (!found) return local;
+  const auto off = rotate_heading(local.origin, pf.heading_deg * kDeg);
+  return {{pf.origin[0] + off[0], pf.origin[1] + off[1], pf.origin[2] + off[2]}, pf.heading_deg + local.heading_deg};
 }
 
 void Player::set_voice_playing(bool playing) {
@@ -594,7 +619,7 @@ Frame Player::frame_for(const Cam& cam, const Frame& player_car, const CarParts*
     // cutscene's node trigger of that name.
     if (cs_)
       for (const auto& e : cs_->events)
-        if (e.type == EventType::kCameraNode && ieq(e.name, cam.target_name)) return {e.position(), e.rotation_deg()};
+        if (e.type == EventType::kCameraNode && ieq(e.name, cam.target_name)) return event_frame(e);
     for (const auto& [n, f] : scene_nodes_)
       if (ieq(n, cam.target_name)) return f;
   }
