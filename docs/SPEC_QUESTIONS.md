@@ -5425,14 +5425,24 @@ the leaderboard (the comparison slides).
 `ScoreGroup`'s `SHOW` / `HIDE` / `ABORT` are decoded ("The skill chain's
 score" in `docs/UI_SCENE_ANIMATION.md`); when the game goes to each is
 not. The engine plays `SHOW` from the chain's first skill, `ABORT` when the
-chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`; a banked total
-holds 3 s, then `HIDE`. The timer's event (what the game does when it
-fires) is not decoded; the 0.6 s hold is read from it, and shortens the
-lost total from the engine's earlier 2.2 s to 0.8 s. The 3 s bank hold is
-the engine's earlier measurement. The red of a lost total is the engine's.
+chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`. The timer's event
+(what the game does when it fires) is not decoded; the 0.6 s hold is read
+from it, and shortens the lost total from the engine's earlier 2.2 s to
+0.8 s. The red of a lost total is the engine's.
 
-Needed: a capture series of a chain lost (a crash) and of one banked, from
-the last skill until the score is gone.
+Settled for a bank (first30b, 2026-11-25, `chain_*_first30b_orig.png`): the
+banked total (the multiplied total, no X) comes in white, turns yellow and
+is gone about 2.1 s after it shows, which is `Total`'s `BANK` slide (in by
+0.5 s, a white flash at 0.5 s, out by 2.3 s), not the engine's old 3 s
+hold. The skill line pulses at partial alpha for the chain's last moments
+(`Skill1`'s `WARNINGSKILL`), and the popularity disc is gone about 4.1 s
+after the bank (`PopularityBar` `SHOW`, 1.4 s, then `HIDE`, out by
+2.67 s). The engine now plays `BANK`, `WARNINGSKILL` over the last 1.2 s,
+`SHOWSKILL` as a skill lands, the multiplier's `ANIMATE` as it changes,
+and fades the disc out over the same 3.67..4.07 s.
+
+Still needed: a capture series of a chain lost (a crash), from the last
+skill until the score is gone.
 
 ## Q244 (FE-02, not blocking): the flow fades' S curve and where they play
 
@@ -5493,3 +5503,60 @@ Open:
 
 Needed: a recorded title session with its audio, from Press Start into the
 menu and into a load.
+
+## Q281 (first30b, physics, not blocking): the car creeps from a standstill
+
+In the first30b free-roam run (the `appdata-2026-09-27` seed, the red
+MX-5 next to the Gauntlet) the original's car sits at 0 km/h with no input
+for the whole idle and camera stretch (`idle_cam0_first30b_orig.png`). The
+engine's car, put down at the same spot from the same save, creeps forward
+with no input from about 2 to 30 km/h over some 16 s
+(`idle_cam0_first30b_engine.png`). Either the engine's parked car lacks a
+hold the original has, or it rolls too freely on that spot's slope.
+Physics constants belong to parity/wp4b-feel and are not changed here.
+
+Needed: what holds the original's car at rest with no input (an
+automatic hold, engine braking at idle, or static tyre friction), from the
+physics code or a telemetry trace of a car left on a slope.
+
+## Q282 (first30b, HUD, not blocking): the chain's total counts up; the bank timeout
+
+The original's total climbs over several frames as a chain grows (54,
+114, 191, 286, 425, 630, 888, 1,000 across about 5.5 s of wall time,
+`chain_*_first30b_orig.png`). Part of that is the skills growing a tier at
+a time (BURNOUT 100, GREAT 150, AWESOME 250, ULTIMATE 500), but the steps
+between captures do not match whole awards, so the shown total may also
+roll toward the real one. The engine shows the total at once. Also open:
+the bank timeout. The original banks some 4.3 to 5.1 s of wall time after
+the last award it shows, at about 25 frames a second under capture, so
+whether its timeout is the engine's 3 s interim (`bank_timeout`, not in
+the data) is not settled.
+
+Needed: the code that writes `TEXT_TOTAL` (whether it interpolates, and at
+what rate) and the chain's bank timer, or a real-time capture of one skill
+banking.
+
+## Q283 (first30b, HUD, not blocking): the minimap's icons in free roam
+
+At the same spot the original's minimap shows the new-event icons, the
+festival (home) icon and a garage H; the engine's shows fewer
+(`minimap_first30b_orig.png`, `minimap_first30b_engine.png`). Not traced:
+which icon sets the original's minimap draws at what range and zoom, and
+which the engine leaves out for this save.
+
+Needed: the minimap's icon filter from the scene or code, or a
+side-by-side at a spot with known nearby events.
+
+## Q284 (first30b, not blocking): the beats this pass could not capture
+
+There is no original save from just after the opening; every progressed
+seed is the `appdata-2026-09-27` lineage (popularity 456,480, 85 signs,
+820 wristband points, 6 cars). So these first-30-minutes beats were not
+captured side by side and rest on earlier evidence: the first barn find
+rumour, the first street race, the first discount sign smash, a speed
+trap series (Q242), the first Autoshow and garage visit, and the first
+festival event from entry to results. The radio is off in that seed (the
+original shows RADIO OFF), so the radio and DJ were not compared either.
+
+Needed: an original save from the first free roam after the opening, or a
+capture route from a new profile through the opening.
