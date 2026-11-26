@@ -333,7 +333,13 @@ destinations, and an outpost must be discovered (Q90).
   180 px panel (y 520 as in the original; Q89); the roads are the profile's
   white line over its soft under-line, with no driven tint, and traffic and
   the Festival's drivers are the profile's vehicle icon. The original's wide
-  fading ribbon on the player's own road is not drawn.
+  fading ribbon on the player's own road is not drawn. The activity icons
+  follow `MapProfileMinimap.xml`'s `VisibleRange` (shown to 2,400 m, faded
+  out by 2,800 m), not the roads' 420 m reach, drawn far first (the event
+  group's `Mode ViewDepth`). Icons well off the panel are dropped rather
+  than clamped to its rim (`UI/Map/IconClampBufferX/Y`, not decoded), and
+  the fixed camera sees about 160 m ahead where the original's shows icons
+  some 500 to 600 m off (Q89, Q283).
 - **Map details.** X DETAILS on an event draws its `H_EVENT_SUMMARY`
   ticket over the map (`draw_event_ticket`, the entry screen's binding,
   with the scene's `PlayerBar` hidden), the map's popup and cursor hidden,
@@ -396,7 +402,10 @@ flow files) as plain steps, with the timings measured on the captures;
   rival callout where the field has a star driver. DIFFICULTY opens the
   difficulty screen. A restart shows only the menu. Each step plays the
   flow's cutscene: `prerace_intro`, `prerace_looping_01`, `nemesis_show`,
-  then `prerace_countdown` after START.
+  then `prerace_countdown` after START; its first cut (the car close up)
+  shows no HUD, which comes with the Follow cut's driving camera. The
+  entry's fade holds black until the load screen (no free-roam frame in
+  between).
   A start without a gantry (a street race) counts 3, 2, 1 on
   `I_321_Go/TEXT_COUNT` (Q173). QUIT RACE, from the menu or the pause
   menu, fades to black before the load (Q172).
@@ -427,7 +436,10 @@ flow files) as plain steps, with the timings measured on the captures;
 - **Rival callout.** Its tapes' offsets; its timing is `nemesis_show`'s UI
   trigger, and the star's wristband check is not decoded (Q95).
 - **Points and won car.** Shown at measured rects without their intros'
-  end states; no wristband art or car render (Q96).
+  end states; no car render (Q96). With a wristband to collect the points
+  page is the captured layout (the band's large wristband on the dark
+  tape, COLLECT IT FROM RACE CENTRAL, PLEASE WAIT bottom left, no A) and
+  moves on after 2.6 s (Q301).
 - **Car select.** On `108_C_BUY_CARSELECT`'s car list without the buy-car
   tile, X CAR LIST or SEARCH (Q97).
 - **Cutscenes.** The flows' race cutscenes play under the screens and the
