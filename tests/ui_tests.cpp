@@ -1314,15 +1314,20 @@ int main() {
   //    Popularity badge ring interpolation + rank-up flip/pop/flash animation,
   //    and high-contrast ROAD DISCOVERED banner with zero stray yellow artifacts.
   {
-    // PT-37a: Smooth distance scaling (1.0 -> 0.78) and alpha fade (full <= 45m -> 0 by 160m).
-    const auto lod_near = carview::compute_name_tag_lod(18.0);
-    const auto lod_45 = carview::compute_name_tag_lod(45.0);
-    const auto lod_mid = carview::compute_name_tag_lod(100.0);
-    const auto lod_far = carview::compute_name_tag_lod(165.0);
-    CHECK(lod_near.visible && std::fabs(lod_near.scale - 1.0f) < 1e-3f && std::fabs(lod_near.alpha - 1.0f) < 1e-3f);
-    CHECK(lod_45.visible && std::fabs(lod_45.alpha - 1.0f) < 1e-3f && lod_45.scale < 1.0f && lod_45.scale > 0.78f);
-    CHECK(lod_mid.visible && lod_mid.alpha > 0.20f && lod_mid.alpha < 0.80f && lod_mid.scale < lod_45.scale);
-    CHECK(!lod_far.visible && lod_far.alpha == 0.0f && std::fabs(lod_far.scale - 0.78f) < 1e-3f);
+    // PT-37a (Q361): the name shrinks as 0.33 + 5.8 / d (14 px capitals at
+    // 12.5 m, 8 px at 40 m), floored at 0.4; full alpha to 150 m, gone by 200 m.
+    const auto lod_close = carview::compute_name_tag_lod(5.0);
+    const auto lod_near = carview::compute_name_tag_lod(12.5);
+    const auto lod_40 = carview::compute_name_tag_lod(40.0);
+    const auto lod_100 = carview::compute_name_tag_lod(100.0);
+    const auto lod_mid = carview::compute_name_tag_lod(175.0);
+    const auto lod_far = carview::compute_name_tag_lod(205.0);
+    CHECK(lod_close.visible && std::fabs(lod_close.scale - 1.0f) < 1e-3f);
+    CHECK(lod_near.visible && std::fabs(lod_near.scale * 18.0f - 14.3f) < 0.5f && lod_near.alpha == 1.0f);
+    CHECK(lod_40.visible && std::fabs(lod_40.scale * 18.0f - 8.6f) < 0.5f && lod_40.alpha == 1.0f);
+    CHECK(lod_100.visible && std::fabs(lod_100.scale - 0.4f) < 1e-3f && lod_100.alpha == 1.0f);
+    CHECK(lod_mid.visible && lod_mid.alpha > 0.20f && lod_mid.alpha < 0.80f);
+    CHECK(!lod_far.visible && lod_far.alpha == 0.0f);
 
     // PT-37b: 7-car packed race straightaway never stacks into a 7-box vertical wall and has zero overlap.
     std::vector<carview::NameTagHud> pack;

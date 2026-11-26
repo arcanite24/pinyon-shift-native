@@ -1448,11 +1448,11 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 at = vehicle.position();
             for (const auto& ot : otags) {
               const double d = std::hypot(ot.x - at.x, ot.z - at.z);
-              if (d > 110.0) continue;
+              if (d > carview::kNameTagMaxM) continue;
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, ot.x, ot.y + 1.85, ot.z, float(w), float(h), sx, sy) &&
                   sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
-                projected_tags.push_back({d, {sx, sy, ot.name, ot.leader}});
+                projected_tags.push_back({d, {sx, sy, ot.name, ot.leader, d}});
             }
             carview::RaceView::OpponentTag stag;
             if (app.race->showcase_tag(stag)) {
@@ -1460,7 +1460,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               float sx = 0, sy = 0;
               if (project_world_point(cam_frame, info, vehicle, stag.x, stag.y, stag.z, float(w), float(h), sx, sy) &&
                   sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
-                projected_tags.push_back({d, {sx, sy, stag.name, stag.leader}});
+                projected_tags.push_back({d, {sx, sy, stag.name, stag.leader, d}});
             }
           } else if (!app.race && festival_mgr && w > 0 && h > 0) {
             const drive::Vec3 at = vehicle.position();
@@ -1473,7 +1473,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   sx >= 0.0f && sx <= float(w) && sy >= 0.0f && sy <= float(h))
                 projected_tags.push_back(
                     {d, {sx, sy, "[" + fc.spec.car_class + " " + std::to_string(fc.spec.pi) + "] " + fc.spec.driver_name,
-                         fc.in_h2h}});
+                         fc.in_h2h, d}});
             }
           }
           if (!projected_tags.empty()) {
