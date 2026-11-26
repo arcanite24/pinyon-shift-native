@@ -155,6 +155,9 @@ class FestivalManager {
   void set_hour(double hour) { hour_ = hour; }
   void set_wristband_level(int level) { wristband_level_ = level; }
   void set_player_pi(int pi) { player_pi_ = std::clamp(pi, 100, 999); }
+  // Head-to-head offers (the prompt behind a festival racer); off while the
+  // first-time career runs, which offers none between its heats (Q280).
+  void set_challenges_enabled(bool on) { challenges_enabled_ = on; }
   int player_pi() const { return player_pi_; }
   void set_difficulty_scale(double scale) { difficulty_scale_ = std::clamp(scale, 0.5, 2.5); }
   double difficulty_scale() const { return difficulty_scale_; }
@@ -265,6 +268,7 @@ class FestivalManager {
   uint32_t next_id_ = 1;
   double hour_ = 12.0;
   int wristband_level_ = 0;
+  bool challenges_enabled_ = true;
   int player_pi_ = 500;
   double difficulty_scale_ = 1.0;
   bool started_ = false;

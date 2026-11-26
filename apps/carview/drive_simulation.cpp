@@ -949,6 +949,7 @@ bool DriveSession::step(const drive::Input& user_in) {
             app.sponsor_banner_at = vehicle.time();
           }
           freeroam::HeadToHeadResult hres;
+          festival_mgr->set_challenges_enabled(!app.campaign.ftc_active());
           if (festival_mgr->step(drive::Vehicle::kStep, vehicle.time(), {fp.x, fp.y, fp.z}, fh, vehicle.speed(),
                                  &hres, traffic ? traffic->cars() : nullptr)) {
             club_pending.encounter_completed = true;
