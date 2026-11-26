@@ -6607,8 +6607,9 @@ Still open:
   (`EnginePlayer::descriptor_dsp_scalar`);
 - ~~the Lowpass's slope~~ decoded in first30k: FMOD Ex's Lowpass is two
   prewarped bilinear sections of the 4-pole Butterworth prototype (damping
-  0.765367 and 1.847759, each divided by the resonance, which it clamps to
-  1..10; a cutoff over half the rate is set to half the rate minus 10 Hz).
+  0.765367 and 1.847759, each divided by the resonance; a resonance under 1 leaves the
+  coefficients unchanged, and a cutoff over half the rate is set to half the
+  rate minus 10 Hz). No engine or intake XML has a resonance under 1.
   The engine ran one 12 dB/oct section with Q = resonance. The cascade
   takes 1 to 1.5 dB off the 8 to 16 kHz excess; what is left is in Q372;
 - the MX-5's closed-throttle level at mid rpm (3 dB quiet; 2.3 dB at
@@ -7084,9 +7085,26 @@ samples over 7,000 rpm:
 The limiter's sound now compares at the same rpm: original 7,585 rpm,
 -21.8 dB, centroid 934 Hz; engine 7,571 rpm, -22.2 dB, 969 Hz, band split
 (0-150 / 150-500 / 500-2k / 2-6k / 6k+ Hz, %) 2/18/76/4/1 against
-1/18/77/4/0. The AI gate's failures (NR02 time, FR01 and FR24 place) are
-the same with and without the change (seeds 1 to 6, baseline at the same
-physics with the old limiter).
+1/18/77/4/0.
+
+AI gate (`tools/race/gate.py`; baseline is the same physics with the old
+limiter; runs in `out/first30k/gate-*`), AI mean time against the oracle:
+
+| event | oracle | seeds | baseline | limiter | checks failing (baseline / limiter) |
+|---|---|---|---|---|---|
+| FR22 | 161.5 | 1-2 | 162.5 | 160.7 | none / none |
+| FR16 | 124.0 | 1-2 | 129.6 | 122.8 | time, place, winner / none |
+| FR24 | 110.8 | 1-6 | 109.4, 109.1 | 108.9, 108.8 | place / place |
+| FR01 | 102.7 | 1-2 | 106.3 | 99.7 | time / place |
+| FR01 | 102.7 | 3-6 | 104.6 | 102.0 | place / place, winner |
+| FR01 | 102.7 | 7-12 | 102.2 | 103.8 | place, winner / place, winner |
+| NR02 | 130.7 | 1-6 | 152.9, 168.1 | 163.2, 163.9 | time / time |
+| FEST | 179.0 | 1-2 | 181.8 | 183.2 | none / none |
+
+FR01's AI winner is slot 3 instead of slot 0 in 1 of 10 baseline seeds and
+2 of 10 with the limiter. The player is 3rd to 7th in both, so the place
+and winner checks fail with and without the change. NR02's time failure is
+one AI car whose time varies from 140 to 168 s between seeds.
 
 ## Q371 (first30k, audio, not blocking): the shift and lift transients against the original
 
@@ -7124,8 +7142,8 @@ octaves in dB re each side's total, engine minus original:
   a different load, not the sound.
 - The top end is still 2 to 3.5 dB high at 10 to 13 kHz in every state, so
   it is not a load or rpm curve. Candidates: the resampler (the engine
-  interpolates the loops linearly; FMOD Ex's default is linear too, but
-  the mixer may run at a different rate), or the FocusPEQ offsets.
+  interpolates the loops linearly; FMOD Ex's resampler and mix rate in
+  the title are not checked), or the FocusPEQ offsets.
 - The overrun is 2.3 dB quiet from 3,600 to 5,400 rpm, on few windows (2 original at 3,000-4,500, 2 engine at 4,500-6,500; Q322).
 
 Needed: a load route at matched speed and rpm (second gear pull from
