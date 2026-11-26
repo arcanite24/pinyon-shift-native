@@ -399,7 +399,9 @@ bool DriveSession::try_enter_event(const race::CareerEvent& ev, const std::strin
 void DriveSession::start_new_career() {
           race::set_campaign_text_resolver([](std::string_view ref) { return carview::game_text(std::string(ref)); });
           app.career = race::CareerRecord{};
-          app.career.credits = 0;
+          // A new profile's credits (ForzaProfile.sch Credits; the original's
+          // player bar shows 500 Cr on the workshop's locked map, Q280).
+          app.career.credits = race::FirstTimeCareer::kNewProfileCredits;
           app.career.wristband_points = 0;
           // Retail FH1 starts pre-wristband (-1, matching FESTIVAL_SECOND Level = -1);
           // Yellow Wristband (0) and the starter Corrado VR6 are awarded upon Festival registration.

@@ -269,6 +269,10 @@ class FirstTimeCareer {
   // original's diner and race to the festival; Q271).
   static constexpr int64_t kCorradoColourSequence = 2;
   static constexpr int64_t kStartingMoney = 40000;  // CGivePlayerMoney
+  // A new profile's credits: the profile schema's default
+  // (media/profileschema/ForzaProfile.sch, Credits = 500). The career pays
+  // nothing before the wristband bonus.
+  static constexpr int64_t kNewProfileCredits = 500;
   // The first Autoshow's car list (Subaru WRX STi 2011, Mitsubishi Lancer Evo X GSR 2008).
   static constexpr std::array<int64_t, 2> kFirstAutoshowCars = {1323, 1009};
   static constexpr const char* kRecaroRush = "FR02";
