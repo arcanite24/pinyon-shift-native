@@ -7022,8 +7022,16 @@ the capture has them, so binding `830_GAMMA_ADJUST` through SceneScreen
 `f00030`, engine `runs/video-after4/video.png`; the run's other frames
 show the controls and the menu after A).
 
+The controls, from first30j `boot-fresh3` (fresh profile, `g-*` frames,
+`out/first30j/tmpb/bf3.png`): a 6-frame d-pad right (about 1 s at the
+recomp's pace there) took BRIGHTNESS from 60 to 100, so a held right
+repeats; down moves to SUBTITLES (its description shows), up back; Y
+resets to 60; A goes to the menu (`m0970`). The test boxes brighten live
+with the slider (at 100 the BARELY and EASILY boxes read clearly).
+
 Open:
-- BRIGHTNESS's step, and its effect: the engine has no brightness
+- BRIGHTNESS's step and repeat rate (the engine steps 1 per press and
+  does not repeat), and its effect: the engine has no brightness
   (gamma) or movie-subtitle setting, so the values stay on the title's
   model and change nothing.
 - The screen's entry animation and the slider's look.
