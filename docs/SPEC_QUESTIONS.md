@@ -5547,16 +5547,32 @@ which the engine leaves out for this save.
 Needed: the minimap's icon filter from the scene or code, or a
 side-by-side at a spot with known nearby events.
 
-## Q284 (first30b, not blocking): the beats this pass could not capture
+## Q284 (first30b, not blocking): the beats this pass did not capture
 
-There is no original save from just after the opening; every progressed
-seed is the `appdata-2026-09-27` lineage (popularity 456,480, 85 signs,
-820 wristband points, 6 cars). So these first-30-minutes beats were not
-captured side by side and rest on earlier evidence: the first barn find
-rumour, the first street race, the first discount sign smash, a speed
-trap series (Q242), the first Autoshow and garage visit, and the first
-festival event from entry to results. The radio is off in that seed (the
-original shows RADIO OFF), so the radio and DJ were not compared either.
+Two kinds of gap are left after the first30b pass.
 
-Needed: an original save from the first free roam after the opening, or a
-capture route from a new profile through the opening.
+**First-time beats, with no save to start from.** There is no original
+save from just after the opening; every progressed seed is the
+`appdata-2026-09-27` lineage (popularity 456,480, 85 signs, 820 wristband
+points, 6 cars). So the first barn find rumour, the first street race's
+unlock and the first discount sign smash could not be captured as first
+times.
+
+**Beats this pass did not attempt.** These do not need an early save, but
+were not captured side by side here; they rest on the earlier captures in
+the audit folder (`03_race_flow_results.md`, the `09_`..`18_` race flow
+captures, the `map_*` captures, Q242):
+- a festival event from entry to results, rewards and wristband progress;
+- the pause menu, the map and fast travel;
+- a speed trap or speed zone pass;
+- the Autoshow and garage menus;
+- the engine and tyre sound, and the radio and DJ. The recomp's
+  `rally-audio-probe.wav` (8 s of the drive) was recorded but not compared,
+  and the seed has the radio off (the original shows RADIO OFF).
+
+Also, the cameras were compared by order only (the same five, in the same
+order), not by framing.
+
+Needed: an original save from the first free roam after the opening (or a
+capture route from a new profile through the opening), and a pass over the
+listed beats from the same seed.
