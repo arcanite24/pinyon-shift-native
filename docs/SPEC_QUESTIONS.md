@@ -3556,12 +3556,10 @@ string). The champion part plays once: `DriveSave::rally_end_seen`
 the podium, with VO `HorizonRallyChampion`. Inferred: that trigger as
 `CPlayRallyChampionDialogue`'s line (the behaviour takes no parameter;
 the dialogue script also has `ChampionAgain` and `PlayerWonRally`).
-Interims: the page is still the engine's layout, not
-`h_post_race_rally_finished` / `h_post_race_rally_points` (both load from
-the v4 overlay); `h_horizon_rally_champion` (a title tape, a position
-tape and a timer over `Rally_Champion_Cutscene`) is not drawn and the
-cutscene is not played; the champion strip's "HORIZON RALLY CHAMPION!"
-is the engine's. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
+Changed (WP5, Q212): a championship's end now shows
+`H_POST_RACE_RALLY_FINISHED`, `H_POST_RACE_RALLY_POINTS` and, once,
+`H_HORIZON_RALLY_CHAMPION`; the engine's page is X on the banner and the
+heats' end. Still interim: `Rally_Champion_Cutscene` is not played. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
 read "NEW EVENT UNLOCKED", "NOW GET OVER TO THE", "NOW GET TO THE",
 "YOU'VE UNLOCKED THE" / "HORIZON RALLY FINAL": the final's unlock
 notice, not the champion screen.
@@ -3621,6 +3619,10 @@ ownership filter for DLC cars. In v4's `pause.xml` the Message Centre
 (`CShowMessageCentreScreen`) has `onGiftCarPrepare` /
 `onGiftCarUnprepare` transitions, so a gift is claimed from a message,
 which suggests a choice among the level's rows (`MaxGiftCars` 5 to 7).
+The UI archive also has `UI4/BuyCar/GiftCarChoice.xds` (the recomp's UI
+catalogue), more support for a choice. WP5 searched the recomp's derived
+source for `CCoDriverPepTalk`, `CRallyStageIntro` and the gift message
+and found no decompiled body, so V4-21's and V4-23's rules stay open.
 
 Needed: which line each of `CCoDriverPepTalk`, `CRallyStageIntro` and
 the finish picks; the gift message's rule (one of N or all N) and its
@@ -4547,3 +4549,40 @@ through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
 
 Needed: the hub's button bar contents, whether locked tickets show, what
 fills BEST TIME and the points tape, and the restriction strings' table.
+
+## Q212 (V4-14, RACE-23, not blocking): the Rally final's screens
+
+After a championship's last stage the engine now runs
+`game_rally_race_flow`'s end on the Rally's own scenes
+(`rally_post_steps`, drawn by `game_hud_core.cpp`):
+
+1. `H_POST_RACE_RALLY_FINISHED`: FINISHED and the place, as the festival
+   banner. A CONTINUE; X RACE RESULTS shows the engine's standings page
+   (B or A closes it).
+2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP, the Rally level
+   bar with the Rally wristbands' art, and PostRaceFlow's
+   "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY FINAL" /
+   "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the final's
+   `UnlockPointsReq`, with no line once champion.
+3. Once, `H_HORIZON_RALLY_CHAMPION`, with `HorizonRallyChampion` (moved
+   from the finish to this screen). A returns to the hub.
+
+The intro heats keep the engine's results page (`game_rally_intro_flow`
+ends differently). `club_rally_corpus_tests` renders the three
+(`rally_{finished,points,champion}_wp5.png`) and checks the lines and the
+steps.
+
+Interims: no earnings screen (the credits are on X's page); the prize-car
+step is not in the sequence; `Rally_Champion_Cutscene` is not played, so
+black is behind the champion screen; its texts are guesses, the title
+CareerEventUI's "HORIZON RALLY CHAMPION 2012" (0x2DD1) and the place on
+the position tape; the banner's help bar is guessed (no RESTART or
+REPLAY); the points line is set on `TEXT_POINTS_TO_NEXT`, which at the
+scene's rest sits under the bar (as on the career points screen, Q96);
+the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
+before the champion screen shows. Between stages the engine's STAGE
+RESULTS page stays (Q147). `race_flow::post_steps` is unchanged: the
+sequence runs on the results state.
+
+Needed: the final's help bars, the champion screen's texts and timing
+against the cutscene, and whether the earnings come before the points.
