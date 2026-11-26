@@ -142,14 +142,17 @@ struct FevSoundDefEntry {
 // maximum spawned sounds, f32 volume. Spawned one-shots carry a spawn time
 // (Tree_Rustle 1,000..10,000 ms, Air_Horns 500..30,000, Car_Door_Slams
 // 0..30,000, Shouts_Lots 0..2,000 with 3 spawned); the continuous beds
-// (River, Crickets, Race_Crowd_Amb) carry 0..0. The rest of the block
-// (randomisation and recalculation flags) is not decoded.
+// (River, Crickets, Race_Crowd_Amb) carry 0..0. Then four f32 (1.0 on every
+// Tires.fev template) and, at byte 36, the f32 pitch in the event-pitch unit
+// (kFevPitchOctaves; Tires.fev's PeelOut template -0.05, HardtoHard -0.0625).
+// The rest of the block (randomisation and recalculation flags) is not decoded.
 struct FevSoundDefTemplate {
   uint32_t play_mode = 0;
   uint32_t spawn_min_ms = 0;
   uint32_t spawn_max_ms = 0;
   uint32_t max_spawned = 1;
   float volume = 1.0f;
+  float pitch = 0.0f;
   bool spawned() const { return spawn_max_ms > 0; }
 };
 
@@ -187,8 +190,11 @@ struct FevProject {
 //  - An envelope with no DSP name and flag 0x08 is the layer's volume: y is
 //    linear amplitude (0.708, 0.501, 0.251 = -3, -6, -12 dB grid points), and
 //    a layer's volume envelopes multiply.
-//  - Flag 0x10 (no DSP name) is the layer's pitch: y = 0.5 is unity. The
-//    octave scale of y is not decoded, so it is reported raw, not applied.
+//  - Flag 0x10 (no DSP name) is the layer's pitch: y = 0.5 is unity and y
+//    spans -4..+4 octaves (kFevPitchEnvOctaves); a layer's pitch envelopes add.
+//  - Event pitch and a sound definition template's pitch are in units of
+//    4 octaves (kFevPitchOctaves): the recomp plays Tires.fev's PeelOut loops
+//    (template -0.05, envelope 0.4896) at 0.82 of their rate, 2^(-0.2 - 0.083).
 //  - An instance sounds while the layer's control parameter is inside
 //    [start_pos, start_pos + length]; fadein_len / fadeout_len are fractions
 //    of the instance's own length (-1 = none). Damage.fev's DamSlow fade-out
@@ -198,6 +204,8 @@ struct FevProject {
 // not evaluated.
 inline constexpr uint32_t kFevEnvVolume = 0x08u;
 inline constexpr uint32_t kFevEnvPitch = 0x10u;
+inline constexpr float kFevPitchOctaves = 4.0f;     // octaves per unit of event / template pitch
+inline constexpr float kFevPitchEnvOctaves = 8.0f;  // octaves across a pitch envelope's y 0..1
 // An unnamed unit whose parameters are a surround pan: param 0 left/right
 // (1 = left), param 1 back/front (1 = front), param 2 LFE send. The disc's
 // countdown stems Left / Right / Left Surround / Right Surround carry
