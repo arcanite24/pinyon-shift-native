@@ -95,14 +95,14 @@ std::string_view workshop_part_preset(int part_enum);
 
 // Smooth turntable camera for 3D Festival Hub screens.
 struct HubCamera {
-  float yaw = 0.62f;        // radians (front 3/4 view)
-  float pitch = 0.16f;      // radians above horizon
-  float distance = 5.15f;   // metres from target
-  float target[3] = {0.0f, 0.54f, 0.0f};
-  float target_yaw = 0.62f;
-  float target_pitch = 0.16f;
-  float target_dist = 5.15f;
-  float target_pos[3] = {0.0f, 0.54f, 0.0f};
+  float yaw = -0.62f;       // radians (front-left 3/4 hero view)
+  float pitch = 0.14f;      // radians above horizon
+  float distance = 6.35f;   // metres from target
+  float target[3] = {0.0f, 0.65f, 0.0f};
+  float target_yaw = -0.62f;
+  float target_pitch = 0.14f;
+  float target_dist = 6.35f;
+  float target_pos[3] = {0.0f, 0.65f, 0.0f};
   float lens_shift_x = 0.0f;
   float lens_shift_y = 0.0f;
   float target_lens_shift_x = 0.0f;

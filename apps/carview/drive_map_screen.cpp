@@ -6,11 +6,14 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
 
 #include "drive_session.h"
 #include "freeroam/fast_travel.h"
 #include "hud_screen.h"
 #include "pause_screen.h"
+#include "race/owt.h"
+#include "race/route.h"
 
 namespace carview {
 namespace {
@@ -20,17 +23,6 @@ namespace {
 constexpr double kSnapPx = 30.0;
 
 double now_s() { return double(SDL_GetTicks()) / 1000.0; }
-
-// The profile's name, as the original shows its gamertag over the player
-// (race_view.cpp's rule): SHIFT_PLAYER_NAME, else the OS account, else User.
-const std::string& player_name() {
-  static const std::string me = [] {
-    for (const char* v : {"SHIFT_PLAYER_NAME", "USERNAME", "USER"})
-      if (const char* e = std::getenv(v); e && *e) return std::string(e).substr(0, 15);
-    return std::string("User");
-  }();
-  return me;
-}
 
 const freeroam::FastTravelTunables& tunables(const DriveApp& app) {
   static const freeroam::FastTravelTunables t = [&] {
@@ -48,6 +40,32 @@ std::string travel_tag(const MapMarker& m) {
   return {};
 }
 
+// Cached (x, z) race-route preview polyline for a career event's route_id,
+// loaded once from aiopenworld.zip (.owt) with TrackRoute waypoint fallback.
+const std::vector<std::array<double, 2>>& cached_event_route_polyline(
+    const std::filesystem::path& game_root, int route_id) {
+  static const std::vector<std::array<double, 2>> kEmpty;
+  if (route_id <= 0 || game_root.empty()) return kEmpty;
+  static std::unordered_map<int, std::vector<std::array<double, 2>>> cache;
+  if (auto it = cache.find(route_id); it != cache.end()) return it->second;
+  std::vector<std::array<double, 2>> pts;
+  race::AiLineFile owt;
+  if (race::load_owt(game_root, route_id, owt, nullptr) && owt.points.size() >= 2) {
+    pts.reserve(owt.points.size() + (owt.closed ? 1u : 0u));
+    for (const auto& pt : owt.points) pts.push_back({double(pt.x), double(pt.z)});
+    if (owt.closed) pts.push_back(pts.front());
+  } else {
+    race::Route route;
+    if (race::load_route(game_root, route_id, route, nullptr)) {
+      const auto wps = route.waypoints();
+      pts.reserve(wps.size());
+      for (const auto* wp : wps) pts.push_back({wp->x, wp->z});
+    }
+  }
+  auto [it, _] = cache.emplace(route_id, std::move(pts));
+  return it->second;
+}
+
 }  // namespace
 
 void DriveSession::map_cursor_world() {
@@ -62,12 +80,14 @@ void DriveSession::map_cursor_world() {
 }
 
 void DriveSession::map_screen_open() {
-  // The cursor opens on the player (map_open_orig.png), which is off the
-  // centre when the view is held inside the map near its edge.
+  // The cursor opens near the player at the settled opening zoom, which is
+  // off the centre when the view is held inside the map or framed toward a
+  // career target.
   map_cursor.reset();
   if (map_w > 64 && map_h > 64) {
     const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
-    const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+    const double cursor_zoom = std::max(map_zoom, map_cam.target_zoom());
+    const double mpp = app.map_view.map_scale(map_w, map_h, cursor_zoom);
     const auto p = vehicle.position();
     map_cursor.absorb(float((0.5 * map_w + (p.x - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
                       float((0.5 * map_h - (p.z - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
@@ -88,17 +108,20 @@ DriveSession::FtcMapTarget DriveSession::ftc_map_target() const {
   if (!app.campaign.ftc_active()) return t;
   const auto stage = app.campaign.ftc().stage();
   if (stage == race::FtcStage::kFirstAutoshow) {
-    // The map after the wristband (map_flow_with_race_central_vo). Interim:
-    // not captured; the disc's IDS_MapTip_SetRouteToRaceCentral suggests a
-    // route to Race Central lets it go, as the other two do (Q313). The
-    // English fallback is ours; the disc's string table supplies its text.
+    // Third locked map targets the Autoshow (not Race Central) so the
+    // tooltip and route lead directly to the player's first Autoshow visit.
     t.event_id = -1;
     t.have_pos = true;
-    t.pos = app.campaign.ftc().race_central();
-    t.tip_id = "IDS_MapTip_SetRouteToRaceCentral";
-    t.tip = "Please set a route to Race Central.";
-    t.gps_label = "IDS_HudMsg_RaceCentral";
-    t.gps_kind = traffic::GpsDestKind::kRaceCentral;
+    if (const auto* site =
+            app.have_career_catalog ? app.career_catalog.find_site(race::FestivalSite::kAutoshow) : nullptr) {
+      t.pos = site->pos;
+    } else {
+      t.pos = app.campaign.ftc().race_central();
+    }
+    t.tip_id = "IDS_MapTip_SetRouteToAutoshow";
+    t.tip = "Please set a route to the Autoshow.";
+    t.gps_label = "IDS_Festival_AS_Line1";
+    t.gps_kind = traffic::GpsDestKind::kAutoshow;
     return t;
   }
   if (stage == race::FtcStage::kShowcase) {
@@ -191,6 +214,18 @@ void DriveSession::map_anim_fill(MapScene& ms) {
   ms.ghost_since = map_anim_ghost_since;
   ms.has_prev_hover = map_anim_prev;
   ms.prev_hover_x = map_anim_px, ms.prev_hover_z = map_anim_pz;
+  // Hover red race-route preview (MapProfileFullscreen.xml "track"): when
+  // hovering a career event marker outside an active race or H2H, supply its
+  // route polyline so MapView::pause_map renders it beneath any green GPS line.
+  if (!app.race && !(festival_mgr && festival_mgr->h2h_active()) && app.have_career_catalog &&
+      ms.selected_marker >= 0 && size_t(ms.selected_marker) < ms.markers.size()) {
+    const MapMarker& sel = ms.markers[size_t(ms.selected_marker)];
+    if (sel.kind == MapMarker::kEvent) {
+      if (const race::CareerEvent* ev = app.career_catalog.find_event(sel.id); ev && ev->route_id > 0) {
+        ms.route = cached_event_route_polyline(app.game_root_of(), ev->route_id);
+      }
+    }
+  }
   // The player's ping fires its "audio" trigger (Map_Radar) at each pass.
   // (Not the passes missed behind the FILTER popup or a dialog.)
   const mapanim::Animation* ping = app.map_view.icon_animation("player_local", "default");
@@ -373,20 +408,13 @@ void DriveSession::map_screen_fill() {
     else if (map_travel_quote(m, cost))
       x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(cost)));
   } else {
-    // The player (their name over the arrow, map_open_orig.png), then a
-    // found or revealed sign or barn.
-    const drive::Vec3 at = vehicle.position();
-    const auto pc = to_canvas(at.x, at.z);
+    // Found or revealed discount sign or barn find under the cursor (no
+    // invented gamertag popup over the player arrow).
     const double snap = kSnapPx;
     auto near = [&](const std::array<float, 2>& c) {
       return std::hypot(double(c[0] - map_cursor.x), double(c[1] - map_cursor.y)) <= snap;
     };
-    if (near(pc)) {
-      p.kind = MapPopupKind::kSimple;
-      p.title = player_name();
-      p.x = pc[0], p.y = pc[1];
-      ms.locked = true;
-    } else if (app.progress_loaded) {
+    if (app.progress_loaded) {
       const bool reveal = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
       if (map_filter.shows(MapCategory::kDiscountSign)) {
         for (size_t i = 0; i < app.collectibles.signs.size() && p.kind == MapPopupKind::kNone; ++i) {
@@ -430,6 +458,10 @@ void DriveSession::map_screen_fill() {
   }
   if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
     ms.prompts.push_back({"A", text_of(route ? map_text::kClearRoute : map_text::kSetRoute)});
+    const bool hovering_event = map_selected_marker >= 0 &&
+                                size_t(map_selected_marker) < cached_map_markers.size() &&
+                                cached_map_markers[size_t(map_selected_marker)].kind == MapMarker::kEvent;
+    if (hovering_event) ms.prompts.push_back({"X", text_of(map_text::kDetails)});
     ms.prompts.push_back({"LB", text_of(map_text::kFilter)});
     ms.prompts.push_back({"LS", text_of({"HelpButtons", "IDS_Move", 0, "MOVE"})});
     ms.prompts.push_back({"RS", text_of({"HelpButtons", "IDS_ZOOM", 0, "ZOOM"})});

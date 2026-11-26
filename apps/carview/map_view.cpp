@@ -642,6 +642,13 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
   return out;
 }
 
+// Groups carrying icon_up_career_new in MapProfileFullscreen.xml (speed
+// cameras and outposts never show the pink NEW badge).
+bool marker_has_new_badge(std::string_view key) {
+  return key == "race" || key == "exhibition" || key == "streetrace" || key == "nemesisrace" ||
+         key == "workshop" || key == "racecentral";
+}
+
 // True when `m` sits at the cursor's icon (x, z).
 bool near(bool on, double x, double z, const Mark& m) { return on && std::fabs(m.x - x) < 0.5 && std::fabs(m.z - z) < 0.5; }
 
@@ -1723,23 +1730,37 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     return std::array<double, 2>{rw * 0.5 + (x - eff_cx) * inv_scale, rh * 0.5 - (z - eff_cz) * inv_scale};
   };
 
-  // Free-roam GPS route line on fullscreen map (MapProfileFullscreen.xml "route": r=74 g=238 b=97).
-  const auto& active_route = !scene.gps_route.empty() ? scene.gps_route : scene.route;
-  if (active_route.size() >= 2) {
+  auto draw_polyline = [&](const std::vector<std::array<double, 2>>& pts, const Rgba& casing, const Rgba& fill) {
+    if (pts.size() < 2) return;
     const double rw_px = std::clamp(14.0 * inv_scale, 3.0, 8.0);
     for (int pass = 0; pass < 2; ++pass) {
-      auto prev = to_screen(active_route[0][0], active_route[0][1]);
-      for (size_t i = 1; i < active_route.size(); ++i) {
-        const auto cur = to_screen(active_route[i][0], active_route[i][1]);
+      auto prev = to_screen(pts[0][0], pts[0][1]);
+      for (size_t i = 1; i < pts.size(); ++i) {
+        const auto cur = to_screen(pts[i][0], pts[i][1]);
         const bool off = (prev[0] < -12 && cur[0] < -12) || (prev[0] > rw + 12 && cur[0] > rw + 12) ||
                          (prev[1] < -12 && cur[1] < -12) || (prev[1] > rh + 12 && cur[1] > rh + 12);
         if (!off) {
-          if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], rw_px + 3.0, Rgba{12, 62, 22, 210});
-          else cv.line(prev[0], prev[1], cur[0], cur[1], rw_px, Rgba{74, 238, 97, 255});
+          if (pass == 0) cv.line(prev[0], prev[1], cur[0], cur[1], rw_px + 3.0, casing);
+          else cv.line(prev[0], prev[1], cur[0], cur[1], rw_px, fill);
         }
         prev = cur;
       }
     }
+  };
+  const bool hovering_event_route =
+      !scene.route.empty() && scene.selected_marker >= 0 &&
+      size_t(scene.selected_marker) < scene.markers.size() &&
+      scene.markers[size_t(scene.selected_marker)].kind == MapMarker::kEvent;
+  if (hovering_event_route) {
+    // Hovered event race-route preview (MapProfileFullscreen.xml "track": r=250 g=0 b=100,
+    // sort_order 154/155, drawn beneath the green GPS route).
+    draw_polyline(scene.route, Rgba{16, 8, 12, 225}, Rgba{250, 0, 100, 255});
+    if (!scene.gps_route.empty())
+      draw_polyline(scene.gps_route, Rgba{12, 62, 22, 210}, Rgba{74, 238, 97, 255});
+  } else {
+    // Free-roam GPS route or active race/H2H route (MapProfileFullscreen.xml "route": r=74 g=238 b=97).
+    const auto& active_route = !scene.gps_route.empty() ? scene.gps_route : scene.route;
+    draw_polyline(active_route, Rgba{12, 62, 22, 210}, Rgba{74, 238, 97, 255});
   }
 
   // Rumour regions: the profile's barn_find_region ellipse, flat white at
@@ -1788,30 +1809,33 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, look.angle_deg * kPi / 180, tint);
     }
     const mapanim::IconLook badge = icon_look(full_.anims, full_.new_badge, ev, scene.anim_time);
-    if (m.is_new && badge.alpha > 0.002f) {
-      const double oy = 20.0 * unit;
-      if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
-        const double bh = 14.0 * unit * 0.5 * double(badge.scale_x + badge.scale_y);
-        const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
-        cv.blit(new_badge_, p[0], p[1] - oy, bh * aspect, bh, Rgba{255, 255, 255, 255 * std::min(1.0f, badge.alpha)});
+    if (m.is_new && marker_has_new_badge(m.key) && badge.alpha > 0.002f) {
+      // MapProfileFullscreen.xml icon_up_career_new: MapIconSheet.xds atlas
+      // cell (3, 4), DynamicSize 45, Angle 3 deg, sitting directly above the icon.
+      const double oy = 24.0 * unit;
+      const double sc = 0.5 * double(badge.scale_x + badge.scale_y);
+      const float alpha = 255.0f * std::clamp(badge.alpha, 0.0f, 1.0f);
+      if (!large_icons_.rgba.empty()) {
+        const double sz = 45.0 * unit * sc;
+        cv.icon(large_icons_, 3, 4, p[0], p[1] - oy, sz, -3.0 * kPi / 180.0, Rgba{255, 255, 255, alpha});
       } else if (badge.alpha >= 0.5f) {
-        const double sc = std::max(0.95, unit * 1.10);
-        const double bw = 20.0 * sc, bh = 8.5 * sc;
+        const double vsc = std::max(0.95, unit * 1.10);
+        const double bw = 20.0 * vsc, bh = 8.5 * vsc;
         const double by = p[1] - oy;
         cv.line(p[0] - bw * 0.5, by, p[0] + bw * 0.5, by, bh + 2.0, Rgba{12, 12, 16, 220});
         cv.line(p[0] - bw * 0.5, by, p[0] + bw * 0.5, by, bh, Rgba{249, 0, 100, 250});
-        const double h2 = 2.4 * sc, gw = 3.2 * sc, st = std::max(1.0, 0.95 * sc);
+        const double h2 = 2.4 * vsc, gw = 3.2 * vsc, st = std::max(1.0, 0.95 * vsc);
         const Rgba wh{255, 255, 255, 255};
-        const double nx = p[0] - 6.6 * sc;
+        const double nx = p[0] - 6.6 * vsc;
         cv.line(nx, by + h2, nx, by - h2, st, wh);
         cv.line(nx, by - h2, nx + gw, by + h2, st, wh);
         cv.line(nx + gw, by + h2, nx + gw, by - h2, st, wh);
-        const double ex = p[0] - 1.6 * sc;
+        const double ex = p[0] - 1.6 * vsc;
         cv.line(ex, by - h2, ex, by + h2, st, wh);
         cv.line(ex, by - h2, ex + gw, by - h2, st, wh);
         cv.line(ex, by, ex + gw * 0.85, by, st, wh);
         cv.line(ex, by + h2, ex + gw, by + h2, st, wh);
-        const double wx = p[0] + 3.4 * sc;
+        const double wx = p[0] + 3.4 * vsc;
         cv.line(wx, by - h2, wx + gw * 0.3, by + h2, st, wh);
         cv.line(wx + gw * 0.3, by + h2, wx + gw * 0.65, by - h2 * 0.2, st, wh);
         cv.line(wx + gw * 0.65, by - h2 * 0.2, wx + gw, by + h2, st, wh);
@@ -1982,22 +2006,25 @@ bool MapCameraController::step(double dt, double pan_x, double pan_z, double zoo
   cx_ += vx_ * dt;
   cz_ += vz_ * dt;
 
-  // Gentle magnetic snap to nearest visible marker when cursor settles near an icon.
+  // Gentle magnetic snap to nearest visible marker when cursor settles near an icon
+  // (paused during animated zoom-in so opening zoom stays centered on its target).
   snapped_marker_ = -1;
-  const double snap_r = 250.0 / std::max(0.5, zoom_);
-  double best_d = snap_r;
-  for (size_t i = 0; i < visible_markers.size(); ++i) {
-    const double d = std::hypot(visible_markers[i].x - cx_, visible_markers[i].z - cz_);
-    if (d < best_d) {
-      best_d = d;
-      snapped_marker_ = int(i);
+  if (std::fabs(target_zoom_ - zoom_) <= 1e-3) {
+    const double snap_r = 250.0 / std::max(0.5, zoom_);
+    double best_d = snap_r;
+    for (size_t i = 0; i < visible_markers.size(); ++i) {
+      const double d = std::hypot(visible_markers[i].x - cx_, visible_markers[i].z - cz_);
+      if (d < best_d) {
+        best_d = d;
+        snapped_marker_ = int(i);
+      }
     }
-  }
-  if (snapped_marker_ >= 0 && mag < 0.05 && std::hypot(vx_, vz_) < 220.0 / std::max(0.5, zoom_)) {
-    const auto& m = visible_markers[size_t(snapped_marker_)];
-    const double pull = 1.0 - std::exp(-10.0 * dt);
-    cx_ += (m.x - cx_) * pull;
-    cz_ += (m.z - cz_) * pull;
+    if (snapped_marker_ >= 0 && mag < 0.05 && std::hypot(vx_, vz_) < 220.0 / std::max(0.5, zoom_)) {
+      const auto& m = visible_markers[size_t(snapped_marker_)];
+      const double pull = 1.0 - std::exp(-10.0 * dt);
+      cx_ += (m.x - cx_) * pull;
+      cz_ += (m.z - cz_) * pull;
+    }
   }
 
   clamp_bounds();

@@ -191,7 +191,7 @@ void test_hub_stage_and_camera() {
       shot = carview::hub_camera_shot(HubRoom::kWorkshop, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, true);
-      CHECK(shot.preset == "CarColorSel");
+      CHECK(shot.sequence_member.empty() && shot.preset.empty());
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kGarage, -1, false, 0, false);
@@ -202,9 +202,59 @@ void test_hub_stage_and_camera() {
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 14, false, false) == "Upgrades_Engine_Front");
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, -1, false, false) == "Upgrades_Main");
     CHECK(carview::hub_camera_preset_name(HubRoom::kPaintShop, -1, true, false) == "LiveryPaintMenu_Body");
-    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true) == "CarColorSel");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true).empty());
     CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, false).empty());
     CHECK(carview::hub_camera_preset_name(HubRoom::kGarage, -1, false, false).empty());
+    // Negative-posy presets (like CarColorSel) lift above ground_y instead of going underground.
+    {
+      carview::CarCameraPreset low{};
+      low.name = "CarColorSel";
+      low.pos[0] = 3.897f, low.pos[1] = -0.150f, low.pos[2] = -0.046f;
+      low.face[0] = -1.0f, low.face[1] = 0.0f, low.face[2] = 0.015f;
+      low.fov = 45.0f;
+      carview::HubCamera c;
+      c.ground_y = 0.0f;
+      c.set_preset(low, true);
+      const auto v = c.view();
+      CHECK(v.eye[1] > c.ground_y + 0.35f);
+    }
+    // Autoshow 3/4 hero framing keeps a full 1.50 m tall car (e.g. WRX STi) cleanly inside the viewport
+    // with zero roof clipping and full tyre clearance above the bottom carousel rail.
+    {
+      auto check_hero_box = [](carview::HubCameraFocus focus) {
+        carview::HubCamera c;
+        c.ground_y = 0.0f;
+        c.set_focus(focus);
+        c.yaw = c.target_yaw;
+        c.pitch = c.target_pitch;
+        c.distance = c.target_dist;
+        for (int i = 0; i < 3; ++i) c.target[i] = c.target_pos[i];
+        c.set_framing(0.11f, 0.12f);
+        c.auto_orbit = false;
+        for (int i = 0; i < 30; ++i) c.step(0.05f);
+        carview::ShowroomFrame f{};
+        carview::build_hub_frame(HubRoom::kAutoshow, c, 1280, 720, f, false);
+        float min_ndc_y = 10.0f, max_ndc_y = -10.0f;
+        for (float bx : {-0.92f, 0.92f}) {
+          for (float by : {0.0f, 1.50f}) {
+            for (float bz : {-2.20f, 2.20f}) {
+              const float* m = f.view_projection;
+              const float cy = m[1] * bx + m[5] * by + m[9] * bz + m[13];
+              const float cw = m[3] * bx + m[7] * by + m[11] * bz + m[15];
+              CHECK(cw > 0.1f);
+              const float ny = cy / cw;
+              min_ndc_y = std::min(min_ndc_y, ny);
+              max_ndc_y = std::max(max_ndc_y, ny);
+            }
+          }
+        }
+        // Vulkan Y-down NDC: -1 is top edge, +1 is bottom edge.
+        CHECK(min_ndc_y > -0.78f);  // roof cleanly below top bar (zero roof clipping)
+        CHECK(max_ndc_y < 0.78f);   // whole car cleanly above bottom button/rail area
+      };
+      check_hero_box(carview::HubCameraFocus::kTurntable);
+      check_hero_box(carview::HubCameraFocus::kPaint);
+    }
   }
 
   // Barn Find Restoration Card UI rasterization.
@@ -920,6 +970,43 @@ void test_disc_hub_shops_and_garage() {
       CHECK(autoshow.back_step());
       CHECK(!autoshow.buy_confirm_open());
       CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
+    }
+
+    // 7. WP-E First Autoshow parity: tutorial mode resolves the real active garage car name
+    //    (never "CURRENT CAR"), uses retail "HORIZON RECOMMENDS" copy (never invented "FIRST CAR"),
+    //    and docks notices on the button bar without overlapping the finish/caliper strip.
+    {
+      garage::Garage fg;
+      garage::Car corrado{};
+      corrado.id = 1;
+      corrado.car_id = 309;  // 1995 VW Corrado VR6 (not in the 2-car starter catalog 1323/1009)
+      corrado.performance_index = 0.524381;
+      corrado.class_id = 3;
+      fg.cars = {corrado};
+      fg.selected = 1;
+      fg.last_id = 1;
+      carview::Autoshow first_show;
+      std::string fwhy;
+      CHECK(first_show.open(db, {}, fwhy, 40000, /*tutorial_first=*/true, false, 1.0, &fg));
+      CHECK(first_show.tutorial_mode());
+      CHECK(first_show.comparison_car().valid);
+      CHECK(!first_show.comparison_car().display_name.empty());
+      CHECK(first_show.comparison_car().display_name != "CURRENT CAR");
+      CHECK(first_show.breadcrumb_text().find("FIRST CAR") == std::string::npos);
+      CHECK(first_show.breadcrumb_text().find("HORIZON RECOMMENDS") != std::string::npos);
+      first_show.set_step(carview::AutoshowStep::kColorSelect);
+      const auto lo_c = carview::compute_autoshow_layout(1280.0f, 720.0f, carview::AutoshowStep::kColorSelect, true, false);
+      carview::ui::List l_base, l_notice;
+      carview::draw_autoshow_hud(l_base, 1280.0f, 720.0f, first_show, bands, 40000);
+      carview::draw_autoshow_hud(l_notice, 1280.0f, 720.0f, first_show, bands, 40000, "CONFIRM PURCHASE FOR 32,000 CR");
+      CHECK(l_notice.items().size() > l_base.items().size());
+      // Notice draw items sit strictly below finish_strip (zero CALIPERS overlap) and outside hero_car_viewport.
+      for (size_t i = l_base.items().size(); i < l_notice.items().size(); ++i) {
+        const auto& it = l_notice.items()[i];
+        carview::AutoshowRect r{it.rect[0], it.rect[1], it.rect[2], it.rect[3]};
+        CHECK(!r.intersects(lo_c.finish_strip));
+        CHECK(!r.intersects(lo_c.hero_car_viewport));
+      }
     }
   }
 }

@@ -232,11 +232,14 @@ const CarCameraPreset* find_car_camera_preset(const std::vector<CarCameraPreset>
 }
 
 std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor_open, bool colour_select) {
+  (void)colour_select;
   switch (room) {
     case HubRoom::kAutoshow:
-      // The standard view is the Autoshow's own camera (6.58 m off the car
-      // in the references, not HorizonAutoshow's 4.8 m; Q129).
-      return colour_select ? "CarColorSel" : "";
+      // Autoshow browse plays HomeSpaceCams.xml and colour select uses the
+      // front-left 3/4 hero orbit camera so tall cars (e.g. WRX STi) frame
+      // cleanly with the vertical stage lights instead of CarColorSel's low
+      // side profile (which sits below the floor and clips the roof).
+      return "";
     case HubRoom::kPaintShop: return editor_open ? "LiveryPaintMenu_Body" : "LiveryMainMenu";
     case HubRoom::kWorkshop:
       // UpgradeAreas' slots (cars/database.cpp upgrade_slots) on the
@@ -286,8 +289,7 @@ HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int
   HubCameraShot s;
   switch (room) {
     case HubRoom::kAutoshow:
-      if (colour_select) s.preset = "CarColorSel";
-      else s.sequence_member = kHomeSpace;
+      if (!colour_select) s.sequence_member = kHomeSpace;
       break;
     case HubRoom::kPaintShop:
       if (editor_open) {
@@ -339,8 +341,12 @@ float nearest_turn(float to, float from) {
 void HubCamera::set_preset(const CarCameraPreset& p, bool snap) {
   const float fl = std::sqrt(p.face[0] * p.face[0] + p.face[1] * p.face[1] + p.face[2] * p.face[2]);
   if (fl < 1e-4f) return;
-  // The game's +Z front is the engine's -Z.
-  const float eye[3] = {p.pos[0], p.pos[1], -p.pos[2]};
+  // The game's +Z front is the engine's -Z. Presets with negative posy
+  // (e.g. CarColorSel, LiveryPaintMenu_Brakes, Upgrades_Engine_Front) are
+  // authored relative to the car's vertical body centre (~0.72 m above ground)
+  // rather than the floor, so lift them above ground_y to avoid underground eyes.
+  const float eye_y = p.pos[1] < 0.0f ? (ground_y + 0.72f + p.pos[1]) : (ground_y + p.pos[1]);
+  const float eye[3] = {p.pos[0], eye_y, -p.pos[2]};
   const float fwd[3] = {p.face[0] / fl, p.face[1] / fl, -p.face[2] / fl};
   // From the view on screen now: a sequence's, else the orbit's.
   if (sequence) {
@@ -508,12 +514,12 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       manual_idle_s = 0.0f;
       break;
     case HubCameraFocus::kPaint:
-      target_yaw = 0.80f;
-      target_pitch = 0.21f;
-      target_dist = 4.15f;
+      target_yaw = -0.68f;
+      target_pitch = 0.14f;
+      target_dist = 5.75f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.58f;
-      target_pos[2] = -0.14f;
+      target_pos[1] = ground_y + 0.65f;
+      target_pos[2] = -0.06f;
       auto_orbit = true;
       orbit_speed = 0.10f;
       user_orbited = false;
@@ -525,7 +531,7 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       target_pitch = 0.17f;
       target_dist = 5.05f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.55f;
+      target_pos[1] = ground_y + 0.55f;
       target_pos[2] = 0.0f;
       auto_orbit = false;
       user_orbited = false;
@@ -533,11 +539,11 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       break;
     case HubCameraFocus::kTurntable:
     default:
-      target_yaw = 0.62f;
-      target_pitch = 0.16f;
-      target_dist = 5.15f;
+      target_yaw = -0.62f;
+      target_pitch = 0.14f;
+      target_dist = 6.35f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.54f;
+      target_pos[1] = ground_y + 0.65f;
       target_pos[2] = 0.0f;
       auto_orbit = true;
       orbit_speed = 0.16f;
@@ -862,7 +868,7 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   if (cam.sequence) {
   } else if (room == HubRoom::kAutoshow) {
     const float sx = cam.has_explicit_framing ? cam.lens_shift_x : 0.11f;
-    const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.16f;
+    const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.12f;
     proj[8] += sx;
     proj[9] += sy;
   } else if (cam.has_explicit_framing) {
@@ -1661,12 +1667,14 @@ void draw_autoshow_spec_card(ui::List& list, const AutoshowLayout& lo, const Aut
 
   // 3. Subtitle / Comparison Baseline Header
   std::string sub_txt;
-  if (delta.has_baseline) {
-    sub_txt = "VS CURRENT: " + autoshow.comparison_car().display_name;
+  const std::string& cmp_name = autoshow.comparison_car().display_name;
+  const bool show_cmp_name = delta.has_baseline && !cmp_name.empty() && cmp_name != "CURRENT CAR";
+  if (show_cmp_name) {
+    sub_txt = "VS CURRENT: " + cmp_name;
   } else {
     sub_txt = std::to_string(sel_car->dealer.year) + "  " + sel_car->make_name + "  •  FACTORY SPECS";
   }
-  ui::TextStyle subs = ui4::style(ui::Font::kB, 10.5f * s, delta.has_baseline ? ui4::kYellow : ui4::kDim);
+  ui::TextStyle subs = ui4::style(ui::Font::kB, 10.5f * s, show_cmp_name ? ui4::kYellow : ui4::kDim);
   ui4::fit_text(sub_txt, subs, rw - 24.0f * s, 8.5f * s);
   list.text(rx0 + 12.0f * s, cy + 2.0f * s, sub_txt, subs);
   cy += 18.0f * s;
@@ -1860,8 +1868,8 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     const float ty0 = lo.top_bar.y0;
     const float tx1 = lo.top_bar.x1;
 
-    // Magenta-accented HORIZON AUTOSHOW title header
-    const std::string hdr_title = autoshow.tutorial_mode() ? "HORIZON AUTOSHOW  //  FIRST CAR" : "HORIZON AUTOSHOW";
+    // Magenta-accented HORIZON AUTOSHOW / HORIZON RECOMMENDS title header
+    const std::string hdr_title = autoshow.tutorial_mode() ? "HORIZON RECOMMENDS" : "HORIZON AUTOSHOW";
     ui::TextStyle hts = ui4::style(ui::Font::kE, 20.0f * s, ui4::kWhite);
     const float hdr_w = std::min(380.0f * s, std::max(240.0f * s, ui::List::measure(hdr_title, hts) + 34.0f * s));
     ui4::fit_text(hdr_title, hts, hdr_w - 24.0f * s, 12.0f * s);
@@ -1955,7 +1963,7 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     std::string rail_title =
         (step == AutoshowStep::kMakeSelect)  ? "MANUFACTURERS"
         : (step == AutoshowStep::kColorSelect) ? "FACTORY PAINT  &  FINISH"
-                                               : (autoshow.tutorial_mode() ? "FIRST CAR MODELS" : (active_make + "  MODELS"));
+                                               : (autoshow.tutorial_mode() ? "HORIZON RECOMMENDS" : (active_make + "  MODELS"));
     list.rect(rx0, hy0, rx0 + 230.0f * s, hy1, ui::rgba(16, 18, 24, 216));
     list.rect(rx0, hy0, rx0 + 4.0f * s, hy1, ui4::kPink);
     ui::TextStyle rts = ui4::style(ui::Font::kE, 12.0f * s, ui4::kWhite);
@@ -2213,11 +2221,11 @@ void draw_autoshow_hud(ui::List& list, float w, float h, const Autoshow& autosho
     draw_autoshow_confirm_modal(list, w, h, lo, autoshow, bands, credits);
   }
 
-  // ---- 6. Optional Toast Notice (docked cleanly above bottom button bar — zero overlap) ----
+  // ---- 6. Optional Toast Notice (docked right on the bottom button bar — zero overlap with finish/caliper strip) ----
   if (!notice.empty()) {
-    const float nw = std::min(w - 80.0f * s, 520.0f * s);
-    const float ny1 = lo.button_bar.y0 - 8.0f * s;
-    const float ny0 = ny1 - 26.0f * s;
+    const float nw = std::min(w - 80.0f * s, 400.0f * s);
+    const float ny0 = lo.button_bar.y0 + 3.0f * s;
+    const float ny1 = lo.button_bar.y1 - 3.0f * s;
     ui4::brush(list, w - nw - 40.0f * s, ny0, w - 40.0f * s, ny1, ui4::kPink);
     ui::TextStyle ns = ui4::style(ui::Font::kB, 11.5f * s, ui4::kWhite, ui::Align::kRight);
     ui4::fit_text(notice, ns, nw - 24.0f * s, 8.5f * s);

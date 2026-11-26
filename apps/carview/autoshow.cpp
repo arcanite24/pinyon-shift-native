@@ -93,6 +93,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   catalog_.clear();
   makes_.clear();
   visible_.clear();
+  garage_meta_.clear();
   empty_reason_.clear();
   sort_ = AutoshowSort::kDefault;
   class_filter_ = -1;
@@ -193,6 +194,34 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
           },
           nullptr);
 
+  // Cache full Data_Car metadata for cars already in the player's garage so
+  // live comparison resolves real car names & stock ratings even when the
+  // active garage car (e.g. Corrado VR6) is excluded by tutorial_mode_ or only_cars.
+  if (owned_garage) {
+    std::set<int64_t> want_ids;
+    for (const auto& gc : owned_garage->cars) want_ids.insert(gc.car_id);
+    for (const auto& c : all) {
+      if (!want_ids.count(c.id)) continue;
+      AutoshowComparisonStats gm{};
+      gm.valid = true;
+      gm.car_id = c.id;
+      gm.display_name = car_name(c.media_name);
+      if (auto mit = metas.find(c.id); mit != metas.end()) {
+        if (gm.display_name.empty()) gm.display_name = mit->second.display_name;
+        gm.drive_type_id = mit->second.drive_type;
+        gm.speed_rating = mit->second.speed;
+        gm.handling_rating = mit->second.handling;
+        gm.accel_rating = mit->second.accel;
+        gm.launch_rating = mit->second.launch;
+        gm.braking_rating = mit->second.braking;
+        gm.peak_power_kw = mit->second.power_kw;
+        gm.peak_torque_nm = mit->second.torque_nm;
+        gm.curb_weight_kg = mit->second.weight_kg;
+      }
+      garage_meta_.push_back(std::move(gm));
+    }
+  }
+
   for (auto& c : all) {
     const drive::HiddenCarInfo* hc = include_hidden ? drive::find_hidden_car(c.id) : nullptr;
     if (hc && c.base_cost <= 0) c.base_cost = hc->fallback_cost;
@@ -248,7 +277,7 @@ bool Autoshow::open(const cars::PartsDb& db, const std::set<std::string>& baked,
   // followed by "All Cars", optional "Hidden & Showcase" tab when Hidden Cars unlock is active,
   // and all manufacturers with >= 1 buyable car sorted alphabetically.
   if (tutorial_mode_) {
-    makes_.push_back({-2, "First Car", catalog_.size()});
+    makes_.push_back({-2, "Horizon Recommends", catalog_.size()});
   } else {
     size_t affordable = 0;
     size_t hidden_count = 0;
@@ -323,9 +352,9 @@ bool Autoshow::back_step() {
 
 std::string Autoshow::breadcrumb_text() const {
   if (tutorial_mode_) {
-    if (buy_confirm_open_) return "FIRST CAR  >  SELECT PAINT  >  CONFIRM PURCHASE";
-    if (step_ == AutoshowStep::kColorSelect) return "FIRST CAR  >  SELECT PAINT";
-    return "FIRST CAR SELECTION";
+    if (buy_confirm_open_) return "HORIZON RECOMMENDS  >  SELECT PAINT  >  CONFIRM PURCHASE";
+    if (step_ == AutoshowStep::kColorSelect) return "HORIZON RECOMMENDS  >  SELECT PAINT";
+    return "HORIZON RECOMMENDS";
   }
   const std::string mk =
       all_cars_mode_ ? std::string("ALL CARS")
@@ -552,6 +581,7 @@ void Autoshow::set_owned_cars(const garage::Garage& g) {
     cmp.class_id = cur->class_id;
     cmp.raw_pi = cur->performance_index;
     cmp.shown_pi = int(std::ceil(cur->performance_index * 999.0));
+    bool found_meta = false;
     for (const auto& entry : catalog_) {
       if (entry.dealer.id == cur->car_id) {
         cmp.display_name = car_name(entry.dealer.media_name);
@@ -565,7 +595,25 @@ void Autoshow::set_owned_cars(const garage::Garage& g) {
         cmp.peak_power_kw = entry.peak_power_kw;
         cmp.peak_torque_nm = entry.peak_torque_nm;
         cmp.curb_weight_kg = entry.curb_weight_kg;
+        found_meta = true;
         break;
+      }
+    }
+    if (!found_meta) {
+      for (const auto& gm : garage_meta_) {
+        if (gm.car_id == cur->car_id) {
+          cmp.display_name = gm.display_name;
+          cmp.drive_type_id = gm.drive_type_id;
+          cmp.speed_rating = gm.speed_rating;
+          cmp.handling_rating = gm.handling_rating;
+          cmp.accel_rating = gm.accel_rating;
+          cmp.launch_rating = gm.launch_rating;
+          cmp.braking_rating = gm.braking_rating;
+          cmp.peak_power_kw = gm.peak_power_kw;
+          cmp.peak_torque_nm = gm.peak_torque_nm;
+          cmp.curb_weight_kg = gm.curb_weight_kg;
+          break;
+        }
       }
     }
     if (cur->cached_stats.peak_power_kw > 0.0) {
@@ -578,7 +626,6 @@ void Autoshow::set_owned_cars(const garage::Garage& g) {
       cmp.peak_torque_nm = cur->cached_stats.peak_torque_nm;
       cmp.curb_weight_kg = cur->cached_stats.curb_weight_kg;
     }
-    if (cmp.display_name.empty()) cmp.display_name = "CURRENT CAR";
     comparison_car_ = std::move(cmp);
   }
 }

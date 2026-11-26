@@ -251,12 +251,6 @@ void DriveSession::open_shop_or_autoshow(bool is_autoshow) {
                         if (!vis.empty()) autoshow.select_index(best_idx);
                       }
                     }
-                    if (ready) {
-                      notice = autoshow.tutorial_mode()
-                                   ? "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS READY IN MY GARAGE. BROWSE STARTER RIDES WITH YOUR 15,000 CR BONUS OR EXIT TO COLORADO FREE ROAM."
-                                   : "HORIZON AUTOSHOW — YOUR 1995 VW CORRADO VR6 IS IN MY GARAGE (+15,000 CR). PICK AN AFFORDABLE RIDE OR EXIT TO START YOUR YELLOW WRISTBAND EVENTS.";
-                      notice_until = vehicle.time() + 14.0;
-                    }
                   }
                 } else {
                   ready = shop.open(*db, app.career_garage,
@@ -508,11 +502,6 @@ void DriveSession::update_map_selection() {
             if (d < best_d) best_d = d, map_selected_marker = int(i);
           }
           const drive::Vec3 at = vehicle.position();
-          // The player's own arrow wins over an icon at the same spot: the
-          // original opens the map on the player with their name and no
-          // event popup, even parked on the Gauntlet (map_cmp_first30d.png).
-          if (map_selected_marker >= 0 && std::hypot(at.x - map_px, at.z - map_pz) <= best_d)
-            map_selected_marker = -1;
           const bool ft_anywhere = slice12.trainer.effective_fast_travel_anywhere();
           double target_x = map_px, target_z = map_pz;
           if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
@@ -647,10 +636,32 @@ void DriveSession::open_map() {
             map_h = win_h;
             map_cam.set_viewport(win_w, win_h, &app.map_view);
           }
-          map_zoom = std::max(2.0, map_cam.min_zoom());
+          const double base_zoom = std::max(2.0, map_cam.min_zoom());
+          double target_zoom = std::max(3.0, base_zoom * 1.5);
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
-          map_cam.reset(map_cx, map_cz, map_zoom);
+          if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
+            const FtcMapTarget mt = ftc_map_target();
+            if (mt.have_pos) {
+              const double d_m = std::hypot(mt.pos[0] - map_cx, mt.pos[2] - map_cz);
+              if (d_m < 650.0) {
+                // Festival locked maps (Horizon Heats, First Autoshow): zoom close onto
+                // the festival/target area (~2.3x base zoom, Q275).
+                target_zoom = std::max(4.6, base_zoom * 2.3);
+                map_cx = 0.5 * (map_cx + mt.pos[0]);
+                map_cz = 0.5 * (map_cz + mt.pos[2]);
+              } else {
+                // Showcase locked map: frame both player and target event closer in.
+                target_zoom = std::max(3.2, base_zoom * 1.6);
+                map_cx = 0.55 * map_cx + 0.45 * mt.pos[0];
+                map_cz = 0.55 * map_cz + 0.45 * mt.pos[2];
+              }
+            }
+          }
+          // Start at base_zoom and animate smoothly in to target_zoom via map_cam.
+          map_zoom = base_zoom;
+          map_cam.reset(map_cx, map_cz, base_zoom);
+          if (target_zoom > base_zoom * 1.01) map_cam.nudge_target_zoom(target_zoom / base_zoom);
           map_cx = map_cam.cx();
           map_cz = map_cam.cz();
           map_zoom = map_cam.zoom();
