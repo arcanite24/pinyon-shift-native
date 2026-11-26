@@ -180,6 +180,11 @@ struct DriveApp : DriveConfig {
   freeroam::SpeedActivitiesData speed_data;
   std::unique_ptr<freeroam::SpeedActivityTracker> speed_tracker;
   int collected_wristband = 0;
+  // The wristband last announced as ready to collect (-1: none; -2: not yet
+  // seeded, so a wristband already pending when the game loads is not
+  // announced again: the original shows no toast on load). Kept here, not
+  // on the session, so one earned in a race is announced back in free roam.
+  int notified_wristband = -2;
   // Street race hubs' unlock state as last seen, for their RadioDJRequests lines.
   std::map<int, bool> street_hub_radio_unlocked;
   double street_hub_radio_check_at = -1e9;

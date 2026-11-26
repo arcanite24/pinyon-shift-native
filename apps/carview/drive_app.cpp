@@ -858,6 +858,7 @@ bool DriveApp::init(int& exit_code) {
     }
   }
   collected_wristband = 0;
+  notified_wristband = -2;  // re-seeded from this career on the next step
   if (have_saved && saved.collected_wristband >= 0) {
     collected_wristband = saved.collected_wristband;
   } else if (have_saved && !saved.intro_completed && saved.collected_wristband < 0) {

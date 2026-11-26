@@ -1938,10 +1938,17 @@ Read off two retail captures: the Mazda MX-5 (redline about 7,000 rpm)
 shows 0..8 in ones on a sweep that runs one step past the 8 (0..9, about
 0.52 rad a step from 2.34 rad left of the top); the Nissan Skyline GT-R
 R34 (redline about 8,000 rpm) shows 0..10 in twos over the whole sweep.
-The engine's rule (`dial_scale()` in `apps/carview/hud_screen.cpp`): the
-sweep spans the redline in thousands rounded up plus two; up to 9 it
-counts in ones with numerals to one below the end, above it in twos to an
-even end. Needed, narrow: the code that fills the dial's slots (the rpm
+A third capture (first30b, 2026-11-25): the same MX-5 with its first
+camshaft (`List_UpgradeEngineCamshaft` 558001, redline 7,300 rpm) still
+shows 0..8 in ones, sweep 0..9, the red band from 7.3 to the end
+(`dial_first30b_orig.png`). So the sweep is the whole thousands of the
+redline (rounded down) plus two, not rounded up: the engine had shown
+0..10 in twos for it. The engine's rule (`dial_scale()` in
+`apps/carview/hud_screen.cpp`) now rounds down; up to 9 it counts in ones
+with numerals to one below the end, above it in twos to an even end. The
+red band is drawn as an arc from the redline to the sweep's end, under
+the hatches and numerals (the scene's `Redline` half-ring is the source
+of a texture-angle wipe the engine does not reproduce). Needed, narrow: the code that fills the dial's slots (the rpm
 range it reads per car and how it picks the step and the last numeral),
 or captures of a car with a redline of 6,000 or 9,000 rpm and up.
 
@@ -5489,14 +5496,27 @@ the leaderboard (the comparison slides).
 `ScoreGroup`'s `SHOW` / `HIDE` / `ABORT` are decoded ("The skill chain's
 score" in `docs/UI_SCENE_ANIMATION.md`); when the game goes to each is
 not. The engine plays `SHOW` from the chain's first skill, `ABORT` when the
-chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`; a banked total
-holds 3 s, then `HIDE`. The timer's event (what the game does when it
-fires) is not decoded; the 0.6 s hold is read from it, and shortens the
-lost total from the engine's earlier 2.2 s to 0.8 s. The 3 s bank hold is
-the engine's earlier measurement. The red of a lost total is the engine's.
+chain is lost and, after `ABORT`'s 0.6 s timer, `HIDE`. The timer's event
+(what the game does when it fires) is not decoded; the 0.6 s hold is read
+from it, and shortens the lost total from the engine's earlier 2.2 s to
+0.8 s. The red of a lost total is the engine's.
 
-Needed: a capture series of a chain lost (a crash) and of one banked, from
-the last skill until the score is gone.
+Settled for a bank (first30b, 2026-11-25, `chain_*_first30b_orig.png`): the
+banked total (the multiplied total, no X) comes in white, turns yellow and
+is gone about 2.1 s after it shows, which is `Total`'s `BANK` slide (in by
+0.5 s, a white flash at 0.5 s, out by 2.3 s), not the engine's old 3 s
+hold. The skill line pulses at partial alpha for the chain's last moments
+(`Skill1`'s `WARNINGSKILL`), and the popularity disc is gone about 4.1 s
+after the bank (`PopularityBar` `SHOW`, 1.4 s, then `HIDE`, out by
+2.67 s). The engine now plays `BANK`, `WARNINGSKILL` over the last 1.2 s
+(holding its last dim step while a drift or burnout keeps the chain past
+the timer), `SHOWSKILL` as a skill lands, the multiplier's `ANIMATE` as it
+changes, and `PopularityBar`'s `SHOW` then `HIDE` for the disc (its fill
+arc rides with the disc's backgrounds). A lost chain shows the total it
+had (it had shown 0 live, the tracker clearing it first).
+
+Still needed: a capture series of a chain lost (a crash), from the last
+skill until the score is gone.
 
 ## Q244 (FE-02, not blocking): the flow fades' S curve and where they play
 
@@ -5736,3 +5756,97 @@ Open:
 Needed: the consumer of the two collision timers (likely through a
 pointer to the singleton kept by the reset code), and the meaning of
 the driver flag and car state above.
+
+## Q281 (first30b, physics, not blocking): the car creeps from a standstill
+
+In the first30b free-roam run (the `appdata-2026-09-27` seed, the red
+MX-5 next to the Gauntlet) the original's car sits at 0 km/h with no input
+for the whole idle and camera stretch (`idle_cam0_first30b_orig.png`). The
+engine's car, put down at the same spot from the same save, creeps forward
+with no input from about 2 to 30 km/h over some 16 s
+(`idle_cam0_first30b_engine.png`). Either the engine's parked car lacks a
+hold the original has, or it rolls too freely on that spot's slope.
+Physics constants belong to parity/wp4b-feel and are not changed here.
+
+Needed: what holds the original's car at rest with no input (an
+automatic hold, engine braking at idle, or static tyre friction), from the
+physics code or a telemetry trace of a car left on a slope.
+
+## Q282 (first30b, HUD, not blocking): the chain's total counts up; the bank timeout
+
+The original's total climbs over several frames as a chain grows (54,
+114, 191, 286, 425, 630, 888, 1,000 across about 5.5 s of wall time,
+`chain_*_first30b_orig.png`). Part of that is the skills growing a tier at
+a time (BURNOUT 100, GREAT 150, AWESOME 250, ULTIMATE 500), but the steps
+between captures do not match whole awards, so the shown total may also
+roll toward the real one. The engine shows the total at once. Also open:
+the bank timeout. The original banks some 4.3 to 5.1 s of wall time after
+the last award it shows, at about 25 frames a second under capture, so
+whether its timeout is the engine's 3 s interim (`bank_timeout`, not in
+the data) is not settled.
+
+Needed: the code that writes `TEXT_TOTAL` (whether it interpolates, and at
+what rate) and the chain's bank timer, or a real-time capture of one skill
+banking.
+
+## Q283 (first30b, HUD, not blocking): the minimap's icons in free roam
+
+At the same spot the original's minimap shows the new-event icons, the
+festival (home) icon and a garage H; the engine's shows fewer
+(`minimap_first30b_orig.png`, `minimap_first30b_engine.png`). Not traced:
+which icon sets the original's minimap draws at what range and zoom, and
+which the engine leaves out for this save.
+
+Needed: the minimap's icon filter from the scene or code, or a
+side-by-side at a spot with known nearby events.
+
+## Q284 (first30b, not blocking): the beats this pass did not capture
+
+Two kinds of gap are left after the first30b pass.
+
+**First-time beats, with no save to start from.** There is no original
+save from just after the opening; every progressed seed is the
+`appdata-2026-09-27` lineage (popularity 456,480, 85 signs, 820 wristband
+points, 6 cars). So the first barn find rumour, the first street race's
+unlock and the first discount sign smash could not be captured as first
+times.
+
+**Beats this pass did not attempt.** These do not need an early save, but
+were not captured side by side here; they rest on the earlier captures in
+the audit folder (`03_race_flow_results.md`, the `09_`..`18_` race flow
+captures, the `map_*` captures, Q242):
+- a festival event from entry to results, rewards and wristband progress;
+- the pause menu, the map and fast travel;
+- a speed trap or speed zone pass;
+- the Autoshow and garage menus;
+- the engine and tyre sound, and the radio and DJ. The recomp's
+  `rally-audio-probe.wav` (8 s of the drive) was recorded but not compared,
+  and the seed has the radio off (the original shows RADIO OFF).
+
+Also, the cameras were compared by order only (the same five, in the same
+order), not by framing.
+
+Needed: an original save from the first free roam after the opening (or a
+capture route from a new profile through the opening), and a pass over the
+listed beats from the same seed.
+
+## Q285 (first30b, WORLD-14, not blocking): where the Gauntlet's start crowd stands
+
+The original's free roam has a crowd of about ten behind the barriers at
+the Gauntlet sign-up (FR06), right of the road and some 7 to 14 m past the
+start node (`idle_cam0_first30b_orig.png`, `cams_first30b_orig.png`). The
+engine had none there: its crowd clusters come from `GameObjs.xml` sites
+(Q109), capped at 96, and the file's planes and exhibitions used the cap up
+before `FR06_NODE` (the 484th cluster in file order). The cap now takes
+every site, so a cluster stands at FR06 (`world_polish_tests` passes with
+the corpus). But it is placed by the engine's own offsets: 9.2 m to the
+side of the node and centred on it along the road, so in the chase view it
+stands beside the car, out of frame (`crowd_first30b_engine_after.png`),
+not ahead behind the barriers. The FR06 objects around the node
+(`FR06_00`..`FR06_16`) lie 6 to 10.5 m to that side and from 9.5 m before
+to 11.3 m past it, the barrier line at 6 m; which of them, if any, places
+spectators is not known.
+
+Needed: the source of the start-line spectator instances (Q109): whether
+an event's `FR<n>_<k>` objects carry a crowd slot and its class, or where
+else the game reads them.

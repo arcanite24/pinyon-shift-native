@@ -403,11 +403,13 @@ void test_scene_turn_and_dial_scale() {
   CHECK(near(centre(1.5707963f, -10), 40, 100));
 
   // The dial's scale: a 7,000 rpm redline reads 0..9 in ones with numerals
-  // to 8, an 8,000 one 0..10 in twos.
+  // to 8, an 8,000 one 0..10 in twos; the MX-5 with its first camshaft
+  // (7,300 rpm) still reads 0..9 in ones (first30b idle-cam0 capture).
   const auto mx5 = carview::dial_scale(7000), r34 = carview::dial_scale(8000), low = carview::dial_scale(5500);
   CHECK(mx5.top == 9 && mx5.step == 1 && mx5.last == 8);
+  CHECK(carview::dial_scale(7300).top == 9 && carview::dial_scale(7300).step == 1);
   CHECK(r34.top == 10 && r34.step == 2 && r34.last == 10);
-  CHECK(low.top == 8 && low.step == 1 && low.last == 7);
+  CHECK(low.top == 7 && low.step == 1 && low.last == 6);
   CHECK(carview::dial_scale(9500).top == 12 && carview::dial_scale(9500).step == 2);
   // A sponsored event's name loses its sponsor line.
   CHECK(carview::event_name_without_sponsor("HORIZON presents The Gauntlet", "HORIZON presents") == "The Gauntlet");

@@ -75,7 +75,8 @@ void raise_all(SceneScreen& sc, int n) {
 // the frame. Entering a slide bakes and restarts its curves, so a slide is
 // entered once and then scrubbed. False without the scene's timeline, the
 // component or the slide.
-bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view slide, double ms) {
+bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view slide, double ms,
+                bool subtree_only = false) {
   const SceneDraw& sd = sc.scene();
   tl.bind(sd.scene());
   if (!tl.ok() || !scene_timelines_enabled() || root < 0 || slide.empty()) return false;
@@ -85,7 +86,19 @@ bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view s
   tl.set_time(uint32_t(comp), float(ms));
   SceneBindings all;
   tl.apply(all);
-  for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
+  if (!subtree_only) {
+    for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
+    return true;
+  }
+  // Only `root`'s subtree: a second timeline on the same screen would
+  // otherwise write its resting look over the nodes the first one moves.
+  std::vector<int> stack{root};
+  while (!stack.empty()) {
+    const int n = stack.back();
+    stack.pop_back();
+    if (auto it = all.anim.find(n); it != all.anim.end()) sc.bindings().anim[n] = it->second;
+    for (int c : sd.children_of(n)) stack.push_back(c);
+  }
   return true;
 }
 
@@ -102,7 +115,9 @@ std::string unit_label(const StringRef& ref) {
 }  // namespace
 
 DialScale dial_scale(double redline_rpm) {
-  const int top = int(std::ceil(std::clamp(redline_rpm, 1000.0, 20000.0) / 1000.0 - 1e-6)) + 2;
+  // The whole thousands of the redline plus two (Q73): the MX-5 with its
+  // first camshaft (7,300 rpm) sweeps to 9 in ones, the R34 (8,000) to 10.
+  const int top = int(std::floor(std::clamp(redline_rpm, 1000.0, 20000.0) / 1000.0 + 1e-6)) + 2;
   if (top <= 9) return {top, 1, top - 1};
   const int even = (top + 1) / 2 * 2;
   return {even, 2, even};
@@ -131,9 +146,13 @@ namespace {
 // laid-out rotation, 2.34 rad counter-clockwise from the top) to the mirror
 // angle on the right.
 constexpr float kDialZero = 2.34f;
-// The red half ring's edge relative to its rotation node (calibrated on
-// 05_roam_hud_day_drive_orig.png: the zone starts at the redline).
-constexpr float kRedlineEdge = -0.23f;
+// The red zone's band off the hub (canvas px) and its look, sampled on
+// idle_cam0_first30b_orig.png: translucent at the inside (about 0.27 at
+// 62 px) rising to 0.72 at 80 px, under a solid rim at 82..84 px.
+constexpr float kRedBandInner = 59.0f, kRedBandRim = 82.0f;
+constexpr float kRedBandAlpha0 = 0.27f, kRedBandAlpha1 = 0.74f;
+constexpr int kRedBandSteps = 8;
+constexpr uint32_t kRedZone = ui::rgba(255, 3, 96);
 // The needle's bar sits further out than the scene lays it (the same
 // capture: from 58 to 83 px off the hub).
 constexpr float kNeedleOut = -11.0f;
@@ -209,9 +228,17 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
     sc.at(text).extra_angle = -(sd.angle(text) + turn);
   }
 
-  // The red zone: its half ring turned so it starts at the redline.
-  const int red_rot = child_path(sd, child(sd, elements, "RPM_and_MPH"), "Redline/rotation");
-  if (red_rot >= 0) sc.at(red_rot).turn = dial_angle(st.redline_rpm / 1000.0, ds) + kRedlineEdge - sd.angle(red_rot);
+  // The red zone. The game turns REDLINE.TGA's half ring and wipes it with
+  // the Redline component's PROGRESS slide (a texture angle, 0 to 180
+  // degrees), so only the arc from the redline to the sweep's end shows.
+  // The engine has no texture wipe: the half ring stays hidden and the band
+  // is drawn as arcs in the colours sampled off first30b's idle-cam0 (a
+  // translucent ramp to a solid rim); the whole half ring hung out of the
+  // dial's bottom gap.
+  const int rpm_mph = child(sd, elements, "RPM_and_MPH");
+  const int red_rot = child_path(sd, rpm_mph, "Redline/rotation");
+  if (red_rot >= 0) sc.hide(child(sd, rpm_mph, "Redline"));
+  const float red_a0 = -dial_angle(st.redline_rpm / 1000.0, ds), red_a1 = kDialZero;
 
   // The needle and its trails (the swoosh behind it while the revs climb or
   // fall).
@@ -267,7 +294,34 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
   assist("HUD_STM", st.stm_enabled, st.stm, st.stm_flash_timer);
   sc.hide(child(sd, assists, "HUD_SHIFT_LIGHT"));
   sc.hide(child(sd, gauge, "FUEL_ANALOG"));
-  return sc.draw(l, f, gauge) > 0;
+  if (red_rot < 0) return sc.draw(l, f, gauge) > 0;
+
+  // The dial in two layers: the ring and the readouts, the red zone, then
+  // the hatches, numerals and needle over it (white over the red, as the
+  // original draws them).
+  const std::vector<int> over = {child(sd, elements, "Large_Hatches"), child(sd, elements, "Mid_Hatches"),
+                                 child(sd, elements, "Small_Hatches"), numbers, needle};
+  for (int n : over)
+    if (n >= 0) sc.at(n).visible = false;
+  const int drawn = sc.draw(l, f, gauge);
+  const auto hub = sd.at(rpm_root);
+  const float hx = f.x(hub[0]), hy = f.y(hub[1]), op = sc.bindings().opacity;
+  if (red_a1 > red_a0) {
+    for (int i = 0; i < kRedBandSteps; ++i) {
+      const float k = float(i) / float(kRedBandSteps - 1);
+      const float r = kRedBandInner + (kRedBandRim - kRedBandInner) * (float(i) + 0.5f) / float(kRedBandSteps);
+      const float a = kRedBandAlpha0 + (kRedBandAlpha1 - kRedBandAlpha0) * k;
+      l.arc(hx, hy, r * f.s, (kRedBandRim - kRedBandInner) / float(kRedBandSteps) * f.s + 0.5f, red_a0, red_a1,
+            ui::fade(kRedZone, a * op), true);
+    }
+    l.arc(hx, hy, (kRedBandRim + 1.0f) * f.s, 2.0f * f.s, red_a0, red_a1, ui::fade(kRedZone, op), true);
+  }
+  for (int n : over) {
+    if (n < 0) continue;
+    sc.at(n).visible.reset();
+    sc.draw(l, f, n);
+  }
+  return drawn > 0;
 }
 
 // --- Race blocks ----------------------------------------------------------
@@ -521,12 +575,25 @@ constexpr uint32_t kLostRed = ui::rgba(236, 52, 44);
 // The rows' stackers centre them on x 640; the gaps between their texts
 // (measured on the same captures).
 constexpr float kScoreGap = 6.0f, kSkillGap = 4.0f;
-// How long the banked total and the disc stay up, and the lost chain.
-constexpr double kBankSeconds = 3.5, kLostSeconds = 2.2, kRankSeconds = 4.0;
-// With ScoreGroup's slides: the banked total holds until HIDE at 3 s (the
-// measured fade's start); a lost chain's ABORT runs its 0.6 s timer, then
+// How long the banked total stays up: Total's BANK slide (2.62 s; it is
+// gone by 2.3 s, and the original's banked total is gone 2.1 s after it
+// shows, first30b). The lost chain, and a rank change's disc.
+constexpr double kBankSeconds = 2.62, kLostSeconds = 2.2, kRankSeconds = 4.0;
+// The disc after a bank: PopularityBar's SHOW (1.4 s), then HIDE, which
+// holds to 2.27 s and is out by 2.67 s (the original's disc is gone about
+// 4.1 s after the bank, first30b).
+constexpr double kDiscSeconds = 4.07, kDiscFadeFrom = 3.67, kDiscShowSeconds = 1.401;
+// Without the slides, the banked total's measured fade (3.0..3.5 s).
+constexpr double kBankHoldSeconds = 3.0;
+// With ScoreGroup's slides: a lost chain's ABORT runs its 0.6 s timer, then
 // HIDE; SHOW is over by 0.3 s.
-constexpr double kBankHoldSeconds = 3.0, kScoreAbortSeconds = 0.6, kScoreShowMs = 300.0;
+constexpr double kScoreAbortSeconds = 0.6, kScoreShowMs = 300.0;
+// Skill1's slides: SHOWSKILL as a skill lands (its curves end by 0.6 s),
+// WARNINGSKILL over the chain's last 1.2 s (its pulse at 30..50 % alpha,
+// the original's greyed line before a bank).
+constexpr double kSkillShowSeconds = 0.6, kSkillWarnSeconds = 1.2, kSkillWarnHoldSeconds = 1.0;
+// Multiplier's ANIMATE as the multiplier changes (its curves end by 0.2 s).
+constexpr double kMultAnimateSeconds = 0.3;
 
 // Packs texts on one row centred on canvas x `cx` by their left edges.
 void pack_row(SceneScreen& sc, const std::vector<std::pair<int, std::string>>& items, float cx,
@@ -565,10 +632,11 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const SceneFrame f = hud_frame(HudAnchor::kTop, w, h, s);
   const double since_bank = time - sk.banked_at, since_lost = time - sk.lost_at, since_rank = time - sk.rank_up_at;
   const bool banked = since_bank >= 0 && since_bank < kBankSeconds;
+  const bool disc_banked = since_bank >= 0 && since_bank < kDiscSeconds;
   const bool lost = since_lost >= 0 && since_lost < kLostSeconds;
   const bool rank_up = (since_rank >= 0 && since_rank < kRankSeconds) ||
                        (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
-  if (!sk.active && !banked && !lost && !rank_up) return true;
+  if (!sk.active && !disc_banked && !lost && !rank_up) return true;
 
   // The chain: the score and multiplier, the last skill and its points.
   const int mult = child(sd, score, "Multiplier");
@@ -593,18 +661,55 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     score_slide = since_lost < kScoreAbortSeconds ? "ABORT" : "HIDE";
     score_ms = (since_lost < kScoreAbortSeconds ? since_lost : since_lost - kScoreAbortSeconds) * 1000.0;
   } else if (banked) {
-    score_slide = since_bank < kBankHoldSeconds ? "SHOW" : "HIDE";
-    score_ms = since_bank < kBankHoldSeconds ? kScoreShowMs : (since_bank - kBankHoldSeconds) * 1000.0;
+    // The group stays shown; Total's BANK carries the banked total in and out.
+    score_slide = "SHOW", score_ms = kScoreShowMs;
   }
+  bool bank_played = false;
   if (sk.active || lost || banked) {
     const bool played =
         play_slide(sc, score_tl, child_path(sd, skill, "CompleteComponent/ScoreGroup"), score_slide, score_ms);
-    if (played) raise_all(sc, score);
-    else show_all(sc, score);
+    if (played) {
+      // Total: BANK as the chain banks, on its own timeline that is not
+      // applied otherwise (BANK ends at alpha 0; its DEFAULT drops the total
+      // out of a live chain's row).
+      static SceneTimeline total_tl;
+      const int total_c = child_path(sd, score, "Total");
+      bank_played = banked && !sk.active && play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
+      // Multiplier: ANIMATE as it changes, SHOWN while it holds.
+      static float last_mult = 0.0f;
+      static double mult_changed = -1e9;
+      const float m = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
+      if (sk.active && std::fabs(m - last_mult) > 1e-4f) {
+        // Not as a chain opens (its first X1.0 comes in with the group).
+        if (last_mult > 0.0f && time >= chain_started + 1e-3) mult_changed = time;
+        last_mult = m;
+      }
+      if (!sk.active) last_mult = 0.0f;
+      const double since_mult = time - mult_changed;
+      const bool animate = since_mult >= 0 && since_mult < kMultAnimateSeconds;
+      play_slide(sc, score_tl, mult, animate ? "ANIMATE" : "SHOWN", animate ? since_mult * 1000.0 : 0.0,
+                 true);
+      // BANK moves anim_helper 35 px right, onto the centre once the X and
+      // multiplier beside it are gone; the row here is already centred, so
+      // the move is replaced by one that keeps the scaled total on it.
+      if (bank_played) {
+        const int total_h = child(sd, total_c, "anim_helper");
+        if (auto it = sc.bindings().anim.find(total_h); it != sc.bindings().anim.end())
+          it->second.dx = (cx - sd.at(total_h)[0]) * (1.0f - it->second.sx);
+      }
+      raise_all(sc, score);
+    } else {
+      show_all(sc, score);
+    }
     for (int c : {child(sd, mult_h, "Background"), child(sd, mult_h, "Smudge_Tape"), child(sd, mult, "Flash"),
                   child_path(sd, score, "Total/Flash")})
       sc.hide(c);
-    const int shown = banked && !sk.active ? sk.banked_total : sk.chain_points;
+    // A lost chain shows the total it had (the tracker has cleared it by then).
+    static int live_points = 0;
+    if (sk.active) live_points = sk.chain_points;
+    const int shown = banked && !sk.active                       ? sk.banked_total
+                      : lost && !sk.active && sk.chain_points == 0 ? live_points
+                                                                   : sk.chain_points;
     const std::string total = thousands(shown);
     if (sk.active) {
       pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, skill_multiplier_text(sk)}}, cx, {kScoreGap, 0.0f});
@@ -612,12 +717,13 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       sc.hide(mult);
       pack_row(sc, {{total_n, total}}, cx, {});
     }
-    if (total_n >= 0) sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
+    // BANK colours the banked total itself (yellow, a white flash at 0.5 s).
+    if (total_n >= 0 && !bank_played) sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
     // Without the slides, the measured fades (an alpha override, which the
     // slides' fade on the group would not reach).
     if (!played) {
       const float fade = lost && !sk.active     ? 1.0f - float(std::clamp((since_lost - 1.5) / 0.7, 0.0, 1.0))
-                         : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0))
+                         : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 2.0) / 0.3, 0.0, 1.0))
                                                 : 1.0f;
       for (int n : {total_n, x_n, m_n})
         if (n >= 0) sc.at(n).alpha = fade;
@@ -628,7 +734,22 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const int skill_group = child_path(sd, skill, "CompleteComponent/SkillGroup");
   sc.hide(child_path(sd, skill_group, "Skill2"));
   if (sk.active && !sk.last_skill.empty()) {
-    show_all(sc, skill1);
+    // Skill1's slides: SHOWSKILL as a skill lands, WARNINGSKILL over the
+    // chain's last 1.2 s, SHOWNSKILL between.
+    static SceneTimeline skill_tl;
+    const double since_skill = time - sk.last_skill_at;
+    const double left = sk.chain_remaining_s;
+    std::string_view slide = "SHOWNSKILL";
+    double ms = 0.0;
+    if (left < kSkillWarnSeconds && since_skill >= kSkillShowSeconds) {
+      // Past the timer while a drift or burnout still holds the bank, the
+      // pulse's last dim step holds (its end, alpha 0, is the bank).
+      slide = "WARNINGSKILL", ms = std::min(kSkillWarnSeconds - left, kSkillWarnHoldSeconds) * 1000.0;
+    } else if (since_skill >= 0.0 && since_skill < kSkillShowSeconds) {
+      slide = "SHOWSKILL", ms = since_skill * 1000.0;
+    }
+    if (play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms, true)) raise_all(sc, skill1);
+    else show_all(sc, skill1);
     for (int c : {child(sd, skill1, "Background"), child(sd, skill1, "Smudge_Tape"), child(sd, skill1, "ComboIcon")})
       sc.hide(c);
     sc.hide(child_path(sd, skill_group, "Skill1/Flash"));
@@ -641,7 +762,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   sc.draw(l, f, skill);
 
   // The popularity disc: shown when a chain banks or the rank changes.
-  if (banked || rank_up) {
+  if (disc_banked || rank_up) {
     const PopularityBadgeAnimFrame anim = evaluate_popularity_badge_anim(sk, time);
     const int value_type = child_path(sd, pop, "ValueScale/ValueType");
     const int level = child(sd, value_type, "TEXT_LEVEL"), suffix = child(sd, value_type, "TEXT_LEVEL_SUFFIX");
@@ -659,15 +780,35 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
       if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
     sc.hide(child(sd, pop, "Flash_SmokeRing2"));
-    const float fade = banked ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0)) : 1.0f;
-    sc.bindings().opacity = fade;
+    const float fade = disc_banked
+                           ? 1.0f - float(std::clamp((since_bank - kDiscFadeFrom) / (kDiscSeconds - kDiscFadeFrom),
+                                                     0.0, 1.0))
+                           : 1.0f;
+    // PopularityBar's SHOW (1.4 s) then HIDE after a bank; SHOWN for a rank
+    // change on its own.
+    static SceneTimeline pop_tl;
+    const bool showing = disc_banked && since_bank < kDiscShowSeconds;
+    const std::string_view pop_slide = !disc_banked ? "SHOWN" : showing ? "SHOW" : "HIDE";
+    const double pop_ms = !disc_banked ? 0.0 : showing ? since_bank * 1000.0 : (since_bank - kDiscShowSeconds) * 1000.0;
+    float arc_alpha = fade;
+    if (play_slide(sc, pop_tl, pop, pop_slide, pop_ms, true)) {
+      // The fill rides with the disc's backgrounds (in from 0.59 s, out by
+      // HIDE's 2.67 s).
+      if (auto it = sc.bindings().anim.find(child(sd, pop, "Backgrounds"));
+          it != sc.bindings().anim.end() && it->second.opacity)
+        arc_alpha = *it->second.opacity;
+      raise_all(sc, pop);
+    } else {
+      sc.bindings().opacity = fade;
+    }
     sc.draw(l, f, pop);
+    sc.bindings().opacity = 1.0f;
     // The ring's fill (the scene's quarter pieces are turned by the game; an
     // arc along the same groove here).
     const auto c = sd.at(pop);
     const float r = kDiscFillRadius * f.s, a0 = kDiscFillStart;
     l.arc(f.x(c[0]), f.y(c[1]), r, kDiscFillWidth * f.s, a0, a0 + anim.radial_progress * kDiscFillSweep,
-          ui::fade(kSkillYellow, fade), true);
+          ui::fade(kSkillYellow, arc_alpha), true);
   }
   return true;
 }

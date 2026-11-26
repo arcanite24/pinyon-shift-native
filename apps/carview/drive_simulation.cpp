@@ -1196,11 +1196,14 @@ bool DriveSession::step(const drive::Input& user_in) {
         }
         // game_free_roam_flow.xml: a wristband ready to collect enters radiodj.special_wristband
         // (CongratsWinnersOfWristband<n>), once per wristband.
+        // Seeded on the first step after the game loads, race or not.
+        if (app.notified_wristband == -2 && app.have_career_catalog)
+          app.notified_wristband = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
         if (!app.race && app.have_career_catalog) {
           const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
           if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
-          if (ready >= 0 && ready != notified_wristband) {
-            notified_wristband = ready;
+          if (ready >= 0 && ready != app.notified_wristband) {
+            app.notified_wristband = ready;
             popup = Popup::notify(NotifyKind::kWristbandAvailable, vehicle.time());
           }
           // A street race hub's RadioDJRequests special (StreetRaceOwnerHub<n>) when it unlocks.

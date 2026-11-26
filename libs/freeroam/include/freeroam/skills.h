@@ -331,6 +331,10 @@ class SkillTracker {
   bool jturn_active_ = false;
   double jturn_t_ = 0.0, jturn_yaw_ = 0.0, jturn_cd_ = -1e9;
   double air_t_ = 0.0, air_cd_ = -1e9;
+  // False from a session start (the car spawned or was placed) until all four
+  // wheels first touch down: the drop onto the road at a spawn is not an AIR
+  // (the original awards none at load; first30b).
+  bool air_armed_ = true;
   double two_wheels_t_ = 0.0, two_wheels_cd_ = -1e9;
   double drift_dist_ = 0.0, drift_hb_t_ = 0.0;
   bool drift_is_e_ = false;

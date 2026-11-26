@@ -389,6 +389,24 @@ void test_skills_and_popularity() {
     tr.step(sm);
     CHECK(!tr.hud().active);
   }
+
+  // 5. A session start (the car spawned) disarms AIR until all four wheels
+  // touch down: the spawn drop awards nothing, a jump after it does.
+  tr.reset_session_clock();
+  auto air_for = [&](int frames) {
+    for (int i = 0; i < frames; ++i) {
+      freeroam::SkillInput in;
+      in.dt = dt, in.time = (t += dt), in.speed_ms = 30.0, in.forward_speed_ms = 30.0, in.wheels_on_ground = 0;
+      tr.step(in);
+    }
+    freeroam::SkillInput land;
+    land.dt = dt, land.time = (t += dt), land.speed_ms = 30.0, land.forward_speed_ms = 30.0, land.wheels_on_ground = 4;
+    const auto evs = tr.step(land);
+    return !evs.empty() && evs[0].kind == freeroam::SkillEvent::kSkillAwarded;
+  };
+  CHECK(!air_for(9));
+  t += 20.0;  // past the lockout and AIR's retrigger delay
+  CHECK(air_for(9));
 }
 
 void test_skills_reset_session_clock() {

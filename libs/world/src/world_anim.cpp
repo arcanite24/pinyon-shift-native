@@ -1818,7 +1818,12 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
   };
 
   size_t pos = 0;
-  constexpr size_t kMaxAutoClusters = 96;
+  // Every site in the file (about 550 clusters before the 22 m merge); a cap
+  // of 96 stopped at the planes and exhibitions and left the race starts
+  // after them bare, the Gauntlet's (FR06_NODE) among them, where the
+  // original's free roam shows a crowd at the barriers (first30b,
+  // idle_cam0_first30b_orig.png). build_spectator_mesh culls by distance.
+  constexpr size_t kMaxAutoClusters = 1024;
   size_t added = 0;
   while (pos < xml.size() && added < kMaxAutoClusters) {
     const size_t gid_pos = xml.find("GameplayID=\"", pos);
@@ -1847,6 +1852,8 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
     const float ox = parse_attr_float(pstr, "x", 0.0f);
     const float oy = parse_attr_float(pstr, "y", 0.0f);
     const float oz = parse_attr_float(pstr, "z", 0.0f);
+    // About 170 placeholders (`*_15`, `*_L`) sit at the world origin.
+    if (std::fabs(ox) < 1.0f && std::fabs(oz) < 1.0f) continue;
 
     // Extract horizontal orientation axes (XAxis = lateral off-road, ZAxis = along road/site).
     float xx = 1.0f, xz = 0.0f;
@@ -2948,8 +2955,7 @@ void AnimatedWorldSystem::build_spectator_mesh(double eye_x, double eye_y, doubl
         if (gs.hit) {
           gcache.valid = true;
           gcache.y = gs.y;
-          gcache.culled = (gs.blocked || gs.steep || (cl.require_offroad && gs.on_road));
-          if (gcache.culled) continue;
+          gcache.culled = (gs.blocked || gs.steep || (cl.require_offroad && gs.on_road));          if (gcache.culled) continue;
           py = gs.y;
         }
       }

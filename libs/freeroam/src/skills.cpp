@@ -374,6 +374,7 @@ void SkillTracker::reset_session_clock() {
   last_skill_.clear();
   last_points_ = 0;
   banked_total_ = 0;
+  air_armed_ = false;
 }
 
 float SkillTracker::chain_multiplier() const { return chain_multiplier_for(multiplier_skills_); }
@@ -772,7 +773,10 @@ std::vector<SkillEvent> SkillTracker::step(const SkillInput& in) {
 
   // 5. Air: all wheels off ground.
   {
-    if (in.wheels_on_ground == 0) {
+    if (!air_armed_) {
+      if (in.wheels_on_ground >= 4) air_armed_ = true;
+      air_t_ = 0.0;
+    } else if (in.wheels_on_ground == 0) {
       air_t_ += in.dt;
     } else if (air_t_ > 0) {
       if (in.time >= air_cd_) {
