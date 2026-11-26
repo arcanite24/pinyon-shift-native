@@ -1160,6 +1160,10 @@ void AudioHost::radio_reset_flow() {
   radio_cancel_playlist();
 }
 
+void AudioHost::radio_hold_popup(bool held) {
+  if (radio_) engine_.radio_hold_popup(held);
+}
+
 void AudioHost::radio_stop_dj() {
   if (radio_) engine_.radio_stop_dj();
 }

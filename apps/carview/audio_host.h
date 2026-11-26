@@ -218,6 +218,7 @@ class AudioHost {
   void radio_set_flow_dj(bool on);
   void radio_set_silent_idents(bool on);
   void radio_stop_dj();
+  void radio_hold_popup(bool held);  // while the career's cutscenes hide the HUD
   void radio_cancel_playlist();
   // Out of the first-time career: the DJ per its option, switching on, idents
   // audible, no playlist.

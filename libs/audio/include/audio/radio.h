@@ -259,6 +259,10 @@ class Radio {
   };
   Popup popup() const;
   static constexpr double kPopupDelay = 1.0, kPopupShow = 4.0, kPopupFade = 0.2;
+  // While the career's cutscenes hide the HUD: no popup, and a track that
+  // starts meanwhile shows its popup after the new-track delay once the HUD
+  // is back (the original's hand-over and race to the festival; Q273).
+  void hold_popup(bool held);
 
  private:
   const RadioData& data_;
@@ -278,6 +282,7 @@ class Radio {
   double popup_clock_ = 0, popup_from_ = -1e9;
   int popup_station_ = -1;
   uint64_t seen_track_ = ~0ull;  // the selected station's track last seen
+  bool popup_held_ = false, popup_deferred_ = false;
   bool last_change_was_user_ = true;
 };
 

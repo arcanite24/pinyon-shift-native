@@ -191,6 +191,27 @@ void cycle_and_popup(const audio::RadioData& d) {
   CHECK(p.popup().alpha > 0 && p.popup().station == 2);
   p.advance(4.0);
   CHECK(p.popup().alpha == 0);
+  // Held (the career's cutscenes): a popup due goes, and comes back after
+  // the new-track delay once released.
+  audio::Radio h(d, 5);
+  h.select(2);
+  h.press(+1);
+  h.advance(1.5);
+  CHECK(h.popup().alpha > 0);
+  h.hold_popup(true);
+  CHECK(h.popup().alpha == 0);
+  h.advance(30.0);
+  CHECK(h.popup().alpha == 0);
+  h.hold_popup(false);
+  h.advance(d.levels.new_track_delay + 1.0);
+  CHECK(h.popup().alpha > 0 && h.popup().station == 0);
+  h.advance(5.0);
+  CHECK(h.popup().alpha == 0);
+  // Nothing due when held: nothing on release.
+  h.hold_popup(true);
+  h.hold_popup(false);
+  h.advance(d.levels.new_track_delay + 1.0);
+  CHECK(h.popup().alpha == 0);
 }
 
 void picker() {

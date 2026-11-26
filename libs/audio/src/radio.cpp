@@ -695,17 +695,33 @@ void Radio::advance(double dt, bool run) {
     seen_track_ = t->id;
     const double from = popup_clock_ + data_.levels.new_track_delay;
     // Not over a popup showing or due (a press's).
-    if (popup_clock_ - popup_from_ > kPopupShow) {
+    if (popup_held_) {
+      popup_deferred_ = true;
+    } else if (popup_clock_ - popup_from_ > kPopupShow) {
       popup_from_ = from;
       popup_station_ = selected();
     }
   }
 }
 
+void Radio::hold_popup(bool held) {
+  if (held == popup_held_) return;
+  popup_held_ = held;
+  if (held) {
+    // A popup showing or due goes with the HUD and comes back with it.
+    popup_deferred_ = popup_station_ >= 0 && popup_clock_ - popup_from_ <= kPopupShow;
+    popup_from_ = -1e9;
+  } else if (popup_deferred_) {
+    popup_deferred_ = false;
+    popup_from_ = popup_clock_ + data_.levels.new_track_delay;
+    popup_station_ = selected();
+  }
+}
+
 Radio::Popup Radio::popup() const {
   Popup p;
   const double age = popup_clock_ - popup_from_;
-  if (age < 0 || age > kPopupShow || popup_station_ < 0) return p;
+  if (popup_held_ || age < 0 || age > kPopupShow || popup_station_ < 0) return p;
   p.alpha = std::clamp(std::min(age, kPopupShow - age) / kPopupFade, 0.0, 1.0);
   p.station = popup_station_;
   if (popup_station_ == selected() && on())

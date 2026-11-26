@@ -116,6 +116,7 @@ void DriveSession::autoplay_frame() {
   std::snprintf(ovs, sizeof ovs, "%.2f rgb %.0f%.0f%.0f", a, ov.rgb[0], ov.rgb[1], ov.rgb[2]);
   ap.observe("overlay", a > 0.0f ? ovs : "0");
   ap.observe("race", app.race ? "on page " + std::to_string(results_page) : "off");
+  ap.observe("radio_popup", radio_popup_gpu.alpha > 0.5f ? radio_popup_gpu.station_name + " / " + radio_popup_gpu.title : "");
   ap.observe("screens", std::string(map_open ? "map " : "") + (autoshow.is_open() ? "autoshow " : "") +
                             (hub_menu.open() ? "hub " : "") + (show_hud ? "hud" : ""));
   const drive::Vec3 p = vehicle.position();

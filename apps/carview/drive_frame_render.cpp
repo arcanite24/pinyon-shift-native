@@ -1645,6 +1645,15 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             if (show_pick_banner)
               std::snprintf(line, sizeof line, "car %zu/%zu: %s - Enter drives it", pick + 1, app.baked_cars.size(),
                             carview::car_name(app.baked_cars[pick]).c_str());
+            {
+              // The career's cutscenes hold the radio popup with the HUD.
+              const bool hold = app.campaign.ftc_active() &&
+                                (app.campaign.is_blocking_gameplay() || !app.campaign.ftc().hud_visible());
+              if (hold != radio_popup_held) {
+                radio_popup_held = hold;
+                app.audio_host.radio_hold_popup(hold);
+              }
+            }
             if (!app.show_title && !ceremony.active) set_radio_popup(h);
             set_hud(w, h,
                     show_pick_banner                 ? std::string(line)
