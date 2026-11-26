@@ -372,11 +372,12 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     // decal_noise_c4 for H_VBLND_DECAL (kFlagVertexFade | kFlagDecalNoise),
     // RoadSpecular/RoadGlossiness for H_ROAD (without kFlagLayerC),
     // or TrackLightMapParams for _LM materials (without kFlagLayerC/kFlagRoad/kFlagVertexFade);
-    // the hub rooms' H_INT_* (c0.z, c2.x) on their _LM and EMISSIVE draws.
+    // the hub rooms' H_INT_* (c0.z, c2.x) on their _LM and EMISSIVE draws (only
+    // H_INT's: other emissive draws keep 1.0, as params.w > 1.5 is the driving line).
     if (flags & 16384u) {
       d.push.params[3] = pack_half2x16_float(mat.tiling_c[0], mat.tiling_c[1]);
     } else if (((flags & 16u) && (flags & 2097152u)) || (flags & 1048576u) || (flags & 2048u) ||
-               (flags & 8388608u)) {
+               ((flags & 8388608u) && mat.interior)) {
       d.push.params[3] = pack_half2x16_float(mat.decal_noise_c4[0], mat.decal_noise_c4[1]);
     } else {
       d.push.params[3] = 1.0f;
