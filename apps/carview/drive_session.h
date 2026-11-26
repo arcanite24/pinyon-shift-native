@@ -867,7 +867,7 @@ struct DriveSession {
   void map_fast_travel_confirm();
   bool map_open_details();
   void map_route_to_selected();
-  void map_travel_to(double x, double z, double heading);
+  void map_travel_to(double x, double z, double heading, double known_y = std::numeric_limits<double>::quiet_NaN());
   void sync_pause_labels();
   void cycle_difficulty(int by);
   void choose();

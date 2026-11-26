@@ -92,6 +92,122 @@ bool recover(const Streamer& streamer, drive::Vehicle& vehicle, Spawn* where) {
   return true;
 }
 
+bool resolve_fast_travel_spawn(const drive::Ground& ground, const Mesh* mesh, double& x, double& y, double& z,
+                               bool has_hint_y, double hint_y) {
+  auto find_ground_y = [&](double px, double pz, bool& open_sky, double& out_y) -> bool {
+    open_sky = false;
+    drive::Hit top_hit;
+    const bool got_top = ground.raycast({px, 2000.0, pz}, {0, -1, 0}, 4000.0, top_hit);
+    const double y_top = got_top ? (2000.0 - top_hit.distance) : 0.0;
+
+    if (has_hint_y) {
+      drive::Hit h;
+      if (ground.raycast({px, hint_y + 3.0, pz}, {0, -1, 0}, 20.0, h) && h.normal.y >= 0.90) {
+        out_y = (hint_y + 3.0) - h.distance;
+        open_sky = !got_top || std::fabs(y_top - out_y) <= 1.0;
+        return true;
+      }
+    }
+    if (!got_top) return false;
+    double best_y = y_top;
+    bool best_flat = (top_hit.normal.y >= 0.90);
+    // Step beneath overhead canopy/sign/arch roofs if a real flat ground surface sits below.
+    double probe_y = best_y - 1.5;
+    for (int step = 0; step < 4; ++step) {
+      drive::Hit below;
+      if (!ground.raycast({px, probe_y, pz}, {0, -1, 0}, 25.0, below)) break;
+      const double by = probe_y - below.distance;
+      if (below.normal.y >= 0.90) {
+        best_y = by;
+        best_flat = true;
+      }
+      probe_y = by - 1.5;
+    }
+    if (!best_flat) return false;
+    out_y = best_y;
+    open_sky = std::fabs(y_top - best_y) <= 1.0;
+    return true;
+  };
+
+  auto has_clearance = [&](double px, double py, double pz) -> bool {
+    // Reject low ceilings / arch bases (< 2.8 m vertical headroom).
+    drive::Hit up;
+    if (ground.raycast({px, py + 0.35, pz}, {0, 1, 0}, 2.8, up)) return false;
+    // Reject enclosing walls/pillars/barriers within 3.0 m horizontally at bumper & cabin heights.
+    constexpr double kPi = 3.14159265358979323846;
+    for (double hy : {0.65, 1.35}) {
+      for (int i = 0; i < 8; ++i) {
+        const double a = i * (kPi * 0.25);
+        drive::Hit side;
+        if (ground.raycast({px, py + hy, pz}, {std::sin(a), 0, std::cos(a)}, 3.0, side) &&
+            std::fabs(side.normal.y) < 0.70) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  // First check the exact requested point: if unobstructed with open sky (or valid headroom under
+  // a high festival banner arch), keep the authored coordinates untouched.
+  double y0 = 0.0;
+  bool sky0 = false;
+  if (find_ground_y(x, z, sky0, y0) && has_clearance(x, y0, z)) {
+    y = y0;
+    return true;
+  }
+
+  // Otherwise search expanding rings for the closest unobstructed open-sky spot (preferring spots
+  // near hint_y when known so we don't jump onto a raised embankment).
+  constexpr double kPi = 3.14159265358979323846;
+  bool found = false;
+  double best_score = 1e30;
+  double best_x = x, best_y = y, best_z = z;
+  for (double r : {4.0, 7.0, 10.0, 13.0, 16.0, 20.0, 25.0}) {
+    for (int i = 0; i < 16; ++i) {
+      const double a = i * (2.0 * kPi / 16.0);
+      const double px = x + r * std::sin(a);
+      const double pz = z + r * std::cos(a);
+      double py = 0.0;
+      bool sky = false;
+      if (!find_ground_y(px, pz, sky, py)) continue;
+      if (has_hint_y && std::fabs(py - hint_y) > 4.5) continue;
+      if (!has_clearance(px, py, pz)) continue;
+      const double score = r + (sky ? 0.0 : 5.0) + (has_hint_y ? 0.5 * std::fabs(py - hint_y) : 0.0);
+      if (score < best_score) {
+        best_score = score;
+        best_x = px;
+        best_y = py;
+        best_z = pz;
+        found = true;
+      }
+    }
+    if (found) break;
+  }
+  if (found) {
+    x = best_x;
+    y = best_y;
+    z = best_z;
+    return true;
+  }
+
+  // Fallback: keep the ground elevation below any overhang, or nearest road triangle from mesh.
+  if (find_ground_y(x, z, sky0, y0)) {
+    y = y0;
+    return true;
+  }
+  if (mesh) {
+    Spawn fsp;
+    if (find_spawn(*mesh, x, z, fsp)) {
+      x = fsp.position[0];
+      y = fsp.position[1];
+      z = fsp.position[2];
+      return true;
+    }
+  }
+  return false;
+}
+
 
 Streamer::Streamer(World& world, GatherOptions options, double regather_distance, Collision* collision,
                    double collision_radius)

@@ -18,6 +18,7 @@
 #include "cars/bake.h"
 #include "drive/vehicle.h"
 #include "settings_page.h"
+#include "world/stream.h"
 #include "world/tod.h"
 #include "world/world.h"
 #include "world/world_anim.h"
@@ -360,6 +361,84 @@ int main() {
     const auto samples = world::footprint_samples({0, 0, 0}, {30, 0, 0}, {0, 0, 30});
     CHECK(samples[3][0] == 15 && samples[3][1] == 0);
     CHECK(samples[6][0] == 10 && samples[6][1] == 10);
+    // Height-aware hole filling: a hillside rising well above a lower roadside patch is NOT covered.
+    CHECK(cover.covered_at(960, 0.5, -540, 1.5));
+    CHECK(!cover.covered_at(960, 8.0, -540, 1.5));
+    CHECK(!cover.covered_at(1005, 0.0, -545, 1.5));
+    // CrowdTERR authoring helper mesh is skipped so it never z-fights festival grounds.
+    CHECK(world::skipped_material("CrowdTERR"));
+    CHECK(world::skipped_material("crowdterr"));
+
+    // Fast-travel spawn solver: avoids landing on overhead arches/roofs AND nudges out of
+    // enclosing booth/arch pillars (like Race Central's festival_02) onto open ground nearby.
+    {
+      class ArchPillarGround final : public drive::Ground {
+       public:
+        bool raycast(const drive::Vec3& o, const drive::Vec3& d, double max_d, drive::Hit& h) const override {
+          double best_t = max_d + 1.0;
+          drive::Vec3 best_n{0, 1, 0};
+          auto hit_plane_y = [&](double py, double ny, double xmin, double xmax, double zmin, double zmax) {
+            if (std::fabs(d.y) < 1e-6) return;
+            const double t = (py - o.y) / d.y;
+            if (t < 0.0 || t >= best_t) return;
+            const double hx = o.x + d.x * t, hz = o.z + d.z * t;
+            if (hx < xmin || hx > xmax || hz < zmin || hz > zmax) return;
+            best_t = t;
+            best_n = {0, ny, 0};
+          };
+          // Road everywhere at y = -6.5.
+          hit_plane_y(-6.5, 1.0, -50.0, 50.0, -50.0, 50.0);
+          // Overhead sign roof at y = +4.2 over [-3, 3] x [-3, 3].
+          hit_plane_y(4.2, 1.0, -3.0, 3.0, -3.0, 3.0);
+          // Pillar vertical wall box around [-2.5, 2.5] x [-2.5, 2.5], y in [-6.5, 4.2].
+          auto hit_wall_x = [&](double wx, double nx) {
+            if (std::fabs(d.x) < 1e-6) return;
+            const double t = (wx - o.x) / d.x;
+            if (t < 0.0 || t >= best_t) return;
+            const double hy = o.y + d.y * t, hz = o.z + d.z * t;
+            if (hy < -6.5 || hy > 4.2 || hz < -2.5 || hz > 2.5) return;
+            best_t = t;
+            best_n = {nx, 0, 0};
+          };
+          auto hit_wall_z = [&](double wz, double nz) {
+            if (std::fabs(d.z) < 1e-6) return;
+            const double t = (wz - o.z) / d.z;
+            if (t < 0.0 || t >= best_t) return;
+            const double hy = o.y + d.y * t, hx = o.x + d.x * t;
+            if (hy < -6.5 || hy > 4.2 || hx < -2.5 || hx > 2.5) return;
+            best_t = t;
+            best_n = {0, 0, nz};
+          };
+          hit_wall_x(-2.5, -1.0);
+          hit_wall_x(2.5, 1.0);
+          hit_wall_z(-2.5, -1.0);
+          hit_wall_z(2.5, 1.0);
+          if (best_t > max_d) return false;
+          h.distance = best_t;
+          h.normal = best_n;
+          h.surface = 0;
+          return true;
+        }
+        void sphere_contacts(const drive::Vec3&, const drive::SphereQuery*, int n, drive::SphereHit* hits) const override {
+          for (int i = 0; i < n; ++i) hits[i] = {};
+        }
+      };
+      ArchPillarGround g;
+      // 1) Target inside pillar & under roof: must land on road y == -6.5 AND outside [-2.5, 2.5] pillar.
+      double x = 0.0, y = -6.45, z = 0.0;
+      CHECK(world::resolve_fast_travel_spawn(g, nullptr, x, y, z, true, -6.45));
+      CHECK(std::fabs(y - (-6.5)) < 0.1);
+      CHECK(std::hypot(x, z) >= 4.0);
+      // 2) Same without hint_y: must STILL avoid roof (+4.2) and pillar interior.
+      double x2 = 0.0, y2 = 0.0, z2 = 0.0;
+      CHECK(world::resolve_fast_travel_spawn(g, nullptr, x2, y2, z2, false, 0.0));
+      CHECK(std::fabs(y2 - (-6.5)) < 0.1);
+      CHECK(std::hypot(x2, z2) >= 4.0);
+      // 3) Already open road at (15, 0): stays at exact (15, -6.5, 0).
+      double x3 = 15.0, y3 = 0.0, z3 = 0.0;
+      CHECK(world::resolve_fast_travel_spawn(g, nullptr, x3, y3, z3, false, 0.0));
+      CHECK(std::fabs(x3 - 15.0) < 1e-6 && std::fabs(z3) < 1e-6 && std::fabs(y3 - (-6.5)) < 0.1);
+    }
   }
 
   // 5b2. Clean-room Round 2 world material resolution & TrackSettings road/lightmap parsing:

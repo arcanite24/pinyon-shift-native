@@ -489,14 +489,15 @@ void DriveSession::map_screen_fill() {
   }
 }
 
-void DriveSession::map_travel_to(double x, double z, double heading) {
+void DriveSession::map_travel_to(double x, double z, double heading, double known_y) {
   close_map();
   app.spawn[0] = x;
-  app.spawn[1] = 0.0;
+  app.spawn[1] = std::isfinite(known_y) ? known_y : 0.0;
   app.spawn[2] = z;
   app.spawn[3] = heading;
   app.have_spawn = true;
   app.fast_travel = true;
+  app.fast_travel_has_y = std::isfinite(known_y);
   app.next_car = app.car;
   running = false;
 }
@@ -566,8 +567,28 @@ void DriveSession::map_fast_travel_confirm() {
   app.audio_host.trigger_ui(audio::UiCue::kAccept);
   if (m.kind == MapMarker::kOutpost && app.have_outposts) {
     if (const auto* op = app.outposts.find_outpost(m.id)) {
-      map_travel_to(op->spawn.x, op->spawn.z, std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]));
+      map_travel_to(op->spawn.x, op->spawn.z, std::atan2(op->spawn.z_axis[0], op->spawn.z_axis[2]), op->spawn.y);
       return;
+    }
+  }
+  if (m.kind == MapMarker::kFestivalSite && app.have_career_catalog) {
+    if (const auto* site = app.career_catalog.find_site(race::FestivalSite::Kind(m.site_or_hub))) {
+      map_travel_to(site->pos[0], site->pos[2], 0.0, site->pos[1]);
+      return;
+    }
+  }
+  if (m.kind == MapMarker::kEvent && app.have_career_catalog) {
+    if (const auto* ev = app.career_catalog.find_event(m.id); ev && ev->has_trigger) {
+      map_travel_to(ev->trigger_pos[0], ev->trigger_pos[2], 0.0, ev->trigger_pos[1]);
+      return;
+    }
+  }
+  if (m.kind == MapMarker::kStreetHub && app.have_career_catalog) {
+    for (const auto& hub : app.career_catalog.hubs) {
+      if (hub.id == m.site_or_hub && hub.has_trigger) {
+        map_travel_to(hub.trigger_pos[0], hub.trigger_pos[2], 0.0, hub.trigger_pos[1]);
+        return;
+      }
     }
   }
   map_travel_to(m.x, m.z, 0.0);

@@ -866,13 +866,11 @@ bool DriveWorldHost::open_world_and_car() {
           } else {
             if (app.fast_travel) {
               app.fast_travel = false;
-              drive::Hit h;
-              if (streamer->ground().raycast({app.spawn[0], 2000.0, app.spawn[2]}, {0, -1, 0}, 4000.0, h)) {
-                app.spawn[1] = 2000.0 - h.distance;
-              } else {
-                world::Spawn fsp;
-                if (world::find_spawn(streamer->mesh(), app.spawn[0], app.spawn[2], fsp)) app.spawn[1] = fsp.position[1];
-              }
+              const bool has_hint_y = app.fast_travel_has_y;
+              app.fast_travel_has_y = false;
+              const double hint_y = app.spawn[1];
+              world::resolve_fast_travel_spawn(streamer->ground(), &streamer->mesh(), app.spawn[0], app.spawn[1],
+                                               app.spawn[2], has_hint_y, hint_y);
             }
             if (!world::choose_spawn(*streamer, app.have_spawn ? app.spawn : nullptr, app.near_given ? near : nullptr,
                                      app.near_given ? nullptr : &app.near_heading, sp, &how)) {
@@ -1102,9 +1100,11 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             }
             if (app.fast_travel) {
               app.fast_travel = false;
-              drive::Hit h;
-              if (streamer->ground().raycast({app.spawn[0], 2000.0, app.spawn[2]}, {0, -1, 0}, 4000.0, h))
-                app.spawn[1] = 2000.0 - h.distance;
+              const bool has_hint_y = app.fast_travel_has_y;
+              app.fast_travel_has_y = false;
+              const double hint_y = app.spawn[1];
+              world::resolve_fast_travel_spawn(streamer->ground(), &streamer->mesh(), app.spawn[0], app.spawn[1],
+                                               app.spawn[2], has_hint_y, hint_y);
             }
             ground = &streamer->ground();
             follower.set_ground(&streamer->ground());
@@ -1122,9 +1122,11 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             streamer->clear_preload();
             if (app.fast_travel) {
               app.fast_travel = false;
-              drive::Hit h;
-              if (streamer->ground().raycast({app.spawn[0], 2000.0, app.spawn[2]}, {0, -1, 0}, 4000.0, h))
-                app.spawn[1] = 2000.0 - h.distance;
+              const bool has_hint_y = app.fast_travel_has_y;
+              app.fast_travel_has_y = false;
+              const double hint_y = app.spawn[1];
+              world::resolve_fast_travel_spawn(streamer->ground(), &streamer->mesh(), app.spawn[0], app.spawn[1],
+                                               app.spawn[2], has_hint_y, hint_y);
             }
             if (room_world != HubRoom::kNone) {
               leave_room_world();

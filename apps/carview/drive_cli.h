@@ -40,8 +40,9 @@ struct DriveConfig {
   double cruise_kmh = 40;
   double spawn[4] = {0, 0, 0, 0};
   std::filesystem::path game_root_given;
-  bool near_given = false, have_spawn = false, cli_spawn_given = false, fast_travel = false, render_ground = false,
-       async_stream = false, flat_world = false, no_props = false, no_far = false, no_trees = false;
+  bool near_given = false, have_spawn = false, cli_spawn_given = false, fast_travel = false, fast_travel_has_y = false,
+       render_ground = false, async_stream = false, flat_world = false, no_props = false, no_far = false,
+       no_trees = false;
   bool cli_title_screen = false, cli_title_menu = false;
   // The hub rooms (MENU-02): --hub-studio keeps the engine's studio stage in
   // place of the rooms' own tracks; --hub-shot <room> <png> (a harness: autoshow,

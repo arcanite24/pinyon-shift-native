@@ -162,4 +162,11 @@ bool choose_spawn(const Streamer& streamer, const double* given, const double* n
 // facing along the road nearest its heading. False when no road is near.
 bool recover(const Streamer& streamer, drive::Vehicle& vehicle, Spawn* where = nullptr);
 
+// Resolves a fast-travel landing point (x, y, z) onto clear, unobstructed
+// ground: avoids landing on overhead roofs/arches/signs (using hint_y when
+// known, or stepping down below canopy surfaces) and nudges out of enclosing
+// walls/pillars (e.g. festival arch bases) onto the nearest open pavement.
+bool resolve_fast_travel_spawn(const drive::Ground& ground, const Mesh* mesh, double& x, double& y, double& z,
+                               bool has_hint_y, double hint_y);
+
 }  // namespace world
