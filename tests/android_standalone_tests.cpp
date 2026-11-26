@@ -761,6 +761,25 @@ void test_baker_state_machine_and_inspect(const fs::path& tmp) {
   CHECK(!setup::baker::run_on_device_bake(bad_opts, nullptr, nullptr, nullptr, bad_rep));
   CHECK(!bad_rep.ok);
   CHECK(!bad_rep.error.empty());
+
+  // Existing pre-baked Android install (gamedb.slt + colorado/bin.zip + colorado.index + play.txt
+  // + bake/cars/*.shiftbake, without raw media/cars/*.zip) must report ready_to_play = true.
+  const fs::path baked_play = root / "baked_only_play";
+  const fs::path baked_game = baked_play / "game";
+  write_bytes(baked_game / "media" / "db" / "gamedb.slt", {'S', 'Q', 'L'});
+  write_bytes(baked_game / "media" / "tracks" / "colorado" / "bin.zip", {'P', 'K', 3, 4});
+  write_bytes(baked_play / "world" / "colorado.index", {'I', 'D', 'X'});
+  write_bytes(baked_play / "bake" / "cars" / "NIS_SkylineGTRVSpecII_02.shiftbake", {'S', 'B', 'K'});
+  {
+    std::ofstream pf(baked_play / "play.txt", std::ios::binary | std::ios::trunc);
+    pf << "game " << baked_game.generic_string() << "\n";
+  }
+  const auto baked_st = setup::baker::inspect_library(baked_play, {});
+  CHECK(baked_st.has_game_disc);
+  CHECK(baked_st.ready_to_play);
+  CHECK(baked_st.disc_car_count == 0);
+  CHECK(baked_st.baked_car_count == 1);
+  CHECK(baked_st.summary.find("1 baked") != std::string::npos);
 }
 
 void test_android_setup_pill_layout_contract() {

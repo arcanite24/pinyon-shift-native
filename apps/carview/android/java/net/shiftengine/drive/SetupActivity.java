@@ -126,6 +126,7 @@ public class SetupActivity extends Activity {
     private boolean mHasTurnip = false;
     private String mTurnipPath = "";
     private int mDiscCarCount = 0;
+    private int mBakedCarCount = 0;
     private int mDlcCount = 0;
     private int mModsEnabledCount = 0;
     private int mModsTotalCount = 0;
@@ -2421,6 +2422,7 @@ public class SetupActivity extends Activity {
         mHasGameDisc = st.optBoolean("has_game_disc", false);
         mReadyToPlay = st.optBoolean("ready_to_play", false);
         mDiscCarCount = st.optInt("disc_car_count", 0);
+        mBakedCarCount = st.optInt("baked_car_count", 0);
         mHasV4 = st.optBoolean("has_v4", false);
         mHasTurnip = st.optBoolean("has_turnip_driver", false);
         mTurnipPath = st.optString("turnip_driver_path", "");
@@ -2471,10 +2473,12 @@ public class SetupActivity extends Activity {
         }
 
         // Hero Card (Tab 1)
+        final int availCars = mDiscCarCount > 0 ? mDiscCarCount : mBakedCarCount;
         if (mHeroStatusDot != null && mHeroStatusText != null) {
             if (mReadyToPlay) {
                 mHeroStatusDot.setBackground(makeCircleDrawable(COL_SUCCESS));
-                mHeroStatusText.setText("Ready to Drive  •  " + mDiscCarCount + " Cars Available");
+                String carMode = mDiscCarCount > 0 ? "Cars Direct-from-Disc" : "Baked Cars Ready";
+                mHeroStatusText.setText("Ready to Drive  •  " + availCars + " " + carMode);
                 mHeroStatusText.setTextColor(COL_TEXT_PRIMARY);
             } else if (mHasGameDisc || mPendingIsoUri != null) {
                 mHeroStatusDot.setBackground(makeCircleDrawable(COL_WARNING));
@@ -2511,7 +2515,11 @@ public class SetupActivity extends Activity {
                 mDiscStatusText.setText("Queued ISO: " + mPendingIsoName + " (ready to extract & index)");
                 mDiscStatusText.setTextColor(COL_WARNING);
             } else if (mHasGameDisc) {
-                mDiscStatusText.setText("Verified Forza Horizon 1 disc (" + mDiscCarCount + " car archives)");
+                if (mDiscCarCount > 0) {
+                    mDiscStatusText.setText("Verified Forza Horizon 1 disc (" + mDiscCarCount + " car archives)");
+                } else {
+                    mDiscStatusText.setText("Verified Forza Horizon 1 install (" + mBakedCarCount + " baked cars)");
+                }
                 mDiscStatusText.setTextColor(COL_SUCCESS);
             } else {
                 mDiscStatusText.setText("No game disc installed yet");

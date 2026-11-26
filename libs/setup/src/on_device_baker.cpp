@@ -720,7 +720,6 @@ LibraryStatus inspect_library(const fs::path& play_dir, const fs::path& state_di
   }
 
   const auto disc = xiso::inspect_disc_directory(candidate_game);
-  st.has_game_disc = disc.valid;
   st.game_root = disc.resolved_root.empty() ? candidate_game : disc.resolved_root;
   st.disc_car_count = disc.car_zip_count;
 
@@ -740,7 +739,10 @@ LibraryStatus inspect_library(const fs::path& play_dir, const fs::path& state_di
     st.full_roster_complete = rec.complete && st.baked_car_count >= rec.total_available_cars && rec.total_available_cars > 0;
   }
 
-  st.ready_to_play = st.has_play_txt && st.has_game_disc && st.has_world_index;
+  const bool has_core_game = disc.has_colorado_bin && disc.has_gamedb;
+  const bool has_baked_cars = st.baked_car_count > 0;
+  st.has_game_disc = disc.valid || (has_core_game && has_baked_cars);
+  st.ready_to_play = st.has_play_txt && has_core_game && (st.disc_car_count > 0 || has_baked_cars) && st.has_world_index;
 
   if (!state_dir.empty()) {
     st.has_v4 = is_non_empty_file(state_dir / "title-update-v4" / "media.zip");
@@ -758,9 +760,11 @@ LibraryStatus inspect_library(const fs::path& play_dir, const fs::path& state_di
   }
 
   if (st.ready_to_play) {
-    if (st.baked_car_count > 0) {
+    if (st.disc_car_count > 0 && st.baked_car_count > 0) {
       st.summary = "Ready to play (" + std::to_string(st.disc_car_count) + " cars on disc, " +
                    std::to_string(st.baked_car_count) + " baked)";
+    } else if (st.baked_car_count > 0) {
+      st.summary = "Ready to play (" + std::to_string(st.baked_car_count) + " baked cars)";
     } else {
       st.summary = "Ready to play (" + std::to_string(st.disc_car_count) + " cars direct from disc)";
     }
