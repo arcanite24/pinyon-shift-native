@@ -3297,6 +3297,10 @@ pulling out. Unknown: the original's real camera height and pitch, and how
 it follows speed. Needed, narrow: captures of the minimap at rest and at
 200 km/h on the same road, or the minimap camera's parameters.
 
+Update (first30j): settled by Q362. The camera is fixed with speed (the
+arrow within 3 px at rest and moving) and sees about 1.4 km ahead; the
+engine uses the fitted camera.
+
 ## Q90 (UI, not blocking): fast travel to undiscovered outposts, and A on the map
 
 The engine offers FAST TRAVEL only on discovered outposts and the
@@ -5653,6 +5657,8 @@ the outposts it keeps the engine's studio stage (interim).
 
 No capture shows MY GARAGE itself.
 
+Update (first30j): still open; see Q365.
+
 Needed: captures of MY GARAGE from the pause menu, from an outpost and
 from the workshop, and the camera the original uses on the current car
 there.
@@ -6025,7 +6031,7 @@ Also settled for the boot: one A during `T10_MS_Combined` (at 20 s) went straigh
 
 Open:
 - Whether Start or B skips Forza_Tone. Only A was sent.
-- Whether `Dolby_Corona_Intro` plays when nothing is pressed (older recomp logs suggest it does).
+- Whether `Dolby_Corona_Intro` plays when nothing is pressed (older recomp logs suggest it does). Settled (first30j, Q364): it does, for 9.05 s after `T10_MS_Combined`.
 
 ## Q273 (INTRO-04, HUD, not blocking): the radio popup under the career's cutscenes
 
@@ -6125,6 +6131,8 @@ The engine has neither: it goes from the splashes to Press Start, and from Press
 
 Needed: the gamma screen's bindings and whether it shows only on a new profile; the disclaimer's duration and scene.
 
+Update (first30j): the VIDEO screen is built and shows only on a new profile (Q363); the boot's lengths are Q364.
+
 Update (first30e): the disclaimer is drawn. The boot now opens on `T:P_Map/P_STA/<LANG>/P_STA_Disclaimer` full screen (EN when the profile's language has no folder) for 3 s, and the splash queue starts after it; a skip of the boot skips it too. The recomp's render tests show it on their first frame (`r1 f00001`). Its scene and exact duration are still not read (interim 3 s). The VIDEO screen is still not built.
 
 ## Q277 (HUD-03, INTRO-08, not blocking): the hand-over HUD's units, pin and name tags
@@ -6146,6 +6154,8 @@ Not changed here:
 Needed: the title's default units by region, and whether any sat-nav world pin exists in the original.
 
 Update (first30e): the engine's default is now miles (settings page, `--units metric` opts into km/h; an old saved `--units imperial` loads as the default). The pin and the name tags are unchanged.
+
+Update (first30j): the remaining km defaults (the career, photo mode, replays, the story intro, the GPS voice and the driving HUD's own default) are miles too, so every path without a settings file reads mph; `--units metric` still gives km/h. The name tags' distance scaling is Q361.
 
 ## Q278 (ACT-01, INTRO-10, not blocking): skills in the career's opening, and PopularitySkillsFlow
 
@@ -6931,3 +6941,113 @@ changes what every focus-engine level in the corpus tests was measured
 with. Needed: a decision on where the snapshot gain belongs for the focus
 car (before the chain, as Q322 assumes, or after it, as the matrix applies
 it), then both changes and a c3 re-measure through the live mixer.
+
+## Q361 (first30j, HUD, not blocking): the AI name tags' size and reach with distance
+
+The original's race tags (the Gauntlet, first30d `c03900`-`c04425`) show
+the surname in white capitals on a faint dark pill, about 1.65 m over the
+car's middle. They shrink with distance and still show on the pack about
+100 m ahead. Read by eye from the 640x360 frames at estimated distances,
+the capitals are roughly 14 px at 12 m, 11 px at 18 m, 8 px at 40 m and
+7 px past 90 m (720 lines). The original's free-roam traffic carries no
+tags (first30j `roam-map`).
+
+The engine passed no distance with its tags, so its size-and-fade by
+distance never ran. Now each tag carries its distance, and the scale falls
+about as 0.33 + 5.8 / d (floored at 0.4), full to 150 m and gone at 200 m;
+the race tags reach those 200 m (they were cut at 110 m). Interim: the
+sizes are eyeballed and the fade distances are not captured.
+
+Open:
+- The free-roam festival drivers' tags: the engine tags them with class,
+  PI and full name; no capture shows the original's (its traffic has none).
+- Where the original's tags fade out.
+
+Needed: 1280x720 race captures with the opponents' poses (render-test
+vehicle trace for the AI) at known distances out to 200 m.
+
+## Q362 (first30j, HUD, settled): the minimap's camera
+
+Settles most of Q89. The original's free-roam minimap is a pitched pinhole
+camera over flat ground, turned with the car and fixed with speed: the
+arrow stays at (180-184, 520) at rest and moving, and seven icon positions
+(the Outpost 009 gas station, PLANE_RACE_002, FR06 and the arrow; first30j
+`roam-map`, `rest-1500`, `d1880`, `d2000`, car at 1999, 963, heading
+0.807, -0.589) fit, within 3.2 px rms (`out/first30j/harness/mmfit2.py`),
+
+    x = 90 + 461 c / (a + 857),  y = -61.7 + 138880 / (a + 857)
+
+in the 180 px panel (a m ahead, c m right; icons are drawn about 12 px over
+their point). So the panel's top shows about 1.4 km ahead, its bottom
+280 m behind, its sides 170 m either way at the car. The profile's sizes
+are pixels at the car's depth and shrink with it as 857 / (a + 857): the
+event ring (DynamicSize 45) is 46 px at the car, the b roads' line (Size
+14) 14 px.
+
+The engine now uses this camera and scale (`MapView::minimap`): roads are
+gathered from a disc centred 560 m ahead, icons and lines shrink with
+depth. Compared at the same place (`out/first30j/tmpb/mm-cmp2.png`:
+original `rest-1500`, `d1880`, `d2000`; engine before `map-before`,
+after `map-after2`), the far roads, the rumour ellipse and the icons now
+sit where the original's do.
+
+Open: the far icons (the gas station H at about 400 m) draw about 30%
+smaller than the original's (20 px against 28 px).
+
+## Q363 (first30j, BOOT, settled in part): a new profile's VIDEO screen
+
+Settles Q276's open part. On a new profile Press Start leads, after the
+profile step, to VIDEO (`830_GAMMA_ADJUST`, orig1 `f00027`-`f00039`,
+`out/first30j/orig/gamma/f00030.png`): a black test panel with NOT
+VISIBLE, BARELY VISIBLE and EASILY VISIBLE (dark text on boxes of about
+5, 9 and 20 grey), BRIGHTNESS's slider at 60 on the selected pink row,
+SUBTITLES: DISABLE under it, a DESCRIPTION panel with the row's text
+(MyProfile.str), and A SAVE, Y RESET TO DEFAULT; the block is turned
+about 3 degrees. A boot with a profile goes from Press Start (LOADING...
+PLEASE WAIT bottom left) straight to the menu (first30j `boot-profile2`,
+`p0420`-`p0800`).
+
+The engine now has the screen (`TitleMenu::Phase::kVideo`,
+`draw_video_screen`): with no save, Press Start leads to it; up/down pick
+the row, left/right change it, Y resets, B does nothing, A saves and goes
+to the menu, and it does not come again in the session. The places are
+the capture's (the scene's rest layout is its entry animation's start, as
+831's is); the strings are MyProfile.str's (BARELY VISIBLE and ENABLE by
+raw key). Side by side: `out/first30j/tmpb/video-cmp4.png` (original
+`f00030`, engine `runs/video-after4/video.png`; the run's other frames
+show the controls and the menu after A).
+
+Open:
+- BRIGHTNESS's step, and its effect: the engine has no brightness
+  (gamma) or movie-subtitle setting, so the values stay on the title's
+  model and change nothing.
+- The screen's entry animation and the slider's look.
+- Whether the original writes the profile at A SAVE (the engine writes its
+  save when the career starts, so quitting from the menu shows VIDEO
+  again next boot).
+
+## Q364 (first30j, BOOT, settled): the boot's order and lengths
+
+A fresh-profile boot with nothing pressed (first30j `boot-fresh`,
+render-test file opens and capture times): the disclaimer (from the first
+frame, about 2.9 s), `T10_MS_Combined` (22.06 s), `Dolby_Corona_Intro`
+(9.05 s: it plays when nothing is pressed, settling Q272's open item),
+then `PressStart`; `Forza_Intro` (the attract, 106.8 s) opens about 56 s
+after Press Start shows. A boot with a profile shows the same disclaimer
+and splashes. The engine's order and its 3 s disclaimer match; the frame
+pacing on Press Start in the recomp (about 4 fps) is too slow to time the
+profile step.
+
+## Q365 (first30j, VIS, open): MY GARAGE's room
+
+Q262 still stands. The first30j `garage` route (the Gauntlet's car
+select, right, A, down, down, B) went from CAR SELECT into the event
+(`out/first30j/tmpb/gar.png`): the original's CAR SELECT draws over the
+world where it opened, and the pause menu has no MY GARAGE row (MAP,
+SETTINGS, PHOTO MODE, MESSAGE CENTER, SPONSOR CHALLENGES, MY PROFILE,
+QUIT). The disc's UI rooms are `uiautoshow`, `uiworkshop`, `uipaintshop`
+and the thumbnail tracks; there is no garage track, so MY GARAGE likely
+uses one of these or the world. The engine is unchanged.
+
+Needed: a capture of MY GARAGE opened from an outpost (its file opens
+name the room's track).
