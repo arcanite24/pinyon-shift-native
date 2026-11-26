@@ -2441,6 +2441,10 @@ renders at 48.1 (the same loops as another car, without the focus DSP:
 so it saturates at 1. `UseCurves="1"` (208 tunings) per-band curves are not
 read. Needed: the shaping curve and the overdrive scale.
 
+**Answered (first30f):** Q321 decodes the plug-in (shapes, the 4 dB a unit
+overdrive scale, UseCurves, DSPScalar, VolumeCompensate as the group volume
+after the DSP) and Q322 measures its levels; the engine runs it that way.
+
 ## Q83 (audio, not blocking): UI cues and other-car audio left open
 
 - `kAchievementReward` and `kSkillBreak` map to `Hud_GeneralNotificationAppear`
@@ -6287,6 +6291,13 @@ Needed:
   groups muted in turn, if the recomp can do that);
 - the TrashDSP's shaping (Q82).
 
+**Mostly answered (first30f, Q322):** with the decoded Trash, the FMOD
+ParamEQ's squared gain and no NegLoad at idle, the same route reads idle
+-41.6 dB against the original's -42.3 and the limiter -21.0 against -21.7
+(centroid 1,025 Hz against 934). Left: the top octaves (above 6 kHz) are
+4 to 10 dB hot in every state, and the lift at 3,500 to 4,500 rpm is about
+3 dB quiet.
+
 ## Q294 (first30c, audio, not blocking): the tyre and wind levels, and the engine's offline render
 
 The original's tyre and wind buses were measured on the c3 route, with
@@ -6404,8 +6415,8 @@ player's dump, and the translated code where Ghidra cannot decode VMX128).
 - **DSPScalar.** On load and on every upgrade change, each band's
   overdrive becomes `clamp(base + TrashBand<N>ODMax x s, 0, 10)` and
   `VolumeCompensate` `clamp(base + TrashVolCompMin x s, 0, 1)`; `PEQGainMax`,
-  `PEQFreqMax` and `PEQBandwidthMax` add to the three groups' PEQ points the
-  same way. `s = DSPMaxScalar x` a float of the car's audio descriptor
+  `PEQFreqMax` and `PEQBandwidthMax` add to one PEQ's three curve points the
+  same way (the FocusPEQ, Q322). `s = DSPMaxScalar x` a float of the car's audio descriptor
   (offset 84, next to the rpm range and the upgrade levels; its source is
   not traced).
 - **ShiftVolumeScalar.** Not an engine volume boost. On an upshift, once
@@ -6420,3 +6431,67 @@ player's dump, and the translated code where Ghidra cannot decode VMX128).
 Not settled here: which emission groups the focus chain carries, the
 global level in the volume, and the descriptor float behind `s`
 (measured in Q322).
+
+## Q322 (first30f, audio, partly answered): the focus engine's chain and levels, measured
+
+Settles the rest of Q82 and most of Q293. Measured on the recomp with one
+XML merge on the MX-5's `_ET.xml` or `_CMT.xml` per run (`zz-archive-patches`
+mod on a copied seed), the c3 route, every bus but the engine at 0, and the
+windows binned by state with clean idle windows only (rpm under 900,
+first capture after its 3 s UI transient). The harness is
+`out/first30f/harness` (`mkseed.py`, `run-probes.ps1`, `probecmp.py`,
+`c3state.py --curve`, `engine-variant.ps1` for the engine's twin of each
+probe). Runs: `.local/runs/first30f-<variant>`.
+
+| probe (original) | idle | full gas, 7,500 rpm | reading |
+|---|---|---|---|
+| base | -42.3 dB | -21.7 dB, 934 Hz | |
+| `TrashDSP Active="0"` | -41.7 | -20.2, 812 Hz | Trash brightens; level within 1.5 dB |
+| `Distortion Active="0"` | -42.3 | -21.7, 944 Hz | the focus car never runs the Distortion |
+| `TrashDSP VolumeCompensate="0.2"` | -50.4 | -28.5, 965 Hz | a pure level after the DSP |
+| `DSPScalar DSPMaxScalar="0"` | -45.6 | -24.9, 647 Hz | s is not 0 |
+| DSPScalar, Trash offsets only at 0 | -45.8 | -23.7, 927 Hz | the Trash part is the level, the rest the brightness |
+| intake only (`_CMT` group volumes) | -74.7 | -24.3 | |
+| ambient only | -58.3 | -26.2 | |
+| exhaust only | -42.5 | -24.1 | |
+| Trash as clean gain, VolComp 1 (`tcal1`) | -54.4 | -32.2 | 12 dB under Trash off |
+| same, `TrashVolCompMin="-0.25"` (`tcal2`) | -56.5 | -34.9 | gives s |
+| Trash off, every volume curve flat | -42.8 | -25.6 | the idle-to-full span left is the loops' and filters' |
+
+- **Routing.** Every emission group goes through the focus chain: halving
+  VolumeCompensate takes the mix (-28.5 dB at the limiter) below the intake
+  alone (-23.8 dB), and the three solos' power sum is about 2 dB above the
+  mix, as one shared shaper gives.
+- **s.** tcal2 against tcal1 is -2.1 to -2.7 dB, so `1 - 0.25 s = 0.77`:
+  s is about 0.9 for this car (DSPMaxScalar 1 times the descriptor's
+  float). The idle drop with DSPMaxScalar 0 (-3.3 dB) is what the linear
+  part of the shaper predicts for s = 0.9 (drive 4 + 1.26 against 4).
+- **VolumeCompensate's gain.** With the bands clean, VolumeCompensate 1
+  sits 12.0 to 12.7 dB under the Trash-off level: `0.175 x global` is 0.24
+  of the group's own volume.
+- **DSPScalar's PEQ offsets** go on one PEQ's three curve points (the loop
+  in the decode walks curve points, not groups; Q321 said groups). Taking
+  them away darkens the top end (centroid 927 to 647 Hz) and drops it
+  1.2 dB, as the FocusPEQ moving from 392 to 1,472 Hz would. The engine
+  applies them to the FocusPEQ (clamps 0.05 to 3, 20 to 22,000 Hz, 0.2 to 5).
+- **PEQ gain.** The FMOD ParamEQ's peak is gain squared, not gain. With
+  the volume curves flat and the Trash off, the original's idle-to-full
+  span is 17.2 dB; the engine's was 9.4 dB with an RBJ peak of `gain`, and
+  15.4 dB with `gain^2` (the shortfall was all in 200 Hz to 2 kHz, where
+  the intake, ambient and LoadPEQ boosts sit).
+- **Idle NegLoad.** At idle the engine fed NegTorque 1 (its closed-throttle
+  torque is friction), so the exhaust's NegLoad PEQ (2.22 at 380 Hz) lifted
+  200 to 400 Hz 6 to 7 dB over the original's idle. The original shows no
+  boost there; the engine now fades NegTorque in from 1.15 to 1.5 times
+  the idle rpm.
+- **Levels into the chain.** The engine's notrash idle was 13 dB over the
+  original's, with the same spectrum. The focus voices reach the chain at
+  -20 dB of the engine's group level (the snapshot and SFX volumes are on
+  them in the game) and come out at +7 dB; the split is set by the idle
+  (linear) and the full-gas (saturated) levels together.
+
+Still open:
+- the descriptor float behind s (one car measured);
+- whether a split cascades more than one first-order section;
+- the FMOD Distortion for the other cars (not modelled: no capture);
+- the 6 dB idle-to-full difference left in the solo groups' top end.
