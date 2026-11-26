@@ -6346,6 +6346,10 @@ Runs: `.local/runs/first30g-g1-tyres`, `first30g-g2-tyres`,
 `after3-g2-tyres`, `st1b-wind` (engine). Still open: the impacts, the
 rolling level at matched speed (the engine's car is slower on the same
 inputs), lock and slide on tarmac (no matching windows on both sides).
+The original's first g2 capture opens with a 0.5 s burst at -21 to -26 dB
+while the car is still at rest (the launch follows at 1.75 s, where the
+trace puts it), so that window is left out; the engine is digital silence
+at rest.
 
 ## Q301 (first30d, UI, not blocking): how long the points page waits with a wristband to collect
 
@@ -6607,3 +6611,35 @@ not known whether the radio was playing in those captures with its bus at
 Needed: the setter for each parameter (a by-name lookup or an index into
 the event's parameters), or a wind capture with the radio playing and its
 bus muted, compared with one with the radio off.
+
+## Q334 (first30g, audio, not blocking): what the game feeds an impact event's RelativeVelocity
+
+The 35 `Collisions/Collisions/<surface>/<surface>/IMPACT_3D` and
+`LFE/IMPACT_LFE` events are one-shot events driven by three parameters:
+- `RelativeVelocity` (0 to 200 mph; LFE 0 to 250) places the hit on the
+  layer's instances, which are sizes of hit with short crossfades (the
+  concrete barrier: VSM to 22 mph, SM to 53, MD to 100, LG above), and a
+  volume curve (0.32 at 20 mph, 0.50 at 40, 0.71 at 100, 1 at 200);
+- `(distance)` fades the hit out from 20 m to 40 m (the LFE from 4 to 5 m);
+- `AIOnlyCollision` takes 10 dB off a hit between AI cars (the LFE goes silent).
+A second layer adds debris by the same position. Each sound definition has 4
+or 5 recordings with equal weights. The LFE event is silent below 10 mph.
+
+The engine now evaluates the pair's events once when a hit starts: every
+instance the position reaches plays one randomly picked recording at its
+instance level times its template volume. Before, it played the first
+recording of one sound at `clamp(mph / 45, 0.15, 1) x 0.85`. On a glancing
+barrier hit at 165 km/h (`out/first30g/runs/imp0-amb` before,
+`imp1-amb` after, ambience bus only) the hit is 2 to 3 dB quieter.
+
+Unknown:
+- what the game feeds as `RelativeVelocity`: the closing speed, its normal
+  component, or a change in velocity. The engine feeds the change in
+  velocity over one physics step from the strongest body contact.
+- the event's `prand 0.05` pitch randomisation (its unit is not settled by
+  Q331's pitch decode), so the engine plays without one;
+- the smashables (`Collisions/Smashables/...`) and scrapes still use the old
+  path.
+
+Needed: head-on wall hits on the recomp at two or three speeds with only
+the collision sounds kept, and the engine's hits at the same speeds.

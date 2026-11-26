@@ -591,6 +591,27 @@ void corpus_ui_catalog(const std::filesystem::path& game) {
   // Every LOD1 tyre event binds: 5 surface groups x 4 wheels x Roll/Skid (Q331).
   std::printf("tyre events bound: %d\n", sfx.tyre_event_count());
   CHECK(sfx.tyre_event_count() == 40);
+  // Impacts play their Collisions.fev events: the RelativeVelocity position picks
+  // the size of hit and its curve the level; the LFE starts above 10 mph (Q334).
+  std::printf("impact events bound: %d\n", sfx.impact_event_count());
+  CHECK(sfx.impact_event_count() == 35);
+  {
+    const char* kWall = "Collisions/Collisions/CarAluminum/ConcreteBarrier/IMPACT_3D";
+    audio::SfxEngine::ImpactShot shots[8]{};
+    float last = 0.0f;
+    for (float mph : {10.0f, 40.0f, 80.0f, 150.0f}) {
+      const int n = sfx.impact_event_shots(kWall, mph, 5.0f, shots, 8);
+      std::printf("wall impact at %.0f mph: %d shot(s)", mph, n);
+      for (int i = 0; i < n && i < 8; ++i) std::printf(" [slot %d gain %.3f pitch %.3f]", shots[i].slot, shots[i].gain, shots[i].pitch);
+      std::printf("\n");
+      CHECK(n == 2);  // one size of hit and one of debris: the sizes do not overlap here
+      CHECK(n < 1 || (shots[0].slot >= 0 && shots[0].gain > last));
+      if (n >= 1) last = shots[0].gain;
+    }
+    CHECK(sfx.impact_event_shots(kWall, 40.0f, 60.0f, shots, 8) == 0);  // silent past 40 m
+    CHECK(sfx.impact_event_shots("Collisions/Collisions/LFE/IMPACT_LFE", 5.0f, 1.0f, shots, 8) == 0);
+    CHECK(sfx.impact_event_shots("Collisions/Collisions/LFE/IMPACT_LFE", 40.0f, 1.0f, shots, 8) == 1);
+  }
   std::vector<float> ui(256 * 2, 0.0f);
   float* buses[audio::kBuses]{};
   buses[int(audio::Bus::kUi)] = ui.data();

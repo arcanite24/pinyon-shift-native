@@ -662,6 +662,8 @@ void DriveSession::run_headless_drive() {
             hit.rel_speed_mps = float(dv_world);
             hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
             hit.surface_hint = collision_surface_hint(host.collision, bc.surface);
+            std::printf("impact t %.2f: %.1f mph surface %d at %.1f km/h\n", vehicle.time(), dv_world * 2.2369,
+                        int(hit.surface_hint), vehicle.speed() * 3.6);
             app.audio_host.trigger_collision(hit);
           }
         };

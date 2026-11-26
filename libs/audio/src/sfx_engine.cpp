@@ -1318,6 +1318,50 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       FevProject wind;
       if (load_fev(cars::mods::resolve(audio_dir / "cars/Wind/Wind.fev"), wind, nullptr))
         bind(wind_event_, wind, wind.find_event("Wind/Wind/Wind"));
+
+      // Collisions.fev's impact events: every instance with all its wavetable
+      // entries, one picked at random per hit (Q334).
+      impact_events_.clear();
+      impact_event_paths_.clear();
+      FevProject coll;
+      if (load_fev(cars::mods::resolve(audio_dir / "collisions/Collisions.fev"), coll, nullptr)) {
+        for (const auto& ev : coll.events) {
+          const std::string low = lower_str(ev.path);
+          const bool impact = low.size() > 10 && (low.ends_with("/impact_3d") || low.ends_with("/impact_lfe"));
+          if (!impact || !ev.is_complex() || low.find("/smashables/") != std::string::npos) continue;
+          ImpactEvent ie;
+          ie.ev = ev;
+          ie.p_vel = int8_t(ev.find_param("RelativeVelocity"));
+          ie.p_dist = int8_t(ev.find_param("(distance)"));
+          ie.p_ai = int8_t(ev.find_param("AIOnlyCollision"));
+          int n = 0;
+          for (const auto& ly : ev.layers)
+            for (const auto& si : ly.instances) {
+              if (n >= kMaxEventVoices) break;
+              auto& in = ie.inst[size_t(n++)];
+              in.slot.fill(-1);
+              if (si.sound_def_index >= coll.sound_defs.size()) continue;
+              const auto& sd = coll.sound_defs[si.sound_def_index];
+              if (const auto* t = coll.template_of(sd)) {
+                in.tpl_gain = t->volume;
+                in.tpl_pitch = std::exp2(t->pitch * kFevPitchOctaves);
+              }
+              for (const auto& en : sd.entries) {
+                if (in.count >= int(in.slot.size())) break;
+                if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+                const int s = slot_of(cars::mods::resolve(coll.dir / (en.wavebank_name + ".fsb")), en.subsound_index);
+                if (s < 0) continue;
+                in.slot[size_t(in.count)] = int16_t(s);
+                in.weight[size_t(in.count)] = std::max(0.0f, float(en.weight));
+                ++in.count;
+              }
+            }
+          ie.count = n;
+          if (n == 0) continue;
+          impact_events_.push_back(std::move(ie));
+          impact_event_paths_.push_back(low);
+        }
+      }
     }
 
     add_first_fev_or_fsb("cars/Reflections/Reflections.fev", SfxSoundId::kRoadsideReflection);
@@ -2242,9 +2286,13 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
   });
 }
 
-void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch, int ui) {
+void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch, int ui,
+                               int ev) {
   if (gain <= 1e-4f) return;
-  if (ui >= 0) {
+  if (ev >= 0) {
+    ui = -1;
+    if (ev >= kMaxEventSamples || !event_samples_[size_t(ev)] || event_samples_[size_t(ev)]->data.empty()) return;
+  } else if (ui >= 0) {
     if (ui >= kMaxUiSamples || !ui_samples_[size_t(ui)] || ui_samples_[size_t(ui)]->data.empty()) return;
   } else {
     const size_t idx = size_t(id);
@@ -2264,6 +2312,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
     slot->active = true;
     slot->id = id;
     slot->ui = ui;
+    slot->ev = ev;
     slot->bus = bus;
     slot->phase = 0.0;
     slot->gain = gain;
@@ -2306,6 +2355,7 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
   }
   victim->next_id = id;
   victim->next_ui = ui;
+  victim->next_ev = ev;
   victim->next_bus = bus;
   victim->next_gain = gain;
   victim->next_left = left;
@@ -2369,6 +2419,56 @@ uint8_t SfxEngine::map_surface_group(std::string_view physics_surface) const {
   return 0;
 }
 
+const SfxEngine::ImpactEvent* SfxEngine::find_impact_event(std::string_view path) const {
+  if (path.empty()) return nullptr;
+  const std::string low = lower_str(std::string(path));
+  for (size_t i = 0; i < impact_event_paths_.size(); ++i)
+    if (impact_event_paths_[i] == low) return &impact_events_[i];
+  return nullptr;
+}
+
+int SfxEngine::start_impact_event(const ImpactEvent& ie, float mph, float dist_m, float left, float right,
+                                  SfxSoundId id, ImpactShot* out, int cap) {
+  std::array<float, 16> raw{};
+  const size_t np = std::min(ie.ev.params.size(), raw.size());
+  for (size_t i = 0; i < np; ++i) raw[i] = ie.ev.params[i].min_val;
+  auto set = [&](int8_t p, float v) {
+    if (p >= 0 && size_t(p) < np) raw[size_t(p)] = v;
+  };
+  set(ie.p_vel, mph);
+  set(ie.p_dist, dist_m);
+  set(ie.p_ai, 0.0f);  // the focus car is in every hit it hears
+  std::array<FevInstanceLevel, kMaxEventVoices> lv{};
+  const int n = std::min(evaluate_fev_event(ie.ev, raw.data(), np, lv.data(), kMaxEventVoices), ie.count);
+  const float ev_pitch = std::exp2(ie.ev.pitch * kFevPitchOctaves);
+  int started = 0;
+  for (int i = 0; i < n; ++i) {
+    const auto& in = ie.inst[size_t(i)];
+    const float g = lv[size_t(i)].gain * in.tpl_gain;
+    if (g <= 1e-4f || in.count == 0) continue;
+    float total_w = 0.0f;
+    for (int e = 0; e < in.count; ++e) total_w += in.weight[size_t(e)];
+    float pick = float(std::uniform_real_distribution<double>(0.0, double(std::max(total_w, 1e-6f)))(rng_));
+    int e = 0;
+    for (; e < in.count - 1; ++e) {
+      pick -= in.weight[size_t(e)];
+      if (pick < 0.0f) break;
+    }
+    float p = ev_pitch * in.tpl_pitch;
+    if (lv[size_t(i)].has_pitch_env) p *= std::exp2((lv[size_t(i)].pitch_env - 0.5f) * kFevPitchEnvOctaves);
+    const int slot = in.slot[size_t(e)];
+    if (out && started < cap) out[started] = {slot, g, p};
+    if (!out) spawn_one_shot(id, Bus::kCollision, g, left, right, p, -1, slot);
+    ++started;
+  }
+  return started;
+}
+
+int SfxEngine::impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap) {
+  const ImpactEvent* ie = find_impact_event(event_path);
+  return ie ? start_impact_event(*ie, mph, dist_m, 0.707f, 0.707f, SfxSoundId::kImpact3d, out, cap) : 0;
+}
+
 void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioState& st) {
   drain_loaded();
   // Confirmed 75 ms rate limit (CollisionData.xml MSBetweenDiffCollisions).
@@ -2401,6 +2501,22 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
     else if (hit.surface_hint == 4) surf_name = "Wood";
 
     const CollisionEventSpec* pair = coll_cfg_.find_pair(surf_name, "CarAluminum");
+    // The pair's own events: their RelativeVelocity curves set the level and
+    // pick the size of hit, their (distance) curves the fall-off (Q334).
+    const ImpactEvent* ie3d =
+        find_impact_event(pair && !pair->impact3d.empty() ? std::string_view(pair->impact3d)
+                                                          : std::string_view("Collisions/Collisions/Asphalt/CarAluminum/IMPACT_3D"));
+    if (ie3d) {
+      start_impact_event(*ie3d, mph, dist, pl, pr, SfxSoundId::kImpact3d, nullptr, 0);
+      const bool lfe_none = pair && (pair->impact_lfe.empty() || lower_str(pair->impact_lfe) == "none" ||
+                                     lower_str(pair->impact_lfe) == "silent");
+      if (!lfe_none) {
+        const ImpactEvent* lfe =
+            find_impact_event(pair ? std::string_view(pair->impact_lfe) : std::string_view("Collisions/Collisions/LFE/IMPACT_LFE"));
+        if (lfe) start_impact_event(*lfe, mph, dist, 0.707f, 0.707f, SfxSoundId::kImpactLfe, nullptr, 0);
+      }
+      return;
+    }
     SfxSoundId imp_id = SfxSoundId::kImpact3d;
     bool emit_lfe = true;
     if (pair && !pair->impact3d.empty()) {
@@ -3751,7 +3867,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
 
     auto bind_current = [&]() -> bool {
       const size_t idx = size_t(o.id);
-      if (o.ui >= 0) pcm = o.ui < kMaxUiSamples ? ui_samples_[size_t(o.ui)] : nullptr;
+      if (o.ev >= 0) pcm = o.ev < kMaxEventSamples ? event_samples_[size_t(o.ev)] : nullptr;
+      else if (o.ui >= 0) pcm = o.ui < kMaxUiSamples ? ui_samples_[size_t(o.ui)] : nullptr;
       else pcm = idx < samples_.size() ? samples_[idx] : nullptr;
       if (!pcm || pcm->data.empty() || !std::isfinite(o.phase) || o.phase < 0.0) return false;
       bus = resolve_shot_bus(o.bus);
@@ -3770,6 +3887,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     auto promote_steal = [&]() -> bool {
       o.id = o.next_id;
       o.ui = o.next_ui;
+      o.ev = o.next_ev;
       o.bus = o.next_bus;
       o.phase = 0.0;
       o.gain = o.next_gain;
