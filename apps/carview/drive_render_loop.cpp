@@ -245,6 +245,19 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
                                                         ca.gps_label, at.x, at.z));
             }
             if (ca.launch_event && (!ca.event_id.empty() || ca.route_id > 0)) {
+              // A career launch of an event with a car provided (the Red
+              // Rock showcase's Mustang Boss 429: its ticket says CAR
+              // PROVIDED) races in that car, as the events page's launch does.
+              if (const race::CareerEvent* lev =
+                      app.have_career_catalog && !ca.event_id.empty() ? app.career_catalog.find_event(ca.event_id) : nullptr) {
+                int64_t cid = 0;
+                int clid = 2;
+                current_car_info(cid, clid);
+                const auto elig = app.career_catalog.check_eligibility(*lev, cid, clid, app.class_name_list(), false);
+                if (elig.uses_loaner && elig.loaner_car_id > 0)
+                  if (auto it = app.baked_ids.find(elig.loaner_car_id); it != app.baked_ids.end())
+                    app.pending_event_loaner_car = it->second;
+              }
               app.next_event = !ca.event_id.empty() ? ca.event_id : std::to_string(ca.route_id);
               app.next_event_fallback =
                   (!ca.event_id.empty() && ca.route_id > 0) ? std::to_string(ca.route_id) : std::string{};
