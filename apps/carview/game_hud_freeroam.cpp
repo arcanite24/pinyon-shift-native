@@ -573,6 +573,65 @@ PopularityBadgeAnimFrame evaluate_popularity_badge_anim(const SkillChainHud& sk,
   return out;
 }
 
+std::string format_minimap_distance(double meters, bool metric) {
+  char buf[48];
+  const double m = std::max(0.0, meters);
+  if (metric) {
+    if (m >= 1000.0) std::snprintf(buf, sizeof buf, "%.1f KM", m / 1000.0);
+    else std::snprintf(buf, sizeof buf, "%d M", int(std::lround(m)));
+  } else {
+    const double mi = m / 1609.344;
+    if (mi >= 0.1) std::snprintf(buf, sizeof buf, "%.1f MI", mi);
+    else std::snprintf(buf, sizeof buf, "%d FT", int(std::lround(m * 3.28084)));
+  }
+  return buf;
+}
+
+void draw_minimap_distance_hud(ui::List& l, const GpsHud& gps, float mm_x, float mm_y, float mm_size, float s,
+                               bool metric_units) {
+  if (!gps.active || mm_size <= 0.0f || gps.dist_to_dest_m < 0.0) return;
+  const std::string label = format_minimap_distance(gps.dist_to_dest_m, metric_units);
+  const ui::TextStyle ts = hud_detail::font(ui::Font::kE, 14.5f * s, ui4::kWhite);
+  const float tw = ui::List::measure(label, ts);
+  const float pin_w = 15.0f * s;
+  const float pin_h = 20.0f * s;
+  const float gap = 7.0f * s;
+  const float row_w = pin_w + gap + tw;
+  // Measured on 1280x720 retail captures (f00264_first30a_orig.png, sheet_s3 q002780):
+  // green destination pin + "2.6 MI" / "2.0 MI" centered beneath the minimap at y = mm_bottom + 10.
+  const float x0 = mm_x + 0.5f * mm_size - 0.5f * row_w;
+  const float y0 = mm_y + mm_size + 10.0f * s;
+
+  std::array<float, 4> pin_uv{};
+  if (ui_texture("HUD/SATNAVDEST", pin_uv)) {
+    l.image(x0 + 1.0f * s, y0 + 1.2f * s, x0 + pin_w + 1.0f * s, y0 + pin_h + 1.2f * s, pin_uv,
+            ui::rgba(0, 0, 0, 150));
+    l.image(x0, y0, x0 + pin_w, y0 + pin_h, pin_uv, ui4::kGreen);
+  } else {
+    // Crisp vector green teardrop pin with target bullseye when texture atlas is absent.
+    const float pcx = x0 + 0.5f * pin_w;
+    const float pcy = y0 + 0.38f * pin_h;
+    const float pr = 0.48f * pin_w;
+    const float tip_y = y0 + pin_h;
+    l.circle(pcx + 1.0f * s, pcy + 1.2f * s, pr + 1.0f * s, ui::rgba(0, 0, 0, 130));
+    l.line(pcx - pr * 0.65f, pcy + pr * 0.55f, pcx, tip_y, 2.8f * s, ui::rgba(16, 46, 22, 220));
+    l.line(pcx + pr * 0.65f, pcy + pr * 0.55f, pcx, tip_y, 2.8f * s, ui::rgba(16, 46, 22, 220));
+    l.line(pcx - pr * 0.52f, pcy + pr * 0.45f, pcx, tip_y - 1.0f * s, 2.2f * s, ui4::kGreen);
+    l.line(pcx + pr * 0.52f, pcy + pr * 0.45f, pcx, tip_y - 1.0f * s, 2.2f * s, ui4::kGreen);
+    l.circle(pcx, pcy, pr + 0.8f * s, ui::rgba(16, 46, 22, 220));
+    l.circle(pcx, pcy, pr, ui4::kGreen);
+    l.circle(pcx, pcy, pr * 0.55f, ui::rgba(20, 62, 28, 220));
+    l.circle(pcx, pcy, pr * 0.28f, ui4::kGreen);
+  }
+
+  const float tx = x0 + pin_w + gap;
+  const float ty = y0 + 0.5f * (pin_h - ts.size) - 0.5f * s;
+  ui::TextStyle sh = ts;
+  sh.color = ui::rgba(0, 0, 0, 195);
+  l.text(tx + 1.2f * s, ty + 1.4f * s, label, sh);
+  l.text(tx, ty, label, ts);
+}
+
 }  // namespace carview
 
 namespace carview::hud_detail {

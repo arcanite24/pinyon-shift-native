@@ -773,7 +773,7 @@ bool should_show_gps_turn_banner(const GpsHud& gps) {
     if (gps.dist_to_dest_m < 30.0) return false;
     if (!gps.confirmed_uturn && gps.dist_to_turn_m < 5.0) return false;
   }
-  if (gps.turn_kind == 0 && gps.turn_text.empty() && gps.dist_to_turn_m < 5.0) return false;
+  if (gps.turn_kind == 0 || gps.turn_kind == 1 || gps.turn_kind == 9) return false;
   return true;
 }
 
@@ -1046,7 +1046,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
   if (st.driving && !menu && !st.event_summary) {
     const bool show_tags = st.hud.names_over_cars && !st.name_tags.empty() &&
                            (!st.race || st.race->phase == RaceHud::kCountdown || st.race->phase == RaceHud::kRacing);
-    const WorldMarkerHud* active_wm = (st.world_marker && st.world_marker->visible && !st.race) ? st.world_marker : nullptr;
+    const WorldMarkerHud* active_wm =
+        (st.world_marker && st.world_marker->visible && !st.race && !st.suppress_world_marker) ? st.world_marker
+                                                                                               : nullptr;
     // In an activation zone the event prompt is 947_HUD's ActivationPrompt;
     // the original draws no label over an event out of range.
     if (active_wm && hud_prompt_available()) {
@@ -1058,9 +1060,18 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       render_world_labels_and_nameplates(l, show_tags ? st.name_tags : kEmptyTags, active_wm, st.race != nullptr, w, h,
                                          st.metric_units);
     }
-    // The route's next turn: DirectionArrows, else the drawn banner.
-    if (st.gps && st.gps->active && !st.race && should_show_gps_turn_banner(*st.gps) &&
-        !draw_hud_direction_arrow(l, *st.gps, w, h, g.s))
+    // Retail FH1 shows the green destination pin + distance ("2.6 MI" / "2.0 MI")
+    // directly beneath the minimap whenever a free-roam GPS route is active.
+    if (st.minimap_visible && st.minimap_size > 0.0f && st.gps && st.gps->active && !st.race) {
+      draw_minimap_distance_hud(l, *st.gps, st.minimap_x, st.minimap_y, st.minimap_size, g.s, st.metric_units);
+    }
+    // Retail FH1 does not show a persistent top-center GPS turn-arrow box or floating
+    // sky destination pin during normal free-roam driving; only draw DirectionArrows /
+    // gps_turn_hud when explicitly opted in or on a confirmed wrong-way U-turn.
+    const bool show_turn_hud =
+        st.gps && st.gps->active && !st.race && should_show_gps_turn_banner(*st.gps) &&
+        (st.gps->show_turn_arrow || (st.gps->turn_kind == 8 && st.gps->confirmed_uturn));
+    if (show_turn_hud && !draw_hud_direction_arrow(l, *st.gps, w, h, g.s))
       gps_turn_hud(l, *st.gps, g, st.metric_units);
     if (st.pr_stunt && st.pr_stunt->active && !st.race) pr_stunt_hud(l, *st.pr_stunt, g);
     if (st.h2h && !st.race) {
@@ -1125,7 +1136,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       const float prox = float(std::clamp(st.barn_radar_proximity, 0.0, 1.0));
       const float pulse_hz = 1.5f + 4.0f * prox;
       const float pulse = 0.5f + 0.5f * std::sin(float(st.time) * 6.28318f * pulse_hz);
-      const bool gps_vis = st.gps && should_show_gps_turn_banner(*st.gps);
+      const bool gps_vis = show_turn_hud;
       const float bx0 = g.L(64), bx1 = g.L(296);
       const float by0 = gps_vis ? g.B(334) : g.B(372);
       const float by1 = by0 + 30.0f * s;
