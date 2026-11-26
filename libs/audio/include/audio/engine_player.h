@@ -86,10 +86,21 @@ class EnginePlayer {
   double dsp_scalar() const;
   // The focus engine group's volume after the Trash DSP (1 while it is off).
   double trash_group_gain() const { return cur_trash_group_gain_; }
-  // Measured against the original (Q322): the car descriptor's scalar, and the
-  // group volume per unit of VolumeCompensate (0.175 x the audio manager's
-  // global level), both relative to the group volume with Trash off.
+  // The car descriptor's scalar behind s (Q322, decoded in first30k): the
+  // fitted intake, exhaust and camshaft levels over their stock rows' levels,
+  // each over 3, weighted 0.165, 0.67 and 0.165, clamped to 0..1. The career
+  // MX-5 (intake 3, exhaust 3, camshaft 1 over stock 0) gives 0.89, which the
+  // original's captures had fitted as 0.9.
+  static double descriptor_dsp_scalar(int intake_up, int exhaust_up, int camshaft_up) {
+    const double v = (0.165 * intake_up + 0.67 * exhaust_up + 0.165 * camshaft_up) / 3.0;
+    return v < 0 ? 0.0 : v > 1 ? 1.0 : v;
+  }
+  // The value used when the caller does not know the fitted parts.
   static constexpr double kDescriptorDspScalar = 0.9;
+  double descriptor_scalar = kDescriptorDspScalar;
+  // Measured against the original (Q322): the group volume per unit of
+  // VolumeCompensate (0.175 x the audio manager's global level), relative to
+  // the group volume with Trash off.
   static constexpr double kTrashGroupScale = 0.24;
   // The focus car's level into and out of its DSP chain, against the
   // original's captures (Q322, Q337). Into the chain the voices carry the
@@ -164,7 +175,7 @@ class EnginePlayer {
     double gain = 0, target_gain = 0;
     double base_target_gain = 0;
     double left = 1, right = 1;
-    Biquad lp, peq, load_peq;
+    Biquad lp, lp2, peq, load_peq;
     double cur_peq_gain = 1.0, cur_load_peq_gain = 1.0;
     // Expander state (ms).
     bool exp_triggered = false;

@@ -258,6 +258,7 @@ void AudioHost::update_other_car_sounds() {
         const double redline = b.redline > idle ? b.redline : std::max(snd.audio_rpm_redline, idle + 1000.0);
         auto ep = std::make_unique<audio::EnginePlayer>(snd, baked->table(), kAudioRate, idle, redline, nullptr);
         ep->master = kEngineMaster;
+    if (focus_descriptor_scalar_ >= 0) ep->descriptor_scalar = focus_descriptor_scalar_;
         ep->positional = true;  // a 3D point source; SfxEngine places it
         ep->attach_owner(baked);
         engine_.set_other_car_engine(id, std::move(ep));
@@ -343,6 +344,7 @@ bool AudioHost::load_car(const std::filesystem::path& sound_dir, const std::file
     auto ep = std::make_unique<audio::EnginePlayer>(baked->loaded.sound, baked->table(), kAudioRate, idle_rpm,
                                                     redline_rpm, baked->intake_chuff());
     ep->master = kEngineMaster;
+    if (focus_descriptor_scalar_ >= 0) ep->descriptor_scalar = focus_descriptor_scalar_;
     // Pin `baked` to the EnginePlayer so any previous car's BakedSound stays alive until
     // the audio thread retires and the main thread reclaims the old EnginePlayer.
     ep->attach_owner(baked);

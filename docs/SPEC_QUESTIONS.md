@@ -6607,8 +6607,23 @@ Still open:
 - ~~the live mixer puts these levels about 7 dB lower in play (Q337)~~
   fixed in first30h: the FocusCar gain is on the voices ahead of the chain,
   and `kFocusPreScale` is now 0.1 / 0.35 per unit of it;
-- the descriptor float behind s (two engine tunings on one car measured);
-- the MX-5's closed-throttle level at mid rpm (3 dB quiet). Tried in
+- ~~the descriptor float behind s~~ decoded in first30k: the engine
+  descriptor stores `clamp((0.165 di + 0.67 de + 0.165 dc) / 3, 0, 1)`,
+  where di, de and dc are the fitted intake, exhaust and camshaft levels
+  over the slot's IsStock row's Level (`List_UpgradeEngine{Intake,Exhaust,
+  Camshaft}`). The career MX-5 (intake 558003, exhaust 558003, camshaft
+  558001, stock level 0) gives 0.89, the fitted 0.9. A stock car gives 0.
+  The engine computes it from the garage's fitted rows
+  (`EnginePlayer::descriptor_dsp_scalar`);
+- ~~the Lowpass's slope~~ decoded in first30k: FMOD Ex's Lowpass is two
+  prewarped bilinear sections of the 4-pole Butterworth prototype (damping
+  0.765367 and 1.847759, each divided by the resonance; a resonance under 1 leaves the
+  coefficients unchanged, and a cutoff over half the rate is set to half the
+  rate minus 10 Hz). No engine or intake XML has a resonance under 1.
+  The engine ran one 12 dB/oct section with Q = resonance. The cascade
+  takes 1 to 1.5 dB off the 8 to 16 kHz excess; what is left is in Q372;
+- the MX-5's closed-throttle level at mid rpm (3 dB quiet; 2.3 dB at
+  3,600 to 5,300 rpm on matched-rpm windows in first30k, Q372). Tried in
   first30h and rejected: feeding NegTorque as the torque over the
   closed-throttle peak (2.63 x ZeroThrottleTorqueScale, as the physics
   trace's load field is normalised) instead of the torque over the
@@ -7012,7 +7027,7 @@ Repeatability: `first30h-snaphalf` (a mod's snapshot edit, overridden by
 the generated file, so effectively a second base run) reads within about
 0.5 dB of `first30f-base` at idle and the limiter.
 
-## Q341 (first30h, physics, not blocking): the MX-5's rev limiter lets the engine run about 600 rpm over the redline
+## Q341 (first30h, physics, answered in first30k): the MX-5's rev limiter lets the engine run about 600 rpm over the redline
 
 The player's MX-5 (`MAZ_Miata_94`) has camshaft row 558001 (`RedlineRPM`
 7,300; `TorqueCurveMaxRPM` 8,500). The original agrees on the redline: its
@@ -7049,6 +7064,57 @@ Needed: the limiter's threshold and release in the engine update (the
 function that applies `k_limiter`), checked on a second car (the R34:
 `RedlineRPM` 8,000, `TorqueCurveMaxRPM` 8,500); then the engine's cut
 changed to match and the c3 limiter re-measured.
+
+**Answer (first30k, decoded from the recomp's generated code).** The
+camshaft-row theory above is wrong; the limiter reads the dial's row.
+- **Cut speed.** The engine setup stores `redline + 0.5 x (TorqueCurveMax -
+  redline)` (as angular velocity) in the engine block: 7,900 rpm on the
+  MX-5 (7,300 / 8,500), 8,250 on the R34 (8,000 / 8,500).
+- **Cut and release.** In each physics substep, an engine speed over the
+  cut speed sets a cut flag and zeroes a timer. While the flag is set the
+  engine's throttle (the value the drivetrain integrate reads) is 0 and the
+  timer advances by the step; the flag clears once the timer passes
+  0.04 s. There is no rpm-based release, so the cut lasts 0.04 s after the
+  last overshoot.
+- **Ceiling.** The engine-to-gearbox sync clamps the engine at
+  `TorqueCurveMaxRPM`; nothing clamps at 1.04 x the redline.
+- `k_limiter` 0.05 is not on this path (the spec's value is unexplained).
+  A separate over-rev damage branch (margin 150 rpm, gated on a damage
+  mode) exists and is not modelled.
+
+The engine now does the same (`Vehicle::rev_cut_rpm()`; the sound reads
+the cut throttle through `applied_throttle()`). c3 route, full throttle,
+samples over 7,000 rpm:
+
+| | n | mean | median | p90 | max |
+|---|---|---|---|---|---|
+| original (`first30h-trace1`) | 469 | 7,503 | 7,525 | 7,836 | 7,910 |
+| engine before (`out/first30h/runs/after1-c3-mix`) | | 7,185 | 7,173 | | 7,313 |
+| engine after (`out/first30k/runs/k1-c3-mix`) | 131 | 7,562 | 7,559 | 7,828 | 7,913 |
+
+The limiter's sound now compares at the same rpm: original 7,585 rpm,
+-21.8 dB, centroid 934 Hz; engine 7,571 rpm, -22.2 dB, 969 Hz, band split
+(0-150 / 150-500 / 500-2k / 2-6k / 6k+ Hz, %) 2/18/76/4/1 against
+1/18/77/4/0.
+
+AI gate (`tools/race/gate.py`; baseline is the same physics with the old
+limiter; runs in `out/first30k/gate-*`), AI mean time against the oracle:
+
+| event | oracle | seeds | baseline | limiter | checks failing (baseline / limiter) |
+|---|---|---|---|---|---|
+| FR22 | 161.5 | 1-2 | 162.5 | 160.7 | none / none |
+| FR16 | 124.0 | 1-2 | 129.6 | 122.8 | time, place, winner / none |
+| FR24 | 110.8 | 1-6 | 109.4, 109.1 | 108.9, 108.8 | place / place |
+| FR01 | 102.7 | 1-2 | 106.3 | 99.7 | time / place |
+| FR01 | 102.7 | 3-6 | 104.6 | 102.0 | place / place, winner |
+| FR01 | 102.7 | 7-12 | 102.2 | 103.8 | place, winner / place, winner |
+| NR02 | 130.7 | 1-6 | 152.9, 168.1 | 163.2, 163.9 | time / time |
+| FEST | 179.0 | 1-2 | 181.8 | 183.2 | none / none |
+
+FR01's AI winner is slot 3 instead of slot 0 in 1 of 10 baseline seeds and
+2 of 10 with the limiter. The player is 3rd to 7th in both, so the place
+and winner checks fail with and without the change. NR02's time failure is
+one AI car whose time varies from 140 to 168 s between seeds.
 
 ## Q361 (first30j, HUD, not blocking): the AI name tags' size and reach with distance
 
@@ -7172,3 +7238,46 @@ uses one of these or the world. The engine is unchanged.
 
 Needed: a capture of MY GARAGE opened from an outpost (its file opens
 name the room's track).
+
+## Q371 (first30k, audio, not blocking): the shift and lift transients against the original
+
+Measured on the c3 route (original `.local/runs/first30h-trace1`, engine
+`out/first30k/runs/k2-c3-mix`, engine bus only). At the 1-2 upshift both
+games dip about 5 dB, but the comparison does not separate timing from
+level: the original's captures run on wall time while the route is frame
+driven, and the engine's script lifts at 14.17 s where the original stayed
+on the throttle about 1.5 s longer. The limiter's sound now matches at
+matched rpm (Q341). Not measured: the blip on downshifts, the cut's
+length on upshifts, and the backfire and overrun pops (the engine has no
+pop model).
+
+Needed: a route where both games shift at the same moments (for example
+manual shifts at fixed rpm from the physics trace, not at fixed times),
+with captures stamped on the trace's clock; then the dip's depth and
+length, the blip's rpm and the pops' rate compared shift by shift.
+
+## Q372 (first30k, audio, not blocking): the focus engine's spectrum left after the Lowpass fix
+
+Matched-rpm windows on the c3 route (`out/first30k/harness/matchspec.py`,
+original `first30f-base`, engine `out/first30k/runs/k3-lp4`), third
+octaves in dB re each side's total, engine minus original:
+
+| state | rpm | level | 100-126 Hz | 252 Hz | 504 Hz | 8 kHz | 10 kHz | 12.8 kHz |
+|---|---|---|---|---|---|---|---|---|
+| full gas | 4,000-5,600 | +0.3 dB | -8.6 / -12.0 | -7.4 | -5.8 | +1.4 | +2.3 | +3.1 |
+| limiter | 7,000-8,000 | -0.3 dB | +2.0 / +2.6 | +0.6 | -0.3 | +1.8 | +2.9 | +3.6 |
+| closed | 4,500-6,500 | -2.3 dB | -4.4 / +4.1 | +3.6 | +1.1 | +2.1 | -1.4 | +3.3 |
+| closed | 3,000-4,500 | -2.3 dB | +3.4 / -2.1 | -3.2 | +3.8 | +1.3 | +3.4 | +2.4 |
+
+- Under load the engine's windows are wheelspin at 15 km/h and the
+  original's are at 40 km/h, with only three engine windows: the 150 to
+  500 Hz shortfall (7% of the power against 14%) may be the LoadPEQ seeing
+  a different load, not the sound.
+- The top end is still 2 to 3.5 dB high at 10 to 13 kHz in every state, so
+  it is not a load or rpm curve. Candidates: the resampler (the engine
+  interpolates the loops linearly; FMOD Ex's resampler and mix rate in
+  the title are not checked), or the FocusPEQ offsets.
+- The overrun is 2.3 dB quiet from 3,600 to 5,400 rpm, on few windows (2 original at 3,000-4,500, 2 engine at 4,500-6,500; Q322).
+
+Needed: a load route at matched speed and rpm (second gear pull from
+40 km/h), and the FMOD Ex mixer's resampling mode and rate in the title.

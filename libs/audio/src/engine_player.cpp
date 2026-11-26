@@ -141,7 +141,7 @@ void EnginePlayer::trigger_shift_boost(bool upshift) {
 
 double EnginePlayer::dsp_scalar() const {
   const auto& d = sound_.dsp_scalar;
-  return d.present ? d.dsp_max_scalar * kDescriptorDspScalar : 0.0;
+  return d.present ? d.dsp_max_scalar * descriptor_scalar : 0.0;
 }
 
 void EnginePlayer::update_expander_state(size_t g, double dt_ms) {
@@ -327,14 +327,18 @@ void EnginePlayer::set(const Update& u) {
     st.left = positional ? 1.0 : group.pan_left[view];
     st.right = positional ? 1.0 : group.pan_right[view];
 
-    // 2nd-order resonant Lowpass.
+    // FMOD Ex's Lowpass is 24 dB/oct: two prewarped bilinear sections of the
+    // 4-pole Butterworth prototype (damping 0.765367 and 1.847759), with each
+    // section's damping divided by the resonance (1..10, default 1).
     if (group.lowpass) {
       const double fc = safe_clamp(group.lowpass_cutoff.eval(in, neg_raises), 20.0, 0.45 * rate_, 0.45 * rate_);
-      const double q =
-          group.lowpass_resonance.present ? safe_clamp(group.lowpass_resonance.eval(in, neg_raises), 0.1, 12.0, 0.707) : 0.707;
-      st.lp.set_lowpass(fc, q, rate_);
+      const double res =
+          group.lowpass_resonance.present ? safe_clamp(group.lowpass_resonance.eval(in, neg_raises), 1.0, 10.0, 1.0) : 1.0;
+      st.lp.set_lowpass(fc, res / 0.765367, rate_);
+      st.lp2.set_lowpass(fc, res / 1.847759, rate_);
     } else {
       st.lp.set_bypass();
+      st.lp2.set_bypass();
     }
 
     // PEQ with audio_rpm_idle_gain_reset linear blend on ExhaustL.
@@ -471,6 +475,7 @@ void EnginePlayer::render(float* out, int frames) {
         double s = st.peq.tick(sum, smooth_);
         s = st.load_peq.tick(s, smooth_);
         s = st.lp.tick(s, smooth_);
+        s = st.lp2.tick(s, smooth_);
         s *= st.gain * group_post;
         if (std::isfinite(s)) {
           dst[2 * f] += float(s * st.left);

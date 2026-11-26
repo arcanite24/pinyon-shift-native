@@ -2494,6 +2494,12 @@ void phase_r2_5_audio_completeness_checks() {
     audio::EnginePlayer ep(es, {{&tone}}, 48000, 800.0, 7000.0);
     const double s = audio::EnginePlayer::kDescriptorDspScalar;
     CHECK(near(ep.dsp_scalar(), s, 1e-12));
+    // The descriptor's scalar from the fitted levels over stock (Q322): the
+    // career MX-5's intake 3, exhaust 3 and camshaft 1 give 0.89.
+    CHECK(near(audio::EnginePlayer::descriptor_dsp_scalar(3, 3, 1), 0.89, 1e-9));
+    CHECK(audio::EnginePlayer::descriptor_dsp_scalar(0, 0, 0) == 0.0);
+    CHECK(audio::EnginePlayer::descriptor_dsp_scalar(3, 3, 3) == 1.0);
+    CHECK(audio::EnginePlayer::descriptor_dsp_scalar(-1, 0, 0) == 0.0);
     ep.set({3000.0, 1.0, 1.0, 0.0, audio::View::kFollow});
     CHECK(near(ep.trash_group_gain(), (0.4 - 0.08 * s) * audio::EnginePlayer::kTrashGroupScale, 1e-9));
     std::vector<float> buf(4800 * 2, 0.0f);

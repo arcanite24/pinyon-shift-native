@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/engine_player.h"
 #include "cars/livery.h"
 #include "cars/mods.h"
 #include "drive/from_bake.h"
@@ -152,6 +153,16 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
                 audio_sc_level = std::max(csc_lvl, dsc_lvl);
                 audio_sc_is_centrifugal = (csc_lvl > 0 && csc_lvl >= dsc_lvl);
                 audio_camshaft_level = int(rows.get("List_UpgradeEngineCamshaft.Level", 0));
+                // The engine sound's DSPScalar reads the fitted intake, exhaust
+                // and camshaft levels over the stock rows' (Q322).
+                cars::CarPhysics stock;
+                std::string se;
+                if (db->physics(gc->car_id, {}, stock, &se)) {
+                  auto up = [&](const char* k) { return int(std::lround(rows.get(k, 0) - stock.get(k, 0))); };
+                  app.audio_host.set_focus_descriptor_scalar(audio::EnginePlayer::descriptor_dsp_scalar(
+                      up("List_UpgradeEngineIntake.Level"), up("List_UpgradeEngineExhaust.Level"),
+                      up("List_UpgradeEngineCamshaft.Level")));
+                }
                 std::printf("garage: car %lld (%s) with its parts, %.0f kg (%.1f s)\n", (long long)gc->id,
                             it->second.c_str(), rows.get("List_UpgradeCarBodyWeight.Mass", 0),
                             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -159,6 +170,8 @@ drive::CarParams build_session_vehicle_params(DriveApp& app, DriveWorldHost& hos
               }
               physics_notes.push_back("garage parts not applied: " + e);
             }
+        // A stock car: no parts over the stock rows, so the descriptor's scalar is 0.
+        app.audio_host.set_focus_descriptor_scalar(0.0);
         drive::CarParams params = drive::params_for_baked_car(info, app.bake_dir, &physics_notes);
         if (params.has_turbo && audio_turbo_level == 0) audio_turbo_level = 1;
         if (params.has_supercharger && audio_sc_level == 0) audio_sc_level = 1;

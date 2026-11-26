@@ -584,6 +584,7 @@ void Vehicle::launch(const Vec3& position, double heading, double speed, double 
   engine_torque_prev_ = 0;
   rev_cut_active_ = false;
   rev_cut_timer_ = 0;
+  applied_throttle_ = 0;
   rest_hold_ = false;  // on the move
 }
 
@@ -639,6 +640,7 @@ void Vehicle::reset(const Vec3& position, double heading) {
   kb_steer_filtered_ = 0;
   rev_cut_active_ = false;
   rev_cut_timer_ = 0;
+  applied_throttle_ = 0;
   handbrake_shaped_ = 0;
   body_free_time_ = 1.0;  // contacts before the reset do not join the next one
   abs_flag_ = false;
@@ -1176,8 +1178,10 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
       full = lerp(p_.torque_curve[i], p_.torque_curve[i + 1], x - double(i));
     }
   }
-  const double k_limiter = (rev_cut_active_ || rpm >= p_.redline_rpm) ? 0.0 : 1.0;
-  const double wot = full * p_.torque_scale * boost_factor_ * k_limiter * torque_factor_;
+  // No limiter here: the original's rev limiter zeroes the throttle before
+  // the engine update (Vehicle::substep), so the curve itself runs on past
+  // the redline to TorqueCurveMaxRPM.
+  const double wot = full * p_.torque_scale * boost_factor_ * torque_factor_;
   // SPEC-CAR-PHYSICS, Engine item 1 (confirmed): for ICE, c_closed ramps
   // linearly 0 -> -1.0 from 800 rpm to peak-power RPM, stays flat -1.0
   // through RedlineRPM, and ramps -1.0 -> -2.63 above RedlineRPM toward
@@ -1196,8 +1200,6 @@ double Vehicle::engine_torque(double rpm, double throttle) const {
     c_closed = over_span > 1.0 ? -1.0 - 1.63 * std::clamp((rpm - p_.redline_rpm) / over_span, 0.0, 1.0) : -2.63;
   }
   const double closed = c_closed * p_.engine_braking;
-  // Rhythmic ignition/fuel cut: zero combustion torque -> engine decelerates under pumping drag.
-  if (k_limiter == 0.0) return closed;
   return throttle * (wot - closed) + closed;
 }
 
@@ -1814,7 +1816,26 @@ void Vehicle::substep(double dt, const Ground& ground) {
   force.y -= p.mass * p.gravity * g_scale;
 
   // 2. Brakes with ABS / No-ABS and STM (SPEC-CAR-PHYSICS, Brakes, ABS, STM).
-  const double drive_in = engine_throttle_;
+  // The rev limiter (SPEC_QUESTIONS Q341), ahead of everything that reads
+  // the throttle as in the original's drivetrain pre-step: above the cut
+  // speed, halfway from RedlineRPM to TorqueCurveMaxRPM, it re-arms with its
+  // timer at 0; while armed it holds the engine's throttle at 0 until the
+  // timer passes 0.04 s. There is no rpm release.
+  if (engine_omega_ * kRpm > rev_cut_rpm()) {
+    rev_cut_active_ = true;
+    rev_cut_timer_ = 0.0;
+  }
+  bool rev_cut_now = false;
+  if (rev_cut_active_) {
+    if (rev_cut_timer_ > 0.04) {
+      rev_cut_active_ = false;
+    } else {
+      rev_cut_timer_ += dt;
+      rev_cut_now = true;
+    }
+  }
+  const double drive_in = rev_cut_now ? 0.0 : engine_throttle_;
+  applied_throttle_ = drive_in;
   const bool auto_swap = (!ai_ && assists_.shifting == 0) || ai_;
   const double brake_in = (auto_swap && gear_ == -1 && !pedal_swap_) ? shaped_.throttle : shaped_.brake;
   const bool abs_on = ai_ ? p.abs : (p.abs && assists_.braking != 2);
@@ -2078,20 +2099,6 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
   }
   update_boost(dt, drive_in, rpm());
-  // Rhythmic ignition-cut redline rev-limiter: cuts fuel at redline_rpm and
-  // releases once RPM falls by 200 rpm or after 0.065 s so the tach bounces crisply.
-  const double rpm_sub = engine_omega_ * kRpm;
-  if (rev_cut_active_) {
-    rev_cut_timer_ += dt;
-    if (rpm_sub <= p.redline_rpm - 200.0 || rev_cut_timer_ >= 0.065) {
-      rev_cut_active_ = false;
-      rev_cut_timer_ = 0.0;
-    }
-  }
-  if (!rev_cut_active_ && rpm_sub >= p.redline_rpm) {
-    rev_cut_active_ = true;
-    rev_cut_timer_ = 0.0;
-  }
   const double local_clutch_cap = 1.0 - 0.55 * std::clamp(clutch_damage_, 0.0, 1.0);
   const double eff_clutch_cap = std::min(std::clamp(damage_.clutch_capacity, 0.25, 1.0), local_clutch_cap);
   const double cap = G != 0 ? p.clutch_max_torque * p.clutch_torque_factor * eff_clutch_cap * clutch_ : 0;
@@ -2233,8 +2240,10 @@ void Vehicle::substep(double dt, const Ground& ground) {
     }
     omega_e = w_stall;
   }
-  const double w_red = p.redline_rpm / kRpm;
-  const double w_ceil = 1.04 * w_red;
+  // The engine speed's ceiling is TorqueCurveMaxRPM (ICarDynamics +456, the
+  // clamp in the original's engine-to-gearbox sync); the rev limiter keeps
+  // the engine under it on its own (Q341).
+  const double w_ceil = std::max(p.torque_curve_max_rpm, p.redline_rpm) / kRpm;
   if (!lock_now && omega_e > w_ceil) omega_e = w_ceil;
   locked_ = lock_now;
   engine_omega_ = omega_e;

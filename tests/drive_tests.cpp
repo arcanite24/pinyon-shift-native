@@ -2184,7 +2184,9 @@ int main() {
       CHECK(std::fabs(snapped.pos.x - far_b.pos.x) < 1e-6);
     }
 
-    // R3-PHY-08: Rhythmic ignition-cut redline rev-limiter bounce.
+    // R3-PHY-08: the rev limiter (Q341) cuts the throttle above halfway from
+    // the redline to TorqueCurveMaxRPM and holds it for 0.04 s, so a free rev
+    // bounces under that speed and never reaches the curve's end.
     {
       drive::Vehicle v(p);
       drive::VehicleAssists a;
@@ -2207,8 +2209,9 @@ int main() {
       }
       CHECK(hit_redline);
       CHECK(cut_transitions >= 6);  // rhythmic on/off bounces, not a flat pin
-      CHECK(min_post_cut_rpm < p.redline_rpm - 60.0);
-      CHECK(max_rpm <= p.redline_rpm * 1.04 + 25.0);
+      CHECK(min_post_cut_rpm < v.rev_cut_rpm() - 60.0);
+      CHECK(max_rpm > v.rev_cut_rpm());
+      CHECK(max_rpm < p.torque_curve_max_rpm);
     }
 
     // R3-PHY-07: Keyboard digital steering progressive 0-120 ms tap ramp, highway cap & crisp center return.
