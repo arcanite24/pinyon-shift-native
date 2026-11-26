@@ -391,11 +391,31 @@ multiplier) is its own component. Its slides move `anim_helper`:
 - `ABORT`: holds it (alpha 0.97 to 1 over 0.6 s) and starts a 0.6 s timer;
 - `DEFAULT`: down.
 
+Its children have their own components:
+- `Total`: `DEFAULT` (up, yellow) and `BANK` (2.62 s): `anim_helper` comes
+  in from scale 3 at alpha 0 (0.1 s) to full by 0.5 s, overshoots to 1.05
+  and settles by 0.8 s, holds, and goes out by 2.3 s; `TEXT_TOTAL` flashes
+  white at 0.5 s and is yellow again by 1 s; an event at 2.3 s. `ABORT`
+  tilts it off and fades it over 0.4 s.
+- `Multiplier`: `SHOWN`, `ANIMATE` (from scale 1.3 to 1 over 0.2 s with a
+  flash), `HIDE` (alpha out over 0.3 s), `ABORT`, `HIDDEN`.
+- `SkillGroup/Skill1`: `SHOWSKILL` (alpha in over 0.2 s, scale 1.5 to 0.95
+  to 1 by 0.3 s, a flash), `SHOWNSKILL`, `WARNINGSKILL` (1.2 s: alpha
+  pulses 30/50 % every 0.2 s, then 0), `ABORTSKILL` (tilts off, out by
+  0.4 s), and the `*COMBO` versions.
+- `PopularityBar`: `SHOW` (1.4 s; the 1st-place background shrinks from
+  2.5, the rest is in by 0.75 s), `SHOWN`, `HIDE` (3 s; holds to 2.27 s, out
+  by 2.67 s), `LEVEL_UP`, `LEVEL_UP_FINAL`.
+
 `draw_hud_skills` plays `SHOW` from the chain's first skill, `ABORT` for
-0.6 s when the chain is lost and then `HIDE`, and `HIDE` 3 s after a bank
-(where the measured fade started). Before, a lost chain stayed 1.5 s and
-faded over 0.7 s, and a banked total faded over 0.5 s; those fades stay for
-the scenes without a timeline (Q243).
+0.6 s when the chain is lost and then `HIDE`. A bank keeps the group up and
+plays `Total`'s `BANK` (the original's banked total is gone about 2.1 s
+after it shows, first30b). `Skill1` plays `SHOWSKILL` for 0.6 s as a skill
+lands, `WARNINGSKILL` over the chain's last 1.2 s and `SHOWNSKILL` between;
+the multiplier plays `ANIMATE` as it changes. The disc keeps the engine's
+own badge animation and fades out from 3.67 to 4.07 s after the bank (the
+end of `SHOW` then `HIDE`). Without a timeline, a lost chain stays 1.5 s
+and fades over 0.7 s, and a banked total fades from 2 to 2.3 s (Q243).
 
 ## Map profile animations
 

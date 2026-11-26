@@ -562,12 +562,25 @@ constexpr uint32_t kLostRed = ui::rgba(236, 52, 44);
 // The rows' stackers centre them on x 640; the gaps between their texts
 // (measured on the same captures).
 constexpr float kScoreGap = 6.0f, kSkillGap = 4.0f;
-// How long the banked total and the disc stay up, and the lost chain.
-constexpr double kBankSeconds = 3.5, kLostSeconds = 2.2, kRankSeconds = 4.0;
-// With ScoreGroup's slides: the banked total holds until HIDE at 3 s (the
-// measured fade's start); a lost chain's ABORT runs its 0.6 s timer, then
+// How long the banked total stays up: Total's BANK slide (2.62 s; it is
+// gone by 2.3 s, and the original's banked total is gone 2.1 s after it
+// shows, first30b). The lost chain, and a rank change's disc.
+constexpr double kBankSeconds = 2.62, kLostSeconds = 2.2, kRankSeconds = 4.0;
+// The disc after a bank: PopularityBar's SHOW (1.4 s), then HIDE, which
+// holds to 2.27 s and is out by 2.67 s (the original's disc is gone about
+// 4.1 s after the bank, first30b).
+constexpr double kDiscSeconds = 4.07, kDiscFadeFrom = 3.67;
+// Without the slides, the banked total's measured fade (3.0..3.5 s).
+constexpr double kBankHoldSeconds = 3.0;
+// With ScoreGroup's slides: a lost chain's ABORT runs its 0.6 s timer, then
 // HIDE; SHOW is over by 0.3 s.
-constexpr double kBankHoldSeconds = 3.0, kScoreAbortSeconds = 0.6, kScoreShowMs = 300.0;
+constexpr double kScoreAbortSeconds = 0.6, kScoreShowMs = 300.0;
+// Skill1's slides: SHOWSKILL as a skill lands (its curves end by 0.6 s),
+// WARNINGSKILL over the chain's last 1.2 s (its pulse at 30..50 % alpha,
+// the original's greyed line before a bank).
+constexpr double kSkillShowSeconds = 0.6, kSkillWarnSeconds = 1.2;
+// Multiplier's ANIMATE as the multiplier changes (its curves end by 0.2 s).
+constexpr double kMultAnimateSeconds = 0.3;
 
 // Packs texts on one row centred on canvas x `cx` by their left edges.
 void pack_row(SceneScreen& sc, const std::vector<std::pair<int, std::string>>& items, float cx,
@@ -606,10 +619,11 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const SceneFrame f = hud_frame(HudAnchor::kTop, w, h, s);
   const double since_bank = time - sk.banked_at, since_lost = time - sk.lost_at, since_rank = time - sk.rank_up_at;
   const bool banked = since_bank >= 0 && since_bank < kBankSeconds;
+  const bool disc_banked = since_bank >= 0 && since_bank < kDiscSeconds;
   const bool lost = since_lost >= 0 && since_lost < kLostSeconds;
   const bool rank_up = (since_rank >= 0 && since_rank < kRankSeconds) ||
                        (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
-  if (!sk.active && !banked && !lost && !rank_up) return true;
+  if (!sk.active && !disc_banked && !lost && !rank_up) return true;
 
   // The chain: the score and multiplier, the last skill and its points.
   const int mult = child(sd, score, "Multiplier");
@@ -634,14 +648,43 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     score_slide = since_lost < kScoreAbortSeconds ? "ABORT" : "HIDE";
     score_ms = (since_lost < kScoreAbortSeconds ? since_lost : since_lost - kScoreAbortSeconds) * 1000.0;
   } else if (banked) {
-    score_slide = since_bank < kBankHoldSeconds ? "SHOW" : "HIDE";
-    score_ms = since_bank < kBankHoldSeconds ? kScoreShowMs : (since_bank - kBankHoldSeconds) * 1000.0;
+    // The group stays shown; Total's BANK carries the banked total in and out.
+    score_slide = "SHOW", score_ms = kScoreShowMs;
   }
+  bool bank_played = false;
   if (sk.active || lost || banked) {
     const bool played =
         play_slide(sc, score_tl, child_path(sd, skill, "CompleteComponent/ScoreGroup"), score_slide, score_ms);
-    if (played) raise_all(sc, score);
-    else show_all(sc, score);
+    if (played) {
+      // Total: BANK as the chain banks, else at rest (BANK ends at alpha 0).
+      const int total_c = child_path(sd, score, "Total");
+      bank_played = banked && !sk.active && play_slide(sc, score_tl, total_c, "BANK", since_bank * 1000.0);
+      if (!bank_played) play_slide(sc, score_tl, total_c, "DEFAULT", 0.0);
+      // Multiplier: ANIMATE as it changes, SHOWN while it holds.
+      static float last_mult = 0.0f;
+      static double mult_changed = -1e9;
+      const float m = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
+      if (sk.active && std::fabs(m - last_mult) > 1e-4f) {
+        // Not as a chain opens (its first X1.0 comes in with the group).
+        if (last_mult > 0.0f && time >= chain_started + 1e-3) mult_changed = time;
+        last_mult = m;
+      }
+      if (!sk.active) last_mult = 0.0f;
+      const double since_mult = time - mult_changed;
+      const bool animate = since_mult >= 0 && since_mult < kMultAnimateSeconds;
+      play_slide(sc, score_tl, mult, animate ? "ANIMATE" : "SHOWN", animate ? since_mult * 1000.0 : 0.0);
+      // BANK moves anim_helper 35 px right, onto the centre once the X and
+      // multiplier beside it are gone; the row here is already centred, so
+      // the move is replaced by one that keeps the scaled total on it.
+      if (bank_played) {
+        const int total_h = child(sd, total_c, "anim_helper");
+        if (auto it = sc.bindings().anim.find(total_h); it != sc.bindings().anim.end())
+          it->second.dx = (cx - sd.at(total_h)[0]) * (1.0f - it->second.sx);
+      }
+      raise_all(sc, score);
+    } else {
+      show_all(sc, score);
+    }
     for (int c : {child(sd, mult_h, "Background"), child(sd, mult_h, "Smudge_Tape"), child(sd, mult, "Flash"),
                   child_path(sd, score, "Total/Flash")})
       sc.hide(c);
@@ -653,12 +696,13 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       sc.hide(mult);
       pack_row(sc, {{total_n, total}}, cx, {});
     }
-    if (total_n >= 0) sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
+    // BANK colours the banked total itself (yellow, a white flash at 0.5 s).
+    if (total_n >= 0 && !bank_played) sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
     // Without the slides, the measured fades (an alpha override, which the
     // slides' fade on the group would not reach).
     if (!played) {
       const float fade = lost && !sk.active     ? 1.0f - float(std::clamp((since_lost - 1.5) / 0.7, 0.0, 1.0))
-                         : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0))
+                         : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 2.0) / 0.3, 0.0, 1.0))
                                                 : 1.0f;
       for (int n : {total_n, x_n, m_n})
         if (n >= 0) sc.at(n).alpha = fade;
@@ -669,7 +713,20 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const int skill_group = child_path(sd, skill, "CompleteComponent/SkillGroup");
   sc.hide(child_path(sd, skill_group, "Skill2"));
   if (sk.active && !sk.last_skill.empty()) {
-    show_all(sc, skill1);
+    // Skill1's slides: SHOWSKILL as a skill lands, WARNINGSKILL over the
+    // chain's last 1.2 s, SHOWNSKILL between.
+    static SceneTimeline skill_tl;
+    const double since_skill = time - sk.last_skill_at;
+    const double left = sk.chain_remaining_s;
+    std::string_view slide = "SHOWNSKILL";
+    double ms = 0.0;
+    if (left > 0.0 && left < kSkillWarnSeconds && since_skill >= kSkillShowSeconds) {
+      slide = "WARNINGSKILL", ms = (kSkillWarnSeconds - left) * 1000.0;
+    } else if (since_skill >= 0.0 && since_skill < kSkillShowSeconds) {
+      slide = "SHOWSKILL", ms = since_skill * 1000.0;
+    }
+    if (play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms)) raise_all(sc, skill1);
+    else show_all(sc, skill1);
     for (int c : {child(sd, skill1, "Background"), child(sd, skill1, "Smudge_Tape"), child(sd, skill1, "ComboIcon")})
       sc.hide(c);
     sc.hide(child_path(sd, skill_group, "Skill1/Flash"));
@@ -682,7 +739,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   sc.draw(l, f, skill);
 
   // The popularity disc: shown when a chain banks or the rank changes.
-  if (banked || rank_up) {
+  if (disc_banked || rank_up) {
     const PopularityBadgeAnimFrame anim = evaluate_popularity_badge_anim(sk, time);
     const int value_type = child_path(sd, pop, "ValueScale/ValueType");
     const int level = child(sd, value_type, "TEXT_LEVEL"), suffix = child(sd, value_type, "TEXT_LEVEL_SUFFIX");
@@ -700,7 +757,10 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
       if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
     sc.hide(child(sd, pop, "Flash_SmokeRing2"));
-    const float fade = banked ? 1.0f - float(std::clamp((since_bank - 3.0) / 0.5, 0.0, 1.0)) : 1.0f;
+    const float fade = disc_banked
+                           ? 1.0f - float(std::clamp((since_bank - kDiscFadeFrom) / (kDiscSeconds - kDiscFadeFrom),
+                                                     0.0, 1.0))
+                           : 1.0f;
     sc.bindings().opacity = fade;
     sc.draw(l, f, pop);
     // The ring's fill (the scene's quarter pieces are turned by the game; an

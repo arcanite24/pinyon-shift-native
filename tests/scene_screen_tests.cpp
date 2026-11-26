@@ -1166,7 +1166,7 @@ int main() {
     hud_shot("hud_direction_arrow.png", "16_race_hud_orig.png", arrow_d);
 
     // The chain's score through ScoreGroup's slides: SHOW as it starts,
-    // ABORT then HIDE as it is lost, HIDE as the banked total goes.
+    // ABORT then HIDE as it is lost, and Total's BANK as it banks.
     {
       carview::SkillChainHud sk;
       carview::DriveHud sk_d = roam;
@@ -1180,13 +1180,18 @@ int main() {
         sk_d.time = t;
         hud_shot("hud_score_" + std::to_string(i++) + "_show.png", "05_roam_hud_day_drive_orig.png", sk_d);
       }
+      // The chain's last 1.2 s: Skill1's WARNINGSKILL (the line pulses at
+      // 30..50 %).
+      sk.chain_remaining_s = 0.5, sk_d.time = 22.5;
+      hud_shot("hud_score_warn.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      sk.chain_remaining_s = 0.0;
       sk.active = false, sk.lost_at = 21.0;
       for (double t : {21.1, 21.5, 21.7, 21.9}) {
         sk_d.time = t;
         hud_shot("hud_score_" + std::to_string(i++) + "_lost.png", "05_roam_hud_day_drive_orig.png", sk_d);
       }
       sk.lost_at = -1e9, sk.banked_at = 30.0, sk.banked_total = 1200;
-      for (double t : {32.9, 33.05, 33.25}) {
+      for (double t : {30.3, 30.55, 31.0, 32.2}) {
         sk_d.time = t;
         hud_shot("hud_score_" + std::to_string(i++) + "_banked.png", "05_roam_hud_day_drive_orig.png", sk_d);
       }
