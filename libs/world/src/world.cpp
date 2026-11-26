@@ -59,6 +59,28 @@ std::string lod_family(const std::string& name, int& lod) {
   return n;
 }
 
+void object_bounds(const fh1::RmbObject& o, const fh1::RenderModel& model,
+                   std::array<float, 3>& bmin, std::array<float, 3>& bmax) {
+  const bool valid_he = std::isfinite(o.centre[0]) && std::isfinite(o.centre[1]) && std::isfinite(o.centre[2]) &&
+                        std::isfinite(o.half_extent[0]) && std::isfinite(o.half_extent[1]) &&
+                        std::isfinite(o.half_extent[2]) &&
+                        (std::fabs(o.half_extent[0]) + std::fabs(o.half_extent[1]) + std::fabs(o.half_extent[2])) > 1e-4f;
+  if (valid_he) {
+    for (int i = 0; i < 3; ++i) {
+      const float he = std::fabs(o.half_extent[size_t(i)]);
+      bmin[size_t(i)] = o.centre[size_t(i)] - he;
+      bmax[size_t(i)] = o.centre[size_t(i)] + he;
+    }
+  } else {
+    bmin = model.box_min;
+    bmax = model.box_max;
+  }
+}
+
+float box_max_extent(const std::array<float, 3>& bmin, const std::array<float, 3>& bmax) {
+  return std::max({0.0f, bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]});
+}
+
 // Bumped whenever what the index records changes (3: the far flag leaves
 // out the CAGE, TERR_CUBE and occluder objects; 4: it also marks objects
 // drawn only with the UberLOD effect), so an older index is rebuilt rather
@@ -136,6 +158,40 @@ bool find_xml_element(std::string_view xml, std::string_view elem_name,
 }
 
 }  // namespace
+
+void WorldLodFilter::add(const std::string& family, int lod, const std::array<float, 3>& box_min,
+                         const std::array<float, 3>& box_max) {
+  if (lod < 0) return;
+  by_family_[family].push_back({lod, box_min, box_max});
+}
+
+bool WorldLodFilter::suppressed(const std::string& family, int lod, const std::array<float, 3>& box_min,
+                                const std::array<float, 3>& box_max, float max_gap) const {
+  if (lod < 0) return false;
+  const auto it = by_family_.find(family);
+  if (it == by_family_.end()) return false;
+  const float gap2 = max_gap * max_gap;
+  for (const auto& e : it->second) {
+    if (e.lod >= lod) continue;
+    float d2 = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+      const float g = std::max({0.0f, box_min[size_t(i)] - e.box_max[size_t(i)],
+                                e.box_min[size_t(i)] - box_max[size_t(i)]});
+      d2 += g * g;
+    }
+    if (d2 <= gap2) return true;
+  }
+  return false;
+}
+
+bool prop_lod_degraded(const std::array<float, 3>& near_min, const std::array<float, 3>& near_max,
+                       size_t near_objects, const std::array<float, 3>& cand_min,
+                       const std::array<float, 3>& cand_max, size_t cand_objects) {
+  if (cand_objects < near_objects) return true;
+  const float near_ext = box_max_extent(near_min, near_max);
+  const float cand_ext = box_max_extent(cand_min, cand_max);
+  return (near_ext - cand_ext) > 2.0f && cand_ext < near_ext * 0.85f;
+}
 
 bool TrackMaterialSettings::load_xml(const std::string& xml_text) {
   if (xml_text.empty()) return false;
@@ -959,7 +1015,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   };
   // far_pass: the far ring's objects only (the near pass skips them).
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
-                           const std::map<std::string, int>* lowest, bool far_pass = false, uint8_t fade = 0) {
+                           const WorldLodFilter* lowest, bool far_pass = false, uint8_t fade = 0) {
     // The model's texture list (WORLD-MATERIALS): list j for member j + 1.
     const std::vector<uint32_t>* texture_list = nullptr;
     if (options.render_data && model_index < models_.size()) {
@@ -1022,8 +1078,9 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         int lod;
         const std::string family = lod_family(o.name, lod);
         if (lod >= 0) {
-          auto it = lowest->find(family);
-          if (it != lowest->end() && it->second != lod) {
+          std::array<float, 3> bmin, bmax;
+          object_bounds(o, model, bmin, bmax);
+          if (lowest->suppressed(family, lod, bmin, bmax)) {
             ++st.skipped_lod;
             continue;
           }
@@ -1272,20 +1329,22 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   std::vector<std::pair<uint32_t, fh1::RenderModel>> selected;
   // The materials always: the effects tell the far ring's objects apart.
   if (!load_models_parallel(near_ids, true, selected)) return false;
-  std::map<std::string, int> lowest;
+  WorldLodFilter lowest;
   for (const auto& [i, model] : selected)
     for (const auto& o : model.objects) {
+      if (skipped_object(o.name) || far_level(o.name, object_effects(model, o)) != 0) continue;
       int lod;
       const std::string family = lod_family(o.name, lod);
       if (lod < 0) continue;
-      auto [it, added] = lowest.emplace(family, lod);
-      if (!added) it->second = std::min(it->second, lod);
+      std::array<float, 3> bmin, bmax;
+      object_bounds(o, model, bmin, bmax);
+      lowest.add(family, lod, bmin, bmax);
     }
   for (const auto& [i, model] : selected) add_triangles(model, i, nullptr, &lowest);
   st.world_models = selected.size();
 
   // The far ring: MIDDIST and UberLOD objects of the models within
-  // far_radius, the finest LOD present per family.
+  // far_radius, the finest LOD present per co-located family.
   if (options.render_data && options.far_radius > 0) {
     std::vector<uint32_t> far_ids;
     const double fr = options.far_radius;
@@ -1299,14 +1358,15 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     }
     std::vector<std::pair<uint32_t, fh1::RenderModel>> far_models;
     if (!load_models_parallel(far_ids, true, far_models)) return false;
-    std::map<std::string, int> far_lowest;
+    WorldLodFilter far_lowest;
     for (const auto& [i, model] : far_models)
       for (const auto& o : model.objects) {
         int lod;
         const std::string family = lod_family(o.name, lod);
         if (lod < 0 || far_level(o.name, object_effects(model, o)) == 0) continue;
-        auto [it, added] = far_lowest.emplace(family, lod);
-        if (!added) it->second = std::min(it->second, lod);
+        std::array<float, 3> bmin, bmax;
+        object_bounds(o, model, bmin, bmax);
+        far_lowest.add(family, lod, bmin, bmax);
       }
     // The hole filling: the near ground's footprint within the widest
     // inner cut (game frame; z is the file frame's here), then each hole
@@ -1337,7 +1397,11 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         if (level == 0) continue;
         int lod;
         const std::string family = lod_family(o.name, lod);
-        if (auto it = far_lowest.find(family); lod >= 0 && it != far_lowest.end() && it->second != lod) continue;
+        if (lod >= 0) {
+          std::array<float, 3> bmin, bmax;
+          object_bounds(o, model, bmin, bmax);
+          if (far_lowest.suppressed(family, lod, bmin, bmax)) continue;
+        }
         const double inner = level == 2 ? options.far_inner_uberlod : options.far_inner;
         double area = 0;
         size_t count = 0;
@@ -1594,21 +1658,55 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         }
       }
       // The levels drawn here, with their fade classes.
+      // Large buildings/landmarks (>= 25 m extent) use fade = 0 so they never
+      // split across 64 m LOD cells, drop sub-objects on stripped LOD02 at
+      // 80-120 m, or fade out at 310-350 m beside 900 m world-space wings.
+      // Smaller 3+ LOD props fall back from LOD02 to LOD01 when LOD02 loses
+      // sub-objects or shrinks significantly compared to LOD00.
       struct Level {
         int64_t member = -1;
         uint8_t fade = 0;
       } levels[2];
-      if (resolvable && fading) {
-        const int64_t far_member = impl_->prop_models->lod_member(m, 2);
+      if (resolvable) {
         const int64_t near_member = impl_->prop_models->lod_member(m, 0);
-        if (near_member == far_member) {
-          levels[0] = {far_member, uint8_t(3)};
-        } else {
-          levels[0] = {far_member, uint8_t(2)};
-          if (d2 < options.prop_near_radius * options.prop_near_radius) levels[1] = {near_member, uint8_t(1)};
+        const int64_t mid_member = impl_->prop_models->lod_member(m, 1);
+        int64_t far_member = impl_->prop_models->lod_member(m, 2);
+        const fh1::RenderModel* r0 = near_member >= 0 ? impl_->prop_models->model(uint32_t(near_member)) : nullptr;
+        const float max_extent = r0 ? box_max_extent(r0->box_min, r0->box_max) : 0.0f;
+        const bool has_distinct_mid =
+            mid_member >= 0 && mid_member != near_member && mid_member != far_member;
+        if (r0 && has_distinct_mid && far_member >= 0) {
+          const fh1::RenderModel* r2 = impl_->prop_models->model(uint32_t(far_member));
+          if (r2 && prop_lod_degraded(r0->box_min, r0->box_max, r0->objects.size(),
+                                      r2->box_min, r2->box_max, r2->objects.size())) {
+            far_member = mid_member;
+          }
         }
-      } else if (resolvable) {
-        levels[0] = {impl_->prop_models->lod_member(m, d2 < options.prop_lod0 * options.prop_lod0 ? 0 : 2), uint8_t(0)};
+        const bool large_structure = max_extent >= kLargeBuildingExtent;
+        if (fading) {
+          if (large_structure) {
+            int64_t chosen = near_member;
+            if (d2 >= options.prop_near_radius * options.prop_near_radius && has_distinct_mid) {
+              const fh1::RenderModel* r1 = impl_->prop_models->model(uint32_t(mid_member));
+              if (r0 && r1 && !prop_lod_degraded(r0->box_min, r0->box_max, r0->objects.size(),
+                                                 r1->box_min, r1->box_max, r1->objects.size())) {
+                chosen = mid_member;
+              }
+            }
+            levels[0] = {chosen, uint8_t(0)};
+          } else if (near_member == far_member) {
+            levels[0] = {far_member, uint8_t(3)};
+          } else {
+            levels[0] = {far_member, uint8_t(2)};
+            if (d2 < options.prop_near_radius * options.prop_near_radius) levels[1] = {near_member, uint8_t(1)};
+          }
+        } else {
+          if (large_structure) {
+            levels[0] = {near_member, uint8_t(0)};
+          } else {
+            levels[0] = {d2 < options.prop_lod0 * options.prop_lod0 ? near_member : far_member, uint8_t(0)};
+          }
+        }
       }
       // The gameplay beacon column (WORLD-MATERIALS item 7: coloradoout.06509,
       // the only DIFF_GLOW_1 model, 105 placements) never drew in the frames

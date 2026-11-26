@@ -1001,7 +1001,7 @@ bool Showroom::near_lod_beyond(const WorldGeometry::Draw& d, const std::array<fl
     const float v = std::max({d.box_min[i] - eye[size_t(i)], 0.0f, eye[size_t(i)] - d.box_max[i]});
     d2 += v * v;
   }
-  const float reach = world_fade_[0] + world_fade_[1] + kPropReach;
+  const float reach = world_fade_[0] + world_fade_[1] + effective_near_prop_reach();
   return d2 > reach * reach;
 }
 

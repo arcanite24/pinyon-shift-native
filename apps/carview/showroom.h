@@ -673,6 +673,8 @@ struct WorldGeometry {
   std::vector<uint32_t> indices;
   std::vector<Draw> draws;
   size_t triangles = 0;
+  // Maximum vertex-to-prop-origin radius across all fade==1/2 draws (m).
+  float near_prop_reach = 0.0f;
 };
 WorldGeometry build_world(const WorldTriangles& world);
 
@@ -822,6 +824,7 @@ class Showroom {
     };
     // Per-prop-draw smashable instance spans extracted off-thread in stage_world() from cached RAM.
     std::vector<std::pair<uint64_t, std::vector<PropSpan>>> prop_spans;
+    float near_prop_reach = 0.0f;
   };
   // `origin_x/z`: what the geometry's positions are relative to, for the content keys of the GPU-driven world.
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error, double origin_x = 0,
@@ -1408,8 +1411,14 @@ class Showroom {
     std::vector<WorldGeometry::Draw> draws;
     bool arena = false;          // its draws are resident (their references are held until it goes)
     double origin[2] = {0, 0};
+    float near_prop_reach = 0.0f;
   };
   float world_fade_[4] = {0, 0, 0, 0};  // set_world_fade's, kept over set_frame
+  float world_near_prop_reach_ = kPropReach;
+  float effective_near_prop_reach() const {
+    const float base = std::max(kPropReach, world_near_prop_reach_);
+    return fading_on_ ? std::max(base, fading_.near_prop_reach) : base;
+  }
   bool fading_on_ = false;
   FadingWorld fading_;
   std::chrono::steady_clock::time_point fade_start_{};

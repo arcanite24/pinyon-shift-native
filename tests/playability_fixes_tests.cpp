@@ -326,6 +326,45 @@ void test_led_panel_winding() {
   }
   CHECK(seen == 2);
 }
+
+// Large placed buildings with fade == 1/2 must expand WorldGeometry::near_prop_reach
+// beyond the default 40 m kPropReach so 64 m cell culling never drops far halves
+// while the building's origin is still inside the active LOD band.
+void test_building_lod_reach_and_culling() {
+  auto build_prop = [](float offset_x, uint8_t fade) {
+    carview::WorldTriangles w;
+    w.colours.push_back({1.0f, 1.0f, 1.0f});
+    // Place one triangle far from its prop origin at (0, 0, 0).
+    w.positions.push_back({offset_x, 0.0f, 0.0f});
+    w.positions.push_back({offset_x + 2.0f, 0.0f, 0.0f});
+    w.positions.push_back({offset_x, 2.0f, 0.0f});
+    for (int i = 0; i < 3; ++i) {
+      w.normals.push_back({0.0f, 0.0f, 1.0f});
+      w.uv0.push_back({0.0f, 0.0f});
+      w.uv1.push_back({0.0f, 0.0f});
+      w.vertex_colours.push_back({255, 255, 255, 255});
+    }
+    w.group = {0};
+    w.material = {0};
+    w.instance = {{0.0f, 0.0f, 0.0f}};
+    carview::WorldTriangles::Material mat;
+    mat.texture = 1;
+    mat.fade = fade;
+    w.materials = {mat};
+    return carview::build_world(w);
+  };
+  // Huge 150 m building in fade == 1 expands near_prop_reach past 150 m.
+  const carview::WorldGeometry big = build_prop(150.0f, 1);
+  CHECK(big.near_prop_reach >= 150.0f);
+  CHECK(big.near_prop_reach > carview::Showroom::kPropReach);
+  // Small 10 m prop stays tightly bounded at kPropReach (40 m).
+  const carview::WorldGeometry small = build_prop(10.0f, 1);
+  CHECK(std::fabs(small.near_prop_reach - carview::Showroom::kPropReach) < 1e-3f);
+  // fade == 0 (large structures promoted out of LOD fade) does not inflate near_prop_reach.
+  const carview::WorldGeometry promoted = build_prop(220.0f, 0);
+  CHECK(std::fabs(promoted.near_prop_reach - carview::Showroom::kPropReach) < 1e-3f);
+}
+
 int main() {
   test_gamepad_db_and_8bitdo();
   test_raw_joystick_and_wheel_calibration();
@@ -333,6 +372,7 @@ int main() {
   test_alt_tab_zero_recreate_fast_path();
   test_water_material_detection();
   test_led_panel_winding();
+  test_building_lod_reach_and_culling();
   if (g_failures == 0) {
     std::printf("playability_fixes_tests: all checks passed\n");
     return 0;

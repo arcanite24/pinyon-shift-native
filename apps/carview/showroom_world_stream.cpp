@@ -167,6 +167,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     const auto it = cutout_cache.find(record);
     return it == cutout_cache.end() ? true : it->second;
   };
+  float max_prop_reach = Showroom::kPropReach;
   std::vector<std::pair<int64_t, uint32_t>> cells;  // (cell, triangle), sorted by cell
   for (uint32_t m : order) {
     if (by_material[m].empty()) continue;
@@ -196,6 +197,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     d.cull = true;
     for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
     float reach = 0;
+    float draw_prop_reach = 0;
     shared.clear();
     // LED displays (anim_flag 2 countdown, 3 flipbook) are unlit and their
     // normals point into the gantry, so turning their faces toward the normals
@@ -245,9 +247,18 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
           v.uv2[1] = float_to_half(world.uv1[c][1]);
         }
         for (int i = 0; i < 4; ++i) v.colour[i] = world.vertex_colours[c][size_t(i)];
-        if (fade_class && t < world.instance.size())
-          for (int i = 0; i < 3; ++i)
-            v.centre[i] = int16_t(std::clamp(std::lround((world.instance[t][size_t(i)] - v.position[i]) * 10.0f), -32767L, 32767L));
+        if (fade_class && t < world.instance.size()) {
+          const float dx = world.instance[t][0] - v.position[0];
+          const float dy = world.instance[t][1] - v.position[1];
+          const float dz = world.instance[t][2] - v.position[2];
+          v.centre[0] = int16_t(std::clamp(std::lround(dx * 10.0f), -32767L, 32767L));
+          v.centre[1] = int16_t(std::clamp(std::lround(dy * 10.0f), -32767L, 32767L));
+          v.centre[2] = int16_t(std::clamp(std::lround(dz * 10.0f), -32767L, 32767L));
+          if (mat.fade == 1 || mat.fade == 2) {
+            const float dist_to_centre = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (std::isfinite(dist_to_centre)) draw_prop_reach = std::max(draw_prop_reach, dist_to_centre);
+          }
+        }
         for (int i = 0; i < 3; ++i) {
           d.box_min[i] = std::min(d.box_min[i], v.position[i]);
           d.box_max[i] = std::max(d.box_max[i], v.position[i]);
@@ -394,9 +405,11 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
       out.indices.resize(d.first_index);
       continue;
     }
+    max_prop_reach = std::max(max_prop_reach, draw_prop_reach);
     out.draws.push_back(d);
     }
   }
+  out.near_prop_reach = max_prop_reach;
   return out;
 }
 
@@ -495,6 +508,7 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   r_.destroy_buffer(world_indices_);
   world_draws_.clear();
   world_triangles_ = 0;
+  world_near_prop_reach_ = kPropReach;
   if (geometry.indices.empty()) {
     evict_world_textures();
     release_retired();
@@ -521,6 +535,7 @@ bool Showroom::set_world(WorldGeometry geometry, std::string& error) {
   }
   world_draws_ = std::move(geometry.draws);
   world_triangles_ = geometry.triangles;
+  world_near_prop_reach_ = std::max(kPropReach, geometry.near_prop_reach);
   evict_world_textures();
   release_retired();
   return true;
@@ -535,6 +550,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
   out.textures = std::move(geometry.textures);
   out.origin_x = origin_x;
   out.origin_z = origin_z;
+  out.near_prop_reach = std::max(kPropReach, geometry.near_prop_reach);
   if (geometry.indices.empty()) return true;
   if (arena_on() && geometry.textured) {
     // Extract hardware-instanced tree sprite quads before index relocalization.
@@ -1037,6 +1053,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     fading_.arena = true;
     fading_.origin[0] = world_origin_[0];
     fading_.origin[1] = world_origin_[1];
+    fading_.near_prop_reach = world_near_prop_reach_;
     if (fade) fading_.draws.reserve(world_draws_.size() / 4 + 16);
     for (auto& d : world_draws_) {
       if (!d.resident) continue;
@@ -1055,6 +1072,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     }
     world_triangles_ = p.staged.triangles;
     world_textured_ = p.staged.textured;
+    world_near_prop_reach_ = std::max(kPropReach, p.staged.near_prop_reach);
     {
       std::lock_guard<std::mutex> lock(world_textures_mutex_);
       for (const auto& d : world_draws_) {
@@ -1093,6 +1111,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     fading_.draws = std::move(world_draws_);
     fading_.origin[0] = world_origin_[0];
     fading_.origin[1] = world_origin_[1];
+    fading_.near_prop_reach = world_near_prop_reach_;
     fading_on_ = true;
     fade_start_ = std::chrono::steady_clock::now();
   } else {
@@ -1109,6 +1128,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
     world_draws_ = std::move(p.staged.draws);
     world_triangles_ = p.staged.triangles;
     world_textured_ = p.staged.textured;
+    world_near_prop_reach_ = std::max(kPropReach, p.staged.near_prop_reach);
     std::lock_guard<std::mutex> lock(world_textures_mutex_);
     for (const auto& d : world_draws_) {
       if (d.texture != kNoWorldTexture) world_lru_.touch(d.texture, world_frame_);
@@ -1123,6 +1143,7 @@ bool Showroom::poll_world(bool wait, bool* swapped) {
   } else {
     world_draws_.clear();
     world_triangles_ = 0;
+    world_near_prop_reach_ = kPropReach;
   }
   world_origin_[0] = p.staged.origin_x;
   world_origin_[1] = p.staged.origin_z;

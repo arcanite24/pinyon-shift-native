@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +22,35 @@ bool same_record(const PvszRecord& a, const PvszRecord& b) {
   return same_floats(a.distances, b.distances) && same_floats(a.position, b.position) &&
          same_floats(a.rotation, b.rotation) && a.unknown == b.unknown &&
          a.extended == b.extended && a.word == b.word && a.extra == b.extra && a.name == b.name;
+}
+
+std::string_view lod_prefix(const std::string& family) {
+  const size_t at = family.find("_lod**");
+  return at == std::string::npos ? std::string_view(family) : std::string_view(family.data(), at);
+}
+
+// Verifies two consecutive LOD candidates occupy the same bounding region and
+// scale, so trailing artist suffixes after "_LODnn" unify cleanly without
+// merging unrelated sequential barrier or terrain chunks.
+bool lod_boxes_compatible(const RenderModel& a, const RenderModel& b) {
+  float ca[3], cb[3], ea[3], eb[3];
+  float max_ext = 0.0f;
+  for (int i = 0; i < 3; ++i) {
+    ca[i] = 0.5f * (a.box_min[i] + a.box_max[i]);
+    cb[i] = 0.5f * (b.box_min[i] + b.box_max[i]);
+    ea[i] = std::max(0.0f, a.box_max[i] - a.box_min[i]);
+    eb[i] = std::max(0.0f, b.box_max[i] - b.box_min[i]);
+    max_ext = std::max({max_ext, ea[i], eb[i]});
+  }
+  const float tol_c = std::max(1.5f, max_ext * 0.20f);
+  const float dx = ca[0] - cb[0], dy = ca[1] - cb[1], dz = ca[2] - cb[2];
+  if (dx * dx + dy * dy + dz * dz > tol_c * tol_c) return false;
+  for (int i = 0; i < 3; ++i) {
+    const float hi = std::max(ea[i], eb[i]);
+    const float lo = std::min(ea[i], eb[i]);
+    if (hi > 1.0f && lo < hi * 0.65f && (hi - lo) > 2.5f) return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -336,24 +367,38 @@ std::vector<uint32_t> PropModels::lod_set(uint32_t member) {
   int level;
   if (!first_name(member, family, level)) return {};
   if (level < 0) return {member};
+  auto matches_neighbor = [&](uint32_t cur, const std::string& cur_family, uint32_t cand,
+                              int expected_level, std::string& cand_family) -> bool {
+    int k = -1;
+    if (!first_name(cand, cand_family, k) || k != expected_level) return false;
+    if (cand_family == cur_family) return true;
+    const std::string_view p0 = lod_prefix(cur_family);
+    const std::string_view p1 = lod_prefix(cand_family);
+    if (p0.empty() || p0 != p1) return false;
+    const RenderModel* ma = model(cur);
+    const RenderModel* mb = model(cand);
+    return ma && mb && lod_boxes_compatible(*ma, *mb);
+  };
   // Down to LOD00, then up while the next member continues the count.
   uint32_t low = member;
+  std::string cur_family = family;
   for (int l = level; l > 0 && low > 0; --l) {
     std::string f;
-    int k;
-    if (!first_name(low - 1, f, k) || f != family || k != l - 1) break;
+    if (!matches_neighbor(low, cur_family, low - 1, l - 1, f)) break;
     --low;
+    cur_family = std::move(f);
   }
   std::string low_family;
   int low_level;
   first_name(low, low_family, low_level);
   std::vector<uint32_t> set{low};
+  cur_family = std::move(low_family);
   for (int l = low_level + 1;; ++l) {
     std::string f;
-    int k;
     const uint32_t next = set.back() + 1;
-    if (!first_name(next, f, k) || f != family || k != l) break;
+    if (!matches_neighbor(set.back(), cur_family, next, l, f)) break;
     set.push_back(next);
+    cur_family = std::move(f);
   }
   return set;
 }
