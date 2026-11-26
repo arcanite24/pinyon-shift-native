@@ -11,6 +11,7 @@
 
 #include "drive_helpers_runtime.h"
 #include "fh1data/world_texture.h"
+#include "fh1data/xds.h"
 #include "world/world.h"
 
 namespace carview {
@@ -93,31 +94,78 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
   const float floor = floor_at(0.0f, 0.0f, 1.0f);
   out.floor_y = floor > -1e8f ? floor : 0.0f;
 
-  // The lightmap scales the surface (an interior's light), so it takes the
-  // AO slot, which the world shader multiplies in; the room's AO is in it.
-  for (auto& m : out.triangles.materials)
-    if (m.light_map != kNoWorldTexture) {
-      m.ao_map = m.light_map;
-      m.light_map = kNoWorldTexture;
-    }
-
-  // TrackSettings.xml's light.
+  // TrackSettings.xml's light and post chain.
   if (std::ifstream ts(folder / "TrackSettings.xml", std::ios::binary); ts) {
     const std::string xml((std::istreambuf_iterator<char>(ts)), std::istreambuf_iterator<char>());
-    auto colour = [&](const char* tag, std::array<float, 3>& c) {
+    // The attribute `name` of the element `tag`, or `fallback`.
+    auto attr = [&](const char* tag, const char* name, float fallback) {
       const size_t at = xml.find(std::string("<") + tag + " ");
-      if (at == std::string::npos) return;
+      if (at == std::string::npos) return fallback;
       const size_t end = xml.find('>', at);
-      int k = 0;
-      for (const char* a : {"r=\"", "g=\"", "b=\""}) {
-        const size_t q = xml.find(a, at);
-        if (q != std::string::npos && q < end) c[size_t(k)] = std::strtof(xml.c_str() + q + 3, nullptr);
-        ++k;
-      }
+      const std::string key = std::string(" ") + name + "=\"";
+      const size_t q = xml.find(key, at);
+      if (q == std::string::npos || q > end) return fallback;
+      return std::strtof(xml.c_str() + q + key.size(), nullptr);
+    };
+    auto colour = [&](const char* tag, std::array<float, 3>& c) {
+      c[0] = attr(tag, "r", c[0]);
+      c[1] = attr(tag, "g", c[1]);
+      c[2] = attr(tag, "b", c[2]);
     };
     colour("LightAmbient", out.ambient);
     colour("LightHemiTop", out.hemi_top);
     colour("LightHemiBottom", out.hemi_bottom);
+    if (xml.find("<filmicTone ") != std::string::npos) {
+      out.tone = true;
+      const char* keys[6] = {"shoulderStrength", "linearStrength", "linearAngle", "toeStrength", "toeNumerator",
+                             "toeDenominator"};
+      for (int i = 0; i < 6; ++i) out.hable[i] = attr("filmicTone", keys[i], out.hable[i]);
+      out.white = attr("filmicTone", "white", out.white);
+      out.exposure_ev = attr("filmicTone", "exposure", out.exposure_ev) + attr("ExposureBias", "value", 0.0f);
+    }
+    out.desaturate = attr("DesaturateAmount", "value", out.desaturate);
+    out.luminance[0] = attr("DesatLuminosity", "r", out.luminance[0]);
+    out.luminance[1] = attr("DesatLuminosity", "g", out.luminance[1]);
+    out.luminance[2] = attr("DesatLuminosity", "b", out.luminance[2]);
+    if (attr("OverrideShadowLightDirection", "value", 0.0f) > 0.5f) {
+      out.light_travel = {attr("ShadowLightDirection", "x", 0.0f), attr("ShadowLightDirection", "y", -1.0f),
+                          attr("ShadowLightDirection", "z", 0.0f)};
+    }
+    const float direct = attr("imageBasedLighting", "iblDirectScale", 1.0f) *
+                         attr("imageBasedLighting", "iblDirectScaleCar", 1.0f);
+    out.car_key = {attr("imageBasedLighting", "iblSunColorR", 1.0f) * direct,
+                   attr("imageBasedLighting", "iblSunColorG", 1.0f) * direct,
+                   attr("imageBasedLighting", "iblSunColorB", 1.0f) * direct};
+    out.ibl_ambient_scale = attr("imageBasedLighting", "iblAmbientScale", 1.0f);
+    out.ibl_ambient_saturation = attr("imageBasedLighting", "iblAmbientSaturation", 1.0f);
+  }
+
+  // The room's static cube (staticcarcubemap.xpr, LogLuv): its mean
+  // radiance, the image-based ambient's base.
+  if (std::ifstream cf(folder / "staticcarcubemap.xpr", std::ios::binary); cf) {
+    const std::vector<uint8_t> raw((std::istreambuf_iterator<char>(cf)), std::istreambuf_iterator<char>());
+    fh1::XprCubemap cube;
+    if (fh1::decode_xpr_cubemap(raw, cube, nullptr) && cube.size > 0) {
+      double acc[3] = {0, 0, 0};
+      size_t n = 0;
+      for (const auto& face : cube.faces)
+        for (const auto& t : face) {
+          for (int k = 0; k < 3; ++k) acc[k] += t[size_t(k)];
+          ++n;
+        }
+      if (n)
+        for (int k = 0; k < 3; ++k) out.cube_mean[size_t(k)] = float(acc[k] / double(n));
+      out.cube = true;
+    }
+  }
+  {
+    const auto& m = out.cube_mean;
+    const float lum = 0.2125f * m[0] + 0.7154f * m[1] + 0.0721f * m[2];
+    // Calibrated on capture 20 (the paint shop's back wall and floor): the
+    // cube's mean is a radiance the shader's ambColor carries at twice.
+    constexpr float gain = 2.0f;
+    for (size_t k = 0; k < 3; ++k)
+      out.ibl_ambient[k] = out.ibl_ambient_scale * gain * (lum + (m[k] - lum) * out.ibl_ambient_saturation);
   }
 
   // The textures: decoded from the room's own archive, records moved past
@@ -152,6 +200,28 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
   out.textures = records.size() - failed.size();
   out.failed = failed.size();
   return true;
+}
+
+void apply_hub_room_post(const HubRoomScenery& room, PostSettings& post) {
+  if (!room.tone) return;
+  for (int i = 0; i < 6; ++i) post.hable[i] = room.hable[i];
+  post.white = room.white;
+  post.auto_exposure = false;
+  post.exposure = std::exp2(room.exposure_ev);
+  post.desaturate = room.desaturate;
+  for (int i = 0; i < 3; ++i) {
+    post.luminance[i] = room.luminance[i];
+    post.balance[i] = 1.0f;
+  }
+  post.lut_enabled = false;
+  post.vignette_amount = 0.0f;
+  post.paired_vignette = false;
+  post.contrast = 1.0f;
+  post.brightness = 0.0f;
+  post.motion_blur = false;
+  post.god_rays = false;
+  post.lens_flare = false;
+  post.dof = false;  // backdrop_blur sets its own bit (renderer_post.cpp)
 }
 
 }  // namespace carview

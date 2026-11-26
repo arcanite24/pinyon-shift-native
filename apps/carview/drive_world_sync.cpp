@@ -791,8 +791,8 @@ void DriveSession::place_world() {
             ps.dof_max_blur = std::clamp(cfg.dof_focal_max_blur > 0.05f ? cfg.dof_focal_max_blur * 0.55f : 0.35f,
                                          0.15f, 0.65f);
             // A popup over the game (STAY IN CAR, the pause confirmations)
-            // blurs the frame behind it.
-            if (popup_backdrop()) {
+            // blurs the frame behind it, as do the option and stats pages.
+            if (popup_backdrop() || page_backdrop()) {
               ps.backdrop_blur = true;
               ps.dof_max_blur = 1.0f;
             }
@@ -826,11 +826,15 @@ void DriveSession::place_world() {
                                    ? 1.0f
                                    : float(1.0 - std::exp(-tod_frame_dt / double(tau)));
             }
+            // A hub room drawn as the world (MENU-02) has its own post chain
+            // (Q222).
+            const carview::HubRoomScenery* room_post = host.room_world_scenery();
+            if (room_post) carview::apply_hub_room_post(*room_post, ps);
             if (photo_mode.active()) {
               ps = photo_mode.effects().apply_to_post(ps);
             }
             host.renderer.set_post_settings(ps);
-            if (!host.user_lut_active) {
+            if (!host.user_lut_active && !room_post) {
               static const DriveWorldHost* s_lut_host = nullptr;
               static world::ColorLutBlender s_lut_blender;
               const bool reset_lut = (s_lut_host != &host || !have_post_lut || app.headless || tod_frame_dt <= 0.0);

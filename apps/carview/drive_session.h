@@ -762,6 +762,10 @@ struct DriveSession {
   // A message popup over the game (STAY IN CAR, the pause menu's
   // confirmations): the frame behind it is blurred.
   bool popup_backdrop() const;
+  // The OPTIONS pages (CONTROLS, DIFFICULTY, HUD, AUDIO) and MY PROFILE's
+  // STATS: the world behind them is blurred as behind a popup (Q224,
+  // captures 23 to 26); the lists that open them are not (22, 31).
+  bool page_backdrop() const;
   // Advances the race screens (timed steps, the grid's start, the finish).
   void update_race_screens(double dt);
   // Plays the race cutscene the flow's step asks for (update_race_screens).
@@ -859,6 +863,7 @@ struct DriveSession {
   void try_trigger_rewind();
   void poll_sdl_events();
   void sample_driving_input(drive::Input& in, double& rig_look);
+  bool pad_was_driving_ = false;  // last frame's pad drove the car (glyph switch on the edge)
 
   // Interactive window loop (drive_render_loop.cpp)
   void poll_async_guest_loads();

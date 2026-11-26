@@ -821,6 +821,12 @@ const cutscene::Cutscene* DriveSession::hub_sequence(std::string_view member, st
   return it->second ? it->second->find(name) : nullptr;
 }
 
+bool DriveSession::page_backdrop() const {
+  const bool option_page = options_page != carview::OptionsPage::kNone && settings_page.is_open();
+  const bool stats_page = career_page.is_open() && career_page.active_tab() == carview::CareerTab::kStats;
+  return option_page || stats_page;
+}
+
 void DriveSession::open_stats() {
           std::vector<cars::PackInfo> packs;
           const carview::CareerSummary cs = app.career_summary(packs);

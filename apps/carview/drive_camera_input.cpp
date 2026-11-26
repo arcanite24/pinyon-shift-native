@@ -746,6 +746,7 @@ WorldTriangles scenery(const world::Mesh& mesh, double origin_x, double origin_z
       wm.is_grass = m.is_grass;
       wm.is_road = m.is_road;
       wm.fade = m.fade;
+      wm.interior = uint8_t(m.effect.rfind("H_INT_", 0) == 0 ? 1 : 0);
       w.materials.push_back(wm);
     }
   }

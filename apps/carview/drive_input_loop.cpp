@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <string>
 
 #include "display_hdr_win.h"
@@ -137,9 +138,18 @@ void DriveSession::poll_sdl_events() {
               slice12.notify_keyboard_or_mouse_input();
             } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
               slice12.notify_gamepad_input(e.gbutton.which, pads);
-            } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && std::abs(int(e.gaxis.value)) > 10000) {
-              slice12.notify_gamepad_input(e.gaxis.which, pads);
-            } else if ((e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN || e.type == SDL_EVENT_JOYSTICK_HAT_MOTION) &&
+            } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+              // Only a stick or trigger pushed past the threshold switches the
+              // glyphs, not one resting there: a drifting stick or a trigger
+              // that rests off zero sends motion events all the time, and
+              // took the help bar back to the pad's buttons after a key.
+              static std::map<std::pair<SDL_JoystickID, int>, bool> axis_out;
+              bool& out = axis_out[{e.gaxis.which, int(e.gaxis.axis)}];
+              const bool now_out = std::abs(int(e.gaxis.value)) > 10000;
+              if (now_out && !out) slice12.notify_gamepad_input(e.gaxis.which, pads);
+              out = now_out;
+            } else if ((e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ||
+                        (e.type == SDL_EVENT_JOYSTICK_HAT_MOTION && e.jhat.value != SDL_HAT_CENTERED)) &&
                        !SDL_IsGamepad(e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN ? e.jbutton.which : e.jhat.which)) {
               slice12.notify_gamepad_input(0, pads);
             }
@@ -674,11 +684,15 @@ void DriveSession::sample_driving_input(drive::Input& in, double& rig_look) {
               pad_in.clutch = clutch;
               pad_used = true;
               pad_was_wheel = is_wheel_pad;
-              slice12.notify_gamepad_input(SDL_GetGamepadID(pad), pads);
+              // The glyphs switch when the pad starts driving, not on every
+              // frame it does: this runs behind the menus too, and a pad
+              // held off zero kept taking their help bars back from a key.
+              if (!pad_was_driving_) slice12.notify_gamepad_input(SDL_GetGamepadID(pad), pads);
               app.touch_controls.notify_gamepad_input(vehicle.time());
               break;
             }
           }
+          pad_was_driving_ = pad_used;
           if (!pad_used &&
               (kb_in.steer != 0 || kb_in.throttle > 0 || kb_in.brake > 0 || kb_in.handbrake || kb_in.clutch > 0)) {
             slice12.notify_keyboard_or_mouse_input();

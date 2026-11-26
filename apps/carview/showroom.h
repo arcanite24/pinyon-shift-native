@@ -606,6 +606,7 @@ struct WorldTriangles {
     uint8_t is_grass = 0;                // world::MeshMaterial::is_grass (_0x00005007)
     uint8_t is_road = 0;                 // world::MeshMaterial::is_road (H_ROAD*)
     uint8_t fade = 0;                    // world::MeshMaterial::fade: the distance cross-fade class
+    uint8_t interior = 0;                // an H_INT_* effect (the hub rooms; params.w packs c0.z, c2.x)
   };
   std::vector<std::array<float, 3>> normals;
   std::vector<std::array<float, 2>> uv0, uv1, uv2;

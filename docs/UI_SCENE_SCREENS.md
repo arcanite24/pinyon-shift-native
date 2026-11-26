@@ -721,12 +721,20 @@ help bar, closing after the cutscene's 9.2 s (`race_screens.cpp`,
 - **Rooms.** The Autoshow, the workshop and the paint shop draw their own
   tracks (`uiautoshow`, `uiworkshop`, `uipaintshop`; `hub_room.h`) in
   Colorado's place while their screens are open, the car at the room's
-  origin on its floor; leaving restores Colorado (Q129). The garage and
-  Barn Finds keep the studio stage. The rooms' light is an interim (Q222):
-  their `H_INT_*` lightmaps scale the surface under a white hemisphere,
-  with no sun, fog or real-time sky (the room's own dome draws), and the
-  car keeps the engine's lighting. The Autoshow's crowd and DJ are not
-  drawn.
+  origin on its floor; leaving restores Colorado (Q129). MY GARAGE opened
+  by the workshop's CHANGE CAR stays in the workshop; from the pause menu
+  and the outposts it and Barn Finds keep the studio stage (Q262). The
+  rooms' surfaces take the decoded `H_INT_*` light (`world_frag.glsl`'s
+  interior branch: albedo x c0.z x (lightmap + (AO + 0.05) x the room's
+  image-based ambient)) and the room's own post chain (`filmicTone`, fixed
+  exposure, desaturation, no LUT; `apply_hub_room_post`), with no sun, fog
+  or real-time sky. The image-based ambient's factor of 2 is fitted on
+  capture 20 (Q222). The car takes the room's key light, with the static
+  cube's mean as its ambient (interim, Q261). The Autoshow's crowd and DJ
+  are not drawn (Q223).
+- **Backdrop blur.** CONTROLS, DIFFICULTY, HUD, AUDIO and STATS blur the
+  world behind them with the pause popups' blur (Q224); its strength and
+  fade are the engine's.
 - **Room cameras.** The room lists play `HomeSpaceCams.xml` (12 looping
   shots); the workshop's body parts and wheels play `WorkshopCams.xml`'s
   `Upgrade_Part_*` sequences and its engine and drivetrain parts the

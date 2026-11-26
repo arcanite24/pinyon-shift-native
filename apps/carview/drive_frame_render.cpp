@@ -1182,13 +1182,19 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             // MENU-02: the room's own track in Colorado's place, the car at its
             // origin with its wheels on the room's floor; the studio stage
             // stays for the rooms without a track and when one does not read.
-            const bool room_track = carview::hub_room_track(active_hub_room) != nullptr &&
-                                    !app.cli_hub_studio && host.enter_room_world(active_hub_room);
+            // MY GARAGE opened by the workshop's CHANGE CAR or BARN FINDS
+            // (the workshop's list still under it) stays in the workshop.
+            const HubRoom scene_room = (active_hub_room == HubRoom::kGarage && hub_menu.open() &&
+                                        hub_menu.top() == carview::HubMenu::kWorkshop)
+                                           ? HubRoom::kWorkshop
+                                           : active_hub_room;
+            const bool room_track = carview::hub_room_track(scene_room) != nullptr && !app.cli_hub_studio &&
+                                    host.enter_room_world(scene_room);
             if (!room_track) host.leave_room_world();
             if (room_track) {
               const carview::HubRoomScenery* rs = host.room_world_scenery();
               const float lift = fy - (rs ? rs->floor_y : 0.0f);
-              const float yaw = carview::hub_room_yaw(active_hub_room);
+              const float yaw = carview::hub_room_yaw(scene_room);
               const float cy = std::cos(yaw), sy = std::sin(yaw);
               // The room's game frame (the car's body axes, +Z forward) turned
               // by the room's yaw, then mirrored into the car model's frame
@@ -1201,20 +1207,38 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   0.0f, lift, 0.0f, 1.0f,
               };
               host.showroom.set_world_transform(room_xf);
-              const float room_sun[3] = {0.45f, 0.78f, -0.42f};
+              // The car's key light comes from the room's ShadowLightDirection
+              // (the game frame, the way the light travels; z mirrored as
+              // in room_xf).
+              float room_sun[3] = {0.45f, 0.78f, -0.42f};
+              if (rs) {
+                const auto& d = rs->light_travel;
+                const float x = -(cy * d[0] + sy * d[2]), y = -d[1], z = -(sy * d[0] - cy * d[2]);
+                const float len = std::sqrt(x * x + y * y + z * z);
+                if (len > 1e-4f) {
+                  room_sun[0] = x / len;
+                  room_sun[1] = y / len;
+                  room_sun[2] = z / len;
+                }
+              }
               const float room_up[3] = {0.0f, 1.0f, 0.0f};
               host.showroom.set_world_light(room_sun, room_up, 1.0f);
-              // The room's light (hub_room.h): no sun, no fog, the lightmap in
-              // the AO slot under a white hemisphere and the room's own.
+              // The room's light (hub_room.h): no sun, no fog; the surfaces
+              // take their lightmaps through world_frag.glsl's interior
+              // branch (day_night_post -1 selects it), the car the room's
+              // key light.
               if (rs) {
                 world::TodState& t = host.showroom.tod_state();
                 t.sun_color = {0.0f, 0.0f, 0.0f};
-                const float gain = carview::kHubRoomLightmapGain;
                 for (int k = 0; k < 3; ++k) {
-                  t.hl_top[size_t(k)] = gain + rs->hemi_top[size_t(k)];
-                  t.hl_bottom[size_t(k)] = gain + rs->hemi_bottom[size_t(k)];
-                  t.ambient_color[size_t(k)] = rs->ambient[size_t(k)];
+                  t.hl_top[size_t(k)] = rs->hemi_top[size_t(k)];
+                  t.hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
+                  t.ambient_color[size_t(k)] = rs->ibl_ambient[size_t(k)];
+                  t.car_sun_color[size_t(k)] = rs->car_key[size_t(k)];
+                  t.car_hl_top[size_t(k)] = rs->cube_mean[size_t(k)];
+                  t.car_hl_bottom[size_t(k)] = rs->cube_mean[size_t(k)];
                 }
+                t.day_night_post = -1.0f;
                 t.ibl_ambient_scale = 1.0f;
                 t.switch_on_lights = 0.0f;
                 t.fog_density = 0.0f;
@@ -1701,9 +1725,17 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               else if (r == "paintshop") open_hub_menu(carview::HubMenu::kPaintBooth);
               else if (r == "paint") open_paint();
               else if (r == "garage") open_garage_browser(false);
+              else if (r == "workshop-garage") {  // the workshop's CHANGE CAR
+                open_hub_menu(carview::HubMenu::kWorkshop);
+                open_garage_browser(false);
+              }
               else if (r == "profile") open_hub_menu(carview::HubMenu::kProfile);
               else if (r == "options") open_hub_menu(carview::HubMenu::kOptions);
               else if (r == "photo") open_hub_menu(carview::HubMenu::kPhotoSelect);
+              else if (r == "difficulty") open_options_page(carview::OptionsPage::kDifficulty);
+              else if (r == "hud") open_options_page(carview::OptionsPage::kHud);
+              else if (r == "controls") open_options_page(carview::OptionsPage::kControls);
+              else if (r == "stats") open_stats();
               s_hub_shot_stage = 1;
               s_hub_shot_t0 = std::chrono::steady_clock::now();
             } else if ((s_hub_shot_stage == 1 || s_hub_shot_stage == 3) && due) {

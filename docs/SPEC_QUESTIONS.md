@@ -3529,8 +3529,9 @@ render target of the car, or a file per car), and the camera they use.
 Mostly answered (WP3). The Autoshow, the workshop and the paint booth are
 tracks on the disc (`uiautoshow`, `uiworkshop`, `uipaintshop`), and the
 engine now draws each one in Colorado's place while its screen is open
-(`hub_room.h`, `DriveWorldHost::enter_room_world`); the garage and Barn
-Finds keep the studio stage. What reading them took:
+(`hub_room.h`, `DriveWorldHost::enter_room_world`). MY GARAGE opened from
+the workshop stays in the workshop (WP3b); from elsewhere it and Barn
+Finds keep the studio stage (Q262). What reading them took:
 
 - The rooms' models are local (within 200 m of the origin), so the room
   gathers them with `GatherOptions::local_models`.
@@ -3575,7 +3576,8 @@ Still open:
   `CarColorSel`'s posy of -0.15 puts the eye below the floor that way, so
   the origin may be the car's centre or its body's base;
 - which workshop part uses a sequence and which a preset (Q221);
-- the rooms' light (Q222) and the Autoshow's crowd and DJ (Q223).
+- the rooms' light (Q222, partly answered; the car's is Q261) and the
+  Autoshow's crowd and DJ (Q223).
 
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
@@ -5293,34 +5295,58 @@ Needed:
 
 ## Q222 (MENU-02, not blocking): the hub rooms' interior shaders
 
-The rooms' surfaces use `H_INT_DIFF_SPEC_REFL_NORM_AO_LM`,
-`H_INT_DIFF_SPEC_REFL_AO_LM`, `H_INT_DIFF_EMISSIVE_2` and a
-`HS_SKY_DIFF_HDRI_SHAD_1` dome. Their TrackSettings have no sun, keep fog
-off, and set a near-black hemisphere:
+Partly answered (WP3b). The rooms' surfaces use
+`H_INT_DIFF_SPEC_REFL_NORM_AO_LM`, `H_INT_DIFF_SPEC_REFL_AO_LM`,
+`H_INT_ROAD_*`, `H_INT_DIFF_EMISSIVE_2` and a `HS_SKY_DIFF_HDRI_SHAD_1`
+dome. Their TrackSettings have no sun and keep fog off. The decoded pixel
+shaders give the light:
 
-- paint booth: ambient 0.04 and DesaturateAmount 0.92;
-- workshop: hemisphere 0;
-- Autoshow: hemisphere top (0.01, 0.02, 0.06).
+- `H_INT_*_AO_LM`: albedo x c0.z x (LM.rgb + (AO.g + 0.05) x ambColor),
+  plus the reflection and specular, output as sqrt. The lightmap is read
+  at the second UV (TEXCOORD1.zw); no scale constant multiplies it.
+- `H_INT_ROAD`: blend x (hemisphere x (AO + 0.05) + LM), the 0.05 in
+  c253.y.
+- `H_INT_DIFF_EMISSIVE_2`: albedo x c0.z x ambColor + Emissive x c0.z.
 
-So the light is baked into each surface's `*_LM` map. The engine's world
-shader adds a Light_Map as Colorado's night spill instead, and its SPIR-V
-cannot be rebuilt here. The interim:
+ambColor is not `LightAmbient` (0.04, which leaves the room 17 times too
+dark). It is image-based: `iblAmbientScale` x the mean of the room's
+`staticcarcubemap.xpr` (LogLuv), at `iblAmbientSaturation`. One factor of
+2 more is fitted on capture 20, so the engine takes
+`ambient = iblAmbientScale x 2 x mean(cube)`. Cube means: paint booth
+0.174, workshop (0.18, 0.198, 0.205), Autoshow (0.189, 0.175, 0.253);
+`iblAmbientScale` 4.8, 2.3 and 2.0.
 
-- `load_hub_room` moves each lightmap into the AO slot, which the shader
-  multiplies in.
-- The frame has no sun, fog or real-time sky, and a white hemisphere of
-  `kHubRoomLightmapGain` (5).
+The rooms' post chain is their own TrackSettings: `filmicTone` (white
+1.5, Hable 0.151, 0.038, 0.566, 0.21, 0.003, 0.141), a fixed exposure of
+2^(0.75 + ExposureBias), `DesaturateAmount` 0.92 at `DesatLuminosity`, and
+no LUT, vignette, contrast, motion blur, god rays, lens flare or depth of
+field.
 
-Against `20_paint_shop_orig.png` the back wall reads 150 of 232 and the
-floor 135 of 144; the original is also greyer (the desaturation is not
-applied). The car keeps the engine's lighting and reflections, not the
-room's `staticcarcubemap.xpr`, and the hemisphere's gain reaches it too
-(the 300SL's door reads 64 at gain 1.6 and 82 at 5). A pale car looks
-overexposed and banded (`19b_manufacturer_select_wp3.png`).
+The engine (`world_frag.glsl`'s interior branch, `hub_room.cpp`,
+`apply_hub_room_post`), measured on `20_paint_shop_wp3b.png` against
+`20_paint_shop_orig.png` (same regions, the two cameras close but not
+equal):
 
-Needed: the `H_INT_*` shaders' lightmap term (its scale and whether it
-replaces the AO), how the rooms' post-process (desaturation and exposure)
-applies, and how the car is lit in a room (the static cubemap).
+| Region (x0,y0,x1,y1) | Engine | Original |
+|---|---|---|
+| back wall (600,30,700,90) | 234 | 232 |
+| left wall (20,180,90,240) | 178 | 218 |
+| floor, front left (20,620,120,700) | 167 | 150 |
+| floor, right (1000,560,1200,640) | 159 | 140 |
+
+The back wall sits on the tone curve's shoulder and barely constrains the
+factor. With 1.5 instead of 2 the floors match (152 and 149) but the back
+wall drops to 219 and the left wall to 157. No single factor fits every
+surface, so the light is still an interim. A material whose lightmap record is a stub
+(the paint booth's door glass) takes its AO map as the lightmap and stays
+interior; before, it took Colorado's light and drew blue.
+
+Still open:
+
+- The factor of 2 is fitted, not decoded. It may be the cube's mip or
+  spherical-harmonic weighting, or the shader's `ambColor` constant.
+- The car's light is an interim (Q261).
+- The paint booth's door glass draws mid-grey, the original's near-black.
 
 ## Q223 (MENU-02, MENU-08, not blocking): the Autoshow's crowd and DJ
 
@@ -5335,14 +5361,13 @@ their animations.
 
 ## Q224 (MENU-06, MENU-18, not blocking): the world behind the option and stats pages
 
-Captures 23 to 26 show the world defocused behind the OPTIONS pages
-(CONTROLS, DIFFICULTY, HUD) and MY PROFILE's STATS. Captures 22 and 31
-show it sharp behind the lists (OPTIONS and PHOTO MODE). The engine draws
-the world sharp behind every page (`23_options_controls_wp3.png` to
-`26_my_profile_stats_wp3.png`). On STATS, the bright sky then shows
-through the gaps between the rows, which the original's blurred, darker
-backdrop hides. The pages' rows and values match the captures (HUD's
-values since WP3).
+Partly answered (WP3b). Captures 23 to 26 show the world defocused behind
+the OPTIONS pages (CONTROLS, DIFFICULTY, HUD) and MY PROFILE's STATS.
+Captures 22 and 31 show it sharp behind the lists (OPTIONS and PHOTO
+MODE). The engine now blurs the frame behind those four pages (and AUDIO,
+which has no capture) with the pause popups' backdrop blur
+(`DriveSession::page_backdrop`;
+`24_options_difficulty_wp3b.png`, `26_my_profile_stats_wp3b.png`).
 
 Needed: which screens turn on the blur (a scene flag or the screen's
 code), its strength and its fade in and out.
@@ -5486,3 +5511,50 @@ Open:
 
 Needed: a recorded title session with its audio, from Press Start into the
 menu and into a load.
+
+The prebuilt `post.frag.spv` had not been rebuilt since the backdrop flag
+went in, so before WP3b neither these pages nor the pause popups blurred
+in a built engine.
+
+Still open: the blur is the engine's eight-tap gather (about 5 px at
+720p), softer and grainier than the original's; which screens turn it on
+in the title (a scene flag or the screen's code); its strength; and its
+fade in and out.
+
+## Q261 (MENU-02, VIS-20, not blocking): the car's light in the hub rooms
+
+The rooms' surfaces are decoded (Q222); the car in them is not. The
+engine lights it with:
+
+- a key light along the room's `ShadowLightDirection`, coloured
+  iblSunColor x iblDirectScale x iblDirectScaleCar;
+- the mean of the room's `staticcarcubemap.xpr` (about 0.17 to 0.2) as
+  its ambient, above and below;
+- the engine's reflections, not the room's `staticcarcubemap.xpr`;
+- no shadow on the room's floor, which the original casts under the car
+  (`20_paint_shop_orig.png`).
+
+Two other ambients were tried. The image-based one that lights the room
+(about 1.7 in the paint booth) turned the tyres light grey, against the
+original's near-black (`20_paint_shop_orig.png`). The rooms' hemisphere
+pair is zero in the workshop and left the car's sides black there. A white
+car in the Autoshow still reads close to clipping (`19_autoshow_wp3b.png`);
+no capture shows the same car in a room to compare.
+
+Needed: the car shader's room terms (the static cube's reflection and its
+ambient, and whether `iblAmbientScale` reaches the car), and a capture of
+one car in the engine and the original in the same room.
+
+## Q262 (VIS-20, VIS-22, not blocking): the scene behind MY GARAGE
+
+`11_car_select_orig.png` shows 108's garage list (an event's CAR SELECT)
+over the world it was opened from, with no stage of its own. The engine
+now keeps the workshop room behind MY GARAGE when the workshop's CHANGE
+CAR opens it (`11_my_garage_workshop_wp3b.png`). From the pause menu and
+the outposts it keeps the engine's studio stage (interim).
+
+No capture shows MY GARAGE itself.
+
+Needed: captures of MY GARAGE from the pause menu, from an outpost and
+from the workshop, and the camera the original uses on the current car
+there.

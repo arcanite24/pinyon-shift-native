@@ -34,7 +34,7 @@
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 1284,
+      "lines": 1304,
       "uses_bda": false,
       "notes": []
     },
@@ -885,7 +885,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 76556,
+      "spirv_bytes": 76772,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -3856,7 +3856,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 129136,
+      "spirv_bytes": 130680,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3980,6 +3980,7 @@
       ],
       "vertex_inputs": [],
       "capabilities": [
+        "DemoteToHelperInvocation",
         "Shader"
       ],
       "uses_point_size": false,
@@ -4154,7 +4155,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 136376,
+      "spirv_bytes": 138364,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4237,6 +4238,7 @@
       ],
       "vertex_inputs": [],
       "capabilities": [
+        "DemoteToHelperInvocation",
         "RuntimeDescriptorArray",
         "Shader",
         "ShaderNonUniform"
@@ -4346,7 +4348,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 131116,
+      "spirv_bytes": 133056,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4454,7 +4456,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 124020,
+      "spirv_bytes": 125516,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
