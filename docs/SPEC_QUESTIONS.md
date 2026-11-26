@@ -3224,8 +3224,7 @@ The rest of the first visit now runs, with `rally_flow` as its step
 All four triggers are in `Rally_DialogueScript_EN.xml`. Interims: the
 heats start from the engine's pre-race menu, where the original runs a
 rolling start under AI control with the pep talk and the heats' intro
-cutscene; the VO is queued, not waited on; the hub's help bar is not
-disabled during the tutorial; and the Autoshow's restriction is the Rally
+cutscene; and the Autoshow's restriction is the Rally
 cars only, though the behaviour's actual contents are unknown. In the
 harness's play bake none of the five Rally cars (nor the heats' loaner)
 is baked, so the restricted Autoshow is empty and the hub opens straight
@@ -3233,12 +3232,17 @@ away ("no cars to buy"). The five are on sale at a price
 (`club_rally_corpus_tests` checks the dealer list; 7,000 to 240,000 Cr),
 so a bake with them lists them (checked with a baked stand-in accepted by
 the filter: the Autoshow listed that one car and its exit opened the
-hub). The VO lines queue behind each other
-(`VoPlayer::trigger` without interrupt).
+hub).
+
+Changed (WP5): the hub tutorial now follows `first_time_hub_flow`: the
+help bar is hidden and the hub takes no input while `ChampionshipStructure`
+plays (waited on), a 0.5 s pause, and `CoDriverIntro` (waited on); then
+the help bar returns and step 4 is saved. A line that never starts
+(no Rally VO bank) gives up after 2 s. The two post-race lines still
+queue behind each other (`VoPlayer::trigger` without interrupt).
 
 Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
-classes, credits), the heats' rolling start and cutscene, and whether
-the flow waits for each VO line before the hub takes input.
+classes, credits) and the heats' rolling start and cutscene.
 
 ## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
 
@@ -3590,16 +3594,12 @@ which the reference save confirms).
 
 ## Q149 (V4-11, V4-21, V4-23, not blocking): the Rally world, the co-driver's lines and level-up gifts
 
-V4-11, the hub as free roam: not built. The original's Rally is
-ColoradoDirt free roam: `game_rally_free_roam_flow` with event tickets
-from the package's `career_event_activations.xml`,
-`rally_event_activations.xml` and `gas_stations.xml`, map icons from
-`rallymapprofile*.xml` and the hub's radio. The engine switches to
-ColoradoDirt and opens its hub overlay (with a FREE ROAM COLORADO DIRT
-row that closes it). Building it needs the free-roam ticket trigger and
-popup, the world markers and the map's Rally profile, which belong with
-the event-activation and map work, not with this branch's screens. Kept
-as the interim: the overlay.
+V4-11, the hub as free roam: settled (Q211). The reading above, that
+the Rally is ColoradoDirt free roam, was wrong: `game_rally_free_roam_flow`
+removes the car and shows `CShowUIScreen_RallyHub` on `H_RALLY_HUB` over
+BgLoop.wmv, a paused menu. The engine now draws that scene. Driving
+ColoradoDirt (the FREE ROAM COLORADO DIRT extra, its world triggers and
+speed traps) is the engine's own, kept off the hub's main layout.
 
 V4-21, the co-driver and Alice: the first visit now plays
 `PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
@@ -4503,3 +4503,47 @@ breaks props and steps the debris, takes one car at a time and steps the
 debris on each call, so the AI's breaks need that split first. Needed:
 whether the title's AI and traffic break props at all, and if so, how
 far from the player.
+
+## Q211 (V4-11, not blocking): the Rally hub's guesses and interims
+
+V4-11 is settled against Q149's reading: the Rally's "free roam" is not
+a drive. `game_rally_free_roam_flow` removes the car, shows BgLoop.wmv
+and `CShowUIScreen_RallyHub` on `H_RALLY_HUB`, and its exits are
+`okCareer` (a ticket), `okRivals`, `selectCar`, `purchaseCar`, `outpost`
+and `return` (the QUIT HORIZON RALLY popup, which unloads to the title
+through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
+"The Rally hub"). Guessed or kept as the engine's:
+
+- The buttons. The scene's button bar is filled at run time; the engine
+  shows A ENTER EVENT, B BACK, Y TRACK LAYOUT (the bgf's Restrictions
+  reverse) and BACK EXTRAS. No X RIVALS: the Rally rivals entry
+  (`okRivals`) is not built (Q147's V4-12).
+- The tickets: only the unlocked championships, in the
+  `MultiStageSeriesEvents` order (tickets 005, 004, 003, 001, 006, 007,
+  002). Whether the original also lists locked
+  tickets, and its order, is unmeasured.
+- The ticket's texts: WINNER TAKES and the prize, the class badge, NEW
+  while the event has never been finished, then its best place. BEST
+  TIME (`TEXT_RACE_TIME`) and the points tape are hidden; the original
+  fills them from data the engine does not keep per championship.
+- ENTRY RESTRICTIONS: the `RestrictionDescription` ids (`_&2027516xx`,
+  table 3093) resolve in no loaded string table, so the reverse shows
+  "Car Class must be <class> or below." (CareerEventUI 0x7013).
+- B's popup reads "return to the main menu" as in the original, but OK
+  goes back to Colorado, not to the title.
+- The engine's EXTRAS (BACK): replay the heats, fit the rally kit in one
+  press (the original converts a car through the car select's RALLY
+  CONVERSION popup), drive ColoradoDirt, and return to Colorado without
+  the popup. None of them is the original's.
+- The car select (`selectCar`), the purchase path (`purchaseCar`), the
+  hub's radio and the ticket ColorScheme tints are not built.
+- The backdrop is black in the live window. BgLoop.wmv (in the Rally
+  package, 1280x720 wmv3) opens, loops and decodes real frames, and
+  `atlas_update("fmv.frame")` succeeds, but the frame's atlas texels
+  never show on screen: a plain image of that atlas entry, drawn last,
+  is black too, at 1280x720 and at 640x360. So the fault is between the
+  queued atlas patch and the GPU atlas, not in the hub's scene. Not
+  fixed here (the renderer's UI upload is another branch's).
+
+Needed: the hub's button bar contents, whether locked tickets show, what
+fills BEST TIME and the points tape, and the restriction strings' table.
