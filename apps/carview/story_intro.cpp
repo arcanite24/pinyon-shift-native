@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <iterator>
 
-#include "game_hud.h"
 #include "hud_scene.h"
 #include "ui4_chrome.h"
 
@@ -441,12 +440,6 @@ std::string disclaimer_texture(std::string_view language) {
   for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
   const bool known = std::find(std::begin(kLanguages), std::end(kLanguages), std::string_view(up)) != std::end(kLanguages);
   return "T:P_Map/P_STA/" + (known ? up : std::string("EN")) + "/P_STA_Disclaimer";
-}
-
-void draw_boot_disclaimer(ui::List& l, float screen_w, float screen_h, std::string_view language) {
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0));
-  std::array<float, 4> uv{};
-  if (ui_texture(disclaimer_texture(language), uv)) l.image(0, 0, screen_w, screen_h, uv);
 }
 
 }  // namespace carview

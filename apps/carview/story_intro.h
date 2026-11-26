@@ -37,8 +37,6 @@ inline constexpr double kDisclaimerSeconds = 3.0;
 // The disclaimer's Textures.zip key for a language ("EN" when the language
 // has no copy of its own).
 std::string disclaimer_texture(std::string_view language);
-// Draws the disclaimer over the whole screen.
-void draw_boot_disclaimer(ui::List& l, float screen_w, float screen_h, std::string_view language);
 
 enum class StoryStage {
   kInactive = 0,

@@ -1056,8 +1056,13 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           carview::draw_radio_popup_gpu(list, radio_popup_gpu, float(width), float(height));
         if (app.story_intro.stage() == carview::StoryStage::kBootSplash)
           app.story_intro.draw_hud(list, float(width), float(height));
-        if (app.story_intro.disclaimer_active())
-          carview::draw_boot_disclaimer(list, float(width), float(height), app.language);
+        if (app.story_intro.disclaimer_active()) {
+          // The legal disclaimer, full screen on black.
+          list.rect(0, 0, float(width), float(height), carview::ui::rgba(0, 0, 0));
+          std::array<float, 4> uv{};
+          if (carview::ui_texture(carview::disclaimer_texture(app.language), uv))
+            list.image(0, 0, float(width), float(height), uv);
+        }
         const bool suppress_campaign_hud =
             map_overlay.active || !st.menu.empty() || settings_page.is_open() || career_page.is_open() || hub_menu.open() ||
             events_page.is_open() || outpost_hub_open || garage_open || shop.is_open() || autoshow.is_open() ||
