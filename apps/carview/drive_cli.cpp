@@ -163,6 +163,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       metric_units = !(u == "imperial" || u == "mph" || u == "IMP" || u == "MPH");
       continue;
     }
+    if (a == "--race-auto-skill") { race_options.autopilot_skill = std::clamp(std::atoi(next()), 1, 80); continue; }
+    if (a == "--race-ai-skill") { race_options.opponent_skill = std::clamp(std::atoi(next()), 1, 80); continue; }
     if (a == "--story-intro") { story_intro_cli = true; continue; }
     if (a == "--campaign-stage") { cli_campaign_stage = next(); continue; }
     if (a == "--cutscene") { cli_cutscene = next(); continue; }
@@ -298,8 +300,6 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     else if (a == "--race-auto") race_auto = 1;
     else if (a == "--race-auto-menus") race_auto = 1, race_auto_menus = true;
-    else if (a == "--race-auto-skill") race_options.autopilot_skill = std::clamp(std::atoi(next()), 1, 80);
-    else if (a == "--race-ai-skill") race_options.opponent_skill = std::clamp(std::atoi(next()), 1, 80);
     else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--radio-press") radio_press_every = std::atof(next());
