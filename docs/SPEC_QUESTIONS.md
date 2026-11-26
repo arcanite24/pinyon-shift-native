@@ -6990,3 +6990,37 @@ Re-measured through the live mixer on the c3 route against `first30f-base`
 The live mixer now matches the engine-only render within 0.7 dB in every
 state, and the bands within 2 %. Left: the top end is about 10 % brighter
 than the original (the Q322 gaps); the limiter rpm differs (Q341).
+
+## Q341 (first30h, physics, not blocking): the MX-5's rev limiter lets the engine run about 600 rpm over the redline
+
+The player's MX-5 (`MAZ_Miata_94`) has camshaft row 558001 (`RedlineRPM`
+7,300; `TorqueCurveMaxRPM` 8,500). The original agrees on the redline: its
+garage row's `SimRedlineAngVel` is 764.45 rad/s (7,300 rpm), and the
+automatic upshift in 2nd comes at 6,896 rpm (0.945 x 7,300). But on the
+limiter the original's engine runs well past it. The c3 route's donuts at
+full throttle in 1st (recomp `.local/runs/first30h-trace1`, physics trace
+every frame, about 15 samples a second in the hidden render): 375 samples
+over 7,000 rpm, mean 7,526, median 7,551, 90th percentile 7,839, maximum
+7,910. In the 1st-gear pull the rpm reaches 7,755 to 7,833 before the
+upshift lands. The engine cuts at the redline (`rev_cut_active_` at
+`redline_rpm`, combustion torque 0, release 200 rpm lower or after
+0.065 s) and reads 7,045 to 7,313 rpm (mean 7,166) on the same route
+(`out/first30h/runs/before-c3-mix`).
+
+So the limiter's ceiling is about 7,900 rpm, roughly halfway from
+`RedlineRPM` to `TorqueCurveMaxRPM` (7,900 = lerp(7,300, 8,500, 0.5)), or
+a cut that lets the engine overshoot by about 8 %. SPEC-CAR-PHYSICS gives
+`k_limiter` 0.05 while the limiter cuts (the engine uses 0) and says the
+traced clamp sits about 1.0 x the redline, which this trace does not show
+for the MX-5. The engine's physics is unchanged: the threshold and the
+release rule are not decoded, and the trace's sampling (60 to 70 ms) is too
+coarse to show the cut's shape.
+
+The sound follows the rpm: the engine's limiter window plays its loops
+400 rpm lower than the original's, so the limiter's level and spectrum
+(Q337) compare different rpm.
+
+Needed: the limiter's threshold and release in the engine update (the
+function that applies `k_limiter`), checked on a second car (the R34:
+`RedlineRPM` 8,000, `TorqueCurveMaxRPM` 8,500); then the engine's cut
+changed to match and the c3 limiter re-measured.
