@@ -4884,15 +4884,13 @@ Still not played:
   `MapProfileFullscreen.xml` profile animations; they are now decoded and
   played (Q241). The perspective map itself and the career unlocks'
   `reveal_drop` are not.
-- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
-  - `SpeedCamera`: `OFF` / `SHOW` / `ON` / `OLDPB`, and more;
-  - its `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
+- **The activity HUDs (ACT-02).** `947_HUD` has the slides:
   - `MissionsDamage`: `BARFILL`;
   - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
 
-  The engine draws its own speed trap and mission HUDs, not these
-  components (ACT-01 and ACT-02 themselves), so there is nothing to play
-  them on yet.
+  The engine draws its own mission HUD, not these components (ACT-02
+  itself), so there is nothing to play them on yet. The speed trap panel,
+  `SpeedCamera` (ACT-01), is drawn and played (Q242).
 
 Also open: the time a contract event is sent relative to the frame it
 takes effect on (the engine fires and advances in the same frame).
@@ -5227,3 +5225,33 @@ decoded from the title ("Map profile animations" in
 Needed: a capture series of a rumour reveal (the map opening on its own
 during a drive), and a capture of the map opened with the player on an
 icon.
+
+## Q242 (ACT-01, not blocking): the speed trap panel's flow and rows
+
+`947_HUD`'s `SpeedCamera` slides are decoded ("The speed trap panel" in
+`docs/UI_SCENE_ANIMATION.md`); which slide the game goes to when, and the
+rows' text, are not. No capture shows the panel. The engine's reading:
+
+- **The flow.** A trap's pass plays `SHOW` (1 s) with the pass's speed,
+  then `NEWPB` or `OLDPB`, which fade the panel out at 2 s. A zone plays
+  `SHOW` as it starts and `ON` while it runs, with the live average, then
+  `NEWPB` or `OLDPB` as it ends; a cancelled run (off road, too slow, out
+  of the corridor) plays `ABORT`. The comparison slides (`COMPARE*`,
+  `NOCOMPARE*`) are not played: the engine has no leaderboard or rival
+  times offline, so `CompLines`, `Summary` and `LeaderboardText` stay down.
+- **The rows.** `Title` is the camera's name (`List_SpeedCameras`, "East
+  Rt. 20 Speed Trap"), not `IDS_Description_SpeedCamera` (SPEED TRAP).
+  The speed has two decimals and an upper-case unit (`Activities/IDS_Mph`,
+  `IDS_KmPerHour`). `SpeedPB` reads `IDS_PB`: speed unit (PB: 192.42 KM/H),
+  after the map popup's line. `NEW_PB` is `IDS_NewPB` (NEW PB!).
+- **The layout.** Stackers are not run. Each row is put on its `Stacker`'s
+  line: `Title` 37 px under the speed. `SpeedPB`'s slides put it on the
+  same line as `Title` (34 to 38 px under the speed), so the engine puts it
+  one row further down; which of the two the stackers move is open.
+- **Gone with the scene's panel:** the engine's full-screen white flash
+  on a pass and its RETURN TO ROAD! line; the scene has neither. The pass
+  still plays the camera's sounds.
+
+Needed: a capture series of a speed trap pass (a new PB and not), a speed
+zone run (start, running, end, cancelled), and one with a friend's time on
+the leaderboard (the comparison slides).

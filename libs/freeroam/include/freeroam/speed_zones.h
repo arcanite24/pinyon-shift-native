@@ -94,6 +94,13 @@ struct SpeedActivityHud {
   double banner_best_mph = 0.0;
   bool banner_new_pb = false;
   double banner_at = -1e9;
+  double banner_age_s = 0.0;  // seconds since the banner
+  // A Speed Zone run just cancelled (off road, too slow, left the corridor):
+  // its name and the live average it had, `abort_age_s` seconds ago.
+  bool abort_active = false;
+  std::string abort_title;
+  double abort_speed_mph = 0.0;
+  double abort_age_s = 0.0;
   // White camera flash intensity [0..1]
   float flash_alpha = 0.0f;
   // Off-road grace warning while active in a Speed Zone
@@ -153,6 +160,11 @@ class SpeedActivityTracker {
   bool banner_new_pb_ = false;
   double banner_at_ = -1e9;
   double flash_at_ = -1e9;
+  std::string abort_title_;
+  double abort_speed_ = 0.0;
+  double abort_at_ = -1e9;
+
+  void note_abort(const SpeedZoneDef& z, double time);
 };
 
 }  // namespace freeroam

@@ -830,11 +830,58 @@ void check_map_animations() {
   CHECK(b.size() == 2 && b.at("hover") == "bulge");
 }
 
+// SpeedCamera's slides from the trap and zone state (Q242).
+void check_speed_camera_phase() {
+  using carview::speed_camera_phase;
+  freeroam::SpeedActivityHud h;
+  CHECK(speed_camera_phase(h).slide.empty());
+  // A trap: its speed (SHOW) for 1 s, then the result for 2 s.
+  h.banner_active = true;
+  h.banner_title = "speed_camera_03";
+  h.banner_speed_mph = 140.0;
+  h.banner_best_mph = 150.0;
+  h.banner_age_s = 0.5;
+  auto p = speed_camera_phase(h);
+  CHECK(p.slide == "SHOW" && std::fabs(p.ms - 500.0) < 1e-6 && !p.zone && p.title == "speed_camera_03");
+  h.banner_age_s = 1.5;
+  p = speed_camera_phase(h);
+  CHECK(p.slide == "OLDPB" && std::fabs(p.ms - 499.0) < 1e-6 && p.best_mph == 150.0);
+  h.banner_new_pb = true;
+  CHECK(speed_camera_phase(h).slide == "NEWPB");
+  h.banner_age_s = 3.1;
+  CHECK(speed_camera_phase(h).slide.empty());
+  // A zone: SHOW as it starts, ON while it runs with the live average.
+  h = {};
+  h.zone_active = true;
+  h.active_zone_id = "average_speed_01";
+  h.live_avg_mph = 90.0;
+  h.zone_elapsed_s = 0.2;
+  CHECK(speed_camera_phase(h).slide == "SHOW");
+  h.zone_elapsed_s = 5.0;
+  p = speed_camera_phase(h);
+  CHECK(p.slide == "ON" && p.zone && p.speed_mph == 90.0);
+  // Its result skips SHOW; a cancelled run plays ABORT for 0.2 s.
+  h = {};
+  h.banner_active = h.banner_is_zone = true;
+  h.banner_age_s = 0.3;
+  CHECK(speed_camera_phase(h).slide == "OLDPB");
+  h = {};
+  h.abort_active = true;
+  h.abort_title = "average_speed_01";
+  h.abort_speed_mph = 70.0;
+  h.abort_age_s = 0.1;
+  p = speed_camera_phase(h);
+  CHECK(p.slide == "ABORT" && p.speed_mph == 70.0 && std::fabs(p.ms - 100.0) < 1e-6);
+  h.abort_age_s = 0.25;
+  CHECK(speed_camera_phase(h).slide.empty());
+}
+
 }  // namespace
 
 int main() {
   // Every letter and digit has strokes.
   check_map_animations();
+  check_speed_camera_phase();
   CHECK(!font_segments().empty());
   TextStyle s;
   s.size = 20;

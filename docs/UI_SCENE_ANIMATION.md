@@ -298,15 +298,55 @@ off, the screens draw as before).
   popups, title tape and player bar) have no slides. The icons' own
   animations and the rumour reveal are profile animations ("Map profile
   animations" below), now played.
-- **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
-  - `SpeedCamera`: `OFF`, `SHOW`, `ON`, `OLDPB` and others;
-  - the `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
+- **The activity HUDs (ACT-02).** `947_HUD` has the slides:
   - `MissionsDamage`: `BARFILL`;
   - `ScoreGroup`: `SHOW` / `HIDE` / `ABORT`.
 
-  The engine draws its own speed trap and mission HUDs, not these
-  components. Playing the slides waits on drawing those components first
-  (Q187).
+  The engine draws its own mission HUD, not these components. Playing the
+  slides waits on drawing those components first (Q187). The speed trap
+  panel (ACT-01) is played ("The speed trap panel" below); the `Icon`'s
+  `SPEEDCAM` / `AVERAGESPEEDCAM` slides belong to the activation prompt's
+  icon, which the engine draws with its own texture.
+
+## The speed trap panel
+
+`947_HUD`'s `SpeedCamera` is its own component, with the slides `OFF`,
+`SHOW` (1 s), `ON` (1 s), `OLDPB` and `NEWPB` (4 s), six `COMPARE*` (7 s)
+and `ABORT` (2 s). Its rows: `Title` (a pill), `Speed` (the speed and its
+unit on a tape), `SpeedPB` (a pill), `PBIcon` (`NEW_PB` on a tape),
+`CompLines` (two rival lines and a VS icon), `Summary` (three lines) and
+`LeaderboardText` (a button prompt).
+
+What the slides do:
+- `SHOW`: `SpeedGroup` fades in over 0.11 s while it grows to 1.02 and back
+  by 0.2 s; `Title` and `Speed` are up, `SpeedPB` and `PBIcon` down.
+- `ON`: the same, still.
+- `OLDPB`: `SpeedPB` slides in from 27 px right (alpha 0.07 to 1 over
+  0.2 s), 4 px lower than in `SHOW`.
+- `NEWPB`: `Speed` goes down and `PBIcon` pops in (alpha 0.5 to 1, scale
+  1.3 to 0.95 to 1 over 0.3 s).
+- Both fade `SpeedGroup` out and shrink it to 0.9 from 1.8 to 2 s.
+- `ABORT`: `SpeedGroup` fades out over 0.2 s.
+- `COMPARE*` / `NOCOMPARE*`: the rival lines and the summary
+  (`IDS_Summary_Win` FASTER THAN:, `_Lose`, `_Move`, `_NC` YOU'RE
+  RANKED:) and, without `NOLB`, the leaderboard prompt, from 0.2 s to
+  about 4.2 s.
+
+The engine (`speed_camera_phase`, `draw_hud_speed_camera` in
+`hud_screen.cpp`) plays, from the trap and zone tracker:
+- a trap: `SHOW` for its 1 s with the pass's speed, then `NEWPB` or
+  `OLDPB`, down at 2 s;
+- a zone: `SHOW` as it starts and `ON` while it runs, with the live
+  average; `NEWPB` or `OLDPB` as it ends; `ABORT` when it is cancelled.
+
+The title is the camera's name (`List_SpeedCameras`), the speed has two
+decimals as the map's popup shows it, the unit is `Activities/IDS_Mph` or
+`IDS_KmPerHour`, the personal best line is `IDS_PB`: speed unit and
+NEW PB! is `IDS_NewPB`. The comparison slides are not played: the engine
+has no leaderboard or rival times offline. The stackers are not run, so
+each row is placed on its `Stacker`'s line; the personal best goes one row
+below the title (Q242). Without the scene's timeline the engine's own
+drawn panel stays.
 
 ## Map profile animations
 

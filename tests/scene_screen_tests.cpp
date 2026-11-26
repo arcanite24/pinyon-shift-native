@@ -535,7 +535,8 @@ int main() {
     // The driving HUD's labels and every notification's lines.
     using namespace carview::hud_text;
     for (const carview::StringRef* r :
-         {&kKmh, &kMph, &kEnterNow, &kSignMeUp, &kGo, &kProgress, &kPlace, &kLaps, &kRace, &kLap, &kLast, &kBest})
+         {&kKmh, &kMph, &kEnterNow, &kSignMeUp, &kGo, &kProgress, &kPlace, &kLaps, &kRace, &kLap, &kLast, &kBest, &kSpeedTrap,
+          &kSpeedZone, &kNewPb, &kPb, &kMphLabel, &kKmhLabel})
       check_ref(*r, "HUD label " + std::string(r->fallback));
     for (const auto& n : carview::notify_strings())
       for (const carview::StringRef* r : {&n.tag, &n.title, &n.message})
@@ -940,6 +941,21 @@ int main() {
           "pause rows: 13 px between a row below the focus and above it");
   }
 
+  // The speed trap panel (SpeedCamera): every slide the engine plays draws.
+  {
+    check(carview::hud_speed_camera_available(), "947_HUD has SpeedCamera");
+    for (const char* slide : {"SHOW", "ON", "OLDPB", "NEWPB", "ABORT"}) {
+      carview::SpeedCameraView v;
+      v.slide = slide;
+      v.ms = 100.0;
+      v.title = "Gladstone Speed Trap", v.speed = "142.53", v.unit = "MPH", v.pb = "PB: 150.00 MPH";
+      v.new_pb = carview::text_of(carview::hud_text::kNewPb);
+      carview::ui::List sl;
+      check(carview::draw_hud_speed_camera(sl, v, 1280.0f, 720.0f, 1.0f, 0.0f) && !sl.items().empty(),
+            std::string("SpeedCamera draws its ") + slide);
+    }
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -1148,6 +1164,18 @@ int main() {
     carview::DriveHud arrow_d = roam;
     arrow_d.gps = &uturn;
     hud_shot("hud_direction_arrow.png", "16_race_hud_orig.png", arrow_d);
+
+    // The speed trap panel (SpeedCamera) at NEWPB.
+    {
+      freeroam::SpeedActivityHud trap;
+      trap.banner_active = true;
+      trap.banner_title = "speed_camera_03";
+      trap.banner_speed_mph = 144.3, trap.banner_best_mph = 144.3, trap.banner_new_pb = true;
+      trap.banner_age_s = 1.3;
+      carview::DriveHud trap_d = roam;
+      trap_d.speed_hud = &trap;
+      hud_shot("hud_speed_trap.png", "05_roam_hud_day_drive_orig.png", trap_d);
+    }
 
     // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
     // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).

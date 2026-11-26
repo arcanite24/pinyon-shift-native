@@ -1040,6 +1040,8 @@ int main() {
     CHECK(szt.zone_active());
     szt.cancel_active();
     CHECK(!szt.zone_active() && !szt.hud(1.1).zone_active);
+    // A rewind's cancel is not an abort (no ABORT slide).
+    CHECK(!szt.hud(1.1).abort_active);
     // Re-enter gate 1, go off-road for > 1.5 s -> fails cleanly with kZoneCancelled + failed_off_road!
     CHECK(szt.step(0.1, 2.0, 0, 98, 0, 102, 40.0).size() == 1);
     szt.set_off_road(true);
@@ -1051,6 +1053,13 @@ int main() {
       }
     }
     CHECK(offroad_failed && !szt.zone_active());
+    // The failed run is reported for the HUD's ABORT, with its live average.
+    {
+      const auto ah = szt.hud(3.7);
+      CHECK(ah.abort_active && !ah.abort_title.empty() && ah.abort_speed_mph > 0.0 && ah.abort_age_s >= 0.0 &&
+            ah.abort_age_s < 0.3);
+      CHECK(!szt.hud(6.0).abort_active);
+    }
     szt.set_off_road(false);
     // Zig-zagging inside the 200 m corridor over 4.0 s must NOT inflate average speed above ~111.8 mph!
     CHECK(szt.step(0.1, 10.0, 0, 98, 0, 102, 50.0).size() == 1);

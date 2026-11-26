@@ -1510,14 +1510,18 @@ bool DriveSession::step(const drive::Input& user_in) {
             prev_speed_z = sp_at.z;
             have_prev_speed_pos = true;
           }
-          if (app.demo_speed_trap && !demo_speed_trap_done && vehicle.time() >= 4.0 && !app.speed_data.traps.empty()) {
-            demo_speed_trap_done = true;
+          // Two passes: ~144.3 mph at 4 s (a new PB), then ~134.2 mph at 13 s
+          // (short of it: the personal best line).
+          if (app.demo_speed_trap && demo_speed_trap_passes < 2 &&
+              vehicle.time() >= (demo_speed_trap_passes == 0 ? 4.0 : 13.0) && !app.speed_data.traps.empty()) {
+            const double mps = demo_speed_trap_passes == 0 ? 64.5 : 60.0;
+            ++demo_speed_trap_passes;
             const auto& g = app.speed_data.traps.front().gate;
             const double gx = g.right[0] - g.left[0], gz = g.right[2] - g.left[2];
             const double gl = std::max(1.0, std::hypot(gx, gz));
             const double nx = -gz / gl, nz = gx / gl;
             app.speed_tracker->step(drive::Vehicle::kStep, vehicle.time(), g.center[0] - nx * 4.0, g.center[2] - nz * 4.0,
-                                g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, 64.5);  // ~144.3 mph flash & PB
+                                g.center[0] + nx * 4.0, g.center[2] + nz * 4.0, mps);
           }
           // R3-CAM-11: Feed live off-road state to SpeedActivityTracker before stepping Speed Zones.
           {

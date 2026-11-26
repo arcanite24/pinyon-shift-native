@@ -333,7 +333,8 @@ struct DriveSession {
   double last_touch_y = 0;
   bool have_prev_speed_pos = false;
   double prev_speed_x = 0.0, prev_speed_z = 0.0;
-  bool demo_h2h_started = false, demo_speed_trap_done = false;
+  bool demo_h2h_started = false;
+  int demo_speed_trap_passes = 0;
   RigAccelState rig_accel;
   double step_physics_ms = 0.0;
   double step_ai_traffic_ms = 0.0;

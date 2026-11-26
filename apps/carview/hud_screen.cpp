@@ -1017,4 +1017,184 @@ float draw_hud_notification(ui::List& l, const NotifyView& st, float w, float h,
   return st.tag.empty() ? kNotifyStep : kNotifyStep + kNotifyTagStep;
 }
 
+// --- SpeedCamera -------------------------------------------------------------
+
+namespace {
+
+// SHOW's length (the trap's speed up before its result), and NEWPB's and
+// OLDPB's fade out of SpeedGroup (1.8 to 2 s): the panel's time up.
+constexpr double kSpeedCamShowMs = 1001.0, kSpeedCamResultMs = 2000.0;
+// ABORT fades SpeedGroup out over its first 0.2 s.
+constexpr double kSpeedCamAbortMs = 200.0;
+// The pills' and tapes' reach past their text (canvas px).
+constexpr float kSpeedCamPillPad = 10.0f, kSpeedCamTapePad = 14.0f, kSpeedCamUnitGap = 8.0f;
+
+// Puts `pill` (a two-texture bar) under the centred text `t` drawn as `s`.
+void pill_under(SceneScreen& sc, int pill, int t, std::string_view s, float pad) {
+  const SceneDraw& sd = sc.scene();
+  if (pill < 0 || t < 0) return;
+  const float tw = sd.measure(t, s), left = sd.at(t)[0] - 0.5f * tw - pad;
+  sc.at(pill).dx = left - sd.rect(pill)[0];
+  sc.at(pill).visible_width = tw + 2.0f * pad;
+}
+
+// Stackers are not run (docs/UI_SCENE_SCREENS.md): a row group's texts and
+// bars sit on the speed's line in the scene and its Stacker where the row
+// goes. Moves the row's content (all but the Stacker) onto the Stacker's
+// line, plus `extra` canvas px down.
+void stack_row(SceneScreen& sc, int group, float extra = 0.0f) {
+  const SceneDraw& sd = sc.scene();
+  const int stacker = child(sd, group, "Stacker");
+  if (group < 0 || stacker < 0) return;
+  int text = -1;
+  for (int c : sd.children_of(group))
+    if (sd.object_name(c) != "Stacker" && sd.object_name(c) != "Bar" && sd.object_name(c) != "Tape" && text < 0)
+      text = c;
+  if (text < 0) return;
+  const float dy = sd.at(stacker)[1] - sd.at(text)[1] + extra;
+  for (int c : sd.children_of(group))
+    if (c != stacker) sc.at(c).dy += dy;
+}
+
+// A tape group's crisp and smudge strips from canvas x `left` to `right`.
+void tape_span(SceneScreen& sc, int tape, float left, float right) {
+  const SceneDraw& sd = sc.scene();
+  for (int c : sd.children_of(tape)) {
+    if (sd.object_name(c) == "Dirt_Tile") {
+      sc.at(c).dx = left - sd.rect(c)[0];
+      continue;
+    }
+    sc.at(c).dx = left - sd.rect(c)[0];
+    sc.at(c).visible_width = std::max(0.0f, right - left);
+  }
+}
+
+}  // namespace
+
+SpeedCameraPhase speed_camera_phase(const freeroam::SpeedActivityHud& sh) {
+  SpeedCameraPhase p;
+  if (sh.banner_active) {
+    double ms = sh.banner_age_s * 1000.0;
+    p.zone = sh.banner_is_zone;
+    p.new_pb = sh.banner_new_pb;
+    p.speed_mph = sh.banner_speed_mph;
+    p.best_mph = sh.banner_best_mph;
+    p.title = sh.banner_title;
+    // A trap shows its speed (SHOW) before the result; a zone's speed is
+    // already up.
+    if (!p.zone) {
+      if (ms < kSpeedCamShowMs) {
+        p.slide = "SHOW";
+        p.ms = ms;
+        return p;
+      }
+      ms -= kSpeedCamShowMs;
+    }
+    if (ms < kSpeedCamResultMs) {
+      p.slide = p.new_pb ? "NEWPB" : "OLDPB";
+      p.ms = ms;
+      return p;
+    }
+  }
+  if (sh.zone_active) {
+    const double ms = sh.zone_elapsed_s * 1000.0;
+    p.zone = true;
+    p.speed_mph = sh.live_avg_mph;
+    p.title = sh.active_zone_id;
+    p.slide = ms < kSpeedCamShowMs ? "SHOW" : "ON";
+    p.ms = ms < kSpeedCamShowMs ? ms : 0.0;
+    return p;
+  }
+  if (sh.abort_active && sh.abort_age_s * 1000.0 < kSpeedCamAbortMs) {
+    p.zone = true;
+    p.speed_mph = sh.abort_speed_mph;
+    p.title = sh.abort_title;
+    p.slide = "ABORT";
+    p.ms = sh.abort_age_s * 1000.0;
+    return p;
+  }
+  return p;
+}
+
+bool hud_speed_camera_available() {
+  const SceneScreen sc(kHudScene);
+  return sc.node("SpeedCamera") >= 0 && scene_timelines_enabled();
+}
+
+bool draw_hud_speed_camera(ui::List& l, const SpeedCameraView& v, float w, float h, float s, float lift) {
+  if (v.slide.empty()) return false;
+  SceneScreen sc(kHudScene);
+  const SceneDraw& sd = sc.scene();
+  const int root = sc.node("SpeedCamera");
+  const int group = child(sd, root, "SpeedGroup");
+  if (root < 0 || group < 0) return false;
+  sc.bindings().fit_text = false;
+  sc.bindings().dy = -lift;
+
+  // The slide's look: SpeedCamera is its own component in 947_HUD.
+  static SceneTimeline tl;
+  tl.bind(sd.scene());
+  if (!tl.ok() || !scene_timelines_enabled()) return false;
+  const int comp = tl.item_of_node(root);
+  if (comp < 0 || sd.scene()->bgf.find_slide(uint32_t(comp), v.slide) < 0) return false;
+  if (tl.slide(uint32_t(comp)) != v.slide) tl.go_to(uint32_t(comp), v.slide);
+  tl.set_time(uint32_t(comp), float(v.ms));
+  SceneBindings all;
+  tl.apply(all);
+  for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
+
+  // The camera's name in its pill.
+  const int title = child(sd, group, "Title");
+  const int title_text = child(sd, title, "Text");
+  sc.text(title_text, v.title);
+  pill_under(sc, child(sd, title, "Bar"), title_text, v.title, kSpeedCamPillPad);
+  stack_row(sc, title);
+
+  // The speed and its unit side by side on one tape, about the group's
+  // middle.
+  const int speed = child(sd, group, "Speed");
+  const int num = child(sd, speed, "speed"), unit = child(sd, speed, "mph");
+  sc.text(num, v.speed);
+  sc.text(unit, v.unit);
+  if (num >= 0 && unit >= 0) {
+    const float nw = sd.measure(num, v.speed), uw = sd.measure(unit, v.unit);
+    const float total = nw + kSpeedCamUnitGap + uw;
+    const float left = sd.at(group)[0] - 0.5f * total;
+    sc.at(num).dx = left_at(sd, num, v.speed, left);
+    sc.at(unit).dx = left_at(sd, unit, v.unit, left + nw + kSpeedCamUnitGap);
+    tape_span(sc, child(sd, speed, "Tape"), left - kSpeedCamTapePad, left + total + kSpeedCamTapePad);
+  }
+
+  // The personal best (OLDPB slides it in): its slide puts it on the
+  // title's line, so it goes one row further down (Q242).
+  const int pb = child(sd, group, "SpeedPB");
+  const int pb_text = child(sd, pb, "Text");
+  sc.text(pb_text, v.pb);
+  pill_under(sc, child(sd, pb, "Bar"), pb_text, v.pb, kSpeedCamPillPad);
+  const float row = sd.at(child(sd, title, "Stacker"))[1] - sd.at(child(sd, speed, "Stacker"))[1];
+  stack_row(sc, pb, row);
+
+  // NEW PB! in the speed's place (NEWPB pops it in). Its text and tape rest
+  // at alpha 0 under the animated group: their own alpha goes to 1, and the
+  // group's still fades them.
+  const int icon = child(sd, group, "PBIcon");
+  if (const int t = child(sd, icon, "NEW_PB"); t >= 0) {
+    sc.text(t, v.new_pb);
+    sc.bindings().anim[t].opacity = 1.0f;
+    const float tw = sd.measure(t, v.new_pb), left = sd.at(t)[0] - 0.5f * tw;
+    if (const int tape = child(sd, icon, "Tape"); tape >= 0) {
+      sc.bindings().anim[tape].opacity = 1.0f;
+      for (int c : sd.children_of(tape)) sc.bindings().anim[c].opacity = 1.0f;
+      tape_span(sc, tape, left - kSpeedCamTapePad, left + tw + kSpeedCamTapePad);
+    }
+  }
+
+  // No leaderboard or rival data offline: the comparison lines, the summary
+  // and the leaderboard prompt stay down (Q242).
+  sc.hide(child(sd, root, "CompLines"));
+  sc.hide(child(sd, root, "Summary"));
+  sc.hide(child(sd, root, "LeaderboardText"));
+  return sc.draw(l, hud_frame(HudAnchor::kBottom, w, h, s), root) > 0;
+}
+
 }  // namespace carview
