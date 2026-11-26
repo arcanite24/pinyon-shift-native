@@ -291,6 +291,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     else if (a == "--demo-rally-service") demo_rally_service = true;
     else if (a == "--demo-rally-hub") demo_rally_hub = true;
     else if (a == "--demo-rally-final") demo_rally_final = true;
+    else if (a == "--demo-rally-last-stage") demo_rally_last_stage = 1;
     else if (a == "--demo-club") demo_club = true;
     else if (a == "--hour") {
       hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);
