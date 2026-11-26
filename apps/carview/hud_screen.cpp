@@ -154,8 +154,13 @@ constexpr float kRedBandAlpha0 = 0.27f, kRedBandAlpha1 = 0.74f;
 constexpr int kRedBandSteps = 8;
 constexpr uint32_t kRedZone = ui::rgba(255, 3, 96);
 // The needle's bar sits further out than the scene lays it (the same
-// capture: from 58 to 83 px off the hub).
+// capture: from 58 to 83 px off the hub). Its Up/Down swoosh trails carry a
+// BGF pivot.x of +/-50 at scale 0.64 -> (1 - 0.64) * 50 = 18 px toward the
+// needle so the arc attaches flush at x = 0, and +4 px down in canvas coords
+// aligns their 64x64 band ([-5, +22] px around centre) to the needle's radius.
 constexpr float kNeedleOut = -11.0f;
+constexpr float kNeedleTrailPivotDx = 18.0f;
+constexpr float kNeedleTrailRadialDy = 4.0f;
 // The dimmed leading zeros of the speed and the gear's grey (the same
 // capture).
 constexpr uint32_t kLeadingZero = ui::rgba(200, 200, 200, 80);
@@ -247,9 +252,16 @@ bool draw_hud_dial(ui::List& l, const DriveHud& st, const SceneFrame& f) {
   if (const int bar = child_path(sd, needle, "Group/Rectangle"); bar >= 0) sc.at(bar).dy = kNeedleOut;
   const int swooshes = child_path(sd, needle, "Group/Swooshes");
   const float rate = float(std::clamp(st.rpm_rate / 6000.0, -1.0, 1.0));
-  if (const int up = child_path(sd, swooshes, "Up/Uptrail"); up >= 0) sc.at(up).alpha = std::max(0.0f, rate);
-  if (const int down = child_path(sd, swooshes, "Down/DownTrail"); down >= 0)
+  if (const int up = child_path(sd, swooshes, "Up/Uptrail"); up >= 0) {
+    sc.at(up).alpha = std::max(0.0f, rate);
+    sc.at(up).dx = kNeedleTrailPivotDx;
+    sc.at(up).dy = kNeedleTrailRadialDy;
+  }
+  if (const int down = child_path(sd, swooshes, "Down/DownTrail"); down >= 0) {
     sc.at(down).alpha = std::max(0.0f, -rate);
+    sc.at(down).dx = -kNeedleTrailPivotDx;
+    sc.at(down).dy = kNeedleTrailRadialDy;
+  }
 
   // Speed: three digits, the leading zeros dimmed.
   const double shown = st.metric_units ? std::fabs(st.kmh) : std::fabs(st.kmh) * 0.62137119;
