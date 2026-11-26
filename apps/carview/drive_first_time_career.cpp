@@ -246,9 +246,21 @@ void DriveSession::apply_first_time_career() {
       loading_screen.start({});
       loading_min_until = carview::LoadingScreen::kEventMinSeconds;
     }
-    if (cmd.open_map) open_map();
+    if (cmd.open_map) ftc_open_map_pending = true;
     if (cmd.place_car || cmd.swap_car || cmd.set_destination) ftc_autopilot.reset();
     // show_map_hint: drawn by FirstTimeCareerUi from the career's state.
+  }
+  // The career's map opens once nothing is over it: after the heats the
+  // stage moves on at the award, under the race's reward pages, and the
+  // original shows the rewards, a loading tip, then the map (first30e r10).
+  // The race's way back to free roam restarts the session, so the
+  // showcase's map is also opened whenever its lock is on and it is not up
+  // (that covers a resume at the showcase too).
+  const bool showcase_map = c.ftc_active() && c.ftc().stage() == race::FtcStage::kShowcase && c.ftc().map_locked();
+  if ((ftc_open_map_pending || showcase_map) && !app.race && !app.fmv_player.active() && !loading_screen.active() &&
+      !host.showroom.has_pending_world() && !app.show_title) {
+    ftc_open_map_pending = false;
+    if (!map_open) open_map();
   }
 }
 

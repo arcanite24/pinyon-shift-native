@@ -819,6 +819,19 @@ struct DriveSession {
   // title slow; interim 3 s (Q275). -1: not counting.
   static constexpr double kMapHeatsCloseSeconds = 3.0;
   double map_heats_close_left = -1.0;
+  // The career event the locked map asks a route to: the Horizon Heats from
+  // the workshop map, the Red Rock showcase after the heats (first30e r10:
+  // "Please set a route to the Showcase event."). event_id 0: none.
+  struct FtcMapTarget {
+    int64_t event_id = 0;
+    const char* tip_id = "";
+    const char* tip = "";
+    const char* gps_label = "";
+    traffic::GpsDestKind gps_kind = traffic::GpsDestKind::kFestivalRace;
+  };
+  FtcMapTarget ftc_map_target() const;
+  // The career asked for its map; it opens when no race, movie or load is up.
+  bool ftc_open_map_pending = false;
   // The career's sign-up: X shows the event's ticket with PLEASE WAIT, and
   // the race launches under it (r9: the ticket about 12 s in hidden mode,
   // then the loading tips; interim 3 s). -1: no ticket.

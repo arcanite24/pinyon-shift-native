@@ -476,24 +476,25 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       break;
 
     case FtcStage::kShowcase:
-      // Stages 10 and 12: placed by the heats, 15:48, the Red Rock showcase
-      // as the destination. Save 12.
+      // Stages 10 and 12: placed by the heats, 15:48. Save 12. The locked
+      // map asks for a route to the Red Rock showcase, and A on it sets the
+      // destination (first30e r10: results, a loading tip, then the map with
+      // "Please set a route to the Showcase event." and no route yet).
       c.save_requested = true;
       c.place_car = true;
       c.pos = kHeatsFinalPlace;
       c.heading_deg = kHeatsFinalHeading;
       c.set_time_of_day = true;
       c.time_of_day_s = kHeatsFinalTimeOfDay;
+      c.open_map = true;
+      map_locked_ = true;
       controls_ = true;
       ai_ = false;
       hud_ = true;
-      set_instruction(12);
-      for (const auto& t : triggers_)
-        if (t.id == kMustangRace) {
-          c.set_destination = true;
-          c.destination_label = "IDS_HudMsg_ShowcaseEvent";
-          c.destination_xz = {t.pos[0], t.pos[2]};
-        }
+      // Stage 12's instruction (ENTER THE SHOWCASE EVENT) once the map lets
+      // go (update); the engine's large line drew over the heats' rewards
+      // (first30e e15). Interim: when the original's appears is not captured.
+      set_instruction(0);
       break;
 
     case FtcStage::kTravelToRaceCentral:
@@ -789,6 +790,7 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kShowcase:
+      if (!map_locked_ && instruction_.empty()) set_instruction(12);
       if (in.race_finished) awaiting_race_ = false;
       if (event_result(kMustangRace)) {
         FtcCommands n = go(FtcStage::kTravelToRaceCentral);

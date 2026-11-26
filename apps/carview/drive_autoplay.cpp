@@ -38,28 +38,31 @@ bool autoplay_key(const std::string& name, SDL_Keycode& key, SDL_Scancode& sc) {
 
 void DriveSession::autoplay_frame() {
   auto& ap = app.autoplay;
+  // The cursor onto the sign-up place of the event the career's locked map
+  // asks for (the heats, then the showcase; the map pans as the stick would;
+  // the harness stands in for the player finding the marker).
+  auto cursor_to_career_event = [&]() {
+    std::array<double, 3> hp{};
+    const int64_t target = ftc_map_target().event_id;
+    if (!map_open || !target || !app.campaign.ftc().event_trigger(target, hp)) return false;
+    map_cam.reset(hp[0], hp[2], map_zoom);
+    map_cx = map_cam.cx();
+    map_cz = map_cam.cz();
+    map_cursor.reset();
+    if (map_w > 64 && map_h > 64) {
+      const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
+      const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+      map_cursor.absorb(float((0.5 * map_w + (hp[0] - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
+                        float((0.5 * map_h - (hp[2] - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
+    }
+    map_dirty = true;
+    update_map_selection();
+    ap.note("mapto event " + std::to_string(target));
+    return true;
+  };
   for (const std::string& name : ap.take_due_keys()) {
-    if (name == "mapto:heats") {
-      // The cursor onto the heats' sign-up place (the map pans as the stick
-      // would; the harness stands in for the player finding the marker).
-      std::array<double, 3> hp{};
-      if (map_open && app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp)) {
-        map_cam.reset(hp[0], hp[2], map_zoom);
-        map_cx = map_cam.cx();
-        map_cz = map_cam.cz();
-        map_cursor.reset();
-        if (map_w > 64 && map_h > 64) {
-          const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
-          const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
-          map_cursor.absorb(float((0.5 * map_w + (hp[0] - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
-                            float((0.5 * map_h - (hp[2] - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
-        }
-        map_dirty = true;
-        update_map_selection();
-        ap.note("mapto heats");
-      } else {
-        ap.note("mapto heats: no map or no heats");
-      }
+    if (name == "mapto:heats" || name == "mapto:career") {
+      if (!cursor_to_career_event()) ap.note("mapto: no map or no career event");
       continue;
     }
     if (name.rfind("launch:", 0) == 0) {
@@ -73,12 +76,16 @@ void DriveSession::autoplay_frame() {
     if (name == "advance") {
       // Return where a press moves the career on (a race and its results, a
       // movie, a blocking career beat, controls held by the career, the
-      // career's SIGN ME UP!), not in free roam, where it would open the
+      // career's SIGN ME UP! and locked map), not in free roam, where it would open the
       // festival's hub.
       const bool held = app.campaign.ftc_active() && !app.campaign.ftc().controls_enabled();
       const bool sign_up = !app.race && app.campaign.ftc_sign_up_event() > 0;
+      // The career's locked map: the cursor onto the event it asks for,
+      // then A (the route there lets the map go).
+      const bool locked_map = map_open && map_heats_close_left < 0.0 && app.campaign.ftc_active() &&
+                              app.campaign.ftc().map_locked() && cursor_to_career_event();
       if (!(app.race || app.fmv_player.active() || app.campaign.is_blocking_gameplay() || held || app.show_title ||
-            sign_up))
+            sign_up || locked_map))
         continue;
       send = "return";
     }

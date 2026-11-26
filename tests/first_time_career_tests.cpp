@@ -337,10 +337,19 @@ void test_heats_and_showcase() {
   check(ftc.stage() == FtcStage::kShowcase && c.place_car && c.pos == FirstTimeCareer::kHeatsFinalPlace &&
             c.time_of_day_s == FirstTimeCareer::kHeatsFinalTimeOfDay,
         "3rd makes it: placed by the heats at 15:48, the showcase next");
-  check(ftc.hud_instruction() == "IDS_HudInstruction_Go_To_Red_Rock", "Get to the Showcase event in Red Rock");
+  check(c.open_map && ftc.map_locked() && !c.set_destination,
+        "the locked map asks for a route to the showcase (first30e r10); no destination until A on it");
+  check(ftc.hud_instruction().empty(), "no instruction over the rewards and the locked map");
   in.race_finished = false;
   c = ftc.update(in);
-  check(c.launch_event_id == 101, "the showcase launches");
+  int64_t launched = c.launch_event_id;
+  check(ftc.hud_instruction().empty(), "still none while the map is locked");
+  ftc.release_map_lock();
+  c = ftc.update(in);
+  if (!launched) launched = c.launch_event_id;
+  check(ftc.hud_instruction() == "IDS_HudInstruction_Go_To_Red_Rock" && ftc.large_instruction_2() == "IDS_HudMsg_ShowcaseEvent",
+        "the map let go: Get to the Showcase event in Red Rock");
+  check(launched == 101, "the showcase launches");
   in.race_finished = true;
   in.race_event_id = 101;
   in.race_place = 1;

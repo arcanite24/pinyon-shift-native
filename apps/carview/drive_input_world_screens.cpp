@@ -452,22 +452,23 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST ||
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH));
                 if (a) {
-                  // The heats' marker, or the cursor on its sign-up place
-                  // (the engine's map may not list the career's event).
+                  // The target's marker (the heats, or the showcase after
+                  // them), or the cursor on its sign-up place (the engine's
+                  // map may not list the career's event).
+                  const FtcMapTarget target = ftc_map_target();
                   std::array<double, 3> hp{};
-                  const bool have_hp = app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp);
+                  const bool have_hp = app.campaign.ftc().event_trigger(target.event_id, hp);
                   bool heats = false;
                   if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
                     const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
                     heats = m.kind == MapMarker::kEvent &&
-                            (m.id == std::to_string(race::FirstTimeCareer::kAllComerFinal) ||
+                            (m.id == std::to_string(target.event_id) ||
                              (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
                   }
                   if (!heats && have_hp) heats = std::hypot(map_px - hp[0], map_pz - hp[2]) < 40.0;
                   if (heats && have_hp && app.gps_solver.ready()) {
                     const drive::Vec3 at = vehicle.position();
-                    fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], traffic::GpsDestKind::kFestivalRace,
-                                                                  "IDS_HudMsg_HorizonHeats",
+                    fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], target.gps_kind, target.gps_label,
                                                                   at.x, at.z));
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
                     app.campaign.ftc_release_map_lock();

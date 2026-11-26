@@ -83,6 +83,29 @@ void DriveSession::map_screen_open() {
   map_cursor_world();
 }
 
+DriveSession::FtcMapTarget DriveSession::ftc_map_target() const {
+  FtcMapTarget t;
+  if (!app.campaign.ftc_active()) return t;
+  // Only the two captured maps: the disc's IDS_MapTip_SetRouteToRaceCentral
+  // suggests a third (the first autoshow's), not captured yet.
+  const auto stage = app.campaign.ftc().stage();
+  if (stage == race::FtcStage::kShowcase) {
+    t.event_id = race::FirstTimeCareer::kMustangRace;
+    t.tip_id = "IDS_MapTip_SetRouteToShowcase";
+    t.tip = "Please set a route to the Showcase event.";
+    t.gps_label = "IDS_HudMsg_ShowcaseEvent";
+    t.gps_kind = traffic::GpsDestKind::kShowcase;
+  } else if (stage == race::FtcStage::kWorkshopMap || stage == race::FtcStage::kRadioUnlock ||
+             stage == race::FtcStage::kHeats) {
+    t.event_id = race::FirstTimeCareer::kAllComerFinal;
+    t.tip_id = "IDS_MapTip_SetRouteToHeats";
+    t.tip = "Please set a route to the Horizon Heats event.";
+    t.gps_label = "IDS_HudMsg_HorizonHeats";
+    t.gps_kind = traffic::GpsDestKind::kFestivalRace;
+  }
+  return t;
+}
+
 void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axis) {
   if (map_heats_close_left >= 0.0) {
     map_heats_close_left -= dt;
@@ -384,9 +407,11 @@ void DriveSession::map_screen_fill() {
   // first30a captures; Q275).
   // A on the heats: PLEASE WAIT in place of the help bar until the map
   // closes by itself, under the same tip (first30e r7 n0-o05).
+  // After the heats the same map asks for the showcase (first30e r10 h00321).
+  const FtcMapTarget map_target = ftc_map_target();
   if (app.campaign.ftc_active() && map_heats_close_left >= 0.0) {
     ms.please_wait = true;
-    ms.tip = text_of({"InGame", "IDS_MapTip_SetRouteToHeats", 0, "Please set a route to the Horizon Heats event."});
+    ms.tip = map_target.event_id ? text_of({"InGame", map_target.tip_id, 0, map_target.tip}) : std::string();
     ms.band_texture = std::string(kNoPlayerBarTopRow);
     return;
   }
@@ -395,7 +420,7 @@ void DriveSession::map_screen_fill() {
     ms.prompts.push_back({"LB", text_of(map_text::kFilter)});
     ms.prompts.push_back({"LS", text_of({"HelpButtons", "IDS_Move", 0, "MOVE"})});
     ms.prompts.push_back({"RS", text_of({"HelpButtons", "IDS_ZOOM", 0, "ZOOM"})});
-    ms.tip = text_of({"InGame", "IDS_MapTip_SetRouteToHeats", 0, "Please set a route to the Horizon Heats event."});
+    ms.tip = map_target.event_id ? text_of({"InGame", map_target.tip_id, 0, map_target.tip}) : std::string();
     // The player bar has the car and the credits only: no wristband row
     // (lockmap_first30a_orig.png).
     ms.band_texture = std::string(kNoPlayerBarTopRow);
