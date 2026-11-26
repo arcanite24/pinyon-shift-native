@@ -597,6 +597,7 @@ race::CampaignAction CampaignDirector::skip_onboarding_all(FmvPlayer& fmv, Audio
 }
 
 race::CampaignAction CampaignDirector::on_enter_event(const race::CareerEvent& ev, FmvPlayer& fmv, AudioHost* audio) {
+  if (ftc_.active()) return {};
   auto act = flow_.on_enter_event(ev);
   dispatch_action_media(act, fmv, audio);
   return act;
@@ -607,10 +608,13 @@ race::CampaignAction CampaignDirector::on_race_finished(
     int new_pop_rank, int64_t balance_before, int64_t balance_after, int wb_points_after, int collected_wristband,
     const std::string& prize_car_name, const race::CareerCatalog* catalog, FmvPlayer& fmv, AudioHost* audio,
     const std::vector<race::RaceFinishStanding>& standings) {
-  if (ftc_.active() && ev) {
-    ftc_race_finished_ = true;
-    ftc_race_event_ = ev->event_id;
-    ftc_race_place_ = place;
+  if (ftc_.active()) {
+    if (ev) {
+      ftc_race_finished_ = true;
+      ftc_race_event_ = ev->event_id;
+      ftc_race_place_ = place;
+    }
+    return {};
   }
   auto act = flow_.on_race_finished(ev, award, place, total_cars, old_pop_rank, new_pop_rank, balance_before,
                                     balance_after, wb_points_after, collected_wristband, prize_car_name, catalog,
@@ -628,6 +632,11 @@ bool CampaignDirector::on_viper_convoy_pass(int passed_delta, AudioHost* audio) 
 race::CampaignAction CampaignDirector::on_wristband_collected(int wristband_level, const std::string& bonus_car_name,
                                                               int newly_unlocked_events, FmvPlayer& fmv,
                                                               AudioHost* audio) {
+  if (ftc_.active()) {
+    if (audio) audio->trigger_ui(audio::UiCue::kWristbandUnlock);
+    if (audio) audio->radio_wristband_awarded(wristband_level);
+    return {};
+  }
   auto act = flow_.on_wristband_collected(wristband_level, bonus_car_name, newly_unlocked_events);
   if (audio) audio->trigger_ui(audio::UiCue::kWristbandUnlock);
   dispatch_action_media(act, fmv, audio);
@@ -657,6 +666,7 @@ void CampaignDirector::on_popularity_rank_changed(int old_rank, int new_rank, Au
 
 bool CampaignDirector::is_cinematic_camera_active() const {
   if (cutscenes_.active()) return true;
+  if (ftc_.active()) return false;
   const auto st = flow_.stage();
   if (st == race::CampaignStage::kQualifyRace && flow_.qualify_retry_pending()) return true;
   // Exclude kPreRaceGrid so the campaign flyby never bleeds into the live

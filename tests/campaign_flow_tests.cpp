@@ -312,13 +312,32 @@ void test_director_first_time_career() {
   check(!fmv.active() && !act.play_fmv, "no FMV at career start");
   check(!dir.flow().is_onboarding(), "no invented onboarding stage");
   check(dir.is_blocking_gameplay(), "controls screen blocks driving");
-  // The Viper is placed under the controls screen, which leaves once the
-  // opening has loaded (no button, no timer).
+  // The Viper is placed under the controls screen, which holds briefly while
+  // the opening loads (no button skip).
   check(act.swap_car && act.car_media == "VIP_Viper_13" && act.teleport, "the Viper placed for the opening");
   dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
   check(dir.ftc().stage() == race::FtcStage::kControls, "the controls screen while the opening loads");
-  dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
+  for (int i = 0; i < 22 && dir.ftc().stage() == race::FtcStage::kControls; ++i)
+    dir.update(0.1, {0, 0}, fmv, nullptr, false, false);
   check(dir.ftc().stage() == race::FtcStage::kOpeningCutscene, "the opening once loaded");
+  // Finishing a Showcase during FTC must not advance legacy CampaignFlow into
+  // kShowcaseOutro or hijack the driving camera (FIRST30_AUDIT Rank 2).
+  {
+    race::CareerEvent plane_ev;
+    plane_ev.event_id = race::FirstTimeCareer::kMustangRace;
+    plane_ev.horizon_id = "PLANE_RACE_001";
+    plane_ev.style = 3;  // Showcase
+    race::RaceAward aw{};
+    aw.credits = 8830;
+    const auto fin_act =
+        dir.on_race_finished(&plane_ev, aw, 1, 2, 250, 247, 500, 8500, 30, -1, "1970 Ford Mustang Boss 429", nullptr,
+                             fmv, nullptr);
+    check(dir.flow().stage() != race::CampaignStage::kShowcaseOutro,
+          "FTC showcase finish does not trigger legacy kShowcaseOutro");
+    check(!fin_act.play_fmv && !fin_act.open_autoshow, "FTC showcase finish returns no legacy action");
+    check(!dir.is_cinematic_camera_active() || dir.cutscenes().active(),
+          "legacy CampaignFlow cannot hijack camera during FTC");
+  }
   check(!fmv.active(), "the opening is in-engine, not FMV_01");
   drive::DriveSave sv;
   dir.save_to_save(sv);
