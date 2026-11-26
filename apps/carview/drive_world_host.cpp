@@ -558,7 +558,7 @@ bool DriveWorldHost::open_world_and_car() {
               }
             }
           }
-          if (!app.headless || app.bench_audio || app.bench_full_fx) {
+          if (!app.headless || app.bench_audio || app.bench_full_fx || app.audio_mix) {
             app.audio_host.init_user_music(app.user_music_dir, true);
             const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
             app.audio_host.init_sfx(groot_cached, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);

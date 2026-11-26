@@ -80,6 +80,9 @@ struct DriveConfig {
   bool no_save = false;
   bool validation = std::getenv("SHIFT_VALIDATION") != nullptr;
   std::filesystem::path sound_dir = "out/sound", audio_out;
+  // --audio-mix: the --audio-out render carries the whole driving mix (tyres,
+  // wind, impacts, surfaces, ambience), not only the engine.
+  bool audio_mix = false;
   bool sound = true, sound_given = false;
   bool radio_on = true;
   double radio_press_every = 0;

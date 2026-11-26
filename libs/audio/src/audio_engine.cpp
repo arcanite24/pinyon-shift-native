@@ -1882,6 +1882,11 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   telemetry_buf_.write(t);
 }
 
+bool AudioEngine::sfx_decoding() const {
+  std::lock_guard<std::mutex> lk(sfx_reload_mu_);
+  return sfx_control_ptr_ && sfx_control_ptr_->decoding();
+}
+
 void AudioEngine::render_offline(float* out, int frames) {
   int done = 0;
   while (done < frames) {

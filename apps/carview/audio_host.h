@@ -232,6 +232,8 @@ class AudioHost {
 
   // Synchronous offline rendering for headless --audio-out.
   void render_offline(const audio::EnginePlayer::Update& u, float* out, int frames);
+  // True while the SFX banks are still decoding in the background.
+  bool sfx_decoding() const { return engine_.sfx_decoding(); }
 
   // Writes radio station/DJ/volume into `save`.
   void save_radio_state(drive::DriveSave& save);
