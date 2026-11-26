@@ -164,6 +164,7 @@ struct FtcInput {
   int64_t race_event_id = 0;
   int race_place = 0;  // 1-based
   bool racing = false;  // the player is in a race (the heats triggers wait)
+  bool sign_up = false;  // X / Enter pressed this frame (the activation's SIGN ME UP!)
 };
 
 // A sphere trigger (the activity's CTriggerZone, shape 1).
@@ -339,6 +340,9 @@ class FirstTimeCareer {
   const std::string& large_instruction_2() const { return large2_; }
   // The heats places counter (-1 when not shown).
   int tickets_remaining() const { return stage_ == FtcStage::kRaceToFestival ? tickets_ : -1; }
+  // The event whose sign-up sphere the player is in, waiting for X (the
+  // activation's SIGN ME UP!, first30e r7 h00318); 0 when none.
+  int64_t sign_up_event() const { return sign_up_event_; }
 
  private:
   FtcCommands enter(FtcStage next);
@@ -370,6 +374,7 @@ class FirstTimeCareer {
   int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
   int drive_leg_ = 0;           // the initial drive's sat-nav point (kInitialDrivePoints)
   bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)
+  int64_t sign_up_event_ = 0;   // the sphere's event while the player is in it
   bool awaiting_race_ = false;  // an event was launched and has not reported
   bool raced_ = false;          // ...and the player has been in it since
   double launch_t_ = 0.0;

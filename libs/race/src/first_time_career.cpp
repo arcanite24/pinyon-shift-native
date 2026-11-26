@@ -309,6 +309,7 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
   timed_.clear();
   set_instruction(-1);
   in_trigger_ = false;
+  sign_up_event_ = 0;
   awaiting_race_ = false;
   skills_cutscene_ = false;
   FtcCommands c;
@@ -607,8 +608,12 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
   auto event_result = [&](int64_t id) {
     return in.race_finished && in.race_event_id == id && in.race_place >= 1 && in.race_place <= kCutoffPlace;
   };
-  // Drive to an event's sign-up sphere, then start it (each new entry; the
-  // host's own event marker can start it too).
+  // Drive to an event's sign-up sphere, then sign up with X: the
+  // activation's banner asks SIGN ME UP! and driving in does not start it
+  // (first30e r7: five minutes in and round the heats' sphere with A
+  // presses never started them). The host's own event marker can start it
+  // too.
+  sign_up_event_ = 0;
   auto sign_up = [&](int64_t id) {
     if (in.racing) {
       raced_ = true;
@@ -638,9 +643,16 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       launch();
       return;
     }
-    if (d <= radius && !in_trigger_) launch();
-    if (d <= radius) in_trigger_ = true;
-    else if (d > radius + kRearmMargin) in_trigger_ = false;
+    if (d <= radius) {
+      in_trigger_ = true;
+      sign_up_event_ = id;
+      if (in.sign_up) {
+        sign_up_event_ = 0;
+        launch();
+      }
+    } else if (d > radius + kRearmMargin) {
+      in_trigger_ = false;
+    }
   };
 
   // The time-of-day zones, on entry, up to the festival arrival.

@@ -413,7 +413,7 @@ void DriveSession::poll_sdl_events() {
               // so it never leaks into ShiftDown / ShiftUp / Rewind / Brake on any controller layout.
               if (e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST && !(app.race && app.race->player_finished())) {
                 const bool has_prompt =
-                    picking || active_trigger.in_range ||
+                    picking || active_trigger.in_range || (!app.race && app.campaign.ftc_sign_up_event() > 0) ||
                     (festival_mgr && !app.race && festival_mgr->hud(vehicle.time()).prompt_visible);
                 if (has_prompt) {
                   if (picking) take_pick();

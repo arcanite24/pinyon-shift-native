@@ -72,10 +72,13 @@ void DriveSession::autoplay_frame() {
     std::string send = name;
     if (name == "advance") {
       // Return where a press moves the career on (a race and its results, a
-      // movie, a blocking career beat, controls held by the career), not in
-      // free roam, where it would open the festival's hub.
+      // movie, a blocking career beat, controls held by the career, the
+      // career's SIGN ME UP!), not in free roam, where it would open the
+      // festival's hub.
       const bool held = app.campaign.ftc_active() && !app.campaign.ftc().controls_enabled();
-      if (!(app.race || app.fmv_player.active() || app.campaign.is_blocking_gameplay() || held || app.show_title))
+      const bool sign_up = !app.race && app.campaign.ftc_sign_up_event() > 0;
+      if (!(app.race || app.fmv_player.active() || app.campaign.is_blocking_gameplay() || held || app.show_title ||
+            sign_up))
         continue;
       send = "return";
     }

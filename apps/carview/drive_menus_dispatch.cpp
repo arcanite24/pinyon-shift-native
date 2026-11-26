@@ -1160,6 +1160,13 @@ void DriveSession::open_menu() {
 
 bool DriveSession::activate_world_trigger() {
           if (app.race) return false;
+          // The first-time career's events (the heats final, the showcase):
+          // X in their sign-up sphere signs up (SIGN ME UP!).
+          if (app.campaign.ftc_sign_up_event() > 0) {
+            app.campaign.ftc_sign_up();
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            return true;
+          }
           // ColoradoDirt free roam: drive into Rally Championship world trigger markers
           // (MS_RALLY_01..07 parsed from rally_event_activations.xml).
           if (!app.colorado_world() && app.rally_catalog.loaded) {

@@ -468,7 +468,9 @@ race::CampaignAction CampaignDirector::update_ftc(double dt, FmvPlayer& fmv, Aud
   in.race_event_id = ftc_race_event_;
   in.race_place = ftc_race_place_;
   in.racing = ftc_in_.racing;
+  in.sign_up = ftc_sign_up_;
   ftc_confirm_ = false;
+  ftc_sign_up_ = false;
   ftc_race_finished_ = false;
   auto act = apply_ftc(ftc_.update(in), fmv, audio);
   if (ftc_.complete()) {
