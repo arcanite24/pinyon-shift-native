@@ -47,6 +47,13 @@ void DriveSession::autoplay_frame() {
         map_cam.reset(hp[0], hp[2], map_zoom);
         map_cx = map_cam.cx();
         map_cz = map_cam.cz();
+        map_cursor.reset();
+        if (map_w > 64 && map_h > 64) {
+          const SceneFrame fr = SceneScreen::frame(float(map_w), float(map_h));
+          const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
+          map_cursor.absorb(float((0.5 * map_w + (hp[0] - map_cx) / mpp - fr.ox) / fr.s) - MapCursor::kCx,
+                            float((0.5 * map_h - (hp[2] - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
+        }
         map_dirty = true;
         update_map_selection();
         ap.note("mapto heats");
