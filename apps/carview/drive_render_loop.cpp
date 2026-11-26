@@ -404,8 +404,25 @@ void DriveSession::run_window_loop() {
             queued_campaign_actions.clear();
             for (const auto& ca : batch) apply_campaign_action(ca);
           }
-          if (app.campaign_new_career_pending && !app.headless) {
+          // SINGLE PLAYER on a new career: the original plays
+          // splash_intros/Forza_Tone.wmv (about 3.5 min) before the
+          // controller loading screen (recomp capture, first30a); the
+          // career starts when it ends.
+          if (app.campaign_new_career_pending && !app.headless && !app.career_tone_done) {
+            app.career_tone_done = true;
+            const auto tp = app.skip_intro_movies
+                                ? std::filesystem::path{}
+                                : carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kForzaTone);
+            if (!tp.empty() && app.fmv_player.open(tp, app.language)) {
+              app.show_title = false;
+              app.audio_host.set_fmv_audio(
+                  [](void* ctx, float* out, int fr) { return static_cast<carview::FmvPlayer*>(ctx)->read_audio(out, fr); },
+                  &app.fmv_player);
+            }
+          }
+          if (app.campaign_new_career_pending && !app.headless && !app.fmv_player.active()) {
             app.campaign_new_career_pending = false;
+            app.career_tone_done = false;
             app.show_title = false;
             app.story_intro.reset();
             host.renderer.reset_auto_exposure();

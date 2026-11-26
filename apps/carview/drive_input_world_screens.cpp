@@ -120,10 +120,18 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
               // (movie_skip_event); the press goes no further, so the one
               // that ends the last splash does not also press START.
               // The end of a movie as the render loop ends one that runs out.
-              if (carview::movie_skip_event(e)) {
+              // Forza_Tone before a new career did not skip on A in the
+              // original (a press every 5 s through it; Q272).
+              const bool career_tone = app.campaign_new_career_pending && app.career_tone_done;
+              if (!career_tone && carview::movie_skip_event(e)) {
                 app.fmv_player.skip();
                 app.audio_host.set_fmv_audio(nullptr, nullptr);
                 host.renderer.reset_auto_exposure();
+                // A press in a boot splash skips the rest of them too: the
+                // original goes from T10_MS_Combined straight to Press Start
+                // (Dolby_Corona_Intro never opens; recomp capture, first30a).
+                if (app.story_intro.stage() == carview::StoryStage::kBootSplash)
+                  apply_story_action(app.story_intro.skip_stage());
                 if (title_attract_playing) {
                   title_attract_playing = false;
                   title_idle_s = 0.0;

@@ -136,6 +136,7 @@ struct DriveApp : DriveConfig {
   StoryIntro story_intro;
   CampaignDirector campaign;
   bool campaign_new_career_pending = false;
+  bool career_tone_done = false;  // Forza_Tone.wmv opened for the pending new career
   PendingCampaignHandoff pending_handoff;
   std::vector<PendingBarnRestore> pending_barn_restorations;
   bool barn_restorations_reconciled = false;
