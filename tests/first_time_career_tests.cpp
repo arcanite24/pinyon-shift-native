@@ -546,21 +546,32 @@ void test_stage_names_and_resume() {
             race::ftc_title_stage(FtcStage::kTravelToRaceCentral) == 8,
         "title stage values");
 
-  // FIRST30_AUDIT Rank 10: ENTER THE SHOWCASE EVENT must wait until the locked
-  // map actually closes (in.screen_open == false), not expire behind its 3 s close hold.
-  ftc.resume(FtcStage::kShowcase);
-  ftc.release_map_lock();
+  // FIRST30_AUDIT Rank 10 & 15: ENTER THE SHOWCASE EVENT waits until the locked
+  // map actually closes (in.screen_open == false), and rolling past the sign-up
+  // sphere during the 3 s ticket hold still launches when ftc_sign_up() fires.
+  FirstTimeCareer ftc_sc;
+  ftc_sc.set_event_trigger(FirstTimeCareer::kMustangRace, kRedRockNode, 27.0);
+  ftc_sc.resume(FtcStage::kShowcase);
+  ftc_sc.release_map_lock();
   race::FtcInput in;
   in.dt = 1.0;
   in.screen_open = true;
-  ftc.update(in);
-  ftc.update(in);
-  check(ftc.hud_instruction().empty() && ftc.large_instruction_1().empty(),
+  ftc_sc.update(in);
+  ftc_sc.update(in);
+  check(ftc_sc.hud_instruction().empty() && ftc_sc.large_instruction_1().empty(),
         "showcase banner waits while map is still closing");
   in.screen_open = false;
-  ftc.update(in);
-  check(!ftc.hud_instruction().empty() && !ftc.large_instruction_1().empty(),
+  ftc_sc.update(in);
+  check(!ftc_sc.hud_instruction().empty() && !ftc_sc.large_instruction_1().empty(),
         "showcase banner fires once the locked map closes");
+  in.player_pos = kRedRockNode;
+  ftc_sc.update(in);
+  check(ftc_sc.sign_up_event() == FirstTimeCareer::kMustangRace, "inside showcase sphere arms sign-up");
+  in.player_pos = {kRedRockNode[0] + 60.0, kRedRockNode[1], kRedRockNode[2]};
+  in.sign_up = true;
+  const auto launched = ftc_sc.update(in);
+  check(launched.launch_event_id == FirstTimeCareer::kMustangRace,
+        "deferred sign-up still launches after rolling past sphere edge");
 }
 
 }  // namespace

@@ -645,13 +645,14 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       launch();
       return;
     }
-    if (d <= radius) {
+    if (in.sign_up) {
+      // Signed up while inside the sphere; honour the launch even if the car
+      // rolled past the sphere edge during the 3 s ticket hold (Rank 15).
+      sign_up_event_ = 0;
+      launch();
+    } else if (d <= radius) {
       in_trigger_ = true;
       sign_up_event_ = id;
-      if (in.sign_up) {
-        sign_up_event_ = 0;
-        launch();
-      }
     } else if (d > radius + kRearmMargin) {
       in_trigger_ = false;
     }
