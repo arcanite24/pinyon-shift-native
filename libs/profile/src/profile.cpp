@@ -582,6 +582,12 @@ bool import_profile(const std::filesystem::path& folder, Imported& out, std::str
     out.has_codriver = true;
     out.codriver_on = cd->value.as_int() != 0;
   }
+  if (const Field* rs = find(fs, "Main/RadioStation")) {
+    out.has_radio = true;
+    out.radio_station = int(rs->value.as_int());
+    if (const Field* dj = find(fs, "Main/RadioDJ")) out.radio_dj = dj->value.as_int() != 0;
+    if (const Field* rv = find(fs, "Main/RadioVolume")) out.radio_volume = rv->value.as_double();
+  }
 
   // The records: signs and barns under Colorado, the 1000 Club.
   for (const auto& blk : out.body.blocks)

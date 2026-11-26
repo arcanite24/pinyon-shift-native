@@ -583,6 +583,9 @@ std::vector<uint8_t> build_rich_retail_body() {
   profile::set_field_bool(body.fields, "Main/SatNav", true);
   profile::set_field_bool(body.fields, "Main/FastTravelAnywhere", true);
   profile::set_field_bool(body.fields, "Main/CoDriver", false);
+  profile::set_field_int(body.fields, "Main/RadioStation", 3, profile::Value::kU8);  // radio off
+  profile::set_field_bool(body.fields, "Main/RadioDJ", false);
+  profile::set_field_double(body.fields, "Main/RadioVolume", 0.5, profile::Value::kFloat);
   profile::set_field_int(body.fields, "Main/NumRallies", 3, profile::Value::kI32);
   profile::set_field_int(body.fields, "Main/NumRallyStages", 12, profile::Value::kI32);
   profile::set_field_int(body.fields, "Main/CustomUnknownOption", 42, profile::Value::kU32);
@@ -743,6 +746,7 @@ void test_retail_profile_importer_and_export() {
   CHECK(imp.version_flags == 2);
   CHECK(imp.fast_travel_anywhere);
   CHECK(imp.has_codriver && !imp.codriver_on);
+  CHECK(imp.has_radio && imp.radio_station == 3 && !imp.radio_dj && std::fabs(imp.radio_volume - 0.5) < 1e-6);
   CHECK(imp.speed_zones.size() == 10);  // 9 CAverageSpeedState + 1 CSpeedZoneState fallback
   CHECK(imp.speed_zones[0].first == "average_speed_01" && std::fabs(imp.speed_zones[0].second - 115.5) < 1e-2);
   CHECK(imp.speed_zones[8].first == "average_speed_09" && std::fabs(imp.speed_zones[8].second - 159.5) < 1e-2);
@@ -784,6 +788,7 @@ void test_retail_profile_importer_and_export() {
   profile::to_drive_save(imp, [](int64_t id) { return id == 445 ? std::string("NIS_SkylineGTRVSpecII_02") : std::string(); },
                          ds, &notes);
   CHECK(ds.fast_travel_anywhere && !ds.codriver_enabled);
+  CHECK(ds.radio_station == "Radio4_Silent" && !ds.radio_dj && std::fabs(ds.radio_volume - 0.5) < 1e-6);
   CHECK(ds.speed_zones.size() == 10 && ds.speed_traps.size() == 1);
   CHECK(ds.car_history.size() == 1 && ds.car_history[0].num_victories == 11);
   CHECK(ds.club.size() == 1 && ds.club[0].progress[0] == std::vector<int>({3, 7}));

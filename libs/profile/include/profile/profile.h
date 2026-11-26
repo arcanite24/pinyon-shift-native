@@ -203,6 +203,12 @@ struct Imported {
   bool fast_travel_anywhere = false;  // Main/FastTravelAnywhere (v4)
   bool has_codriver = false;
   bool codriver_on = true;            // Main/CoDriver (v4)
+  // Main/RadioStation (the player station cycle of RadioSystem.xml: 0..2 Radio1..Radio3,
+  // 3 Radio4_Silent, the off station), Main/RadioDJ and Main/RadioVolume (Q292).
+  bool has_radio = false;
+  int radio_station = 0;
+  bool radio_dj = true;
+  double radio_volume = 1.0;
   // PlayerDatabase.
   std::vector<GarageCar> garage;
   std::vector<PurchasedPart> parts;
