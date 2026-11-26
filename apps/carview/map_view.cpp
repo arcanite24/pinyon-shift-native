@@ -88,6 +88,10 @@ MapView::Profile read_profile(const audio::XmlNode& root) {
         if (!size) size = sym.child("Size");
         s.size = size ? size->number("value", 45) : 45;
         s.colour = colour(sym.child("ColourPrimary"), {255, 255, 255, 255});
+        if (const audio::XmlNode* vr = sym.child("VisibleRange")) {
+          s.max_distance = vr->number("max_distance", 0);
+          s.max_fade_distance = vr->number("max_fade_distance", s.max_distance);
+        }
         icons.push_back(s);
       }
       // A filter value can head several groups (the pause map's layers):
@@ -675,6 +679,13 @@ mapanim::IconLook icon_look(const mapanim::Library& lib, const mapanim::Bindings
 
 }  // namespace
 
+float MapView::visible_range_alpha(const IconStyle& s, double dist) {
+  if (s.max_distance <= 0 || dist <= s.max_fade_distance) return 1.0f;
+  if (dist >= s.max_distance) return 0.0f;
+  const double span = s.max_distance - s.max_fade_distance;
+  return span > 1e-6 ? float(1.0 - (dist - s.max_fade_distance) / span) : 0.0f;
+}
+
 const mapanim::Animation* MapView::icon_animation(std::string_view key, std::string_view event) const {
   const auto it = full_.icons.find(std::string(key));
   if (it == full_.icons.end()) return nullptr;
@@ -1061,16 +1072,39 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit, 52 * unit, 0, Rgba{74, 238, 97, 255});
     }
   }
+  // The activity icons by their profile's VisibleRange (2,400 m, faded out
+  // by 2,800 m; Q283), not the roads' reach, and the event icon group's
+  // ViewDepth order: the farthest first, the nearest on top.
+  struct MiniMark {
+    Mark m;
+    P p;
+    double dist;
+  };
+  std::vector<MiniMark> mini_marks;
   for (const auto& m : marks(scene, false)) {
-    if (std::hypot(m.x - scene.x, m.z - scene.z) > reach) continue;
+    const double dist = std::hypot(m.x - scene.x, m.z - scene.z);
     auto it = mini_.icons.find(m.key);
     if (it == mini_.icons.end()) it = mini_.icons.find("gas_station");
     if (it == mini_.icons.end()) continue;
+    const double range = it->second.empty() || it->second.front().max_distance <= 0 ? reach
+                                                                                     : it->second.front().max_distance;
+    if (dist > range) continue;
     const P p = project(m.x, m.z);
     if (p.depth < 1) continue;
+    // Off the panel by more than an icon: nothing of it would show.
+    if (p.x < -40 * unit || p.x > size + 40 * unit || p.y < -60 * unit || p.y > size + 40 * unit) continue;
+    mini_marks.push_back({m, p, dist});
+  }
+  std::stable_sort(mini_marks.begin(), mini_marks.end(),
+                   [](const MiniMark& a, const MiniMark& b) { return a.p.depth > b.p.depth; });
+  for (const auto& mm : mini_marks) {
+    const Mark& m = mm.m;
+    const P& p = mm.p;
+    const auto& styles = mini_.icons.count(m.key) ? mini_.icons.at(m.key) : mini_.icons.at("gas_station");
     double top_y = p.y;
-    for (const auto& ic : it->second) {
+    for (const auto& ic : styles) {
       Rgba tint = ic.colour;
+      tint.a *= visible_range_alpha(ic, mm.dist);
       if (!m.discovered) tint = {145, 145, 155, tint.a * 0.72f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
       const double iy = p.y - ic.size * unit * 0.4;

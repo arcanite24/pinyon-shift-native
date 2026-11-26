@@ -173,7 +173,12 @@ class MapView {
     double size = 45;  // DynamicSize (or Size)
     Rgba colour;
     mapanim::Bindings anims;  // event -> animation name
+    // VisibleRange (m from the player): shown to max_fade_distance, faded
+    // out by max_distance; 0 = no range (always shown).
+    double max_distance = 0, max_fade_distance = 0;
   };
+  // A symbolizer's VisibleRange alpha at `dist` m (1 inside, 0 past max).
+  static float visible_range_alpha(const IconStyle& s, double dist);
   struct Profile {
     std::map<std::string, LineStyle> roads;               // by road_type
     std::map<std::string, std::vector<IconStyle>> icons;  // by filter value, drawn in order

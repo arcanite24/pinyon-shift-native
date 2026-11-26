@@ -2933,6 +2933,16 @@ COLLECT panel and the won car's render are not reproduced. Needed:
 captures of both screens at rest (a race that levels the wristband, and a
 race that wins a car), or the intro timelines' end states.
 
+**Wristband reached, captured (first30d).** The recomp's points page
+after a race that reaches a wristband (`points_collect_first30d_orig.png`)
+shows POINTS EARNED, the new band's large wristband on the dark tape (ink
+95,222-454,361), COLLECT IT FROM RACE CENTRAL on the light pill under it
+(100,355-440,395) and PLEASE WAIT with the spinner bottom left; no points
+tape, no bar and no A. The engine now draws that layout from the scene's
+`LargeTape`, `WristbandLarge` and `CarName/XPRemainingText` nodes placed
+at those rects, and moves on by itself (Q301). The won car's screen and
+the page without a wristband are unchanged.
+
 ## Q97 (UI, not blocking): car select and difficulty from the race menus
 
 When the current car does not qualify, the original's summary leads to
@@ -5828,6 +5838,23 @@ Needed: the code that writes `TEXT_TOTAL` (whether it interpolates, and at
 what rate) and the chain's bank timer, or a real-time capture of one skill
 banking.
 
+**Count-up settled (first30d).** `CHudDrivingFeatsControl` writes `TEXT_TOTAL` itself. Its set-total
+puts the control in its counting state with the new total as the target;
+on a chain's first total it starts the shown value from 0 (and plays
+`RESET` and `SHOW_SCORE`). The rate is `(target - shown) /
+Count_Up_Duration`, with `UI/RaceFeats/Animation/Count_Up_Duration` 1.6 s,
+so each new award re-aims the roll from where it stands. Its tick
+adds `dt * rate`, stops at the target and shows the floor.
+A lost chain snaps the shown value to the target and
+plays `FAIL`. The engine now does the same (`SkillTotalCountUp`,
+`ui_tests`). Banking (`SUCCEED`) is not the HUD's timer:
+it fires when the game-side chain object goes away (the HUD's poll
+of it), so the bank timeout lives in the feats logic
+(`CRaceFeatComponent`, which loads its times from runtime
+tunables). `HorizonFeats.xml`'s `ComboWindowDuration` values (0.5 to 20 s)
+are per-feat combo windows, not the chain's. The bank timeout stays the
+engine's 3 s interim (Q302).
+
 ## Q283 (first30b, HUD, not blocking): the minimap's icons in free roam
 
 At the same spot the original's minimap shows the new-event icons, the
@@ -5838,6 +5865,31 @@ which the engine leaves out for this save.
 
 Needed: the minimap's icon filter from the scene or code, or a
 side-by-side at a spot with known nearby events.
+
+**Range settled (first30d).** `MapProfileMinimap.xml` gives every
+activity icon group (career events with their ring, wreath and NEW badge,
+street races, the Festival and garage, barns, flyers, speed cameras)
+`VisibleRange max_distance=2800 max_fade_distance=2400`, and the event
+icon group sorts by `Mode ViewDepth`. The engine culled them at the
+roads' 420 m reach. The minimap now shows each group to its profile's
+range (full to 2,400 m, fading to 0 at 2,800 m), draws far icons first and
+drops icons well off the panel.
+
+That alone does not bring the Gauntlet spawn's icons back
+(`minimap_cmp_first30d.png`: the original, the engine before, the engine
+after). Their likely sources sit far off: the NEW event top left is FR58
+(590 m), the house and H the Outpost 009 and its gas station (474 m). The
+original's perspective minimap reaches that far within its panel; the
+engine's fixed camera (Q89) sees about 160 m ahead, so they project off
+the panel. Also not reproduced: the original's event icon at the car is
+the large ring (about 46 px across) with the NEW badge, where the engine
+draws a smaller icon (about 27 px: the profile's 45 at `size / 300`) with a
+trophy and a note badge and no NEW, though the event is not yet done in
+either save (the engine's race award logs a first completion).
+
+Still needed: the minimap camera (Q89; no `UI/Map` tunable names it, the
+map's are `Map_Distance_Min/Max`, `Zoom_Default` and the like), and the
+edge clamp (`UI/Map/IconClampBufferX/Y`, default 1.0, range 0 to 1).
 
 ## Q284 (first30b, not blocking): the beats this pass did not capture
 
@@ -5869,6 +5921,31 @@ Needed: an original save from the first free roam after the opening (or a
 capture route from a new profile through the opening), and a pass over the
 listed beats from the same seed.
 
+**first30d update.** Captured side by side from the `appdata` seed
+(recomp routes `out/first30d/harness/orig-race-full.fh1test` and
+`orig-pause.fh1test`, engine steps `engine-race4.steps` and
+`engine-pause.steps`; sheets in the audit folder's `captures/*_first30d*`):
+- The Gauntlet from entry to results: settled beat by beat except the
+  entry's single black frame (not visible at capture rate) and the
+  points page's wait (Q301). The engine now holds the entry fade black to
+  the load, hides the HUD on the count's first cut, shows the points page
+  with the wristband to collect, places the start crowd behind the
+  barriers (Q285) and announces NEW WRISTBAND AT RACE CENTRAL back in free
+  roam. Alice's call-in after a race is now the career's first race only
+  (Q303).
+- The pause menu: opens in the same frame in both, the same tabs and help
+  bar (A SELECT, B RESUME, X EXTRAS). The engine also lists the 1000 CLUB
+  and HORIZON RALLY rows, which the recomp's seed lacks because it has no
+  DLC (Q304).
+- The map: the original opens and closes about 12 frames after Back and B.
+  It opens on the player with their name and no popup, with every icon
+  drawn; the engine opened on the Gauntlet under the car, which ghosted
+  every other icon. Fixed (`map_open_player_first30d_engine.png`).
+
+Still not captured side by side: fast travel, a speed trap or zone, a PR
+stunt, the first street race, the Autoshow and garage, and the first-time
+beats above.
+
 ## Q285 (first30b, WORLD-14, not blocking): where the Gauntlet's start crowd stands
 
 The original's free roam has a crowd of about ten behind the barriers at
@@ -5889,6 +5966,22 @@ spectators is not known.
 Needed: the source of the start-line spectator instances (Q109): whether
 an event's `FR<n>_<k>` objects carry a crowd slot and its class, or where
 else the game reads them.
+
+**Placed by the site's slots (first30d).** Not decoded still, but ruled
+out as the source: `Colorado_track_00.crowd` (12 bytes, no records),
+`Spectators.zip`'s `spectators.xml` (models, skeletons and crowd classes
+only), the race and free-roam flows (`gamemodes.zip`), the database (only
+`Events.CrowdSize` and `CrowdExcitement`) and every loose XML but
+`GameObjs.xml` and `ParticleEmitters.xml`. Every festival race site is one
+kit of 18 slots around `FR<n>_NODE` in nearly the same layout
+(`_04`/`_05` before the node, `_06`/`_02` past it, the barrier slots at
+about 6 m to the side). As an interim the engine now centres a race site's
+crowd (ten, as the capture shows) between its `_06` and `_02` slots,
+facing the road: at the Gauntlet 4 to 15 m past the node and 7.6 m to the
+side, behind the barriers where the original's stands
+(`crowd_cmp_first30d.png`). Needed as before: which slot (or which other
+data) the game spawns it from, and whether the class and count come from
+`Events.CrowdSize`.
 
 ## Q271 (INTRO-03, INTRO-09, not blocking): the career cars' paint
 
@@ -6220,3 +6313,52 @@ Needed:
 - that harness;
 - then the same states on both sides, and the impacts, which the route
   did not take.
+
+## Q301 (first30d, UI, not blocking): how long the points page waits with a wristband to collect
+
+The recomp's points page after a race that reaches a wristband shows
+PLEASE WAIT and no A, and moves on to the next step (STAY IN CAR in that
+seed) about 210 captured frames after it opens (frames 9420 to 9630 of
+first30d's race; an A at 9500 changed nothing). Under capture the frames
+are not paced in game time; on the cash page, whose auto-advance is
+measured (160 to 180 frames at 60 fps), the same capture ran about 225
+frames, so the points page holds for about 2.6 s. The engine waits 2.6 s
+(`race_flow::timing::kPointsCollect`) and ignores A there. Unknown: what
+the original waits for (a save, the award's commit) and whether the page
+without a wristband to collect takes A (the engine keeps A CONTINUE
+there). Needed: a 60 fps capture of the points page with and without a
+wristband reached, or the post-race flow state's exit condition.
+
+## Q302 (first30d, HUD, not blocking): the skill chain's bank timeout
+
+Moved from Q282, whose count-up is settled. The HUD banks (`SUCCEED`)
+when the feats logic drops the chain object, so the timeout is in
+`CRaceFeatComponent`, which reads its times from runtime
+tunables, not `HorizonFeats.xml` (whose `ComboWindowDuration` is per feat).
+The engine keeps its 3 s (`bank_timeout`). The recomp banks some 4.3 to
+5.1 s of capture wall time after the last award it shows. Needed: the
+tunable's name and default (its registration, as the `UI/RaceFeats`
+blocks are registered), or a 60 fps capture of one chain banking.
+
+## Q303 (first30d, campaign, not blocking): Alice's call-in after the first race
+
+`DialogueScript_EN.xml` has `FirstPostRaceWinner`, `FirstPostRacePodium`
+and `FirstPostRaceFourthBelow`, spoken by Alice. The engine plays one
+after the career's first race only (the first race whose points start
+from zero), once per career, and none after later races, as the
+recomp's Gauntlet in a progressed seed shows. Unknown: the subtitle text
+(the engine's lines are its own, and FourthBelow has none), whether the
+original plays it on the results or back in free roam, and whether it
+waits for the wristband's announcement. Needed: the lines' subtitle
+strings (the VO bank's string table) and a capture from a new profile's
+first race.
+
+## Q304 (first30d, UI, not blocking): the pause menu's DLC rows and the map's player label
+
+The recomp's seed has no DLC, so its pause menu shows no 1000 CLUB or
+HORIZON RALLY row; the engine lists both. Whether the original shows
+them without the DLC installed (greyed or hidden) is unknown. The map's
+player label is the profile's gamertag in the original (`User` in the
+recomp); the engine shows the engine profile's name. Needed: a capture
+of the pause menu with the DLC installed, and the rows' visibility
+rule.

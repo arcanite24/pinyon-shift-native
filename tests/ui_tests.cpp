@@ -1389,6 +1389,22 @@ int main() {
       check_hud_screen(d);
     }
 
+    // Q282: the chain's total counts up to each new total over Count_Up_Duration (1.6 s).
+    {
+      carview::SkillTotalCountUp c;
+      CHECK(c.update(true, 100, 10.0) == 0);    // a new chain's first total starts from 0
+      CHECK(c.update(true, 100, 10.8) == 50);   // half way at 0.8 s
+      CHECK(c.update(true, 100, 11.6) == 100);  // there at 1.6 s
+      CHECK(c.update(true, 100, 12.0) == 100);  // and holds
+      CHECK(c.update(true, 250, 12.0) == 100);  // a new award: from the shown value
+      CHECK(c.update(true, 250, 12.8) == 175);
+      CHECK(c.update(true, 400, 12.8) == 175);  // another one resets the rate
+      CHECK(c.update(true, 400, 13.6) == 287);
+      CHECK(c.update(true, 400, 14.4) == 400);
+      CHECK(c.update(false, 0, 15.0) == 0);     // the chain ends
+      CHECK(c.update(true, 50, 16.0) == 0);     // the next starts from 0 again
+    }
+
     // PT-38: Popularity badge smooth radial ring interpolation, rank-up flip/pop/flash, and skill pulse.
     {
       carview::PopularityBadgeAnimator anim;

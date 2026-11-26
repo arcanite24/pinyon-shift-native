@@ -95,6 +95,10 @@ inline constexpr double kCashAuto = 170.0 / 60;  // cash auto-advances after 160
 inline constexpr double kCashLines = 30.0 / 60;  // the remaining cash lines within 30 frames
 inline constexpr double kBlackFade = 12.0 / 60;  // the darken after A on the points
 inline constexpr double kBlackHold = 30.0 / 60;  // 30 frames of black before the load
+// interim (SPEC_QUESTIONS Q301): the points page with a wristband to collect
+// shows PLEASE WAIT, no A, and moves on by itself; the recomp held it ~210
+// captured frames, ~2.6 s on the cash page's frames-to-seconds measure.
+inline constexpr double kPointsCollect = 2.6;
 // The rival callout runs on the nemesis_show cutscene: its
 // CCutsceneNemesisUITrigger shows the callout at 0.8 s for 10 s, then the
 // flow waits half a second (NemesisCalloutSequence's wait_half_second).

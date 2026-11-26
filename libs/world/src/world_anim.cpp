@@ -1817,6 +1817,22 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
     return false;
   };
 
+  // A site slot's ground position by its GameplayID (false: missing, or a
+  // placeholder at the world origin).
+  auto find_slot = [&](const std::string& id, float& x, float& z) -> bool {
+    const size_t at = xml.find("GameplayID=\"" + id + "\"");
+    if (at == std::string::npos) return false;
+    const size_t end = xml.find("</Obj", at);
+    const size_t tag = xml.find("<Pos ", at);
+    if (tag == std::string::npos || tag > end) return false;
+    const size_t gt = xml.find('>', tag);
+    if (gt == std::string::npos || gt > end) return false;
+    const std::string s = xml.substr(tag, gt - tag + 1);
+    x = parse_attr_float(s, "x", 0.0f);
+    z = parse_attr_float(s, "z", 0.0f);
+    return std::fabs(x) >= 1.0f || std::fabs(z) >= 1.0f;
+  };
+
   size_t pos = 0;
   // Every site in the file (about 550 clusters before the 22 m merge); a cap
   // of 96 stopped at the planes and exhibitions and left the race starts
@@ -1899,11 +1915,35 @@ void AnimatedWorldSystem::populate_gameobjs_crowds(const std::filesystem::path& 
 
     // Offset crowd cluster cleanly off the asphalt shoulder (~9.5 m laterally), facing inward toward the site.
     const float lateral = is_festival ? 10.5f : 9.2f;
-    const int count = is_festival ? 10 : (is_outpost ? 9 : 7);
+    const int count = is_festival || is_race_node ? 10 : (is_outpost ? 9 : 7);  // ~10 at FR06 (first30b)
     const float spacing = is_festival ? 1.15f : 1.18f;
     const float half_span = 0.5f * float(count - 1) * spacing;
-    const float cx = ox + xx * lateral - zx * half_span;
-    const float cz = oz + xz * lateral - zz * half_span;
+    float cx = ox + xx * lateral - zx * half_span;
+    float cz = oz + xz * lateral - zz * half_span;
+    // interim (SPEC_QUESTIONS Q285): a festival race site is one kit of 18
+    // slots (FR<n>_00..17) around FR<n>_NODE; the original's crowd stands
+    // behind the site's barriers past the start (idle_cam0_first30b_orig.png:
+    // the Gauntlet's, 7-14 m past FR06_NODE, behind the barrier line at 6 m).
+    // Which slot carries it is not decoded; the engine centres it between
+    // the slots _06 and _02 that bound that stretch on every site.
+    if (is_race_node) {
+      const std::string site = gid.substr(0, gid.size() - 5);  // "FR06" of "FR06_NODE"
+      float ax = 0, az = 0, bx = 0, bz = 0;
+      if (find_slot(site + "_06", ax, az) && find_slot(site + "_02", bx, bz)) {
+        const float mx = 0.5f * (ax + bx), mz = 0.5f * (az + bz);
+        // Face the road: from the slots back to the node, across the line.
+        float lx = mx - ox, lz = mz - oz;
+        const float along = lx * zx + lz * zz;
+        lx -= along * zx;
+        lz -= along * zz;
+        if (const float ll = std::hypot(lx, lz); ll > 0.5f) {
+          xx = lx / ll;
+          xz = lz / ll;
+          cx = mx - zx * half_span;
+          cz = mz - zz * half_span;
+        }
+      }
+    }
     if (too_close(cx, cz, 22.0f)) continue;
 
     const bool lit_stage = is_festival || is_outpost || is_exhibition;

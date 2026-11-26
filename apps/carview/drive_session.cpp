@@ -860,7 +860,8 @@ void DriveSession::init_session() {
         cars::load_physics_settings(pzip, hub_phys_settings, nullptr);
         garage::load_pi_config(pzip, hub_pi_cfg, nullptr);
       }
-      grid_menu_open = app.race != nullptr && !app.headless && !app.bench && !app.race_options.autopilot;
+      grid_menu_open = app.race != nullptr && !app.headless && !app.bench &&
+                       (!app.race_options.autopilot || app.race_auto_menus);
       app.campaign_owns_post_race = false;
       // The race screens name the event by its string-table name (an event
       // started from the command line has not been through the menus).
