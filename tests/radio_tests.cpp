@@ -566,6 +566,26 @@ void flow_radio_states(const audio::RadioData& d) {
   CHECK(!beta->has_locked_playlist());  // played once, then the station's own
   r.cancel_playlist();
 
+  // The list's first track is a new track: its popup after the new-track
+  // delay, or after the delay once a hold (the career's HUD) ends (Q273).
+  {
+    audio::Radio q(d, 31, true);
+    q.select(0);
+    CHECK(q.set_playlist({"T_Three"}, true));
+    CHECK(q.popup().alpha == 0);
+    q.advance(d.levels.new_track_delay + 1.0);
+    CHECK(q.popup().alpha > 0 && q.popup().station == 1 && q.popup().track == 1);
+    audio::Radio hq(d, 31, true);
+    hq.select(0);
+    hq.hold_popup(true);
+    CHECK(hq.set_playlist({"T_Three"}, true));
+    hq.advance(20.0);
+    CHECK(hq.popup().alpha == 0);
+    hq.hold_popup(false);
+    hq.advance(d.levels.new_track_delay + 1.0);
+    CHECK(hq.popup().alpha > 0 && hq.popup().station == 1);
+  }
+
   // A looping list stays locked.
   audio::StationSchedule loop(d, 1, 3, 0.0, false);
   loop.set_locked_playlist({1}, 0.0);

@@ -645,6 +645,15 @@ bool Radio::set_playlist(const std::vector<std::string>& fmodnames, bool then_no
       sc->set_locked_playlist(std::move(idx), clock_, then_normal);
       if (const RadioEvent* t = sc->track_at(clock_)) seen_track_ = t->id;
     }
+    // The list's first track is a new track: its popup after the delay, or
+    // once the HUD is back (Everyday at the original's hand-over, The Power
+    // at the race to the festival; Q273).
+    if (popup_held_) {
+      popup_deferred_ = true;
+    } else {
+      popup_from_ = popup_clock_ + data_.levels.new_track_delay;
+      popup_station_ = s;
+    }
     return true;
   }
   return false;
