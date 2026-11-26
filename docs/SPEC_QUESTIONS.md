@@ -5989,9 +5989,9 @@ Update (first30e): what releases the lock is settled, from the title's code and 
 - r5 and r6: A on a plain point routes there and leaves the map open, and B then does nothing (`o*` frames).
 - r6 `m0`-`m5`: the map opens zoomed out, then zooms in onto the festival (`g00135`-`g00145`). The cursor moved 12 frames right (LX 20000) snaps onto the heats marker. There it shows the "HORIZON Heats" tooltip with 1,000 Cr, the event's route in red, and A SET ROUTE plus a DETAILS button (`m1`).
 
-- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker, then B. With the heats routed (the marker's tooltip now reads 3,000 Cr), B left the map, and the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
+- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker at 33 s, then B at 37 s. `m0` (before A) has the help bar A SET ROUTE, DETAILS, LB FILTER, MOVE, ZOOM. From `n0` (35 s, before B) the help bar is gone and a spinner with PLEASE WAIT sits bottom left; the route is drawn and the marker's tooltip reads 3,000 Cr. `o00`-`o05` and `h00042` are the same, and the map is gone by `h00045` (black), so it closed about 10 s after A in hidden mode. Whether A alone closes it (after a load) or B, pressed during PLEASE WAIT, did is not settled: r9 holds B back to 60 s to tell. Then the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
 
-The engine now routes to the heats on A over them, keeps the map open and releases the lock, so B exits. It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
+The engine now routes to the heats on A over them and releases the lock. It then replaces the help bar with the spinner and PLEASE WAIT, takes no input, and closes the map by itself after 3 s (interim: the closing's cause and delay are open, above). It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
 
 ## Q276 (BOOT-04, BOOT-07, not blocking): the first profile's VIDEO screen and the boot disclaimer
 
@@ -6119,3 +6119,17 @@ Open:
 - How long the card stays up. The hidden render test showed it for about 6 s, but hidden mode slows the title's timing, so it cannot be measured there.
 
 Needed: a visible (not hidden) capture of the FMV_01 skip to the map, with timestamps.
+
+## Q313 (INTRO-05, FESTIVAL, not blocking): signing up for the heats
+
+In the original, after the locked map, the Corrado reaches the Horizon Heats with the tip "Head to the Horizon Heats". The heats' banner reads HORIZON HEATS with SIGN ME UP! and the X glyph (first30e r7 `h00318`). Five minutes in and around the sphere with A every 5 s never started the heats (r7 `h00042`-`h00357`).
+
+The engine launched the heats final as soon as the car entered its 27 m sign-up sphere. It now waits in the sphere for X (or Enter). It shows the event's banner, in range, with SIGN ME UP!. The showcase (event 101) takes the same rule.
+
+Inferred, not yet observed:
+- X starting the heats. r9 presses X (held 8 frames) every 2 s near the sphere.
+- What X opens: an event ticket first, or the race's loading at once. The engine launches the race directly.
+- The showcase's sign-up: no capture reaches it.
+- Who drives the Corrado to the festival in r7: the route has no throttle or stick, yet the car drives at up to 78 mph.
+
+Needed: r9's frames after the first X in the sphere.
