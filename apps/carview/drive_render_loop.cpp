@@ -507,7 +507,8 @@ void DriveSession::run_window_loop() {
               app.rally_bg_tried = true;
               const auto mp = carview::FmvPlayer::resolve_movie(app.game_root_of(), carview::FmvMovieId::kRallyBgLoop,
                                                                 app.state_root);
-              if (!mp.empty()) app.rally_bg_video.open(mp, app.language, 1280, 720, nullptr, true);
+              if (mp.empty() || !app.rally_bg_video.open(mp, app.language, 1280, 720, nullptr, true))
+                std::fprintf(stderr, "rally hub: no BgLoop movie (%s)\n", mp.empty() ? "not found" : mp.string().c_str());
             }
             if (app.rally_bg_video.active()) app.rally_bg_video.update(frame_dt, false);
           } else {

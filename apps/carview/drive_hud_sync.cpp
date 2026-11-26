@@ -720,6 +720,23 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             app.rally_service_repaired = false;
           }
         }
+        if (app.demo_rally_hub) {
+          app.demo_rally_hub = false;
+          if (!app.rally_catalog.loaded) {
+            const auto db_ptr = app.parts_db.valid() ? app.parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+            if (!*app.car_names_loaded) carview::car_name("");
+            std::string rerr;
+            race::load_rally_catalog(app.state_root, db_ptr.get(), app.car_names->strings(), app.rally_catalog, &rerr);
+          }
+          if (app.rally_catalog.loaded) {
+            app.saved.has_rally = true;
+            app.saved.rally_flow = 4;
+            app.saved.event_results.emplace_back(app.rally_catalog.heats.event_id, 3);
+            for (const auto& ch : app.rally_catalog.championships) app.saved.event_unlocks.push_back(ch.event_id);
+            app.rally_hub_open = true;
+            app.rally_hub_selected = 1;
+          }
+        }
         if (app.demo_club && !club_open) {
           club_check();
           if (club_gate.empty() && club_car >= 0 && app.club_data.cars.count(club_car)) {
@@ -805,7 +822,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           // runs the heats again.
           rally_hub_state.extras_open = app.rally_hub_extras || rally_hub_state.tickets == 0;
           rally_hub_state.extras_selected = app.rally_hub_extra_selected;
-          rally_hub_state.help_hidden = app.rally_hub_tutorial != 0;
+          // The quit popup brings its own A OK / B CANCEL bar.
+          rally_hub_state.help_hidden = app.rally_hub_tutorial != 0 || rally_entry != carview::RallyEntryPopup::kNone;
           d.rally_hub = &rally_hub_state;
         }
         if (app.rally_service_open && app.rally_session.active()) {
