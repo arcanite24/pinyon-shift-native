@@ -20,6 +20,7 @@ constexpr uint32_t kTapeBlack = ui::rgba(12, 12, 12);
 constexpr uint32_t kTapePink = ui4::kPink;
 constexpr uint32_t kPanelGrey = ui::rgba(214, 214, 214);
 constexpr uint32_t kTicketGreen = ui::rgba(4, 221, 125);
+constexpr uint32_t kTicketYellow = ui::rgba(232, 238, 22);
 constexpr uint32_t kTicketInk = ui::rgba(46, 46, 46);
 
 std::string upper(std::string s) {
@@ -248,8 +249,11 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
 // scene's groups rest at their intro starts (the stackers are not run).
 constexpr float kCashTitleX = 112.0f, kCashTitleY = 192.0f, kCashTitlePad = 24.0f;
 constexpr float kCashLineX = 148.0f, kCashLineY = 262.0f, kCashLinePitch = 28.0f, kCashLinePad = 6.0f;
-// The labels have no tape of their own in the capture (a dark smudge at most).
-constexpr uint32_t kCashLabelTape = ui::rgba(12, 12, 12, 0);
+// Each breakdown label sits on its tilted dark brushstroke tape (r10_h00303 / r10_h00306).
+// Breakdown item tapes use a 0.65 vertical UV crop inside their 68 px quad, so
+// lifting the tape by kCashLineTapeDy centres the brushstroke behind each line.
+constexpr uint32_t kCashLabelTape = kTapeBlack;
+constexpr float kCashLineTapeDy = -11.0f;
 constexpr float kCashValuePad = 14.0f;
 constexpr float kCashValueGap = 10.0f;
 // The values sit ~7 px above their labels' middles (0 Cr against FINISHED 5TH).
@@ -290,7 +294,7 @@ struct LateText {
 };
 
 void tape_text(SceneScreen& sc, std::vector<LateText>& late, int group, int text, const std::string& s, float x, float y,
-               float size, float pad, uint32_t tint, uint32_t colour = kWhite) {
+               float size, float pad, uint32_t tint, uint32_t colour = kWhite, float tape_dy = 0.0f) {
   const SceneDraw& sd = sc.scene();
   if (group < 0 || text < 0) return;
   const auto a = sd.at(text);
@@ -300,7 +304,7 @@ void tape_text(SceneScreen& sc, std::vector<LateText>& late, int group, int text
     std::string low(sd.object_name(c));
     for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
     if (low.find("crisp") != std::string::npos || low.find("smudge") != std::string::npos)
-      tape_at(sc, c, x, y, tw, size, pad, tint);
+      tape_at(sc, c, x, y + tape_dy, tw, size, pad, tint);
     else if (low.find("dirt") != std::string::npos)
       sc.hide(c);
   }
@@ -343,9 +347,10 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
     const int label = child(sd, tt, "TEXT_LABEL"), value = child(sd, vt, "TEXT_VALUE");
     const float y = kCashLineY + kCashLinePitch * float(i);
     const auto& [ls, vs] = lines[size_t(i)];
-    tape_text(sc, late, tt, label, ls, kCashLineX, y, 20.0f, kCashLinePad, kCashLabelTape);
+    tape_text(sc, late, tt, label, ls, kCashLineX, y, 20.0f, kCashLinePad, kCashLabelTape, kWhite, kCashLineTapeDy);
     const float lw = label >= 0 ? sd.measure(label, ls) : 0.0f;
-    tape_text(sc, late, vt, value, vs, kCashLineX + lw + kCashValueGap, y + kCashValueDy, 22.0f, kCashValuePad, kTapePink);
+    tape_text(sc, late, vt, value, vs, kCashLineX + lw + kCashValueGap, y + kCashValueDy, 22.0f, kCashValuePad, kTapePink,
+              kWhite, kCashLineTapeDy);
   }
   // The total and the balance (with the rest of the lines).
   const int total = sc.node("TotalAlign"), balance = sc.node("Balance");
@@ -662,13 +667,45 @@ bool draw_won_car(ui::List& l, const RaceHud& r, float w, float h) {
   const std::string won = text_of(race_text::kYouWonACar);
   sc.text(title, won);
   if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, won) + kTitleTapePad, kTapeBlack);
-  sc.text(pos, upper(r.won_car_name));
+  const std::string car_upper = upper(r.won_car_name);
+  sc.text(pos, car_upper);
+  float fitted_w = 0.0f;
   if (pos >= 0) {
-    sc.at(pos).dx = kPlaceDx, sc.at(pos).dy = kPlaceDy;
+    // Fit long car names (e.g. "FORD MUSTANG BOSS 429") inside the 1280px canvas
+    // starting at x ~ 85 with a clean right margin, keeping vertical center on Tape2.
+    constexpr float kWonCarMaxW = 1040.0f;
+    constexpr float kWonCarBaseSize = 79.0f;
+    const float raw_w = sd.measure(pos, car_upper);
+    const float text_scale = raw_w > kWonCarMaxW ? std::clamp(kWonCarMaxW / raw_w, 0.35f, 1.0f) : 1.0f;
+    fitted_w = raw_w * text_scale;
+    sc.at(pos).dx = kPlaceDx;
+    sc.at(pos).dy = kPlaceDy + 0.35f * kWonCarBaseSize * (1.0f - text_scale);
+    sc.at(pos).scale = text_scale;
     sc.at(pos).extra_angle = kPlaceTurn;
     sc.at(pos).alpha = 1.0f;
   }
-  fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
+  const int tape2 = sc.node("Tape2");
+  if (tape2 >= 0) {
+    const float text_left = pos >= 0 ? (sd.at(pos)[0] + kPlaceDx) : 85.0f;
+    const float tape_end = std::max(text_left + 360.0f, text_left + fitted_w + 56.0f);
+    for (int c : sd.children_of(tape2)) {
+      std::string low(sd.object_name(c));
+      for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      const bool tape = low.find("crisp") != std::string::npos || low.find("smudge") != std::string::npos;
+      const bool dirt = low.find("dirt") != std::string::npos;
+      if (tape) {
+        const auto rr = sd.rect(c);
+        if (tape_end <= rr[0]) {
+          sc.hide(c);
+        } else {
+          sc.at(c).tint = kTapePink;
+          sc.at(c).visible_width = std::clamp(tape_end - rr[0], 1.0f, rr[2] - rr[0]);
+        }
+      } else if (dirt) {
+        sc.at(c).tint = kTapePink;
+      }
+    }
+  }
   sc.hide(sc.node("CarName"));
   sc.draw(l, SceneScreen::frame(w, h));
   ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
@@ -947,13 +984,13 @@ constexpr float kTicketEligibilityDx = -80.0f;
 constexpr const char* kTicketOpenText = "OPEN";  // the restriction kTicketEligibilityDx was measured after
 constexpr float kTicketTapePad = 8.0f;
 
-// Widens a ticket value tape (LeftEdge, Centre, RightEdge) leftwards to its
-// right-aligned text plus a pad (6,000 Cr runs past the scene's tape).
-void widen_ticket_tape(SceneScreen& sc, int tape, int text, const std::string& s) {
+// Widens a ticket value tape (LeftEdge, Centre, RightEdge) leftwards to cover
+// `text_w` canvas pixels right-aligned at `text` plus a pad.
+void widen_ticket_tape_width(SceneScreen& sc, int tape, int text, float text_w) {
   const SceneDraw& sd = sc.scene();
   const int le = child(sd, tape, "LeftEdge"), ce = child(sd, tape, "Centre");
   if (le < 0 || ce < 0 || text < 0) return;
-  const float left = sd.at(text)[0] - sd.measure(text, s) - kTicketTapePad;
+  const float left = sd.at(text)[0] - text_w - kTicketTapePad;
   const auto rl = sd.rect(le), rc = sd.rect(ce);
   if (left >= rl[0]) return;
   const float dx = left - rl[0];
@@ -961,6 +998,13 @@ void widen_ticket_tape(SceneScreen& sc, int tape, int text, const std::string& s
   const float from = rl[2] + dx, to = rc[2];
   sc.at(ce).stretch_x = (to - from) / std::max(1.0f, rc[2] - rc[0]);
   sc.at(ce).dx += 0.5f * (from + to) - 0.5f * (rc[0] + rc[2]);
+}
+
+// Widens a ticket value tape (LeftEdge, Centre, RightEdge) leftwards to its
+// right-aligned text plus a pad (6,000 Cr runs past the scene's tape).
+void widen_ticket_tape(SceneScreen& sc, int tape, int text, const std::string& s) {
+  if (text < 0) return;
+  widen_ticket_tape_width(sc, tape, text, sc.scene().measure(text, s));
 }
 
 bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h, bool player_bar) {
@@ -973,44 +1017,95 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   if (const int bg = sc.node("Ticket/bg"); bg >= 0 && !es.ticket.empty()) sc.at(bg).texture = es.ticket;
   sc.text(sc.node("TEXT_RACE_INFO"), upper(es.track));
   sc.text(sc.node("TEXT_TRACK_INFO"), upper(es.track_info));
-  sc.text(sc.node("TEXT_POINTS_AVAILABLE"), text_of(race_text::kPointsAvailable));
-  sc.text(sc.node("TEXT_POINTS"), thousands(es.points) + " " + text_of(race_text::kPts));
-  sc.text(sc.node("TEXT_CREDITS"), credits_text(es.credits));
+
+  const bool has_wb_prize = !es.prize_wristband.empty();
+  const bool has_points = !has_wb_prize && es.points > 0;
+  const bool credits_only = !has_wb_prize && !has_points;
+  const int pa = sc.node("TEXT_POINTS_AVAILABLE");
+  const std::string heading = !es.prize_heading.empty()
+                                  ? upper(es.prize_heading)
+                                  : (has_points ? text_of(race_text::kPointsAvailable) : std::string{});
+  if (heading.empty()) sc.hide(pa);
+  else sc.text(pa, heading);
+
+  std::string wb_l1, wb_l2;
+  if (has_wb_prize) {
+    const std::string up = upper(es.prize_wristband);
+    if (const size_t nl = up.find('\n'); nl != std::string::npos) {
+      wb_l1 = up.substr(0, nl);
+      wb_l2 = up.substr(nl + 1);
+    } else {
+      wb_l1 = up;
+    }
+  }
+
+  const int pts_tape = sc.node("Points/Tape"), pts_txt = sc.node("TEXT_POINTS");
+  const int cr_tape = sc.node("Credits/Tape"), cr_txt = sc.node("TEXT_CREDITS");
+  if (has_wb_prize) {
+    if (wb_l2.empty()) sc.text(pts_txt, wb_l1);
+    else sc.hide(pts_txt);
+  } else if (has_points) {
+    sc.text(pts_txt, thousands(es.points) + " " + text_of(race_text::kPts));
+  } else {
+    sc.hide(sc.node("Points"));
+  }
+  if (es.credits > 0) sc.text(cr_txt, credits_text(es.credits));
+  else sc.hide(sc.node("Credits"));
+
   // The value tapes take the ticket's colour scheme (set at run time by the
-  // ColorScheme states, not decoded); interim (SPEC_QUESTIONS Q94): the
-  // festival green and dark text sampled on 10_event_card_prerace_orig.png
-  // for festival tickets, the scene's own colours for the others.
-  if (es.style == 1) {
+  // ColorScheme states, not decoded); interim (SPEC_QUESTIONS Q94): yellow for
+  // the Horizon Heats wristband qualifier (r9_h00081.png), festival green for
+  // festival point races (10_event_card_prerace_orig.png), and the scene's own
+  // colours for the others.
+  if (has_wb_prize || es.style == 1) {
+    const uint32_t tape_col = has_wb_prize ? kTicketYellow : kTicketGreen;
     for (const char* tape : {"Points/Tape", "Credits/Tape"}) {
       const int tp = sc.node(tape);
       for (int c : sd.children_of(tp)) {
         if (sd.object_name(c).rfind("TEXT_", 0) == 0) sc.at(c).tint = kTicketInk;
-        else sc.at(c).tint = kTicketGreen;
+        else sc.at(c).tint = tape_col;
       }
     }
+    if (pa >= 0) sc.at(pa).tint = tape_col;
   }
-  if (const int tp = sc.node("Points/Tape"); tp >= 0) sc.at(tp).dy = kTicketPointsDy;
-  if (const int tx = sc.node("TEXT_POINTS"); tx >= 0) sc.at(tx).dy = kTicketPointsTextDy;
-  if (const int tp = sc.node("Credits/Tape"); tp >= 0) sc.at(tp).dy = kTicketCreditsDy;
-  if (const int tx = sc.node("TEXT_CREDITS"); tx >= 0) sc.at(tx).dy = kTicketCreditsTextDy;
+  if (pts_tape >= 0 && !credits_only) {
+    sc.at(pts_tape).dy = kTicketPointsDy;
+    if (has_wb_prize && !wb_l2.empty()) sc.at(pts_tape).stretch_y = 1.18f;
+  }
+  if (pts_txt >= 0 && has_points) sc.at(pts_txt).dy = kTicketPointsTextDy;
+  if (pts_txt >= 0 && has_wb_prize && wb_l2.empty()) sc.at(pts_txt).dy = kTicketPointsTextDy;
+  // When no points/wristband box sits above credits (Showcases, Street, Showdown),
+  // lift the credits tape up into the main prize slot right below the heading.
+  const float credits_lift = credits_only ? -36.0f : 0.0f;
+  if (cr_tape >= 0) sc.at(cr_tape).dy = kTicketCreditsDy + credits_lift;
+  if (cr_txt >= 0) sc.at(cr_txt).dy = kTicketCreditsTextDy + credits_lift;
+
   // The eligibility line follows the restriction: measured after OPEN, and
   // pushed right by a longer restriction (MUST BE ...) so they never overlap.
   if (const int el = sc.node("TEXT_ELIGIBILITY"); el >= 0) {
-    float dx = kTicketEligibilityDx;
-    if (const int cr = sc.node("TEXT_CAR_RESTRICTIONS"); cr >= 0 && !es.restriction.empty())
-      dx += std::max(0.0f, sd.measure(cr, upper(es.restriction)) - sd.measure(cr, kTicketOpenText));
-    sc.at(el).dx = dx;
+    if (es.eligibility.empty()) {
+      sc.hide(el);
+    } else {
+      float dx = kTicketEligibilityDx;
+      if (const int cr = sc.node("TEXT_CAR_RESTRICTIONS"); cr >= 0 && !es.restriction.empty())
+        dx += std::max(0.0f, sd.measure(cr, upper(es.restriction)) - sd.measure(cr, kTicketOpenText));
+      sc.at(el).dx = dx;
+      sc.text(el, upper(es.eligibility));
+    }
   }
-  widen_ticket_tape(sc, sc.node("Points/Tape"), sc.node("TEXT_POINTS"), thousands(es.points) + " " + text_of(race_text::kPts));
-  widen_ticket_tape(sc, sc.node("Credits/Tape"), sc.node("TEXT_CREDITS"), credits_text(es.credits));
-  if (es.style == 1)
-    if (const int pa = sc.node("TEXT_POINTS_AVAILABLE"); pa >= 0) sc.at(pa).tint = kTicketGreen;
+  if (has_wb_prize) {
+    const float w1 = pts_txt >= 0 ? sd.measure(pts_txt, wb_l1) * (wb_l2.empty() ? 1.0f : 0.92f) : 0.0f;
+    const float w2 = (pts_txt >= 0 && !wb_l2.empty()) ? sd.measure(pts_txt, wb_l2) * 0.72f : 0.0f;
+    widen_ticket_tape_width(sc, pts_tape, pts_txt, std::max(w1, w2));
+  } else if (has_points) {
+    widen_ticket_tape(sc, pts_tape, pts_txt, thousands(es.points) + " " + text_of(race_text::kPts));
+  }
+  if (es.credits > 0) widen_ticket_tape(sc, cr_tape, cr_txt, credits_text(es.credits));
   if (const int icon = sc.node("CarClass/ClassIcon"); icon >= 0) {
     if (es.car_class.empty()) sc.hide(icon);
     else sc.at(icon).texture = "PICLASS/CLASS_" + upper(es.car_class) + "_SM";
   }
   sc.text(sc.node("TEXT_CAR_RESTRICTIONS"), upper(es.restriction));
-  sc.text(sc.node("TEXT_ELIGIBILITY"), upper(es.eligibility));
   if (es.provided_car.empty()) {
     sc.hide(sc.node("CarInfo"));
   } else {
@@ -1038,9 +1133,23 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
                                                                      : "EVENTTICKETS/EVENTTICKETRESTRICTIONS";
     }
   }
-  if (player_bar) bind_player_bar(sc, st);
-  else sc.hide(sc.node("PlayerBar"));
-  sc.draw(l, SceneScreen::frame(w, h));
+  if (player_bar) {
+    // Hide the wristband row before any wristband is owned/pending (e.g. FTC
+    // Heats & Showcase tickets, r9_h00081.png), so the scene's baked green
+    // placeholder band never shows prematurely.
+    const std::string bar_band =
+        (st.band_name.empty() && !st.band_collect_ready) ? std::string(kNoPlayerBarTopRow) : std::string{};
+    bind_player_bar(sc, st, bar_band);
+  } else {
+    sc.hide(sc.node("PlayerBar"));
+  }
+  const SceneFrame f = SceneScreen::frame(w, h);
+  sc.draw(l, f);
+  if (has_wb_prize && !wb_l2.empty() && !es.restrictions_view && pts_txt >= 0) {
+    // Two-line wristband prize ("YELLOW" / "WRISTBAND") centred on Points/Tape (r9_h00081.png).
+    sd.text(l, f, pts_txt, wb_l1, kTicketInk, 0.0f, kTicketPointsDy + kTicketPointsTextDy - 12.0f, false, 0.92f);
+    sd.text(l, f, pts_txt, wb_l2, kTicketInk, 0.0f, kTicketPointsDy + kTicketPointsTextDy + 13.0f, false, 0.72f);
+  }
   return true;
 }
 

@@ -1,9 +1,17 @@
 // The race-flow model (apps/carview/race_flow.h): the original's screen
-// orders around a race, per race kind, and the timed advances.
+// orders around a race, per race kind, and the timed advances, plus WP-D
+// race ticket string-table verification when SHIFT_GAME_ROOT is set.
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <string>
 #include <vector>
 
+#include "cars/sources.h"
+#include "cars/strings.h"
+#include "fh1data/stringtables.h"
 #include "race_flow.h"
+#include "race_screens.h"
 
 static int failures = 0;
 #define CHECK(cond)                                                        \
@@ -191,6 +199,42 @@ void timed() {
   CHECK(screen_name(S::kEncounterIntro) == "encounter_intro");
 }
 
+void disc_ticket_strings() {
+  const char* root_env = std::getenv("SHIFT_GAME_ROOT");
+  if (!root_env || !*root_env) return;
+  const std::filesystem::path game_root = root_env;
+  const char* state_env = std::getenv("SHIFT_STATE_ROOT");
+  const std::filesystem::path state_root = state_env ? state_env : "";
+
+  cars::Install inst;
+  std::string why;
+  CHECK(cars::discover_install(game_root, state_root, {}, inst, &why));
+  fh1::StringTables tables;
+  CHECK(cars::load_string_tables(inst, tables, &why, "EN"));
+
+  auto lookup_ref = [&](const carview::StringRef& r) -> std::string {
+    const uint32_t hi = fh1::string_hash(r.table);
+    const uint32_t lo = r.id.empty() ? uint32_t(r.raw) : fh1::string_hash(r.id);
+    const std::string key = "_&" + std::to_string((hi << 16) | (lo & 0xFFFFu));
+    auto res = tables.resolve(key);
+    return res ? *res : std::string{};
+  };
+
+  // Rank 15: verify real disc CareerEventUI strings for Heats & Showcase tickets.
+  const std::string heats_info = lookup_ref(carview::race_text::kHorizonHeatsInfo);
+  const std::string heats_l1 = lookup_ref(carview::race_text::kHorizonHeatsReward1);
+  const std::string heats_l2 = lookup_ref(carview::race_text::kHorizonHeatsReward2);
+  const std::string showcase_info = lookup_ref(carview::race_text::kShowcaseInstructions);
+  const std::string winner_takes = lookup_ref(carview::race_text::kWinnerTakes);
+  std::printf("ticket strings: heats='%s' / '%s' / '%s', showcase='%s', winner='%s'\n", heats_info.c_str(),
+              heats_l1.c_str(), heats_l2.c_str(), showcase_info.c_str(), winner_takes.c_str());
+  CHECK(heats_info == "FINISH 3RD OR ABOVE TO WIN");
+  CHECK(!heats_l1.empty());
+  CHECK(!heats_l2.empty());
+  CHECK(showcase_info == "WIN THE RACE TO KEEP THE CAR");
+  CHECK(winner_takes == "WINNER TAKES");
+}
+
 }  // namespace
 
 int main() {
@@ -198,6 +242,7 @@ int main() {
   post_race();
   entry();
   timed();
+  disc_ticket_strings();
   if (failures) {
     std::printf("race_flow_tests: %d failure(s)\n", failures);
     return 1;

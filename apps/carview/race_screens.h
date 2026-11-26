@@ -70,6 +70,11 @@ inline constexpr StringRef kMixedSurface{"CareerEventUI", {}, 0xB7E1, "MIXED SUR
 inline constexpr StringRef kOffRoad{"CareerEventUI", {}, 0x2048, "OFF ROAD"};
 inline constexpr StringRef kTwoWords{"CareerEventUI", {}, 0xC25F, "{0} {1}"};
 inline constexpr StringRef kPointsAvailable{"CareerEventUI", {}, 0x87C6, "POINTS AVAILABLE"};
+inline constexpr StringRef kHorizonHeatsInfo{"CareerEventUI", "IDS_HorizonHeatsInfo", 0, "FINISH 3RD OR ABOVE TO WIN"};
+inline constexpr StringRef kHorizonHeatsReward1{"CareerEventUI", "IDS_HorizonHeatsReward_Line1", 0, "YELLOW"};
+inline constexpr StringRef kHorizonHeatsReward2{"CareerEventUI", "IDS_HorizonHeatsReward_Line2", 0, "WRISTBAND"};
+inline constexpr StringRef kShowcaseInstructions{"CareerEventUI", "IDS_ShowcaseInstructions", 0, "WIN THE RACE TO KEEP THE CAR"};
+inline constexpr StringRef kWinnerTakes{"CareerEventUI", {}, 0x4293, "WINNER TAKES"};
 inline constexpr StringRef kEntryRestrictions{"CareerEventUI", {}, 0x4953, "ENTRY RESTRICTIONS:"};
 inline constexpr StringRef kClassOrBelow{"CareerEventUI", {}, 0x7013, "Car Class must be {0} or below."};
 inline constexpr StringRef kCarProvided{"CareerEventUI", {}, 0xA554, "CAR PROVIDED"};
@@ -138,6 +143,8 @@ struct EventSummaryHud {
   std::string track_info;  // ASPHALT POINT-TO-POINT
   int points = 0;          // the winner's wristband points
   int64_t credits = 0;     // the winner's cash
+  std::string prize_heading;    // overrides POINTS AVAILABLE (e.g. Heats / Showcase / Street)
+  std::string prize_wristband;  // wristband reward in place of points (e.g. "YELLOW\nWRISTBAND")
   std::string car_class;   // the class letter (A); empty: none
   std::string restriction;  // OPEN / the event's restriction line
   std::string restriction_detail;  // the restrictions view's text
