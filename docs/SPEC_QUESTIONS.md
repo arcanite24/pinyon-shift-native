@@ -6594,7 +6594,9 @@ probe). Runs: `.local/runs/first30f-<variant>`.
   overrun tuning, not in the chain.
 
 Still open:
-- the live mixer puts these levels about 7 dB lower in play (Q337);
+- ~~the live mixer puts these levels about 7 dB lower in play (Q337)~~
+  fixed in first30h: the FocusCar gain is on the voices ahead of the chain,
+  and `kFocusPreScale` is now 0.1 / 0.35 per unit of it;
 - the descriptor float behind s (two engine tunings on one car measured);
 - the MX-5's closed-throttle level at mid rpm (3 dB quiet);
 - whether a split cascades more than one first-order section;
@@ -6890,6 +6892,13 @@ Unknown:
 - what else leaks into the original's engine bus (bursts at -22 dB with a
   1.2 kHz centroid in two captures at rest).
 
+**Mostly answered (first30h):** with Q337's fix (no EngineLFE in stereo, the
+FocusCar gain ahead of the chain), the live mixer at idle reads far chase
+-42.5 dB (132 Hz), cockpit -49.9 dB (239 Hz) and hood -50.0 dB (245 Hz):
+a 7.4 dB drop against the original's 8.5, and brighter the same way
+(`out/first30h/runs/view{0,2,3}-mix`, 2 to 10 s). Still open: the 1 dB left,
+look-back, and the views under load.
+
 ## Q337 (first30g, audio, blocking for the engine's level in play): the live mixer puts the focus engine 7 dB under the original
 
 Q322 set the focus chain's levels (`kFocusPreScale`, `kFocusPostScale`)
@@ -6931,3 +6940,53 @@ changes what every focus-engine level in the corpus tests was measured
 with. Needed: a decision on where the snapshot gain belongs for the focus
 car (before the chain, as Q322 assumes, or after it, as the matrix applies
 it), then both changes and a c3 re-measure through the live mixer.
+
+**Answered (first30h, 2026-11-26).**
+
+- **Where the snapshot gain applies: before the chain.** The recomp's own
+  `--pinyon_shift_mix_engine` scales the `Gameplay` group's `FocusCar`
+  destvolume (its generated `AudioMixerSnapshots.xml` wins over a mod's
+  copy, so a mod's edit of that file does nothing while any mix cvar is
+  set). On the c3 route with only the engine kept (recomp
+  `.local/runs/first30h-eng50`, `first30h-eng25` against `first30f-base`):
+
+  | FocusCar level | idle | limiter |
+  |---|---|---|
+  | x 0.5 (-6.0 dB) | -6.2 dB | -3.3 dB |
+  | x 0.25 (-12.0 dB) | -12.4 dB | -7.1 dB |
+
+  A gain after the shaper would drop both by the step. The master
+  compressor does not explain the difference: its threshold is 0.1 RMS
+  (-20 dB) and the six channels at the limiter sit near -26 dB. The
+  engine's chain with only its input scaled predicts -6.3 / -3.8 and
+  -12.5 / -8.6 dB (`out/first30h/runs/nomix-prehalf`, `nomix-prequarter`),
+  so the original's FocusCar gain is on the voices ahead of the Trash, as
+  the SPEC-ENGINE-SOUND voice gain chain lists it.
+- **The engine now** gives the focus `EnginePlayer` the matrix's FocusCar
+  gain each block (`category_gain`), with `kFocusPreScale` 0.1 / 0.35 per
+  unit of it (Q322's 0.1 at FreeRoam's 0.35), and divides it back out of the
+  chain's output because the matrix mix multiplies the engine bus by it
+  again. Without a matrix (the engine-only render) the gain stays at 0.35,
+  so every Q322 level and corpus expectation measured that way is
+  unchanged. `Main/SFXVolume` and the user's engine slider still apply after
+  the chain (not measured).
+- **EngineLFE: none in stereo.** The original's stereo output omits the LFE
+  channel (SPEC-ENGINE-SOUND's fold; the recomp's default 5.1-to-stereo fold
+  has an LFE weight of 0), and its front channels carry no EngineLFE (1 %
+  under 150 Hz at the limiter). The live mixer's stereo output now sets the
+  EngineLFE loop's level to 0 (`SfxEngine::set_engine_lfe_level`). ImpactLFE
+  and BackfireLFE still fold into L and R at -3 dB (not measured against
+  the original).
+
+Re-measured through the live mixer on the c3 route against `first30f-base`
+(`out/first30h/runs/before-c3-mix`, `after1-c3-mix`):
+
+| state | original | before | after |
+|---|---|---|---|
+| rest (clean idle) | -42.3 dB, 121 Hz | -48.8 dB, 89 Hz, 96 % under 150 Hz | -42.5 dB, 133 Hz, 94 % |
+| load, 5,000 to 5,600 rpm | -22.4 dB, 727 Hz, 7 % under 150 Hz | -28.2 dB, 621 Hz, 40 % | -21.5 dB, 963 Hz, 1 % |
+| limiter | -21.8 dB, 934 Hz, 1 %, 77 % in 500 Hz to 2 kHz | -27.8 dB, 596 Hz, 47 %, 44 % | -21.7 dB, 1,024 Hz, 1 %, 83 % |
+
+The live mixer now matches the engine-only render within 0.7 dB in every
+state, and the bands within 2 %. Left: the top end is about 10 % brighter
+than the original (the Q322 gaps); the limiter rpm differs (Q341).
