@@ -18,6 +18,7 @@
 #include "garage/rally_kit.h"
 #include "race/rally_championship.h"
 #include "race/rally_codriver.h"
+#include "race/rally_dialogue.h"
 #include "race/rivals.h"
 
 namespace {
@@ -486,9 +487,39 @@ void test_r3_rivals_targets_shgh_ghost_and_bounty() {
   std::filesystem::remove_all(tmp_dir, ec);
 }
 
+// The lines around a stage (CCoDriverPepTalk, the finish call, CPostRaceResults).
+void test_rally_dialogue_rules() {
+  using race::RallyLine;
+  // The pep talk: none before the first stage; the final's own lines, the
+  // leader's first and the chaser's second.
+  CHECK(race::rally_pep_talk(1, false, true).trigger.empty());
+  CHECK(race::rally_pep_talk(1, true, true).trigger.empty());
+  CHECK((race::rally_pep_talk(2, false, false) == RallyLine{"PreRace", -1}));
+  CHECK((race::rally_pep_talk(2, true, true) == RallyLine{"PreRace", -1}));
+  CHECK((race::rally_pep_talk(3, false, true) == RallyLine{"PreRace", -1}));
+  CHECK((race::rally_pep_talk(3, true, true) == RallyLine{"FinalPreRaceSecondStage", 0}));
+  CHECK((race::rally_pep_talk(3, true, false) == RallyLine{"FinalPreRaceSecondStage", 1}));
+  CHECK((race::rally_pep_talk(4, false, true) == RallyLine{"PreRaceLastStage", -1}));
+  CHECK((race::rally_pep_talk(4, true, true) == RallyLine{"FinalPreRaceFinalStage", 0}));
+  CHECK((race::rally_pep_talk(4, true, false) == RallyLine{"FinalPreRaceFinalStage", 1}));
+  // The finish call: stages 1-3 by place; none after the last; the heats'.
+  CHECK((race::rally_stage_finish_line(1, 4, 1, false) == RallyLine{"FinishedStageFirst", -1}));
+  CHECK((race::rally_stage_finish_line(2, 4, 10, false) == RallyLine{"FinishedStage", -1}));
+  CHECK((race::rally_stage_finish_line(3, 4, 11, false) == RallyLine{"FinishedStageLast", -1}));
+  CHECK(race::rally_stage_finish_line(4, 4, 1, false).trigger.empty());
+  CHECK((race::rally_stage_finish_line(1, 1, 5, true) == RallyLine{"FinishedStage", 3}));
+  // Alice after the last stage.
+  CHECK((race::rally_post_race_line(false, false, false) == RallyLine{"PostRaceNoWinFeedback", -1}));
+  CHECK((race::rally_post_race_line(false, true, true) == RallyLine{"PostRaceNoWinFeedback", -1}));
+  CHECK((race::rally_post_race_line(true, true, false) == RallyLine{"PlayerWonRally", 2}));
+  CHECK((race::rally_post_race_line(true, false, false) == RallyLine{"PlayerWonFirstRally", -1}));
+  CHECK((race::rally_post_race_line(true, false, true) == RallyLine{"PlayerWonRally", -1}));
+}
+
 }  // namespace
 
 int main() {
+  test_rally_dialogue_rules();
   test_championship_standings_and_rewards();
   test_r2_5_xp_delta_podium_unlock_and_helpers();
   test_restriction_0x80_and_rally_parts();

@@ -146,7 +146,7 @@ class AudioEngine {
   void trigger_ui_event(const UiAudioCatalog::Event& event, float gain = 1.0f);
   void trigger_satnav(SatNavCue cue);
   void set_satnav_enabled(bool on);
-  void trigger_vo(std::string_view trigger_id, bool interrupt = false);
+  void trigger_vo(std::string_view trigger_id, bool interrupt = false, int variant = -1);
   void skip_vo();
   void set_dialog_ducking(bool active);
   void trigger_codriver(std::string_view cue_path, bool supersede = false);

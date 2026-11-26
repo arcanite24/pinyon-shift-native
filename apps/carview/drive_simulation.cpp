@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "hud_screen.h"
+#include "race/rally_dialogue.h"
 #include "world/road_follow.h"
 
 namespace carview {
@@ -1098,11 +1099,26 @@ bool DriveSession::step(const drive::Input& user_in) {
             ++app.saved.ach.rally_hard_manual_stage_wins;
           // Achievement 214: a stage win without crashing or rewinding.
           if (app.rally_stage_signals.finish(fin.stage_place)) ++app.saved.ach.rally_flawless_stage_wins;
-          app.audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
+          // The co-driver's finish call (stages before the last; the heats'
+          // own line), then Alice after the last stage (CPostRaceResults).
+          {
+            const auto line = race::rally_stage_finish_line(app.rally_session.current_stage_index() + 1,
+                                                            app.rally_session.total_stages(), fin.stage_place,
+                                                            app.rally_session.is_heats());
+            if (!line.trigger.empty()) app.audio_host.trigger_vo(line.trigger, false, line.variant);
+          }
           if (fin.championship_complete) {
             const int dpct = race::difficulty_bonus_percent(int(app.race_options.difficulty));
             const int apct = race::assist_difficulty_bonus_percent(app.race_options.assists);
             const auto rew = app.rally_session.finalize(app.rally_catalog, app.saved, dpct, apct);
+            if (!rew.is_heats) {
+              const auto* ch = app.rally_catalog.find_championship(rew.event_id);
+              const auto line = race::rally_post_race_line(rew.final_place == 1,
+                                                           ch && ch->series_id == race::kRallyFinalSeries,
+                                                           app.saved.rally_first_win_vo);
+              if (line.trigger == "PlayerWonFirstRally") app.saved.rally_first_win_vo = true;
+              app.audio_host.trigger_vo(line.trigger, false, line.variant);
+            }
             app.career.credits = app.saved.credits;
             app.career.total_winnings = app.saved.total_winnings;
             // R3-CAM-01: Merge finalized Rally Championship & Stage results into app.career.event_places

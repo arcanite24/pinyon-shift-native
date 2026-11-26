@@ -219,6 +219,9 @@ struct DriveSave {
   // The Horizon Rally champion sequence has played (game_rally_race_flow's
   // CSetHasSeenRallyEndSequence): it plays once.
   bool rally_end_seen = false;
+  // PlayerWonFirstRally has played (CPostRaceResults' profile flag 4): Alice
+  // says it after the first championship won, once.
+  bool rally_first_win_vo = false;
   std::vector<SavedCarHistory> car_history;
   // Offline Car Club (451_CLUB_SETTINGS: name, 4-char [TAG], shared Club Garage car IDs).
   std::string car_club_name;
