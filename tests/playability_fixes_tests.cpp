@@ -278,6 +278,9 @@ void test_water_material_detection() {
   CHECK(!world::decal_effect("LAKE_ANIM_NORM_OPAC_REFL_3"));
   CHECK(world::effect_blend("H_WATER_RIVER_1") == world::Blend::kAlpha);
   CHECK(!world::decal_effect("H_WATER_RIVER_1"));
+  // _BIAS road/terrain overlay effects (including _OPAC_BIAS coverage overlays) require depth bias.
+  CHECK(world::decal_effect("H_VBLND_NORM_MASK_OPAC_BIAS_LM"));
+  CHECK(world::decal_effect("H_VBLND_DECAL_MASK_BIAS_LM"));
 }
 
 }  // namespace

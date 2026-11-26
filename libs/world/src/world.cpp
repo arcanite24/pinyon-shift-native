@@ -610,7 +610,9 @@ uint8_t far_level(const std::string& object, const std::vector<std::string>& eff
 GroundCover::GroundCover(double x, double z, double half_width, double cell)
     : x0_(x - half_width), z0_(z - half_width), cell_(cell > 0 ? cell : 1),
       side_(std::max(1, int(std::ceil(2 * half_width / (cell > 0 ? cell : 1))))) {
-  covered_.assign(size_t(side_) * size_t(side_), 0);
+  const size_t n = size_t(side_) * size_t(side_);
+  covered_.assign(n, 0);
+  max_y_.assign(n, -1e30f);
 }
 
 long GroundCover::cell_of(double x, double z) const {
@@ -622,6 +624,13 @@ long GroundCover::cell_of(double x, double z) const {
 bool GroundCover::covered(double x, double z) const {
   const long c = cell_of(x, z);
   return c < 0 || covered_[size_t(c)] != 0;
+}
+
+bool GroundCover::covered_at(double x, double y, double z, double margin) const {
+  const long c = cell_of(x, z);
+  if (c < 0) return true;
+  if (covered_[size_t(c)] == 0) return false;
+  return y <= double(max_y_[size_t(c)]) + margin;
 }
 
 void GroundCover::add(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c) {
@@ -639,13 +648,21 @@ void GroundCover::add(const std::array<float, 3>& a, const std::array<float, 3>&
       const double px = x0_ + (i + 0.5) * cell_, pz = z0_ + (j + 0.5) * cell_;
       const double l1 = ((double(b[2]) - c[2]) * (px - c[0]) + (double(c[0]) - b[0]) * (pz - c[2])) / d;
       const double l2 = ((double(c[2]) - a[2]) * (px - c[0]) + (double(a[0]) - c[0]) * (pz - c[2])) / d;
-      if (l1 < 0 || l2 < 0 || 1 - l1 - l2 < 0) continue;
-      covered_[size_t(j) * size_t(side_) + size_t(i)] = 1;
+      const double l3 = 1.0 - l1 - l2;
+      if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+      const size_t idx = size_t(j) * size_t(side_) + size_t(i);
+      const float py = float(l1 * a[1] + l2 * b[1] + l3 * c[1]);
+      covered_[idx] = 1;
+      if (py > max_y_[idx]) max_y_[idx] = py;
       any = true;
     }
   if (!any) {
     const long cc = cell_of((double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3);
-    if (cc >= 0) covered_[size_t(cc)] = 1;
+    if (cc >= 0) {
+      const float py = std::max({a[1], b[1], c[1]});
+      covered_[size_t(cc)] = 1;
+      if (py > max_y_[size_t(cc)]) max_y_[size_t(cc)] = py;
+    }
   }
 }
 
@@ -661,6 +678,20 @@ std::array<std::array<double, 2>, 7> footprint_samples(const std::array<float, 3
            mid(b, c),
            mid(c, a),
            {(double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3}}};
+}
+
+std::array<std::array<double, 3>, 7> footprint_samples_3d(const std::array<float, 3>& a, const std::array<float, 3>& b,
+                                                          const std::array<float, 3>& c) {
+  auto mid = [](const std::array<float, 3>& p, const std::array<float, 3>& q) {
+    return std::array<double, 3>{(double(p[0]) + q[0]) / 2, (double(p[1]) + q[1]) / 2, (double(p[2]) + q[2]) / 2};
+  };
+  return {{{a[0], a[1], a[2]},
+           {b[0], b[1], b[2]},
+           {c[0], c[1], c[2]},
+           mid(a, b),
+           mid(b, c),
+           mid(c, a),
+           {(double(a[0]) + b[0] + c[0]) / 3, (double(a[1]) + b[1] + c[1]) / 3, (double(a[2]) + b[2] + c[2]) / 3}}};
 }
 
 namespace {
@@ -682,7 +713,7 @@ std::vector<std::string> object_effects(const fh1::RenderModel& model, const fh1
 
 bool skipped_material(const std::string& material) {
   const std::string m = lower(material);
-  return m == "occluder" || m == "underground";
+  return m == "occluder" || m == "underground" || m == "crowdterr";
 }
 
 bool ground_object(const std::string& object) {
@@ -831,7 +862,7 @@ bool is_water_effect(std::string_view effect) {
 }
 
 bool decal_effect(const std::string& e) {
-  if (e.find("DECAL") != std::string::npos) return true;
+  if (e.find("DECAL") != std::string::npos || e.find("_BIAS") != std::string::npos) return true;
   return effect_blend(e) == Blend::kAlpha && !is_water_effect(e);
 }
 
@@ -998,7 +1029,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   // it copies. Built before the far pass: cover, and per hole cell its
   // filler (mean area, object key).
   std::unique_ptr<GroundCover> cover;
-  std::unordered_map<long, std::pair<double, uint64_t>> hole_fill;
+  std::unordered_map<long, std::tuple<uint8_t, double, uint64_t>> hole_fill;
   auto object_key = [](uint32_t model_index, const fh1::RenderModel& model, const fh1::RmbObject& o) {
     return (uint64_t(model_index) << 20) | uint64_t(&o - model.objects.data());
   };
@@ -1006,10 +1037,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                         const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c) {
     if (!cover) return false;
     const uint64_t key = object_key(model_index, model, o);
-    for (const auto& s : footprint_samples(a, b, c)) {
-      if (cover->covered(s[0], s[1])) continue;
-      auto it = hole_fill.find(cover->cell_of(s[0], s[1]));
-      if (it != hole_fill.end() && it->second.second == key) return true;
+    for (const auto& s : footprint_samples_3d(a, b, c)) {
+      if (cover->covered_at(s[0], s[1], s[2], 1.5)) continue;
+      auto it = hole_fill.find(cover->cell_of(s[0], s[2]));
+      if (it != hole_fill.end() && std::get<2>(it->second) == key) return true;
     }
     return false;
   };
@@ -1223,6 +1254,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           }
           out.colours.push_back(c);
         };
+        bool flip_winding = false;
+        if (placement) {
+          const auto& L = placement->linear;
+          const double det = L[0][0] * (L[1][1] * L[2][2] - L[1][2] * L[2][1]) -
+                             L[0][1] * (L[1][0] * L[2][2] - L[1][2] * L[2][0]) +
+                             L[0][2] * (L[1][0] * L[2][1] - L[1][1] * L[2][0]);
+          flip_winding = det < 0.0;
+        }
         size_t added = 0;
         for (size_t t = 0; t + 2 < tri.size(); t += 3) {
           if (far) {
@@ -1238,8 +1277,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
             ++st.far_triangles;
           }
           corner(tri[t]);
-          corner(tri[t + 1]);
-          corner(tri[t + 2]);
+          corner(tri[t + (flip_winding ? 2u : 1u)]);
+          corner(tri[t + (flip_winding ? 1u : 2u)]);
           if (options.render_data) out.material.push_back(mat), out.instance.push_back(instance);
           out.surface.push_back(surface);
           out.model.push_back(model_index);
@@ -1370,8 +1409,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       }
     // The hole filling: the near ground's footprint within the widest
     // inner cut (game frame; z is the file frame's here), then each hole
-    // cell's finest far object.
-    cover = std::make_unique<GroundCover>(x, -z, std::max(options.far_inner, options.far_inner_uberlod), 10);
+    // cell's finest far object (MIDDIST preferred over UberLOD, and 4 m
+    // height-aware cells so steep MIDDIST hillsides rising above a lower
+    // roadside patch are not cut out).
+    cover = std::make_unique<GroundCover>(x, -z, std::max(options.far_inner, options.far_inner_uberlod), 4.0);
     for (size_t t = 0; t < out.triangles(); ++t)
       if (out.surface[t] != Surface::kWater)
         cover->add(out.positions[3 * t], out.positions[3 * t + 1], out.positions[3 * t + 2]);
@@ -1421,12 +1462,12 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
                               (double(p[2][0]) - p[0][0]) * (double(p[1][2]) - p[0][2])) / 2;
             ++count;
             if (!inside) continue;
-            for (const auto& sp : footprint_samples(p[0], p[1], p[2]))
-              if (!cover->covered(sp[0], sp[1])) cells.push_back(cover->cell_of(sp[0], sp[1]));
+            for (const auto& sp : footprint_samples_3d(p[0], p[1], p[2]))
+              if (!cover->covered_at(sp[0], sp[1], sp[2], 1.5)) cells.push_back(cover->cell_of(sp[0], sp[2]));
           }
         }
         if (cells.empty()) continue;
-        const std::pair<double, uint64_t> filler{area / double(count), object_key(i, model, o)};
+        const std::tuple<uint8_t, double, uint64_t> filler{level, area / double(count), object_key(i, model, o)};
         for (long c : cells) {
           auto [it, added] = hole_fill.emplace(c, filler);
           if (!added && filler < it->second) it->second = filler;

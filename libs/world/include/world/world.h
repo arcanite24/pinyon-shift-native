@@ -89,6 +89,10 @@ class GroundCover {
   GroundCover(double x, double z, double half_width, double cell);
   void add(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c);
   bool covered(double x, double z) const;
+  // True only when a near surface covers (x, z) AND reaches within `margin`
+  // below `y` (so a steep hillside rising above a roadside embankment is not
+  // considered covered by the lower terrain).
+  bool covered_at(double x, double y, double z, double margin = 1.5) const;
   // The cell of a point, -1 outside the grid.
   long cell_of(double x, double z) const;
 
@@ -96,11 +100,14 @@ class GroundCover {
   double x0_ = 0, z0_ = 0, cell_ = 1;
   int side_ = 0;
   std::vector<uint8_t> covered_;
+  std::vector<float> max_y_;
 };
 // Seven points that stand for a triangle's footprint (x, z): its corners,
 // its edges' midpoints and its centroid.
 std::array<std::array<double, 2>, 7> footprint_samples(const std::array<float, 3>& a, const std::array<float, 3>& b,
                                                        const std::array<float, 3>& c);
+std::array<std::array<double, 3>, 7> footprint_samples_3d(const std::array<float, 3>& a, const std::array<float, 3>& b,
+                                                          const std::array<float, 3>& c);
 // Whether a world-space object is driven on in the stand-in ground. Thin,
 // upright things (armco, barriers, railings, cables, gates, fences) are
 // not: with nothing but wheel rays they act as ramps. Props never are.
