@@ -313,6 +313,8 @@ void SpeedActivityTracker::reset_session_clock() {
   zone_cd_.clear();
   cancel_active();
   off_road_ = false;
+  banner_title_.clear();
+  abort_title_.clear();
   banner_at_ = flash_at_ = abort_at_ = -1e9;
 }
 
