@@ -241,7 +241,9 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     if (cs.level_name.rfind("_&", 0) == 0) cs.level_name = std::to_string(li);
     cs.level = li;
     cs.signs_found = int(saved.signs_found.size());
-    cs.barns = int(saved.barns.size());
+    // Every barn on the disc (barnfinds.xml), as the free roam counts them;
+    // the save lists only the barns it has a state for.
+    cs.barns = int(std::max(saved.barns.size(), collectibles.barns.size()));
     for (const auto& b : saved.barns) cs.barns_found += freeroam::barn_discovered(b.status);
     cs.wristband_points = career.wristband_points, cs.credits = career.credits;
     cs.total_winnings = career.total_winnings, cs.races = career.num_races;
@@ -253,6 +255,20 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
     cs.rally_victories = saved.num_rally_victories, cs.rally_winnings = saved.rally_winnings;
     cs.rally_xp = saved.rally_xp, cs.rally_level = saved.rally_level;
+    // The exploration counts from the same trackers the board's right column
+    // reads (VIS-24: the summary left them at 0 while the board showed the
+    // live counts).
+    cs.popularity_rank = current_pop_rank();
+    if (road_discovery.ready()) {
+      cs.roads_discovered = road_discovery.discovered_count();
+      cs.roads_total = road_discovery.total_roads();
+    }
+    if (have_outposts) {
+      cs.outposts_discovered = outpost_progress.discovered_count(outposts);
+      cs.outposts_total = int(outposts.outposts.size());
+      cs.pr_stunts_done = outpost_progress.completed_stunt_count(outposts);
+      cs.pr_stunts_total = int(outposts.stunts.size());
+    }
     const char* state = std::getenv("SHIFT_STATE_ROOT");
     packs = cars::list_packs(state ? state : "");
     // SPEC-V4-CONTENT, Progression: Rally needs its package (offer 1600).

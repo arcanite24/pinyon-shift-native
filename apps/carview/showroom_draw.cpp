@@ -867,7 +867,7 @@ void Showroom::set_world_light(const float sun[3], const float up[3], float expo
 
 void Showroom::record_world(VkCommandBuffer cmd) {
   record_world_opaque(cmd);
-  if (world_textured_ && sky_ready_) {
+  if (world_textured_ && sky_ready_ && !sky_hidden_) {
     record_sky_draw(cmd);
     r_.mark(cmd, "sky");
   }
@@ -1054,7 +1054,9 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       world_stats_.indices += d.index_count;
       const uint32_t draw_fl = uint32_t(std::lround(d.push.params[1]));
       const bool sky = draw_fl == 2;
-      if (sky && sky_ready_) continue;
+      // A hidden real-time sky leaves the track's own sky meshes (a hub
+      // room's dome) in.
+      if (sky && sky_ready_ && !sky_hidden_) continue;
       if (group < 0 && !sky) {
         if (!sky_ready_) r_.mark(cmd, "sky");
         group = d.blend;

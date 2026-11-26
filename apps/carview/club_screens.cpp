@@ -642,6 +642,9 @@ bool draw_rally_entry_popup(ui::List& l, RallyEntryPopup p, float w, float h) {
     case RallyEntryPopup::kConfirm:
       return draw_message(l, text_of(rally_text::kConfirmTitle), text_of(rally_text::kConfirmMsg),
                           {{"A", text_of(club_text::kOk)}, {"B", text_of(club_text::kCancel)}}, w, h);
+    case RallyEntryPopup::kQuit:
+      return draw_message(l, text_of(rally_text::kQuitTitle), text_of(rally_text::kQuitMsg),
+                          {{"A", text_of(club_text::kOk)}, {"B", text_of(club_text::kCancel)}}, w, h);
   }
   return false;
 }

@@ -230,6 +230,55 @@ const Cutscene* Library::find(std::string_view name) const {
   return nullptr;
 }
 
+namespace {
+
+// A camera sequence's cams: a ResetPlayback cam marks the loop's end (the
+// sequence's duration when it states none) and is dropped; a cam of zero
+// duration runs to the next cam's start.
+Cutscene camera_sequence(const audio::XmlNode& cams, std::string name, double duration) {
+  Cutscene cs;
+  cs.name = std::move(name);
+  cs.mode = PlaybackMode::kLooping;
+  cs.duration = duration;
+  cs.declared_cams = int(cams.number("NumCams"));
+  double reset = -1.0;
+  for (const auto& cam : cams.children) {
+    if (!ieq(cam.name, "Cam")) continue;
+    if (ieq(cam.attr("Type"), "ResetPlayback")) {
+      reset = cam.number("StartCut");
+      continue;
+    }
+    cs.cams.push_back(parse_cam(cam));
+  }
+  std::stable_sort(cs.cams.begin(), cs.cams.end(), [](const Cam& a, const Cam& b) { return a.start < b.start; });
+  if (cs.duration <= 0.0) cs.duration = reset > 0.0 ? reset : (cs.cams.empty() ? 0.0 : cs.cams.back().end());
+  for (size_t i = 0; i < cs.cams.size(); ++i)
+    if (cs.cams[i].duration <= 0.0)
+      cs.cams[i].duration = std::max(0.0, (i + 1 < cs.cams.size() ? cs.cams[i + 1].start : cs.duration) - cs.cams[i].start);
+  return cs;
+}
+
+}  // namespace
+
+bool parse_camera_sequences(std::string_view xml, Library& out, std::string* error) {
+  audio::XmlNode root;
+  if (!audio::parse_xml(xml, root, error)) return false;
+  out.cutscenes.clear();
+  if (ieq(root.name, "Cams")) {
+    out.cutscenes.push_back(camera_sequence(root, "", 0.0));
+    return true;
+  }
+  for (const auto& c : root.children) {
+    if (!ieq(c.name, "Cutscene")) continue;
+    if (const auto* cams = c.child("Cams")) out.cutscenes.push_back(camera_sequence(*cams, c.attr("name"), c.number("Duration")));
+  }
+  if (out.cutscenes.empty()) {
+    if (error) *error = "root element " + root.name + " holds no camera sequence";
+    return false;
+  }
+  return true;
+}
+
 bool parse_cutscenes(std::string_view xml, Library& out, std::string* error) {
   audio::XmlNode root;
   if (!audio::parse_xml(xml, root, error)) return false;

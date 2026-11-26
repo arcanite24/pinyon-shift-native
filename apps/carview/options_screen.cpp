@@ -89,9 +89,19 @@ constexpr ValueText kValues[] = {
     {"damage", "none", kOff},
     {"difficulty", "easy", {"AIDiff", "IDS_DisplayName_0", 0, "EASY"}},
     {"difficulty", "hard", {"AIDiff", "IDS_DisplayName_2", 0, "HARD"}},
-    {"minimap", "rotating", {"InGame", "IDS_HudOptionValue_Rotating", 0, "ROTATING"}},
+    // MAP and SPEEDOMETER read ON for their defaults (25_options_hud_orig.png);
+    // FIXED and DIGITAL are the engine's extra modes.
+    {"minimap", "rotating", kOn},
     {"minimap", "north-up", {"InGame", "IDS_HudOptionValue_Fixed", 0, "FIXED"}},
-    {"speedometer", "analog", {"InGame", "IDS_HudOptionValue_Analog", 0, "ANALOG"}},
+    {"speedometer", "analog", kOn},
+    // CAMERA VIEW: the cameras' names (GameOptions2's IDS_ForcedCamera_*);
+    // the engine's default is the near chase (CHASE on the capture).
+    {"camera", "default", {"GameOptions2", "IDS_ForcedCamera_ChaseNear", 0, "CHASE"}},
+    {"camera", "chase low", {"GameOptions2", "IDS_ForcedCamera_ChaseNear", 0, "CHASE"}},
+    {"camera", "chase high", {"GameOptions2", "IDS_ForcedCamera_ChaseFar", 0, "CHASE FAR"}},
+    {"camera", "cockpit", {"GameOptions2", "IDS_ForcedCamera_Cockpit", 0, "COCKPIT"}},
+    {"camera", "hood", {"GameOptions2", "IDS_ForcedCamera_Hood", 0, "HOOD"}},
+    {"camera", "bumper", {"GameOptions2", "IDS_ForcedCamera_Bumper", 0, "BUMPER"}},
     {"speedometer", "digital", {"InGame", "IDS_HudOptionValue_Digital", 0, "DIGITAL"}},
     {"units", "metric (km/h)", {"InGame", "IDS_HudOptionValue_Metric", 0, "METRIC"}},
     {"units", "imperial (mph)", {"InGame", "IDS_HudOptionValue_English", 0, "ENGLISH"}},

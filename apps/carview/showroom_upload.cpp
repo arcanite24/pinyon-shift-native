@@ -726,7 +726,7 @@ bool Showroom::upload(std::string& error) {
     const VkPipeline car_op = (r_.z_prepass() && opaque_after_z_) ? opaque_after_z_ : opaque_;
     if (draw_car_) record_draws(cmd, car_op, glass_, 1);
     record_all_instances(cmd, r_.z_prepass(), 1);
-    if (world_textured_ && sky_ready_) {
+    if (world_textured_ && sky_ready_ && !sky_hidden_) {
       record_sky_draw(cmd);
       r_.mark(cmd, "sky");
     }

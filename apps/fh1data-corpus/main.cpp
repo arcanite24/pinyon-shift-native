@@ -638,7 +638,9 @@ int world_materials(const fs::path& source_path, const fs::path& pvs_path) {
     } else {
       ++with_uv;
     }
-    const uint32_t member = uint32_t(std::stoul(name.substr(12, 5)));
+    // <track>out.NNNNN.rmb.bin (any track's prefix, the hub rooms' too).
+    const size_t dot = name.find('.');
+    const uint32_t member = dot != std::string::npos ? uint32_t(std::strtoul(name.c_str() + dot + 1, nullptr, 10)) : 0;
     const std::vector<uint32_t>* list =
         member >= 1 && member - 1 < table.model_textures.size() ? &table.model_textures[member - 1] : nullptr;
     for (const auto& o : m.objects)

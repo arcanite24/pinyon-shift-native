@@ -1,4 +1,5 @@
 #include "drive_session.h"
+#include "cutscene_runtime.h"
 #include "hud_screen.h"
 
 #include <algorithm>
@@ -1030,6 +1031,13 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             else if (shop.is_open()) active_hub_room = HubRoom::kWorkshop;
             else if (paint_open) active_hub_room = HubRoom::kPaintShop;
             else if (garage_open) active_hub_room = HubRoom::kGarage;
+            // The paint booth's and the workshop's lists are shown in their
+            // rooms (20_paint_shop_orig.png).
+            else if (hub_menu.open() && hub_menu.top() == carview::HubMenu::kPaintBooth)
+              active_hub_room = HubRoom::kPaintShop;
+            else if (hub_menu.open() && (hub_menu.top() == carview::HubMenu::kWorkshop ||
+                                         hub_menu.top() == carview::HubMenu::kUpgradeChoice))
+              active_hub_room = HubRoom::kWorkshop;
           }
           ShowroomFrame hub_cam_frame{};
           bool hide_for_garage_preview = false;
@@ -1107,27 +1115,48 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                           : HubCameraFocus::kTurntable;
             // The disc's camera preset for the screen (UICarTargetCameraPresets.xml),
             // else the engine's focus.
-            const std::string_view want_preset = carview::hub_camera_preset_name(
-                active_hub_room, active_hub_room == HubRoom::kWorkshop ? shop.active_part_enum() : -1,
-                livery_editor.is_open(), false);
+            // MENU-03: the disc's camera for the screen (a camera.zip sequence
+            // or a UICarTargetCameraPresets.xml preset), else the engine's focus.
+            const bool colour_select =
+                active_hub_room == HubRoom::kAutoshow && autoshow.step() == carview::AutoshowStep::kColorSelect;
+            const carview::HubCameraShot shot = carview::hub_camera_shot(
+                active_hub_room, active_hub_room == HubRoom::kWorkshop && shop.is_open() ? shop.active_part_enum() : -1,
+                livery_editor.is_open(), int(livery_editor.region()), colour_select);
+            const cutscene::Cutscene* sequence =
+                shot.sequence_member.empty() ? nullptr : hub_sequence(shot.sequence_member, shot.sequence);
+            const std::string_view want_preset = sequence ? std::string_view{} : shot.preset;
             const carview::CarCameraPreset* preset = hub_preset(want_preset);
             static std::string s_last_hub_preset;
+            static const cutscene::Cutscene* s_last_hub_sequence = nullptr;
             const bool room_changed = (active_hub_room != last_hub_room);
             if (room_changed) {
               hub_cam = HubCamera{};
               last_hub_room = active_hub_room;
+              s_last_hub_sequence = nullptr;
             }
-            // Only reset camera focus when the hub screen, part focus, or highlighted car changes,
-            // preserving smooth turntable auto-orbit and manual right-stick inspection.
+            {
+              const auto& pb0 = preview_sr->bounds_min();
+              const auto& pb1 = preview_sr->bounds_max();
+              hub_cam.ground_y = pb0[1];
+              hub_cam.parts = car_parts(vehicle, pb0, pb1);
+            }
+            // Only reset the camera when the hub screen, the shot or the
+            // highlighted car changes, keeping the orbit and the stick's look.
+            // A new car in the Autoshow's browse keeps the sequence running.
             if (room_changed || desired_focus != s_last_hub_focus || cur_preview_car != s_last_hub_car ||
-                want_preset != s_last_hub_preset) {
-              if (preset)
+                want_preset != s_last_hub_preset || sequence != s_last_hub_sequence) {
+              if (sequence)
+                hub_cam.play(sequence);
+              else if (preset)
                 hub_cam.set_preset(*preset);
-              else
+              else {
+                hub_cam.play(nullptr);
                 hub_cam.set_focus(desired_focus);
+              }
               s_last_hub_focus = desired_focus;
               s_last_hub_car = cur_preview_car;
               s_last_hub_preset = std::string(want_preset);
+              s_last_hub_sequence = sequence;
             }
             const float hub_dt = float(std::clamp(frame_dt, 0.0, 0.1));
             for (SDL_Gamepad* pad : pads) {
@@ -1150,6 +1179,55 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const float hw = std::clamp(0.5f * (bmax[0] - bmin[0]), 0.70f, 1.45f);
             const float hl = std::clamp(0.5f * (bmax[2] - bmin[2]), 1.60f, 3.00f);
             const float fy = bmin[1];
+            // MENU-02: the room's own track in Colorado's place, the car at its
+            // origin with its wheels on the room's floor; the studio stage
+            // stays for the rooms without a track and when one does not read.
+            const bool room_track = carview::hub_room_track(active_hub_room) != nullptr &&
+                                    !app.cli_hub_studio && host.enter_room_world(active_hub_room);
+            if (!room_track) host.leave_room_world();
+            if (room_track) {
+              const carview::HubRoomScenery* rs = host.room_world_scenery();
+              const float lift = fy - (rs ? rs->floor_y : 0.0f);
+              const float yaw = carview::hub_room_yaw(active_hub_room);
+              const float cy = std::cos(yaw), sy = std::sin(yaw);
+              // The room's game frame (the car's body axes, +Z forward) turned
+              // by the room's yaw, then mirrored into the car model's frame
+              // (-Z forward; drive::model_to_world's B), the floor at the
+              // car's wheels.
+              const float room_xf[16] = {
+                  cy, 0.0f, sy, 0.0f,
+                  0.0f, 1.0f, 0.0f, 0.0f,
+                  sy, 0.0f, -cy, 0.0f,
+                  0.0f, lift, 0.0f, 1.0f,
+              };
+              host.showroom.set_world_transform(room_xf);
+              const float room_sun[3] = {0.45f, 0.78f, -0.42f};
+              const float room_up[3] = {0.0f, 1.0f, 0.0f};
+              host.showroom.set_world_light(room_sun, room_up, 1.0f);
+              // The room's light (hub_room.h): no sun, no fog, the lightmap in
+              // the AO slot under a white hemisphere and the room's own.
+              if (rs) {
+                world::TodState& t = host.showroom.tod_state();
+                t.sun_color = {0.0f, 0.0f, 0.0f};
+                const float gain = carview::kHubRoomLightmapGain;
+                for (int k = 0; k < 3; ++k) {
+                  t.hl_top[size_t(k)] = gain + rs->hemi_top[size_t(k)];
+                  t.hl_bottom[size_t(k)] = gain + rs->hemi_bottom[size_t(k)];
+                  t.ambient_color[size_t(k)] = rs->ambient[size_t(k)];
+                }
+                t.ibl_ambient_scale = 1.0f;
+                t.switch_on_lights = 0.0f;
+                t.fog_density = 0.0f;
+                t.fog_start = 1.0e6f;
+                t.fog_height_fade_amount = 0.0f;
+              }
+              host.showroom.set_debris_mesh({});
+              host.showroom.set_skidmarks({}, {});
+              host.showroom.set_particles({}, {}, {}, 0.25f, false);
+              host.showroom.set_showcase_mesh({});
+              host.showroom.set_world_overlay({});
+              s_cached_stage_room = HubRoom::kNone;
+            } else {
             if (s_cached_stage_room != active_hub_room || std::fabs(s_cached_stage_hw - hw) > 0.02f ||
                 std::fabs(s_cached_stage_hl - hl) > 0.02f || std::fabs(s_cached_stage_fy - fy) > 0.02f) {
               s_cached_stage_room = active_hub_room;
@@ -1202,12 +1280,20 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             host.showroom.set_particles({}, {}, {}, 0.25f, false);
             host.showroom.set_showcase_mesh({});
             host.showroom.set_world_overlay({});
+            }
           } else if (last_hub_room != HubRoom::kNone) {
             host.showroom.set_background(0.42f, 0.55f, 0.72f);
             host.showroom.set_draw_car(true);
             last_hub_room = HubRoom::kNone;
             s_last_hub_car.clear();
           }
+          // The room's track stays drawn under a menu opened over its screen;
+          // it goes when the room's screens close.
+          if (host.room_world != HubRoom::kNone && !autoshow.is_open() && !shop.is_open() && !paint_open &&
+              !(hub_menu.open() && (hub_menu.top() == carview::HubMenu::kPaintBooth ||
+                                    hub_menu.top() == carview::HubMenu::kWorkshop ||
+                                    hub_menu.top() == carview::HubMenu::kUpgradeChoice)))
+            host.leave_room_world();
           ShowroomFrame cam_frame =
               photo_mode.active()
                   ? camera_view_frame(photo_mode.camera().view(), info, vehicle, aspect, host.renderer.reverse_z(), &host.cam_proj)
@@ -1594,11 +1680,65 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                         app.frame_stats.summary().c_str(), double(vram.allocation_bytes) / (1024.0 * 1024.0),
                         vram.allocation_count, double(vram.device_local_usage) / (1024.0 * 1024.0));
           }
+          // --hub-shot (a harness): open the room's first screen once free roam
+          // is up, capture it after the delay and quit (with a round trip:
+          // close it, capture free roam, open it again, capture, quit).
+          // Stages: 0 open, 1 wait, 2 room captured, 3 wait in free roam,
+          // 4 free roam captured.
+          static int s_hub_shot_stage = 0, s_hub_shot_pass = 0;
+          static uint64_t s_hub_shot_frames = 0;
+          static std::chrono::steady_clock::time_point s_hub_shot_t0;
+          if (!app.cli_hub_shot_room.empty() && !app.show_title && !app.fmv_player.active() &&
+              pending_shot == PendingShot::kNone) {
+            ++s_hub_shot_frames;
+            const std::string& r = app.cli_hub_shot_room;
+            const bool due = std::chrono::duration<double>(std::chrono::steady_clock::now() - s_hub_shot_t0).count() >=
+                             app.cli_hub_shot_delay;
+            if (s_hub_shot_stage == 0 && s_hub_shot_frames > 90) {
+              if (r == "autoshow") open_shop_or_autoshow(true);
+              else if (r == "upgrade") open_shop_or_autoshow(false);
+              else if (r == "workshop") open_hub_menu(carview::HubMenu::kWorkshop);
+              else if (r == "paintshop") open_hub_menu(carview::HubMenu::kPaintBooth);
+              else if (r == "paint") open_paint();
+              else if (r == "garage") open_garage_browser(false);
+              else if (r == "profile") open_hub_menu(carview::HubMenu::kProfile);
+              else if (r == "options") open_hub_menu(carview::HubMenu::kOptions);
+              else if (r == "photo") open_hub_menu(carview::HubMenu::kPhotoSelect);
+              s_hub_shot_stage = 1;
+              s_hub_shot_t0 = std::chrono::steady_clock::now();
+            } else if ((s_hub_shot_stage == 1 || s_hub_shot_stage == 3) && due) {
+              pending_shot = PendingShot::kHubShot;
+              host.renderer.request_capture(true);
+              ++s_hub_shot_stage;
+            }
+          }
           // Process real Vulkan swapchain / color-target PNG captures (F8, F12, Photo Mode 4x SSAA).
           if (pending_shot != PendingShot::kNone) {
             std::vector<uint8_t> cap_rgba;
             uint32_t cap_w = 0, cap_h = 0;
-            if (host.renderer.take_captured_frame(cap_rgba, cap_w, cap_h)) {
+            if (host.renderer.take_captured_frame(cap_rgba, cap_w, cap_h) && pending_shot == PendingShot::kHubShot) {
+              for (size_t i = 3; i < cap_rgba.size(); i += 4) cap_rgba[i] = 255;
+              std::filesystem::path png = app.cli_hub_shot_png;
+              const char* suffix = s_hub_shot_stage == 4 ? "_roam" : s_hub_shot_pass > 0 ? "_again" : "";
+              if (*suffix) png.replace_filename(png.stem().string() + suffix + png.extension().string());
+              const bool ok = write_png(png.string(), cap_w, cap_h, 4, cap_rgba.data());
+              std::printf("hub shot %s -> %s (%ux%u)%s\n", app.cli_hub_shot_room.c_str(), png.string().c_str(), cap_w,
+                          cap_h, ok ? "" : " FAILED");
+              pending_shot = PendingShot::kNone;
+              if (app.cli_hub_shot_round_trip && s_hub_shot_pass == 0 && s_hub_shot_stage == 2) {
+                // Out of the room: every hub screen closed.
+                hub_menu.close();
+                if (autoshow.is_open()) autoshow.close();
+                if (shop.is_open()) shop.close();
+                s_hub_shot_stage = 3;
+                s_hub_shot_t0 = std::chrono::steady_clock::now();
+              } else if (s_hub_shot_stage == 4) {
+                s_hub_shot_stage = 0;  // the room again
+                s_hub_shot_pass = 1;
+              } else {
+                running = false;
+              }
+            } else if (!cap_rgba.empty()) {
               if (pending_shot == PendingShot::kPhotoMode && photo_mode.accumulator().active()) {
                 photo_mode.accumulator().add_frame(cap_rgba, cap_w, cap_h);
                 if (photo_mode.accumulator().complete()) {

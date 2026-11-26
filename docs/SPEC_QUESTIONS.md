@@ -3471,8 +3471,7 @@ The rest of the first visit now runs, with `rally_flow` as its step
 All four triggers are in `Rally_DialogueScript_EN.xml`. Interims: the
 heats start from the engine's pre-race menu, where the original runs a
 rolling start under AI control with the pep talk and the heats' intro
-cutscene; the VO is queued, not waited on; the hub's help bar is not
-disabled during the tutorial; and the Autoshow's restriction is the Rally
+cutscene; and the Autoshow's restriction is the Rally
 cars only, though the behaviour's actual contents are unknown. In the
 harness's play bake none of the five Rally cars (nor the heats' loaner)
 is baked, so the restricted Autoshow is empty and the hub opens straight
@@ -3480,12 +3479,17 @@ away ("no cars to buy"). The five are on sale at a price
 (`club_rally_corpus_tests` checks the dealer list; 7,000 to 240,000 Cr),
 so a bake with them lists them (checked with a baked stand-in accepted by
 the filter: the Autoshow listed that one car and its exit opened the
-hub). The VO lines queue behind each other
-(`VoPlayer::trigger` without interrupt).
+hub).
+
+Changed (WP5): the hub tutorial now follows `first_time_hub_flow`: the
+help bar is hidden and the hub takes no input while `ChampionshipStructure`
+plays (waited on), a 0.5 s pause, and `CoDriverIntro` (waited on); then
+the help bar returns and step 4 is saved. A line that never starts
+(no Rally VO bank) gives up after 2 s. The two post-race lines still
+queue behind each other (`VoPlayer::trigger` without interrupt).
 
 Needed: `CSetRestrictionsForFirstRallyAutoshow`'s restrictions (cars,
-classes, credits), the heats' rolling start and cutscene, and whether
-the flow waits for each VO line before the hub takes input.
+classes, credits) and the heats' rolling start and cutscene.
 
 ## Q146 (V4-18, not blocking): ColoradoDirt's speed traps and their records
 
@@ -3521,48 +3525,56 @@ render target of the car, or a file per car), and the camera they use.
 
 ## Q129 (UI, not blocking): the hub rooms' tracks and cameras
 
-The Autoshow, the workshop and the paint booth are tracks on the disc
-(`uiautoshow`, `uiworkshop`, `uipaintshop`) with their own camera presets
-(`UICarTargetCameraPresets.xml`, the `HorizonAutoshow` set). The engine
-still draws each room as its studio stage (`build_hub_stage`) with a
-per-room colour. As an interim the Autoshow stage is dark
-(`19_autoshow_orig.png` is a dark club stage); the workshop and the paint
-booth keep their colours. Needed: how the title loads a room's track
-under the menu (which track per screen, the car's placement in it) and
-which preset each screen's camera uses.
+Mostly answered (WP3). The Autoshow, the workshop and the paint booth are
+tracks on the disc (`uiautoshow`, `uiworkshop`, `uipaintshop`), and the
+engine now draws each one in Colorado's place while its screen is open
+(`hub_room.h`, `DriveWorldHost::enter_room_world`); the garage and Barn
+Finds keep the studio stage. What reading them took:
 
-The rooms' tracks: each is a small track folder like Colorado's
-(`bin.zip` of 8.6 to 16.1 MB, one PVS zone, a one-cell `.hex`, a
-collision box about the origin, empty `GameObjs.xml`, `CollObjs.xml` and
-post zones, no time of day). `World::open` and `Collision::open` take any
-track folder, so reading them is not the obstacle; drawing one under the
-menu is: room models within 200 m of the origin count as local and are
-not gathered (`rmb_is_world_space`), placements at the origin are dropped
-(a Colorado filter), and a second world's texture numbers would collide
-with Colorado's in the GPU world (one world per host). A room needs a
-full world swap (as the Rally's ColoradoDirt does, seconds per entry) or a
-second world channel, and its interior shaders (`H_INT_*`,
-`HS_SKY_DIFF_HDRI_*`) are unchecked. The car's place in a room is not in
-its data (the empty `GameObjs.xml`); the presets suggest the origin. So
-the rooms stay the studio stage (MENU-02).
+- The rooms' models are local (within 200 m of the origin), so the room
+  gathers them with `GatherOptions::local_models`.
+- Their `.pvs` model lists differ from Colorado's: list 0 names no model,
+  and the parser had taken its textures for a fixed header (`52b4b95a`).
+- The rooms' game frame is the car's body frame (+Z forward), mirrored in
+  z into the car model's frame; the car stands at the origin, its wheels
+  on the floor there. Unturned, the paint booth matches
+  `20_paint_shop_orig.png` (EXIT sign, doors and ceiling lights).
+- A room's texture records move past Colorado's
+  (`hub_room_record_base`). One record in the Autoshow (21) and one in the
+  paint booth are in no bundle of the room's archive and draw untextured.
+- Leaving a room re-prepares Colorado's last gather on the main thread
+  (about 0.3 s); entering and leaving twice is clean
+  (`19c_room_left_free_roam_wp3.png`).
 
-The camera presets: `media/UICarTargetCameraPresets.xml` (loose on the
-disc) has 28 presets under 27 names (`LiveryLayerSelect_Wing` twice: one
-for every car, one for car 1124), each an eye (`posx/y/z`) and look
-direction (`facex/y/z`) in the car's frame (+Z front), a field of view, X
-and Y angle limits and `allowZoom`. The engine reads them
-(`parse_car_camera_presets`) and aims the hub camera with them: the
-workshop's `Upgrades_*` by the selected part, the paint shop's
-`LiveryMainMenu` and `LiveryPaintMenu_Body` (editor), and the Autoshow's
-colour select `CarColorSel`. The field of view is taken as vertical. Open:
-- the Autoshow's standard view: `HorizonAutoshow` puts the eye 4.8 m from
-  the car, but every reference dump has the live camera 6.58 m off
-  (AUTOSHOW_REFERENCE.md), so the engine keeps its own camera there and in
-  the garage;
-- the angle limits and zoom (not applied; the engine's orbit limits stay),
-  the `LiveryLayerSelect_*` and `LiveryPaintMenu_*` per region, and which
-  preset the workshop uses for a mid- or rear-engined car's engine parts
-  (`Upgrades_Engine_Rear`).
+The cameras are three files, not only the presets:
+
+- The room lists (the Autoshow's browse, the paint booth's rows, the
+  workshop's rows) play `camera.zip`'s `HomeSpaceCams.xml`: 12 cams over
+  79.58 s, looping. Its first shot is the front-left three-quarter view of
+  captures 19 and 20.
+- The workshop's body parts and wheels play `WorkshopCams.xml`'s looping
+  `Upgrade_Part_*` sequences, placed on the car's parts (`PartSpace`);
+  its engine and drivetrain parts use the `Upgrades_*` presets. Which part
+  uses which camera is Q221.
+- The paint editor's regions use `LiveryPaintMenu_*` and the Autoshow's
+  colour select `CarColorSel` from `UICarTargetCameraPresets.xml`. A
+  change of preset blends over 0.75 s (smoothstep, the yaw the short way
+  round).
+
+Still open:
+
+- the presets' X and Y angle limits and `allowZoom` (the engine's orbit
+  limits stay), and the `LiveryLayerSelect_*` presets (the vinyl rows open
+  the engine's editor, Q132);
+- the blend's length and curve between presets (measured nowhere; 0.75 s
+  is the engine's);
+- the `HorizonAutoshow` preset, which no screen uses now (the Autoshow
+  plays HomeSpaceCams);
+- the presets' origin: the engine takes `posy` from the ground, but
+  `CarColorSel`'s posy of -0.15 puts the eye below the floor that way, so
+  the origin may be the car's centre or its body's base;
+- which workshop part uses a sequence and which a preset (Q221);
+- the rooms' light (Q222) and the Autoshow's crowd and DJ (Q223).
 
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
 
@@ -3799,12 +3811,10 @@ string). The champion part plays once: `DriveSave::rally_end_seen`
 the podium, with VO `HorizonRallyChampion`. Inferred: that trigger as
 `CPlayRallyChampionDialogue`'s line (the behaviour takes no parameter;
 the dialogue script also has `ChampionAgain` and `PlayerWonRally`).
-Interims: the page is still the engine's layout, not
-`h_post_race_rally_finished` / `h_post_race_rally_points` (both load from
-the v4 overlay); `h_horizon_rally_champion` (a title tape, a position
-tape and a timer over `Rally_Champion_Cutscene`) is not drawn and the
-cutscene is not played; the champion strip's "HORIZON RALLY CHAMPION!"
-is the engine's. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
+Changed (WP5, Q212): a championship's end now shows
+`H_POST_RACE_RALLY_FINISHED`, `H_POST_RACE_RALLY_POINTS` and, once,
+`H_HORIZON_RALLY_CHAMPION`; the engine's page is X on the banner and the
+heats' end. Still interim: `Rally_Champion_Cutscene` is not played. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
 read "NEW EVENT UNLOCKED", "NOW GET OVER TO THE", "NOW GET TO THE",
 "YOU'VE UNLOCKED THE" / "HORIZON RALLY FINAL": the final's unlock
 notice, not the champion screen.
@@ -3837,16 +3847,12 @@ which the reference save confirms).
 
 ## Q149 (V4-11, V4-21, V4-23, not blocking): the Rally world, the co-driver's lines and level-up gifts
 
-V4-11, the hub as free roam: not built. The original's Rally is
-ColoradoDirt free roam: `game_rally_free_roam_flow` with event tickets
-from the package's `career_event_activations.xml`,
-`rally_event_activations.xml` and `gas_stations.xml`, map icons from
-`rallymapprofile*.xml` and the hub's radio. The engine switches to
-ColoradoDirt and opens its hub overlay (with a FREE ROAM COLORADO DIRT
-row that closes it). Building it needs the free-roam ticket trigger and
-popup, the world markers and the map's Rally profile, which belong with
-the event-activation and map work, not with this branch's screens. Kept
-as the interim: the overlay.
+V4-11, the hub as free roam: settled (Q211). The reading above, that
+the Rally is ColoradoDirt free roam, was wrong: `game_rally_free_roam_flow`
+removes the car and shows `CShowUIScreen_RallyHub` on `H_RALLY_HUB` over
+BgLoop.wmv, a paused menu. The engine now draws that scene. Driving
+ColoradoDirt (the FREE ROAM COLORADO DIRT extra, its world triggers and
+speed traps) is the engine's own, kept off the hub's main layout.
 
 V4-21, the co-driver and Alice: the first visit now plays
 `PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
@@ -3868,6 +3874,10 @@ ownership filter for DLC cars. In v4's `pause.xml` the Message Centre
 (`CShowMessageCentreScreen`) has `onGiftCarPrepare` /
 `onGiftCarUnprepare` transitions, so a gift is claimed from a message,
 which suggests a choice among the level's rows (`MaxGiftCars` 5 to 7).
+The UI archive also has `UI4/BuyCar/GiftCarChoice.xds` (the recomp's UI
+catalogue), more support for a choice. WP5 searched the recomp's derived
+source for `CCoDriverPepTalk`, `CRallyStageIntro` and the gift message
+and found no decompiled body, so V4-21's and V4-23's rules stay open.
 
 Needed: which line each of `CCoDriverPepTalk`, `CRallyStageIntro` and
 the finish picks; the gift message's rule (one of N or all N) and its
@@ -4994,3 +5004,189 @@ Open:
 
 Needed: the writers of those two bytes, or a map capture with a found but
 uncollected barn.
+
+## Q211 (V4-11, not blocking): the Rally hub's guesses and interims
+
+V4-11 is settled against Q149's reading: the Rally's "free roam" is not
+a drive. `game_rally_free_roam_flow` removes the car, shows BgLoop.wmv
+and `CShowUIScreen_RallyHub` on `H_RALLY_HUB`, and its exits are
+`okCareer` (a ticket), `okRivals`, `selectCar`, `purchaseCar`, `outpost`
+and `return` (the QUIT HORIZON RALLY popup, which unloads to the title
+through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
+"The Rally hub"). Guessed or kept as the engine's:
+
+- The buttons. The scene's button bar is filled at run time; the engine
+  shows A ENTER EVENT, B BACK, Y TRACK LAYOUT (the bgf's Restrictions
+  reverse) and BACK EXTRAS. No X RIVALS: the Rally rivals entry
+  (`okRivals`) is not built (Q147's V4-12).
+- The tickets: only the unlocked championships, in the
+  `MultiStageSeriesEvents` order (tickets 005, 004, 003, 001, 006, 007,
+  002). Whether the original also lists locked
+  tickets, and its order, is unmeasured.
+- The ticket's texts: WINNER TAKES and the prize, the class badge, NEW
+  while the event has never been finished, then its best place. BEST
+  TIME (`TEXT_RACE_TIME`) and the points tape are hidden; the original
+  fills them from data the engine does not keep per championship.
+- ENTRY RESTRICTIONS: the `RestrictionDescription` ids (`_&2027516xx`,
+  table 3093) resolve in no loaded string table, so the reverse shows
+  "Car Class must be <class> or below." (CareerEventUI 0x7013).
+- B's popup reads "return to the main menu" as in the original, but OK
+  goes back to Colorado, not to the title.
+- The engine's EXTRAS (BACK): replay the heats, fit the rally kit in one
+  press (the original converts a car through the car select's RALLY
+  CONVERSION popup), drive ColoradoDirt, and return to Colorado without
+  the popup. None of them is the original's.
+- The car select (`selectCar`), the purchase path (`purchaseCar`), the
+  hub's radio and the ticket ColorScheme tints are not built.
+- The backdrop is black in the live window. BgLoop.wmv (in the Rally
+  package, 1280x720 wmv3) opens, loops and decodes real frames, and
+  `atlas_update("fmv.frame")` succeeds, but the frame's atlas texels
+  never show on screen: a plain image of that atlas entry, drawn last,
+  is black too, at 1280x720 and at 640x360. So the atlas entry reads
+  black on the GPU; the hub's scene does not cover it. Not diagnosed
+  further.
+
+Needed: the hub's button bar contents, whether locked tickets show, what
+fills BEST TIME and the points tape, and the restriction strings' table.
+
+## Q212 (V4-14, RACE-23, not blocking): the Rally final's screens
+
+After a championship's last stage the engine now runs
+`game_rally_race_flow`'s end on the Rally's own scenes
+(`rally_post_steps`, drawn by `game_hud_core.cpp`):
+
+1. `H_POST_RACE_RALLY_FINISHED`: FINISHED and the place, as the festival
+   banner. A CONTINUE; X RACE RESULTS shows the engine's standings page
+   (B or A closes it).
+2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP and the Rally
+   level bar with the Rally wristbands' art. `TEXT_POINTS_TO_NEXT` is set
+   to PostRaceFlow's "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY
+   FINAL" / "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the
+   final's `UnlockPointsReq` (none once champion), but it does not show:
+   at the scene's rest it sits under the bar, as the career line does
+   (`17c_results_points_engine_wp2.png` shows only its last digits).
+3. Once, `H_HORIZON_RALLY_CHAMPION`, with `HorizonRallyChampion` (moved
+   from the finish to this screen). A returns to the hub.
+
+The intro heats keep the engine's results page (`game_rally_intro_flow`
+ends differently). `club_rally_corpus_tests` renders the three (the
+captures folder's `rally_{finished,points,champion}_offline_wp5.png`) and
+checks the lines and the steps. `carview --demo-rally-final` opens the
+sequence after a won first championship; the live captures are
+`rally_{finished,finished_results,points,champion,final_after}_live_wp5.png`.
+
+Interims: no earnings screen (the credits are on X's page); the prize-car
+step is not in the sequence; `Rally_Champion_Cutscene` is not played, so
+black is behind the champion screen; its texts are guesses, the title
+CareerEventUI's "HORIZON RALLY CHAMPION 2012" (0x2DD1) and the place on
+the position tape; the banner's help bar is guessed (no RESTART or
+REPLAY); the points line is hidden under the bar (above; Q96's scene
+rest); the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
+before the champion screen shows. Between stages the engine's STAGE
+RESULTS page stays (Q147). `race_flow::post_steps` is unchanged: the
+sequence runs on the results state.
+
+Needed: the final's help bars, the champion screen's texts and timing
+against the cutscene, and whether the earnings come before the points.
+
+## Q221 (MENU-03, not blocking): which workshop part plays which camera
+
+The disc has two sources for the upgrade shop's camera, and neither says
+which part uses it:
+
+- `WorkshopCams.xml` has seven looping 10 s sequences:
+  `Upgrade_Part_FRONT`, `HOOD`, `REAR`, `WING`, `SIDE`, `FRONTWHEEL` and
+  `REARWHEEL`. Each is placed on one of the car's parts (`headlightR`,
+  `headlightL`, `taillightL`, `taillightR`, `wheelLF`, `wheelRF`,
+  `wheelRR`).
+- `UICarTargetCameraPresets.xml` has fixed presets: `Upgrades_Main`,
+  `FrontBumper`, `RearBumper`, `RearWing`, `Hood`, `WheelStyle`,
+  `Flywheel`, `Engine_Front`, `Engine_Rear` and `Drivetrain`.
+
+The engine plays the sequences for the parts they name, and the presets
+for the parts that have no sequence:
+
+- **Sequences (`workshop_part_sequence`):**
+  - front bumper → FRONT;
+  - rear bumper and exhaust → REAR;
+  - wing → WING;
+  - hood → HOOD;
+  - side skirts → SIDE;
+  - tyres, rims, brakes and suspension → FRONTWHEEL.
+- **Presets (`workshop_part_preset`):**
+  - the engine's parts → `Upgrades_Engine_Front` (every engine taken as
+    front-mounted);
+  - the flywheel → `Upgrades_Flywheel`;
+  - the drivetrain → `Upgrades_Drivetrain`.
+
+REARWHEEL is not used. The recomp's source does not name either file's
+entries; the names are in the game's data.
+
+The engine's part positions are estimates (`car_parts`: headlights at the
+front overhang, 0.7 m up). With them, HOOD's shot looks down at the floor
+ahead of the car, with the car at the top left of the frame. That may be
+the original's framing, or a wrong part position or `PartSpace` reading.
+No capture shows the upgrade shop.
+
+Needed:
+- the title's part-to-camera table, and whether the sequences play only
+  after a part is fitted;
+- the engine's placement for `Upgrades_Engine_Rear`;
+- the parts' real positions (the car model's light and wheel bones);
+- a capture of the upgrade shop.
+
+## Q222 (MENU-02, not blocking): the hub rooms' interior shaders
+
+The rooms' surfaces use `H_INT_DIFF_SPEC_REFL_NORM_AO_LM`,
+`H_INT_DIFF_SPEC_REFL_AO_LM`, `H_INT_DIFF_EMISSIVE_2` and a
+`HS_SKY_DIFF_HDRI_SHAD_1` dome. Their TrackSettings have no sun, keep fog
+off, and set a near-black hemisphere:
+
+- paint booth: ambient 0.04 and DesaturateAmount 0.92;
+- workshop: hemisphere 0;
+- Autoshow: hemisphere top (0.01, 0.02, 0.06).
+
+So the light is baked into each surface's `*_LM` map. The engine's world
+shader adds a Light_Map as Colorado's night spill instead, and its SPIR-V
+cannot be rebuilt here. The interim:
+
+- `load_hub_room` moves each lightmap into the AO slot, which the shader
+  multiplies in.
+- The frame has no sun, fog or real-time sky, and a white hemisphere of
+  `kHubRoomLightmapGain` (5).
+
+Against `20_paint_shop_orig.png` the back wall reads 150 of 232 and the
+floor 135 of 144; the original is also greyer (the desaturation is not
+applied). The car keeps the engine's lighting and reflections, not the
+room's `staticcarcubemap.xpr`, and the hemisphere's gain reaches it too
+(the 300SL's door reads 64 at gain 1.6 and 82 at 5). A pale car looks
+overexposed and banded (`19b_manufacturer_select_wp3.png`).
+
+Needed: the `H_INT_*` shaders' lightmap term (its scale and whether it
+replaces the AO), how the rooms' post-process (desaturation and exposure)
+applies, and how the car is lit in a room (the static cubemap).
+
+## Q223 (MENU-02, MENU-08, not blocking): the Autoshow's crowd and DJ
+
+`19_autoshow_orig.png` shows a crowd, a DJ at a desk and moving lights
+on the Autoshow's stage. The `uiautoshow` track has the stage, speaker
+stacks, banners and light strips but no characters: its `GameObjs.xml`
+is empty. The engine draws the room without them.
+
+Needed: where the title spawns the Autoshow's crowd and DJ (a homespace
+script, `075_SHOWROOM_HOMESPACE`'s scene, or the spectator system) and
+their animations.
+
+## Q224 (MENU-06, MENU-18, not blocking): the world behind the option and stats pages
+
+Captures 23 to 26 show the world defocused behind the OPTIONS pages
+(CONTROLS, DIFFICULTY, HUD) and MY PROFILE's STATS. Captures 22 and 31
+show it sharp behind the lists (OPTIONS and PHOTO MODE). The engine draws
+the world sharp behind every page (`23_options_controls_wp3.png` to
+`26_my_profile_stats_wp3.png`). On STATS, the bright sky then shows
+through the gaps between the rows, which the original's blurred, darker
+backdrop hides. The pages' rows and values match the captures (HUD's
+values since WP3).
+
+Needed: which screens turn on the blur (a scene flag or the screen's
+code), its strength and its fade in and out.

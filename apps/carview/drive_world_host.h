@@ -4,7 +4,9 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -16,6 +18,7 @@
 #include "drive_helpers_runtime.h"
 #include "frame_inspector.h"
 #include "freeroam/collectibles.h"
+#include "hub_room.h"
 #include "render_modern.h"
 #include "renderer.h"
 #include "showroom.h"
@@ -79,6 +82,23 @@ struct DriveWorldHost {
   bool streamer_async = false;
   bool first_session = true;
   std::shared_ptr<Prepared> deferred_prepared_;
+
+  // MENU-02: the hub room whose own track (hub_room.h) is the drawn world in
+  // Colorado's place while its screen is open; kNone draws Colorado. The
+  // streamer keeps gathering Colorado meanwhile, but its swaps wait.
+  HubRoom room_world = HubRoom::kNone;
+  std::atomic<bool> prepare_on_main{false};  // the streamer's prepare run by leave_room_world
+  std::map<HubRoom, std::shared_ptr<const HubRoomScenery>> room_scenery;
+  std::set<HubRoom> room_failed;
+  // Draws `room`'s track (read once, then kept). False when the room has no
+  // track or it does not read: the caller keeps the studio stage.
+  bool enter_room_world(HubRoom room);
+  // Draws Colorado again around the streamer's last gather.
+  bool leave_room_world();
+  const HubRoomScenery* room_world_scenery() const {
+    auto it = room_scenery.find(room_world);
+    return it != room_scenery.end() ? it->second.get() : nullptr;
+  }
 
   explicit DriveWorldHost(DriveApp& a)
       : app(a),

@@ -46,6 +46,8 @@ struct RallyChampionshipDef {
   int64_t cash_prize = 0;    // Events.CashPrize (10,000..50,000)
   int unlock_points_req = 0; // Events.UnlockPointsReq (310 for MS_RALLY_02)
   int64_t unlocks_event_id = 0;  // Rewards_EventUnlock target (0 for final)
+  std::string event_ticket;  // Events.EventTicket ("001".. "007": EventTickets/RallyTickets/<n>)
+  std::string restriction;   // Events.RestrictionDescription, resolved
   double trigger_x = 0.0;    // rally_event_activations.xml
   double trigger_z = 0.0;
   std::vector<RallyStageInfo> stages;  // 4 stages in StageIndex order

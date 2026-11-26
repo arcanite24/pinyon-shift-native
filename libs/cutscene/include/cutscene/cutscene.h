@@ -156,6 +156,14 @@ struct Library {
 // root is not CutsceneManager.
 bool parse_cutscenes(std::string_view xml, Library& out, std::string* error);
 
+// The animated cameras' sequences in media/camera.zip (CUI4AnimatedCamera):
+// a document whose root is one <Cams> (HomeSpaceCams.xml, carrevealcams.xml;
+// one looping sequence named "") or whose root holds named <Cutscene>
+// elements (WorkshopCams.xml's PartSpecificCameraSequences). Each sequence
+// loops; its length is its Duration, else its ResetPlayback cam's start
+// (that cam is dropped); a cam of zero duration runs to the next cam.
+bool parse_camera_sequences(std::string_view xml, Library& out, std::string* error);
+
 // The free-roam cutscenes of the player's disc: media/gamemodes.zip
 // Colorado/Cutscenes/cutscenes_default_freeroam.xml under `game_root` (the
 // Rally expansion ships a byte-identical copy).

@@ -138,6 +138,10 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     if (a == "--save-settings") { save_settings = true; continue; }
     if (a == "--no-title") { no_title = true; continue; }
+    if (a == "--hub-studio") { cli_hub_studio = true; continue; }
+    if (a == "--hub-shot") { cli_hub_shot_room = next(); cli_hub_shot_png = next(); continue; }
+    if (a == "--hub-shot-delay") { cli_hub_shot_delay = std::atof(next()); continue; }
+    if (a == "--hub-shot-round-trip") { cli_hub_shot_round_trip = true; continue; }
     if (a == "--skip-intro-movies") { skip_intro_movies = true; continue; }
     if (a == "--no-skip-intro-movies") { skip_intro_movies = false; continue; }
     if (a == "--start-in-single-player") { start_in_single_player = true; continue; }
@@ -290,6 +294,8 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     else if (a == "--demo-h2h") demo_h2h = true;
     else if (a == "--demo-rally-stage") demo_rally_stage = true;
     else if (a == "--demo-rally-service") demo_rally_service = true;
+    else if (a == "--demo-rally-hub") demo_rally_hub = true;
+    else if (a == "--demo-rally-final") demo_rally_final = true;
     else if (a == "--demo-club") demo_club = true;
     else if (a == "--hour") {
       hour = std::fmod(std::fmod(std::atof(next()), 24.0) + 24.0, 24.0);

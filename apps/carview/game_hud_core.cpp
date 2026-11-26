@@ -981,7 +981,8 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.rally_hub && st.rally_hub->active) {
-    build_rally_hub_screen(l, *st.rally_hub, w, h);
+    // H_RALLY_HUB over BgLoop.wmv (drawn first by the drive); black without it.
+    if (!build_rally_hub_screen(l, &st, *st.rally_hub, w, h)) l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
     return;
   }
   if (st.rally_service && st.rally_service->active) {
@@ -989,7 +990,32 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.rally_results && st.rally_results->active) {
-    build_rally_championship_results_screen(l, *st.rally_results, w, h);
+    // game_rally_race_flow's final: the banner, the Rally points and the
+    // champion on their scenes; the heats and X keep the engine's page.
+    const RallyChampResultsState& rs = *st.rally_results;
+    const auto steps = rally_post_steps(rs);
+    const RallyPostStep step = steps[size_t(std::clamp(rs.step, 0, int(steps.size()) - 1))];
+    bool drawn = false;
+    if (!rs.show_table) {
+      if (step == RallyPostStep::kBanner) {
+        drawn = draw_rally_finished(l, rs.final_place, w, h);
+      } else if (step == RallyPostStep::kPoints) {
+        RallyPostHud p;
+        p.xp_before = rs.old_rally_xp;
+        p.xp_after = rs.new_rally_xp;
+        p.band_hi = rs.next_level_xp;
+        p.final_req = rs.final_xp_req;
+        p.champion = rs.final_won;
+        p.band = rs.band_thumb;
+        p.band_next = rs.band_next_thumb;
+        drawn = draw_rally_points(l, p, w, h);
+      } else if (step == RallyPostStep::kChampion) {
+        // Rally_Champion_Cutscene is not played: black behind it (Q212).
+        l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
+        drawn = draw_rally_champion(l, rs.final_place, w, h);
+      }
+    }
+    if (!drawn) build_rally_championship_results_screen(l, rs, w, h);
     return;
   }
   const bool menu = !st.menu_title.empty() || !st.menu.empty();

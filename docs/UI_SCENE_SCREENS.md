@@ -588,6 +588,45 @@ ToTheAutoshow VO and opens the first Autoshow, then the hub tutorial
 (`drive_app.cpp`, `drive_input_hub_screens.cpp`; Q145 has the flow and its
 interims).
 
+## The Rally hub (`H_RALLY_HUB`)
+
+The original's Rally "free roam" is a menu, not a drive:
+`game_rally_free_roam_flow` removes the car, plays
+`Splash_Intros/BgLoop.wmv` looped and shows `CShowUIScreen_RallyHub` on
+`H_RALLY_HUB` until a ticket, the car select or the quit popup takes over.
+`build_rally_hub_screen` (`rally_hub.cpp`) draws that scene over BgLoop
+(`drive_render_loop.cpp` plays it; for now the backdrop shows black, Q211):
+
+- **Tickets.** The scrolling list's seven `StreetRaceTicket` slots, slot 4
+  focused, carry the unlocked championships in the database's order, each
+  on its `EventTickets/RallyTickets/<EventTicket>` artwork: WINNER TAKES
+  and the prize on the Credits tape, the class badge, NEW until the event
+  is finished, then the best place on the complete sticker. BEST TIME and
+  the points tape stay hidden.
+- **Track layout (Y).** The focused slot flips to `Restrictions`: the
+  `REVERSE/<n>` card, the `TRACKS/<n>` map, TRACK LAYOUT and ENTRY
+  RESTRICTIONS with the class line.
+- **Player bar.** Level, car, class and credits as on the pause menu, with
+  the Rally wristband in the band slot.
+- **Buttons.** A ENTER EVENT, B BACK (the QUIT HORIZON RALLY popup, A OK,
+  B CANCEL), Y TRACK LAYOUT, and BACK EXTRAS: the engine's list of replay
+  heats, fit rally kit, free roam ColoradoDirt and return to Colorado.
+  With no ticket unlocked the extras stay open.
+- **First visit.** `first_time_hub_flow` hides the help bar and takes no
+  input while `ChampionshipStructure`, a 0.5 s pause and `CoDriverIntro`
+  play, each waited on; then `rally_flow` 4 is saved.
+
+`club_rally_corpus_tests` renders it (the captures folder's
+`rally_hub_*_offline_wp5.png`); the live captures are
+`rally_hub_*_live_wp5.png`. Interims and guesses are Q211.
+
+A championship's end (`rally_post_steps`) shows the Rally's own banner
+(`H_POST_RACE_RALLY_FINISHED`, drawn as the festival one; X shows the
+engine's standings page), points (`H_POST_RACE_RALLY_POINTS`, the Rally
+bands; the points-to-final line is set but hidden under the bar) and,
+once, `H_HORIZON_RALLY_CHAMPION`
+(`race_screens.cpp`; Q212).
+
 ## The hub's menus and car lists
 
 - **Option lists on `H_GENERIC`** (`hub_menus.h`). MY PROFILE, OPTIONS,
@@ -674,11 +713,22 @@ interims).
   and the info panel are guesses (Q130). The info panel is hidden because
   every `List_CarMake.Profile` is "N/A"; the engine's Hidden & Showcase tab
   is a text tile after the makes.
-- **Rooms.** Each room is the engine's studio stage, the Autoshow's dark
-  (Q129: the rooms' tracks cannot be drawn under the menu yet). The
-  workshop, the paint shop and the Autoshow's colour select aim with the
-  disc's camera presets (`UICarTargetCameraPresets.xml`); the Autoshow's
-  standard view and the garage keep the engine's turntable (Q129).
+- **Rooms.** The Autoshow, the workshop and the paint shop draw their own
+  tracks (`uiautoshow`, `uiworkshop`, `uipaintshop`; `hub_room.h`) in
+  Colorado's place while their screens are open, the car at the room's
+  origin on its floor; leaving restores Colorado (Q129). The garage and
+  Barn Finds keep the studio stage. The rooms' light is an interim (Q222):
+  their `H_INT_*` lightmaps scale the surface under a white hemisphere,
+  with no sun, fog or real-time sky (the room's own dome draws), and the
+  car keeps the engine's lighting. The Autoshow's crowd and DJ are not
+  drawn.
+- **Room cameras.** The room lists play `HomeSpaceCams.xml` (12 looping
+  shots); the workshop's body parts and wheels play `WorkshopCams.xml`'s
+  `Upgrade_Part_*` sequences and its engine and drivetrain parts the
+  `Upgrades_*` presets (which part uses which is Q221); the paint
+  editor's regions and the Autoshow's colour select use
+  `UICarTargetCameraPresets.xml`, with a 0.75 s smoothstep between
+  presets. The presets' angle limits and zoom are not applied (Q129).
 - **Rows.** The workshop's order (Q131); the paint booth's vinyl rows open
   the livery editor (Q132); TEAM CREDITS shows a notice (Q134). OPTIONS's
   VIDEO opens the engine's DISPLAY page (Q135).
