@@ -141,7 +141,7 @@ void EnginePlayer::trigger_shift_boost(bool upshift) {
 
 double EnginePlayer::dsp_scalar() const {
   const auto& d = sound_.dsp_scalar;
-  return d.present ? d.dsp_max_scalar * kDescriptorDspScalar : 0.0;
+  return d.present ? d.dsp_max_scalar * descriptor_scalar : 0.0;
 }
 
 void EnginePlayer::update_expander_state(size_t g, double dt_ms) {

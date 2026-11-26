@@ -69,6 +69,9 @@ class AudioHost {
   bool load_car(const std::filesystem::path& sound_dir, const std::filesystem::path& game_root,
                 const std::filesystem::path& state_root, const std::string& car, audio::UpgradeLevels levels,
                 double idle_rpm, double redline_rpm, std::string* note = nullptr);
+  // The focus car's descriptor scalar (EnginePlayer::descriptor_dsp_scalar of
+  // its fitted parts), applied by the next load_car; < 0 keeps the default.
+  void set_focus_descriptor_scalar(double s) { focus_descriptor_scalar_ = s; }
   void clear_car();
 
   // Other cars play their own engine sound (SPEC-ENGINE-SOUND; the focus
@@ -277,6 +280,7 @@ class AudioHost {
   bool sound_files_tried_ = false;
   std::shared_ptr<audio::BakedSound> baked_sound_;
   bool has_car_ = false;
+  double focus_descriptor_scalar_ = -1.0;
 
   audio::RadioData stock_radio_data_;  // immutable after init_radio (referenced by audio-thread Radio)
   audio::RadioData radio_data_;        // main-thread view: stock stations + enabled custom stations
