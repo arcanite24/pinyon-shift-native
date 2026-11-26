@@ -5799,20 +5799,19 @@ Needed: the code that writes `TEXT_TOTAL` (whether it interpolates, and at
 what rate) and the chain's bank timer, or a real-time capture of one skill
 banking.
 
-**Count-up settled (first30d).** `CHudDrivingFeatsControl` (vtable
-`82068074`) writes `TEXT_TOTAL` itself. Its set-total (`sub_827F08B8`)
+**Count-up settled (first30d).** `CHudDrivingFeatsControl` writes `TEXT_TOTAL` itself. Its set-total
 puts the control in its counting state with the new total as the target;
 on a chain's first total it starts the shown value from 0 (and plays
 `RESET` and `SHOW_SCORE`). The rate is `(target - shown) /
 Count_Up_Duration`, with `UI/RaceFeats/Animation/Count_Up_Duration` 1.6 s,
 so each new award re-aims the roll from where it stands. Its tick
-(`sub_827F1600`) adds `dt * rate`, stops at the target and shows the floor.
-A lost chain (`sub_827EE410`) snaps the shown value to the target and
+adds `dt * rate`, stops at the target and shows the floor.
+A lost chain snaps the shown value to the target and
 plays `FAIL`. The engine now does the same (`SkillTotalCountUp`,
-`ui_tests`). Banking (`SUCCEED`, `sub_827EE260`) is not the HUD's timer:
-it fires when the game-side chain object goes away (the HUD poll
-`sub_82655F08`), so the bank timeout lives in the feats logic
-(`CRaceFeatComponent`, `sub_82624CD8`, which loads its times from runtime
+`ui_tests`). Banking (`SUCCEED`) is not the HUD's timer:
+it fires when the game-side chain object goes away (the HUD's poll
+of it), so the bank timeout lives in the feats logic
+(`CRaceFeatComponent`, which loads its times from runtime
 tunables). `HorizonFeats.xml`'s `ComboWindowDuration` values (0.5 to 20 s)
 are per-feat combo windows, not the chain's. The bank timeout stays the
 engine's 3 s interim (Q302).
@@ -5964,7 +5963,7 @@ wristband reached, or the post-race flow state's exit condition.
 
 Moved from Q282, whose count-up is settled. The HUD banks (`SUCCEED`)
 when the feats logic drops the chain object, so the timeout is in
-`CRaceFeatComponent` (`sub_82624CD8`), which reads its times from runtime
+`CRaceFeatComponent`, which reads its times from runtime
 tunables, not `HorizonFeats.xml` (whose `ComboWindowDuration` is per feat).
 The engine keeps its 3 s (`bank_timeout`). The recomp banks some 4.3 to
 5.1 s of capture wall time after the last award it shows. Needed: the
