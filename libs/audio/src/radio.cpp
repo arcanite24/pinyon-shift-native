@@ -873,11 +873,18 @@ void RadioPlayer::render(float* out, int frames) {
   float* ident = mix_.data() + 4 * size_t(frames);
   const double fade_s = radio_.last_change_was_user() ? lv.change_fade : lv.change_fade_normal;
   const double fade_step = 1.0 / (std::max(0.01, fade_s) * rate_);
+  // A D-pad change fades the old station out, and the new one comes in only
+  // once it is silent, over 50 ms (Q335: the original dips to silence
+  // between stations; it does not crossfade). A change by the game (not
+  // measured) keeps the crossfade.
+  constexpr double kStationFadeInS = 0.05;
+  const bool user_change = radio_.last_change_was_user();
+  const double fade_in_step = user_change ? 1.0 / (kStationFadeInS * rate_) : fade_step;
   const double vol = std::clamp(volume, 0.0, 2.0);
   bool any_sel_dj = false;
   bool any_sel_festival = false;
   for (size_t s = 0; s < station_gain_.size(); ++s) {
-    const double target = int(s) == sel ? 1.0 : 0.0;
+    const double target = int(s) == sel && !(fading && user_change) ? 1.0 : 0.0;
     if (station_gain_[s] <= 0 && target <= 0) continue;
     StationSchedule* sched = radio_.schedule(int(s));
     if (!sched || t1 <= t0) {
@@ -992,7 +999,7 @@ void RadioPlayer::render(float* out, int frames) {
     const double st_vol = s < data.stations.size() ? std::clamp(data.stations[s].volume, 0.0, 2.0) : 1.0;
     double g = station_gain_[s];
     for (int i = 0; i < frames; ++i) {
-      g = target > g ? std::min(target, g + fade_step) : std::max(target, g - fade_step);
+      g = target > g ? std::min(target, g + fade_in_step) : std::max(target, g - fade_step);
       if (int(s) == sel) duck_ = duck_target < duck_ ? std::max(duck_target, duck_ - duck_step)
                                                      : std::min(duck_target, duck_ + duck_step);
       const double duck = int(s) == sel ? duck_ : 1.0;

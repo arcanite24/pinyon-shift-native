@@ -366,9 +366,10 @@ bool parse_fev(std::span<const uint8_t> bytes, FevProject& out, std::string* err
   for (uint32_t i = 0; i < tpl_count; ++i) {
     FevSoundDefTemplate& t = out.templates[i];
     if (!r.u32(t.play_mode) || !r.u32(t.spawn_min_ms) || !r.u32(t.spawn_max_ms) || !r.u32(t.max_spawned) ||
-        !r.f32(t.volume) || !r.skip(tpl_size - 20))
+        !r.f32(t.volume) || !r.skip(16) || !r.f32(t.pitch) || !r.skip(tpl_size - 40))
       return done_fail();
     if (!std::isfinite(t.volume) || t.volume < 0.0f) t.volume = 1.0f;
+    if (!std::isfinite(t.pitch) || out.version < 0x00400000u) t.pitch = 0.0f;  // v0x37 layout unchecked
   }
 
   // 7. Sound definitions

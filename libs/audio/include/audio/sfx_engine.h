@@ -48,8 +48,10 @@ struct WheelAudio {
   float load = 1.0f;
   float bottom_out_force = 0.0f;
   int16_t surface_index = -1;  // Tires.xml SurfaceIndex (>= 0 preserves distinct channels; -1 = derive from group)
-  float slip_ratio = 0.0f;     // longitudinal slip magnitude (burnouts / braking)
-  float slip_angle = 0.0f;     // lateral slip magnitude (cornering scrub)
+  // Normalised slips (1 = the tyre curve's peak), as Tires.fev takes them:
+  // slip_ratio signed (positive spinning, negative locking), slip_angle its magnitude.
+  float slip_ratio = 0.0f;
+  float slip_angle = 0.0f;
 };
 
 struct ShowcaseAudioState {
@@ -505,11 +507,13 @@ class SfxEngine {
     std::filesystem::path bank_path;
     uint32_t subsound = 0;
     int ui = -1;  // >= 0: the sample of UI catalog event `ui` instead of `id`
+    int ev = -1;  // >= 0: event sample slot `ev` (an event loop's sound definition)
   };
   struct LoadedSample {
     SfxSoundId id = SfxSoundId::kWind;
     PcmSample* pcm = nullptr;
     int ui = -1;
+    int ev = -1;
   };
   struct LoopVoice {
     double phase = 0.0;
@@ -517,10 +521,88 @@ class SfxEngine {
     float left = 1.0f, right = 1.0f;
     float pitch = 1.0f;
   };
+
+ public:
+  // The parameters the game sets on its tyre and wind events (its per-wheel
+  // tyre audio update; Wind.fev), by name; an event takes those it has.
+  enum class EvParam : uint8_t {
+    kSlipAngle = 0,
+    kSlipRatio,
+    kSurfaceIndex,
+    kTireRpm,
+    kLoad,
+    kCombinedSlip,
+    kSpeed,
+    kTopSpeedPercent,
+    kBoostCarWindAudio,
+    kMusicActive,
+    kCount
+  };
+  static constexpr int kMaxEventSamples = 1024;
+  static constexpr int kMaxEventVoices = 16;
+  // Tests: install the sample for an event sample slot.
+  void set_event_sample(int slot, PcmSample sample);
+  // Tyre event voices loaded from Tires.fev (LOD1: 5 groups x 4 wheels x Roll/Skid).
+  int tyre_event_count() const;
+  // Collisions.fev IMPACT_3D / IMPACT_LFE events bound for the impacts (Q334).
+  int impact_event_count() const { return int(impact_events_.size()); }
+  // Tests: the one-shots one impact event would start at RelativeVelocity `mph`
+  // and listener distance `dist_m` (instance gain x template volume, pitch).
+  struct ImpactShot {
+    int slot = -1;
+    float gain = 0.0f;
+    float pitch = 1.0f;
+  };
+  int impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap);
+
+ private:
+  // One Collisions.fev impact event, evaluated once when a hit starts it: every
+  // layer instance its RelativeVelocity position reaches plays one randomly
+  // picked wavetable entry of its sound definition as a one-shot (Q334).
+  struct ImpactEvent {
+    FevEvent ev{};
+    int8_t p_vel = -1, p_dist = -1, p_ai = -1;
+    struct Inst {
+      float tpl_gain = 1.0f, tpl_pitch = 1.0f;
+      std::array<int16_t, 8> slot{};
+      std::array<float, 8> weight{};
+      int count = 0;
+    };
+    std::array<Inst, kMaxEventVoices> inst{};
+    int count = 0;
+  };
+  const ImpactEvent* find_impact_event(std::string_view path) const;
+  int start_impact_event(const ImpactEvent& ie, float mph, float dist_m, float left, float right, SfxSoundId id,
+                         ImpactShot* out, int cap);
+  // One FEV event played as loops: each layer instance is a voice whose level is
+  // the event's own curves (evaluate_fev_event) and whose pitch is the event's
+  // pitch and its layer's pitch envelope (SPEC-AUDIO-EVENTS, Q331).
+  struct EventLoop {
+    bool ok = false;
+    FevEvent ev{};
+    std::array<int8_t, int(EvParam::kCount)> param{};  // ev.params index, -1 if the event lacks it
+    std::array<int16_t, kMaxEventVoices> slot{};       // event sample slot per flattened instance
+    std::array<float, kMaxEventVoices> tpl_gain{};     // its sound definition template's volume
+    std::array<float, kMaxEventVoices> tpl_pitch{};    // and pitch, as a rate factor
+    std::array<LoopVoice, kMaxEventVoices> voices{};
+    int count = 0;  // flattened instances
+    // An "FMOD Highpass" cutoff envelope on the first layer (Wind.fev's on
+    // TopSpeedPercent), -1 if none; its 2-pole filter's state (L, R).
+    int hp_env = -1;
+    std::array<float, 8> hp_z{};
+  };
+  std::vector<float> event_scratch_;  // stereo, sized at construction
+  // Evaluates `el` at `in` and mixes its voices (`gain` and `pitch` on top).
+  // Returns the summed target level.
+  float mix_event(EventLoop& el, const std::array<float, int(EvParam::kCount)>& in, float gain, float pitch,
+                  float left, float right, float* bus, int frames);
+  void mix_loop_pcm(LoopVoice& v, const PcmSample* pcm, float target_gain, float target_pitch, float target_l,
+                    float target_r, float* bus, int frames);
   struct OneShot {
     bool active = false;
     SfxSoundId id = SfxSoundId::kWind;
     int ui = -1;  // >= 0: plays ui_samples_[ui] (a UI catalog event)
+    int ev = -1;  // >= 0: plays event_samples_[ev] (an impact event's entry)
     Bus bus = Bus::kUi;
     double phase = 0.0;
     float gain = 1.0f;
@@ -534,6 +616,7 @@ class SfxEngine {
     int fade_total_frames = 0;
     SfxSoundId next_id = SfxSoundId::kWind;
     int next_ui = -1;
+    int next_ev = -1;
     Bus next_bus = Bus::kUi;
     float next_gain = 0.0f;
     float next_left = 0.707f, next_right = 0.707f;
@@ -579,7 +662,8 @@ class SfxEngine {
   void drain_queue(SpscQueue<LoadedSample>& q);
   void drain_loaded();
   void reclaim_retired();
-  void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f, int ui = -1);
+  void spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, float right, float pitch = 1.0f, int ui = -1,
+                      int ev = -1);
   void mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float target_l, float target_r,
                 float* bus, int frames);
   void mix_loop_mono(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float* mono_out, int frames);
@@ -641,6 +725,15 @@ class SfxEngine {
   int damage_param_damage_ = -1;
   int damage_param_rpm_ = -1;
   int damage_param_throttle_ = -1;
+  // Tires.fev LOD1 (by group OnRoad, OffRoad, Grass, Brick, Trackway; wheel LF,
+  // RF, LR, RR; Roll, Skid) and Wind.fev Wind: read-only events after load, voices
+  // on the audio thread. Each event's instances play samples from event_samples_.
+  static constexpr int kTyreGroups = 5;
+  std::array<std::array<std::array<EventLoop, 2>, 4>, kTyreGroups> tyre_events_{};
+  EventLoop wind_event_{};
+  std::array<PcmSample*, kMaxEventSamples> event_samples_{};
+  std::vector<ImpactEvent> impact_events_;
+  std::vector<std::string> impact_event_paths_;  // lower-case, parallel to impact_events_
   // Real-time synth stand-ins (damage knock, showcase aircraft) run only in the
   // explicit no-assets mode set by populate_procedural_fallbacks().
   bool procedural_mode_ = false;

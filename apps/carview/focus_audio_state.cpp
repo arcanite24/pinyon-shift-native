@@ -85,7 +85,11 @@ void fill_focus_audio_state(const drive::Vehicle& vehicle, const audio::EnginePl
   for (int wi = 0; wi < 4; ++wi) {
     auto& wa = vst.wheels[size_t(wi)];
     const auto& wstate = ws[size_t(wi)];
-    wa.slip_ratio = float(std::fabs(wstate.slip_ratio));
+    // Signed against the wheel's direction of roll, as the game feeds Tires.fev:
+    // a wheel spinning faster than the ground is positive whichever way it turns
+    // (the original plays PeelOut for a reverse burnout too), a locking one negative.
+    const double roll_dir = wstate.omega != 0.0 ? wstate.omega : vehicle.speed();
+    wa.slip_ratio = float(roll_dir < 0.0 ? -wstate.slip_ratio : wstate.slip_ratio);
     wa.slip_angle = float(std::fabs(wstate.slip_angle));
     wa.slip_combined = float(std::hypot(wstate.slip_ratio, wstate.slip_angle));
     wa.wheel_rpm = float(wstate.omega * 9.5492966);

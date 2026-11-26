@@ -642,6 +642,20 @@ void DriveSession::run_headless_drive() {
           vst.cockpit_view = view == audio::View::kCockpit;
           vst.in_race = app.race != nullptr;
           app.audio_host.update_vehicle(vst, app.race != nullptr, false, false, 0);
+          // Every 0.1 s, what the tyre events are fed (binning renders by tyre state).
+          if (std::floor(vehicle.time() * 10.0) > std::floor((vehicle.time() - drive::Vehicle::kStep) * 10.0)) {
+            std::printf("tyres t %.2f:", vehicle.time());
+            for (const auto& w : vst.wheels)
+              std::printf(" %+.2f/%.2f/%u/%d/%.0f/%.2f", w.slip_ratio, w.slip_angle, unsigned(w.surface_group),
+                          int(w.surface_index), w.wheel_rpm, w.load);
+            std::printf("\n");
+            if (std::floor(vehicle.time()) > std::floor(vehicle.time() - drive::Vehicle::kStep))
+              std::printf("snapshot gain t %.0f: engine %.3f music %.3f tyres %.3f wind %.3f\n", vehicle.time(),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kEngine),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kMusic),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kTyres),
+                          app.audio_host.snapshot_bus_gain(audio::Bus::kWind));
+          }
           const drive::Vec3 vpos = vehicle.position();
           const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
           app.audio_host.update_world_acoustics(float(vpos.x), float(vpos.y), float(vpos.z),
@@ -654,6 +668,8 @@ void DriveSession::run_headless_drive() {
             hit.rel_speed_mps = float(dv_world);
             hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
             hit.surface_hint = collision_surface_hint(host.collision, bc.surface);
+            std::printf("impact t %.2f: %.1f mph surface %d at %.1f km/h\n", vehicle.time(), dv_world * 2.2369,
+                        int(hit.surface_hint), vehicle.speed() * 3.6);
             app.audio_host.trigger_collision(hit);
           }
         };

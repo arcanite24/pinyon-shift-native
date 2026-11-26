@@ -6306,6 +6306,10 @@ Not settled:
 Needed: a music-only capture through a pull, a capture of the popup at
 finer spacing, and a DJ trigger, such as a wristband or event unlock.
 
+**Partly answered (first30g):** Q335 has the music-only pull (no ducking),
+a switch while moving and the popup at 10-frame spacing. DJ intros are
+still open.
+
 ## Q293 (first30c, audio, not blocking): the focus engine's balance by rpm
 
 The MX-5 (`MAZ_Miata_94`, intake and exhaust level 3) was driven through
@@ -6356,7 +6360,8 @@ ParamEQ's squared gain and no NegLoad at idle, the same route reads idle
 -41.6 dB against the original's -42.3 and the limiter -21.0 against -21.7
 (centroid 1,025 Hz against 934). Left: the top octaves (above 6 kHz) are
 4 to 10 dB hot in every state, and the lift at 3,500 to 4,500 rpm is about
-3 dB quiet.
+3 dB quiet. These levels are through carview's engine-only render; through
+the live mixer the player hears the engine about 7 dB lower (Q337).
 
 ## Q294 (first30c, audio, not blocking): the tyre and wind levels, and the engine's offline render
 
@@ -6384,6 +6389,32 @@ Needed:
 - that harness;
 - then the same states on both sides, and the impacts, which the route
   did not take.
+
+**Partly answered (first30g, 2026-11-26):** the harness exists (carview
+`--drive --headless --audio-mix` renders the live mixer, and the run logs a
+`tyres t` line per 0.1 s with each wheel's slips, surface group and rpm).
+The tyres and the wind now play their FEV events (Q331, Q332). Measured on
+the g1 and g2 routes against the recomp with its telemetry probe:
+
+| bus, state | original | engine before | engine after |
+|---|---|---|---|
+| tyres, wheelspin on tarmac | -29.0 dB, 889 Hz | -31.9 dB, 1,083 Hz | -30.5 dB, 816 Hz (g2: -28.4 against -28.6) |
+| tyres, wheelspin on dirt | -31.1 dB | -34.6 dB | -30.1 dB, bands within 4 % |
+| tyres, slide on dirt | -29.1 dB | -32.2 dB | -27.0 dB (2.1 dB loud) |
+| tyres, rolling on tarmac | -42.5 dB at 82 km/h | | -44.9 dB at 51 km/h, same bands |
+| wind, 100 km/h | -58.9 dB | | -58.8 dB |
+| wind, 110 to 113 km/h | -52.7 dB | | -51.8 dB |
+| wind, 118 km/h | -48.8 dB | | -49.6 dB |
+
+Runs: `.local/runs/first30g-g1-tyres`, `first30g-g2-tyres`,
+`first30c-c3-wind` (recomp); `out/first30g/runs/{before,after3}-g1-tyres`,
+`after3-g2-tyres`, `st1b-wind` (engine). Still open: the impacts, the
+rolling level at matched speed (the engine's car is slower on the same
+inputs), lock and slide on tarmac (no matching windows on both sides).
+The original's first g2 capture opens with a 0.5 s burst at -21 to -26 dB
+while the car is still at rest (the launch follows at 1.75 s, where the
+trace puts it), so that window is left out; the engine is digital silence
+at rest.
 
 ## Q301 (first30d, UI, not blocking): how long the points page waits with a wristband to collect
 
@@ -6563,6 +6594,7 @@ probe). Runs: `.local/runs/first30f-<variant>`.
   overrun tuning, not in the chain.
 
 Still open:
+- the live mixer puts these levels about 7 dB lower in play (Q337);
 - the descriptor float behind s (two engine tunings on one car measured);
 - the MX-5's closed-throttle level at mid rpm (3 dB quiet);
 - whether a split cascades more than one first-order section;
@@ -6674,3 +6706,228 @@ Still open:
 - What A on the showcase does on the original's map. r11 and r12 moved the cursor blind and never landed on the marker; r11 stopped on Discount Sign 73 next to it.
 - The showcase race, its rewards and everything after it in the original: no capture reaches them.
 - The engine's Skills_Unlock cutscene after the showcase draws a broken scene: the sky and black shapes (e16 `f_00388`-`f_00403`).
+
+## Q331 (first30g, audio, not blocking): the tyre events' feed, pitch units and level
+
+The engine plays `Tires/Tires/LOD1/<group>/<Roll|Skid>_<LF|RF|LR|RR>` for
+each wheel, in every group at once, with only the wheel's current group at
+full gain (the others fade out). Decoded:
+- **Feed** (the per-wheel tyre audio update and its level setup): `SlipAngle` takes the normalised
+  slip angle's magnitude, `SlipRatio` the normalised slip ratio, signed
+  against the direction of roll (positive spinning, negative locking: the
+  original plays PeelOut for a reverse burnout too), `SurfaceIndex` the
+  surface's index from `Tires.xml`, `TireRPM` the wheel's rpm, `Load` the
+  normalised load. `TireTemperature` is never set and sits at its minimum.
+- **Groups.** `Tires.xml` maps each physics surface to a LOD1 group
+  (OnRoad, OffRoad, Grass, Brick, Trackway) and a SurfaceIndex (OnRoad 0
+  to 10, OffRoad and Grass 11 to 16: Dirt 11, Gravel 12, Sand 13, Grass 15).
+- **Pitch units.** An event's and a sound-definition template's pitch are
+  in units of 4 octaves; a pitch envelope's y spans -4 to +4 octaves,
+  `(y - 0.5) x 8`. Evidence: PeelOut uses template 4 (pitch -0.05) and an
+  envelope at 0.4896, so 2^(-0.2 - 0.083) = 0.822, and the original's
+  spectrum matches the sample at k = 0.820; the envelopes' y values sit on
+  0.5 +- n/96 (a semitone grid); event and template pitches times 4 give
+  round octaves. The template's pitch is the float at byte 36 of the
+  70-byte v0x40 record.
+- **Level.** One constant, 0.83 (-1.6 dB), puts the events at the
+  original's level: wheelspin on tarmac -0.8 dB of it, on dirt -2.4 dB.
+  The g2 route (spin, coast, full lock, hard brake, handbrake) left it
+  where it was.
+
+Measured results are in Q294.
+
+Still open:
+- slides on dirt are 2.1 dB loud; the suspects are the Skid events'
+  `map 1` envelopes, curve shape 2 and the Load normalisation, not a second
+  constant;
+- the Stones one-shots (play mode 6, spawned) are skipped;
+- parameter smoothing (the events' `vel`/`seek`) and the hold while a
+  wheel is airborne are not modelled;
+- the rally mode and the unit tests still use the old invented path;
+- LOD2 (other cars' tyres) is not played;
+- the probe's surface byte (wheel + 337, values 0 to 2) is not confirmed
+  as the LOD1 group.
+
+## Q332 (first30g, audio, not blocking): the wind event's high-pass and top-speed scale
+
+`Wind/Wind/Wind` plays one loop whose volume is the product of a Speed
+curve (0 below 56.5 mph, 91 km/h, full at 175 mph), a TopSpeedPercent
+curve (0.71 to 1 by 75 %), BoostCarWindAudio (0.71 at 0) and MusicActive
+(Q333). An FMOD Highpass follows TopSpeedPercent (`map 1`: 0.51 at 0 to
+0.22 at 97 %). The engine assumes:
+- the Highpass's cutoff is `10 x 2,200^y` Hz (a log axis over FMOD's 10
+  to 22,000 Hz), through a two-pole high-pass with Q 1;
+- `TopSpeedPercent` is speed over the car's top speed in mph as the
+  dial-max reports it.
+
+With those, the engine is within 1 dB of the original at 100 to 118 km/h
+(Q294) and the third-octave difference is within about 4 dB down to 63 Hz.
+
+Still open:
+- the Highpass's real axis mapping and the top-speed denominator;
+- 150 km/h and above: the original's runs did not reach it;
+- the original's wind bus at 50 and 75 km/h is not clean (the launch, a
+  shift and 4.3 kHz bursts leak into it), so those levels are not measured.
+
+## Q333 (first30g, audio, not blocking): who sets the wind's MusicActive and BoostCarWindAudio
+
+`MusicActive`'s volume curve on the wind goes from 1 at 0 to 0 at 1 (shape
+2), so at 1 the wind is silent; `BoostCarWindAudio` lifts the wind from
+0.71 to 1 above 0.9. The recomp's spec (`AUDIO_EVENTS.md`) says MusicActive
+is 1 while radio music plays and BoostCarWindAudio is set in boost or
+airborne states, but no code that sets either was found. The engine leaves
+both at 0, which matches the original's wind levels on the c3 route; it is
+not known whether the radio was playing in those captures with its bus at
+0.
+
+Needed: the setter for each parameter (a by-name lookup or an index into
+the event's parameters), or a wind capture with the radio playing and its
+bus muted, compared with one with the radio off.
+
+## Q334 (first30g, audio, not blocking): what the game feeds an impact event's RelativeVelocity
+
+The 35 `Collisions/Collisions/<surface>/<surface>/IMPACT_3D` and
+`LFE/IMPACT_LFE` events are one-shot events driven by three parameters:
+- `RelativeVelocity` (0 to 200 mph; LFE 0 to 250) places the hit on the
+  layer's instances, which are sizes of hit with short crossfades (the
+  concrete barrier: VSM to 22 mph, SM to 53, MD to 100, LG above), and a
+  volume curve (0.32 at 20 mph, 0.50 at 40, 0.71 at 100, 1 at 200);
+- `(distance)` fades the hit out from 20 m to 40 m (the LFE from 4 to 5 m);
+- `AIOnlyCollision` takes 10 dB off a hit between AI cars (the LFE goes silent).
+A second layer adds debris by the same position. Each sound definition has 4
+or 5 recordings with equal weights. The LFE event is silent below 10 mph.
+
+The engine now evaluates the pair's events once when a hit starts: every
+instance the position reaches plays one randomly picked recording at its
+instance level times its template volume. Before, it played the first
+recording of one sound at `clamp(mph / 45, 0.15, 1) x 0.85`. On a glancing
+barrier hit at 165 km/h (`out/first30g/runs/imp0-amb` before,
+`imp1-amb` after, ambience bus only) the hit is 2 to 3 dB quieter.
+
+Unknown:
+- what the game feeds as `RelativeVelocity`: the closing speed, its normal
+  component, or a change in velocity. The engine feeds the change in
+  velocity over one physics step from the strongest body contact.
+- the event's `prand 0.05` pitch randomisation (its unit is not settled by
+  Q331's pitch decode), so the engine plays without one;
+- the smashables (`Collisions/Smashables/...`) and scrapes still use the old
+  path;
+- the listener distance: the engine feeds the distance from the listener to
+  the hit, so the LFE event (silent past 5 m) plays no LFE for the focus
+  car's own hits in the chase views. That follows FMOD's 3D distance if the
+  game's listener is at the camera; not checked against the original.
+
+Needed: head-on wall hits on the recomp at two or three speeds with only
+the collision sounds kept, and the engine's hits at the same speeds.
+
+## Q335 (first30g, radio, not blocking): the radio while driving: ducking, switching and the popup
+
+Measured with only the music bus kept, from the radio-off seed (recomp
+`.local/runs/first30g-g3-music` and `first30g-g3b-music`, route
+`orig-g3.fh1test`; engine `out/first30g/runs/g3-music` and `g3b-music`,
+`g3.script` with `--radio-press 10` from a radio-off save). Times are wall
+time from the trace (the recomp rendered about 34 frames a second).
+
+- **No ducking under the engine.** Bass Arena at rest read -23.0 to
+  -24.9 dB; through a full-throttle pull to 97 km/h on the same track,
+  -22.0 to -23.5 dB. The engine does not duck either. The music's level
+  depends on the track, so Q292's 2 dB difference at rest is not a gap on
+  this evidence (the engine's Bass Arena reads -21.3 to -23.5 dB).
+- **Switching while moving works** (Bass Arena to Pulse at 80 km/h), with
+  the same popup as at rest.
+- **The popup** is absent 0.57 to 0.68 s after the press, fading in at
+  0.85 s, full by 1.02 to 1.09 s, still up at 2.74 to 3.04 s and gone by
+  4.14 to 4.71 s of wall time. The engine shows it from 1.0 s to 5.0 s
+  after the press. That fits only if the popup's timer steps 1/30 s per
+  rendered frame (SPEC-RADIO's HUD section), so that at 30 frames a second
+  the recomp's times grow by about 34/30 (gone by 4.7 to 5.3 s); in wall
+  time as captured, the engine's popup stays up 0.3 to 0.9 s longer.
+- **The change itself is not a crossfade.** The old station fades out from
+  about 0.17 s after the press over about 0.45 s to silence, and the new
+  station comes in about 0.7 s after the press within 50 ms. Before, the
+  engine crossfaded both over `stationChangeFadeTimeUser` (0.25 s) with no
+  dip. It now fades the old station out over that time and brings the new
+  one in over 50 ms once the old is silent. Only D-pad changes were
+  measured, so a change made by the game keeps the crossfade over
+  `stationChangeFadeTimeNormal`.
+
+Unknown:
+- why the fade-out takes about 0.45 s against the file's 0.25 s (a fade
+  stepped per rendered frame would explain it, as SPEC-RADIO's popup timer
+  is);
+- how a change made by the game sounds;
+- the gap before the new station (about 0.25 s of silence on the recomp;
+  the engine has almost none);
+- DJ intros: none played in these runs, so their triggers are not measured.
+
+## Q336 (first30g, audio, not blocking): the camera's effect on the focus engine
+
+The MX-5 at idle (800 rpm), engine bus only, each view held for an 8 s
+capture (recomp `.local/runs/first30g-g4-views`, `orig-g4.fh1test`, RB
+cycling the views; control `first30g-g4b-views`, `orig-g4b.fh1test`).
+Steady windows only (each capture's first 1.5 s carries a transient):
+
+| view | original | engine, engine-only render | engine, live mixer |
+|---|---|---|---|
+| far chase | -42.3 dB, centroid 110 Hz | -41.6 dB, 123 Hz | -49.0 dB, 82 Hz |
+| near chase | -42.4 dB, 112 Hz | as far chase | as far chase |
+| cockpit | -50.9 dB, 287 Hz | -49.0 dB, 220 Hz | -51.4 dB, 62 Hz |
+| hood, bumper | -50.8 dB, 291 to 304 Hz | as cockpit | as cockpit |
+
+The far chase late in the control run reads -42.4 dB again, so the drop is
+the view and not the time since spawn. The engine's own render (the car's
+per-view group levels) is within about 1 dB of the original's 8.5 dB drop
+inside the car and brightens the same way. Through the live mixer the drop
+is only 2.4 dB and darker, because the EngineLFE layer that the mixer adds
+does not depend on the view (Q337). Engine runs:
+`out/first30g/runs/view{0..4}-engine`, `idle-nomix`, `idle-nomix-cam2`.
+
+Unknown:
+- look-back: -50.6 dB steady in one run, about -46 dB and unsteady in the
+  control, and the far chase after it read -38.7 dB;
+- the views under load (only idle was measured, which is mostly the
+  exhaust group);
+- what else leaks into the original's engine bus (bursts at -22 dB with a
+  1.2 kHz centroid in two captures at rest).
+
+## Q337 (first30g, audio, blocking for the engine's level in play): the live mixer puts the focus engine 7 dB under the original
+
+Q322 set the focus chain's levels (`kFocusPreScale`, `kFocusPostScale`)
+against the original using carview's engine-only render, which has no
+snapshot matrix. The game path (the live mixer, as carview plays it and as
+`--audio-mix` renders it) adds two things on the engine bus:
+- the snapshot matrix's gain, 0.35 (-9.1 dB) in free roam at rest; Q322's
+  pre-scale already stands for the snapshot and SFX volumes, so this counts
+  them twice;
+- the sfx engine's EngineLFE loop at an invented level
+  (`0.22 x view x throttle x rpm`), which goes to the LFE buffer and is
+  folded into L and R after the master compressor. In the original's
+  engine-only runs the LFE channel reads -54 to -78 dB during a pull and
+  the front fold has 1 % under 150 Hz, so the EngineLFE adds next to
+  nothing there. (fevdump reads the EngineLFE events' speaker levels as all
+  0; that field's meaning is my reading of the dump, not confirmed.)
+
+On the c3 route against `first30f-base` (`out/first30g/runs/c3-engine-mix`
+and `c3-engine-nomix`):
+
+| state | original | engine-only render | live mixer |
+|---|---|---|---|
+| rest | -42.3 dB (clean idle) | -41.6 dB, 124 Hz | -48.7 dB, 89 Hz |
+| load, 5,000 to 5,600 rpm | -22.4 dB, 727 Hz, 7 % under 150 Hz | -20.8 dB, 962 Hz | -28.2 dB, 621 Hz, 40 % under 150 Hz |
+| limiter | -21.8 dB, 934 Hz, 1 % | -21.0 dB, 1,025 Hz, 1 % | -27.8 dB, 596 Hz, 47 % |
+
+So what the player hears is about 7 dB under the original at every state,
+and boomy. carview's windowed loop plays this path (it loads the snapshot
+matrix in `init_sfx`, and the LFE buffer is folded into the stereo output).
+The tyre levels (Q331) were fitted through the live mixer, and the wind
+(Q332) matched the original through it with no fitted level under the same
+matrix (0.3 on the wind bus), so the matrix's values look right and the
+correction belongs in the focus chain's scales.
+
+Not changed here: removing the EngineLFE layer from the stereo bus and
+dropping the double-counted snapshot gain go together (either alone moves
+the level the wrong way or leaves the spectrum wrong), and the second
+changes what every focus-engine level in the corpus tests was measured
+with. Needed: a decision on where the snapshot gain belongs for the focus
+car (before the chain, as Q322 assumes, or after it, as the matrix applies
+it), then both changes and a c3 re-measure through the live mixer.
