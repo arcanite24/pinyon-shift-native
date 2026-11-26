@@ -143,29 +143,74 @@ else
   fi
 fi
 
-# When running a binary inside a macOS .app bundle directly, wire bundled MoltenVK
-# (mirrors tools/package.py's macos_launcher_wrapper).
-BIN_DIR="$(CDPATH='' cd -- "$(dirname -- "$RESOLVED_BIN")" && pwd)"
-if [ "$OS_NAME" = "Darwin" ] && [ "$(basename -- "$BIN_DIR")" = "MacOS" ]; then
-  CONTENTS_DIR="$(dirname -- "$BIN_DIR")"
-  if [ "$(basename -- "$CONTENTS_DIR")" = "Contents" ]; then
-    FW_DIR="$CONTENTS_DIR/Frameworks"
-    ICD_FW="$FW_DIR/MoltenVK_icd.json"
-    ICD_RES="$CONTENTS_DIR/Resources/vulkan/icd.d/MoltenVK_icd.json"
-    ICD_PATH=""
-    if [ -f "$ICD_FW" ]; then
-      ICD_PATH="$ICD_FW"
-    elif [ -f "$ICD_RES" ]; then
-      ICD_PATH="$ICD_RES"
-    fi
-    if [ -n "$ICD_PATH" ]; then
-      export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-$ICD_PATH}"
-      export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$ICD_PATH}"
-    fi
-    if [ -d "$FW_DIR" ]; then
-      export DYLD_FALLBACK_LIBRARY_PATH="$FW_DIR${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+# On macOS, ensure SDL3/volk can find libvulkan.1.dylib or libMoltenVK.dylib
+# both for packaged .app bundles (mirrors tools/package.py's macos_launcher_wrapper)
+# and for raw build/apps/carview/carview binaries.
+MVK_LIB_DIR=""
+if [ "$OS_NAME" = "Darwin" ]; then
+  BIN_DIR="$(CDPATH='' cd -- "$(dirname -- "$RESOLVED_BIN")" && pwd)"
+  MVK_CANDIDATES=()
+  ICD_CANDIDATES=()
+
+  if [ "$(basename -- "$BIN_DIR")" = "MacOS" ]; then
+    CONTENTS_DIR="$(dirname -- "$BIN_DIR")"
+    if [ "$(basename -- "$CONTENTS_DIR")" = "Contents" ]; then
+      MVK_CANDIDATES+=("$CONTENTS_DIR/Frameworks")
+      ICD_CANDIDATES+=(
+        "$CONTENTS_DIR/Frameworks/MoltenVK_icd.json"
+        "$CONTENTS_DIR/Resources/vulkan/icd.d/MoltenVK_icd.json"
+      )
     fi
   fi
+
+  MVK_CANDIDATES+=(
+    "$BIN_DIR/../Frameworks"
+    "$BIN_DIR"
+    "$ROOT_DIR/out/release/Shift Engine.app/Contents/Frameworks"
+  )
+  # Check any staged macOS release bundle under out/release/shift-engine-macos-*
+  if [ -d "$ROOT_DIR/out/release" ]; then
+    while IFS= read -r stage_fw; do
+      [ -n "$stage_fw" ] && MVK_CANDIDATES+=("$stage_fw")
+    done < <(find "$ROOT_DIR/out/release" -maxdepth 4 -path '*/Shift Engine.app/Contents/Frameworks' -type d 2>/dev/null | sort -r)
+  fi
+  MVK_CANDIDATES+=(
+    "/Applications/Shift Engine.app/Contents/Frameworks"
+    "$HOME/Applications/Shift Engine.app/Contents/Frameworks"
+    "$HOME/Applications/Shift Engine Integration.app/Contents/Frameworks"
+    "/opt/homebrew/opt/vulkan-loader/lib"
+    "/opt/homebrew/opt/molten-vk/lib"
+    "/opt/homebrew/lib"
+    "/usr/local/lib"
+  )
+
+  for d in "${MVK_CANDIDATES[@]}"; do
+    if [ -f "$d/libvulkan.1.dylib" ] || [ -f "$d/libMoltenVK.dylib" ]; then
+      MVK_LIB_DIR="$(CDPATH='' cd -- "$d" && pwd)"
+      export DYLD_FALLBACK_LIBRARY_PATH="$MVK_LIB_DIR${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+      if [ -f "$MVK_LIB_DIR/MoltenVK_icd.json" ]; then
+        if [ ${#ICD_CANDIDATES[@]} -gt 0 ]; then
+          ICD_CANDIDATES=("$MVK_LIB_DIR/MoltenVK_icd.json" "${ICD_CANDIDATES[@]}")
+        else
+          ICD_CANDIDATES=("$MVK_LIB_DIR/MoltenVK_icd.json")
+        fi
+      fi
+      break
+    fi
+  done
+
+  ICD_CANDIDATES+=(
+    "/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json"
+    "/opt/homebrew/opt/molten-vk/etc/vulkan/icd.d/MoltenVK_icd.json"
+    "/usr/local/share/vulkan/icd.d/MoltenVK_icd.json"
+  )
+  for icd in "${ICD_CANDIDATES[@]}"; do
+    if [ -f "$icd" ]; then
+      export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-$icd}"
+      export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$icd}"
+      break
+    fi
+  done
 fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -190,6 +235,9 @@ fi
 echo "============================================================"
 echo "Shift Engine Playtest Recorder"
 echo "  Executable : $RESOLVED_BIN"
+if [ -n "$MVK_LIB_DIR" ]; then
+  echo "  Vulkan lib : $MVK_LIB_DIR"
+fi
 if [ "$USE_LAUNCHER" -eq 0 ]; then
   echo "  Play dir   : $PLAY_DIR"
 else
