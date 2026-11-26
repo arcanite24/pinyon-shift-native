@@ -2096,7 +2096,7 @@ Still ours (interim):
   are on.~~ Superseded by Q231: it is the held-stick lock extension's rate.
 - ~~**SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).~~
   Settled (FEEL-17, 53e1f996): they are mph. The steering model's setup
-  multiplies both by 0.44704 (0x820055FC), so the shipped 1 and 120 are
+  multiplies both by 0.44704 (the constant at 820055FC), so the shipped 1 and 120 are
   0.447 and 53.6 m/s. The rest of this item is kept for the record.
   Every car ships SlowSpeed 1.0, FastSpeed 120.0 and FastRateScale 1.0.
   In the engine the two speeds only blend the rate toward FastRateScale,
@@ -5061,7 +5061,7 @@ centring), or the writer of the overrides for the player's car.
 
 Decoded from 82B84808, the AI driver's per-frame reset check. It copies
 MetaAIDriver/ResetParameters (60 bytes at MetaAIDriver+152) to a global
-(0x83338980) and keeps a tracker per car. The engine runs the rules
+(83338980) and keeps a tracker per car. The engine runs the rules
 below (`Session::step_ai_rules`).
 
 - **The cancel.** When the car is more than CancelResetIfMovedThisFar_m
@@ -5098,7 +5098,7 @@ Open:
   AI line's points. The wheels-down condition and the horizontal speed
   are not modelled (the engine uses the forward speed).
 - **WORLD-16.** HandOfGodReset is bound by 82521200 into the tunables
-  singleton (0x832E5130, built by 82520970): PostResetNonCollideTime at
+  singleton (832E5130, built by 82520970): PostResetNonCollideTime at
   +0x45C, OptimalSpeedScale +0x460, FadeOutTime +0x464, FadeInTime
   +0x468, CollisionsOffTime +0x46C, FallYSpeed +0x474, the suction rows
   from +0x478. No direct float load of +0x45C or +0x46C from that

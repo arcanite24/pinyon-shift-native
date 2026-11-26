@@ -711,7 +711,7 @@ class Vehicle {
   };
   void set_damage_mods(const DamageMods& d) { damage_ = d; }
   const DamageMods& damage_mods() const { return damage_; }
-  // The engine sputter (82D2CD20, SPEC_QUESTIONS Q72): a 0.08 s throttle cut
+  // The engine sputter (SPEC_QUESTIONS Q72): a 0.08 s throttle cut
   // started at random. sputter_count() counts the starts (for the rumble).
   bool sputtering() const { return sputter_active_; }
   uint32_t sputter_count() const { return sputter_count_; }

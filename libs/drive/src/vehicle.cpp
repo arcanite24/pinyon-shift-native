@@ -829,7 +829,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     // The scale: 1 below 2 m/s forward, and while the wheel is turned back
     // through centre; CounterSteerScale while countersteering; otherwise
     // SteerScale0 to SteerScale1 over |velocity| from SteerSpeed0 to 1.
-    // The countersteer state (82D2FD30, the same test as the pad's, Q231):
+    // The countersteer state (the same test as the pad's, Q231):
     // a front wheel's normalised slip against the road wheels' angle, wheel
     // 0 when the angle is positive and wheel 1 otherwise. The engine's
     // slip_angle has the other sign from the original's.
@@ -913,7 +913,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     kb_steer_filtered_ = shaped_.steer;
   }
 
-  // The decoded pad filter (82D37598, SPEC_QUESTIONS Q69 and Q231). The
+  // The decoded pad filter (SPEC_QUESTIONS Q69 and Q231). The
   // tyre slips are the load-weighted means of each axle's normalised slip
   // angle, in the original's sign: positive with the steer angle in an
   // ordinary turn (the engine's slip_angle has the other sign).
@@ -1059,7 +1059,7 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     // The countersteer rate: straight to the target, no acceleration ramp.
     steer_ang_vel_ = rate_use * dt < std::fabs(err) ? (err >= 0 ? rate_use : -rate_use) : err / dt;
   } else {
-    // The move (82D22A30): the angular velocity restarts from zero when the
+    // The move: the angular velocity restarts from zero when the
     // error changes side, gains rate / SteerAccelTimeToMaxRate per second up
     // to the rate, and lands on the target rather than overshoot.
     const double accel = p_.steer_accel_time > 1e-6 ? rate_use / p_.steer_accel_time : 1e12;
@@ -1518,7 +1518,7 @@ void Vehicle::update_gearbox(double dt) {
 }
 
 void Vehicle::update_sputter(double dt) {
-  // 82D2CD20, each step. The rate is EngineDamageMaxSputtersPerSec (halved
+  // The damage update, each step. The rate is EngineDamageMaxSputtersPerSec (halved
   // outside Simulation damage) x (damage - start) / (1 - start), with the
   // damage clamped to 0..1; none at or below the start level. A draw from
   // the car's generator below rate x dt starts (or restarts) a sputter,

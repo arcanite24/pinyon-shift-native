@@ -173,7 +173,7 @@ void apply_hand_of_god(const HandOfGodReset& h, Session::Options& o) {
 }
 
 // AIRacing.xml MetaAIDriver/ResetParameters (SPEC-RACE-AI; decoded from
-// 82B84808, the AI driver's per-frame check, SPEC_QUESTIONS Q232):
+// the AI driver's per-frame check, SPEC_QUESTIONS Q232):
 // - the cancel: a car more than CancelResetIfMovedThisFar_m (horizontally)
 //   from the stuck-distance anchor restarts every timer and anchor. The
 //   anchor moves whenever the car leaves its stuck distance, so only a
