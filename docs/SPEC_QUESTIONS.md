@@ -660,12 +660,13 @@ question Q38)" and "Colour byte order"). Built:
   brake unit is 1,200 N m (4,390 / 1,790 N m full press on the R34), the
   up-shift is at 0.945 x the redline, the braking down-shift at 0.8 x, and
   the part-throttle up-shift is the pad's only.
-- **Placeholder: the pad's lock and rate at speed.** The lock is
+- ~~**Placeholder: the pad's lock and rate at speed.** The lock is
   atan(1.61 x SteerSpeedSensitiveMaxGees x g x wheelbase / v^2), the
   measured 2,410 / v^2 degrees per unit on the R34; the turning rate
   scales with the lock's share of the full lock, down to a quarter (20 to
   38 deg/s measured at speed); centring keeps its rate. Open: the rule
-  behind both.
+  behind both.~~ Superseded by Q69 (the decoded curve) and Q231 (the rate
+  law): the measurements here are kept as the check.
 - **The lap: DNF** (595 of 1,199 m in 77.6 s; 0-100 km/h 6.09 s against
   5.76). Split: +0.26 s at 100 m, +0.28 at 200, +0.27 at 300, +2.04 at
   400, +2.44 at 500. The first braking zone pulls -14.6 m/s^2 at brake
@@ -2085,14 +2086,18 @@ per-mode lock factors (Simulation 1.25, Assisted 0.90) are gone.
 
 Still ours (interim):
 
-- **The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
-  between MinMaxAngle and the mode's cap. The 1.61 is a fit.
-- **The countersteer trigger.** It fires at a mean normalised rear slip
+- ~~**The lock law.** It is atan(1.61 * MaxGees * g * wheelbase / v^2)
+  between MinMaxAngle and the mode's cap. The 1.61 is a fit.~~ Done
+  (c3bdd78b): the decoded per-car curve below.
+- ~~**The countersteer trigger.** It fires at a mean normalised rear slip
   above 0.5. Settings carry NormRearSlipAngleToCountersteer 50; its unit
-  is not read.
-- **SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
-  are on.
-- **SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).
+  is not read.~~ Superseded by Q231: the decoded states replace it.
+- ~~**SteerAngVelDynFindPeak (10 deg/s).** It is unused unless the helpers
+  are on.~~ Superseded by Q231: it is the held-stick lock extension's rate.
+- ~~**SlowSpeed and FastSpeed units.** They are read as m/s (FEEL-17).~~
+  Settled (FEEL-17, 53e1f996): they are mph. The steering model's setup
+  multiplies both by 0.44704 (0x820055FC), so the shipped 1 and 120 are
+  0.447 and 53.6 m/s. The rest of this item is kept for the record.
   Every car ships SlowSpeed 1.0, FastSpeed 120.0 and FastRateScale 1.0.
   In the engine the two speeds only blend the rate toward FastRateScale,
   so with the shipped rows the unit changes nothing today. It matters
@@ -2132,16 +2137,25 @@ MinMaxAngle, SlowSpeed, FastSpeed, FastRateScale.
     third steering factor.
   - The result is clamped between min(MinMaxAngle, lock) and the lock.
     The target is the stick times it.
-- **The rate.** MaxAngVelTurning is scaled from 1 toward FastRateScale
+- ~~**The rate.** MaxAngVelTurning is scaled from 1 toward FastRateScale
   as |velocity| goes from SlowSpeed to FastSpeed. The speed is the same
   m/s field the curve reads, so SlowSpeed and FastSpeed are m/s unless
   the row loader converts them (FEEL-17, probable). The rate is also
   scaled by the surfaces' mean rate factor. A test of |stick| against
-  0.976 is on this path; its use is not decoded.
+  0.976 is on this path; its use is not decoded.~~ Superseded by Q231
+  (the full rate law, the branches and the 0.976 hold).
 
-The engine keeps its interim lock law. Its 1.61 x g stands in for a(v),
+~~The engine keeps its interim lock law. Its 1.61 x g stands in for a(v),
 and the engine has no per-speed table. Porting a(v) needs the steering
-model's load-transfer iteration, which is decoded only in outline.
+model's load-transfer iteration, which is decoded only in outline.~~
+Done (c3bdd78b): the engine builds the 32-sample curve per car. a(v) is
+the six-pass lateral load transfer over each wheel's peak lateral
+friction (`Vehicle::steer_grip_accel`), L is the wheelbase, and the
+moment arm is the centre of mass height (interim: its writer is not
+found). On the R34 the curve gives 6.40, 5.77 and 4.94 deg at 19, 20 and
+22 m/s, against the measured 2,410 / v^2 (6.68, 6.03, 4.98); a(v) is
+1.53 g at 5 m/s, 1.55 g at 20 m/s and 1.71 g at 60 m/s. The 1.61 fit is
+kept only for the AI's pure-pursuit turn-in cap.
 Supersedes, in Q69's Still ours, "The 1.61 is a fit": it is a fit to
 a(v) / g.
 
@@ -2208,7 +2222,7 @@ carview wheel path does not yet pass its 900-degree setting). Interim:
   steering-lock caps (degrees, converted) of the surfaces under the
   wheels in contact, 9999 when none is. The wheel path takes it without
   speed narrowing. The engine now does the same.
-- **The countersteer state.** It is off, so CounterSteerScale never
+- ~~**The countersteer state.** It is off, so CounterSteerScale never
   applies. A guess would switch on the 900-degree table's 1.5 scale,
   which is the only table carview's wheels reach. The original tests
   the sign of the road wheels' angle against the same field of the two
@@ -2217,9 +2231,12 @@ carview wheel path does not yet pass its 900-degree setting). Interim:
   is not positive and the second front wheel's field is positive. The
   field is set at car setup from a car vector. No per-frame writer turns
   up in a search of plain stores, so it may be written by a vector
-  store.
+  store.~~ Decoded (Q231, 129bf3f9): the field is the wheel's normalised
+  lateral slip (wheel block +520), which the pad filter's countersteer
+  test reads too. The engine now runs the test on its own slip_angle,
+  whose sign is the other way round.
 
-Needed: what that front-wheel field is.
+~~Needed: what that front-wheel field is.~~
 
 ## Q71 (FEEL-12, not blocking): new-profile assists and the presets
 
@@ -4935,3 +4952,84 @@ is in the engine, and the consumers are not decoded.
 
 Needed: the consumers of the bump-stop damage keys and
 BumpstopFrictionScale.
+
+## Q231 (FEEL-15/16, not blocking): the pad filter's branches and rate
+
+Decoded from 82D37598 (each frame), 82D22A30 and 82D22AE8 (the move),
+82D25C38 (the row setup) and 82D347F0 (the tuning overrides). The
+engine runs all of this (8187a655, 129bf3f9).
+
+- **The setup.** The four rates (MaxAngVelTurning, Straighten,
+  Countersteer, DynFindPeak) are multiplied by pow(2, 2 x SteerSpeed -
+  1) and MaxGees by pow(2, 2 x SteerAmount - 1). SteerSpeed and
+  SteerAmount are two of 47 tuning overrides at data+11272 ("Tune
+  default out of range" is the range check's message). The overrides
+  are reset to -1 (unset). Unset normalises the built-in default into
+  [0, 1]: SteerSpeed's 1.0 gives 1, so the rates double; SteerAmount's
+  0.5 gives 0.5, so MaxGees stays. The engine carries the factor as
+  `steer_speed_scale` = 2.
+- **The slips.** Each axle's slip is the load-weighted mean of the
+  wheels' normalised slip angle (block +520; the load is +676 plus +700,
+  floored at 0; the sum floored at 1e-7).
+- **The countersteer states.** One is a front wheel slipping against the
+  steer angle: wheel 0's slip below 0 when the angle is positive,
+  otherwise wheel 1's above 0. The wheel path (82D2FD30) tests the same.
+  The other is |rear slip| above NormRearSlipAngleToCountersteer,
+  compared raw.
+- **The narrowed branch.** It needs 2 m/s forward (velocity along the
+  body's forward axis), neither countersteer state, and the stick on the
+  side the road wheels already point (not stick <= 0 at a positive
+  angle, stick >= 0 at a negative one, or both at 0). Then:
+  - the target is stick x the narrowed lock;
+  - the rate is MaxAngVelTurning x the surfaces' mean rate factor
+    (car+5904) x min(lock, curve(v')) / min(lock, curve(SlowSpeed)),
+    with v' the speed clamped to [SlowSpeed, FastSpeed], x a blend from
+    1 at SlowSpeed to FastRateScale at FastSpeed;
+  - with |stick| >= 0.976, the road wheels within one step of the
+    narrowed lock and the front slip under 1.05, the rate drops to
+    min(rate, DynFindPeak) and an extension grows by it, signed with the
+    target. The extension clears when the stick drops below 0.976 and
+    is kept otherwise;
+  - the target is extension + stick x lock, clamped to the full lock.
+    While held, it never backs off the current angle;
+  - when |front slip| >= SteerFrictionClamp (1.2 built in) on the
+    angle's side, the target is clamped to max(|angle|, MinMaxAngle).
+- **Otherwise.** The target is stick x the full lock and the extension
+  clears. In the rear countersteer state the rate is SteerAngVelCounter-
+  steer x the surface factor and it sets the angular velocity directly.
+  Otherwise the rate is MaxAngVelTurning moving outward (angle >= 0 and
+  target above it, or angle <= 0 and target below it) or Straighten
+  moving in, x the surface factor.
+- **The move.** The angular velocity restarts from 0 when the error
+  changes side, gains rate / SteerAccelTimeToMaxRate per second up to
+  the rate, and is set to error / dt when one more step would pass the
+  target.
+
+On the R34 (MaxAngle 42, 105 deg/s rows) the turning rate at 19 to 22
+m/s comes to 32 to 25 deg/s, inside the measured 20 to 38. Centring is
+210 deg/s; 140 to 190 was measured. Supersedes, in Q40, "the turning
+rate scales with the lock's share of the full lock, down to a quarter":
+there is no floor beyond MinMaxAngle / lock.
+
+Still open:
+
+- **Who sets the overrides.** The 105 deg/s measured at walking pace
+  fits a factor of 1, not 2. The overrides are copied through 82D34AD0,
+  82D38018, 82D38170 and 825CA318. If the MetaDifficulty presets or a
+  profile setting write SteerSpeed (FEEL-12, Q71), the factor differs
+  per mode.
+- **The rear trigger.** It assumes block +520 is normalised, which the
+  1.05 and 1.2 front tests suggest. Then the shipped 50 never fires, and
+  neither does the engine's old 0.5 trigger, which is gone.
+- **The blend at car+20508 / +20512.** Both branches blend the target
+  toward lock x car+20508 by car+20512. The engine assumes a weight of
+  0 for the player; the writer is not traced.
+- **The surfaces' third factor** (car+5908) multiplies the curve. The
+  engine has no such factor.
+- **Dropped engine rules.** The Simulation rate floor
+  (max(rate, MaxAngVelTurning x max(0.5, share))) and the 0.25 share
+  floor are gone. The keyboard filter and the opt-in helpers are kept
+  on top.
+
+Needed: a retail pad trace at walking pace and at speed (rate and
+centring), or the writer of the overrides for the player's car.
