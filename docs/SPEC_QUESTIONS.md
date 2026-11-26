@@ -6179,6 +6179,19 @@ Update (first30e): the primes now log their wall time (`f6c8e836`). First30e `e8
 
 e3 (20.8 / 62.5 / 5.3 s) and e5 (12.9 / 60.2 / 5.7 s) ran with other captures on the machine. Not fixed: priming those places before the cut (asynchronously, as the diner's own `preload_cutscene` does for its first place) is the remedy.
 
+Update (first30i): `d6`–`d8` confirmed three synchronous stalls on the diner
+path: priming `(1843, -1657)` at `NEW_Diner_Cutscene_1` (2.3 s), priming
+`(1547, -1957)` at `New_Diner_Cutscene_2` (1.4 s), and hot-swapping to the
+Corrado at the end of `New_Diner_Cutscene_3` (1.5 s), which had blindly set
+`app.fast_travel = true` and forced a full world regather 23 m from the
+already-loaded diner origin. `prime_world_at` also lacked the 100 m centre
+guard that `prime_world_and_snap_impl` uses, causing the workshop's
+duplicate 3.85 s preload. Both redundant gathers are now skipped: the
+campaign swap only sets `fast_travel` beyond 120 m from the resident world
+origin, and `prime_world_at` skips gathering within 100 m of the streamer
+centre. Priming `New_Diner_Cutscene_2`'s placement asynchronously during
+`NEW_Diner_Cutscene_1` remains open.
+
 ## Q280 (M6/INTRO, not blocking): the first-time career past the workshop map, not captured
 
 Every scripted original run stops at the locked map (Q275), so this pass has no original capture of these beats:
@@ -6190,6 +6203,9 @@ Every scripted original run stops at the locked map (Q275), so this pass has no 
 - the rewards;
 - the first Autoshow;
 - the sat-nav hand-over.
+
+Update (first30i i3): the heats' finish, rewards, load and the showcase's
+locked map are now captured (Q352).
 
 The engine's order for them is the flow XML's (Q66). Its only capture is `eng5`, resumed from `eng4`'s heats save. It reached the heats final (FESTIVAL_SECOND, route 16, 8 cars) twice and finished 5th both times under `--race-auto`, so the career stayed at the heats. The showcase and the beats after it are not exercised end to end in this pass.
 
@@ -6431,16 +6447,30 @@ without a wristband to collect takes A (the engine keeps A CONTINUE
 there). Needed: a 60 fps capture of the points page with and without a
 wristband reached, or the post-race flow state's exit condition.
 
+Update (first30i i3): after the first-time career's heats the original
+shows no points page at all, from the cash page straight to the black and
+the load (Q352). The engine leaves it out while the career is active
+(`PostFacts::first_time_career`); the career's only other race then is
+the showcase, which shows none anyway.
+
 ## Q302 (first30d, HUD, not blocking): the skill chain's bank timeout
 
 Moved from Q282, whose count-up is settled. The HUD banks (`SUCCEED`)
 when the feats logic drops the chain object, so the timeout is in
 `CRaceFeatComponent`, which reads its times from runtime
 tunables, not `HorizonFeats.xml` (whose `ComboWindowDuration` is per feat).
-The engine keeps its 3 s (`bank_timeout`). The recomp banks some 4.3 to
-5.1 s of capture wall time after the last award it shows. Needed: the
-tunable's name and default (its registration, as the `UI/RaceFeats`
-blocks are registered), or a 60 fps capture of one chain banking.
+The recomp banks some 4.3 to 5.1 s of capture wall time after the last
+award it shows.
+
+Settled (first30i): the timer restarts on each award and runs the HUD's
+show, hold and fade: 947_HUD's Skill1 `SHOWCOMBO` slide (0 to 1000 ms,
+`carview --ui-scene <gameroot> 947_HUD bgf`), then
+`UI/RaceFeats/Animation/Shown_Duration` 0.5 s, then `FadeOut_Duration`
+3.0 s while chaining (`FadeOut_Duration_No_Chaining` 0.5 s otherwise).
+GlobalRegistry.xml carries the registered defaults unchanged. So 4.5 s,
+inside the measured 4.3 to 5.1 s. The engine banks 4.5 s after the last
+award (`freeroam::SkillsData::bank_timeout`, `kShowComboSeconds + kShownSeconds +
+kFadeOutChainingSeconds`).
 
 ## Q303 (first30d, campaign, not blocking): Alice's call-in after the first race
 
@@ -6931,3 +6961,116 @@ changes what every focus-engine level in the corpus tests was measured
 with. Needed: a decision on where the snapshot gain belongs for the focus
 car (before the chain, as Q322 assumes, or after it, as the matrix applies
 it), then both changes and a c3 re-measure through the live mixer.
+
+## Q351 (first30i, HUD, not blocking): how long each notification stays up, and their queue
+
+The notification's look is the scene's: 947_HUD's CombinedNotification
+SHOW slide fades its State in over 0.166 s while it grows from 0.9 past
+1.03 to 1 at 0.218 s, and HIDE fades it out and shrinks it to 0.8 over
+0.002 to 0.137 s; PopularityUnlock's SHOW brings MainMessage in over
+0.2 s (scale 1.3, 0.95, 1 at 0.3 s) and ShowMe at 0.6 to 0.8 s, and its
+HIDE takes 0.2 s. The engine plays those slides (`notify_state_anim`).
+
+How long one stays up is the game's code, not the scene. GlobalRegistry.xml
+has `Notifications/DurationsInSeconds/BarnFindDiscovered`,
+`BarnFindBeingRestored` and `BarnFindReady` (10 s each),
+`PlayerJoinsOrLeaves` (3 s), `Achievements/AchievementDisplayTime` (7 s)
+and `UI/Notifications/TimeRemainingWhenAchievementCanHide` (2 s). The
+engine now keeps the barn find being restored and ready notifications up
+10 s (`notify_seconds`); every other kind keeps the engine's 4.5 s
+(`kPopupSeconds`), and the sponsor rank its 5.5 s. Which engine kind
+`BarnFindDiscovered` is (the rumour, or the barn found) is not known, so
+the rumour keeps 4.5 s.
+
+Open:
+- The other kinds' durations (outposts, stunts, showcase unlock, rank,
+  wristband available): they have no tunable, so they are compiled in.
+- The queue. The engine holds one notification and a new one replaces it;
+  whether the original queues them, in what order and with what gap, is
+  unknown.
+- The engine's achievement toast (FIRST! 20G) draws over the heats' cash
+  page and the black-out (first30i e4 grabs); the original shows nothing
+  there (i3 `h00273`, `h00276`), and `first_time_career.xml` gives its
+  achievement after Wristband_Intro. The toast stands in for the console's
+  own; not changed.
+- The credit, XP and skill popups in the post-race and free roam: the
+  rewards screens are probably paced by `UI/RaceRewards/*` (EarningsWaitTime 1, PositionWaitTime 1,
+  CareerPointsWaitTime 1, XPWaitTime 2, XP_BarAnimationTime 3,
+  EarningsDuration_LevelUp 3 and _NoLevelUp 5 s), which the engine does not
+  read; its post-race pages run on the measured `race_flow::timing` values.
+
+Needed: a 60 fps capture of two notifications arriving together (a barn
+find rumour on the radio while a discount sign breaks), and of a
+showcase unlock.
+
+## Q352 (first30i, LOAD, not blocking): from the heats' finish to the locked map
+
+The original (first30i i3, the recomp hidden, a capture every 3 s and then
+every 0.4 s; wall times from the log's `trigger_elapsed_us`):
+- FINISHED 1ST PLACE with CONTINUE, RESTART, RACE RESULTS and VIEW REPLAY
+  (`h00270`, 653.98 s);
+- CASH REWARD, total 4,250 Cr (`h00273`, `h00276`, 656.98 to 659.97 s);
+- no points page, no HUD instruction and no achievement over them;
+- black, the tip card fading in (`h00279`, 662.98 s);
+- the freeroam tip card (DIFFICULTY, PLEASE WAIT, no event title) until
+  at least `q028400` (667.98 s);
+- the locked map at full brightness, PLEASE WAIT bottom left
+  (`q028440`, 668.37 s).
+
+So the card shows for about 5 s, and the map follows it within 0.4 s.
+first30e r10 shows the same order (`h00303`-`h00318`), with the Corrado
+under the FINISH gantry and no UI at `h00309`. Hidden captures are not
+paced in game time, so the durations are wall time of the recomp under
+capture.
+
+The engine before (first30i e1, its own captures every 0.25 s):
+- the banner, the cash page, then POINTS EARNED with PLEASE WAIT
+  (435.4 s) for 2.8 s;
+- the black-out at 438.2 s, then black to 444.9 s (6.4 s: the black-out,
+  the hot load's card, which the engine's captures miss, and a 1.8 s hang
+  on the session's first placing);
+- the map fading up from black until 452.5 s (the hand-off fade, stepped
+  on the HUD clock at most 0.05 s a frame);
+- the career's "Head to the Horizon Heats" over the banner and the
+  rewards.
+
+The engine after (e6, window grabs of carview every 0.1 s,
+`E:\first30i\e6_sc`; a different ruler from e1's own captures):
+- the banner, the cash page (auto-advance 4.4 s), black (0.9 s), the tip
+  card fading in;
+- the card about 5.6 s (it carries on from the hot load until free roam's
+  world is in, through the placing's 1.3 s hang);
+- the map at full brightness the next grab (0.1 s), with no veil;
+- the map has no PLEASE WAIT bottom left (the original's has);
+- no instruction over the race and its screens.
+
+Open:
+- The cash page's length: the engine's 4.5 s (`kBannerOut` + `kCashAuto`)
+  against the original's at least 3 s (two captures 3 s apart).
+- The achievement toast over the cash page (Q351).
+- The card's length is the engine's load time plus `kEventMinSeconds`; the
+  original's is not known to be a minimum.
+- Why the session's first placing after the load still takes about 1.8 s
+  (`campaign teleport: primed world at (-3196.80, 3.89, -1465.50)`); the
+  card now covers it.
+
+## Q354 (first30i, cutscene, not blocking): Skills_Unlock's camera nodes sit on the placed car
+
+`Skills_Unlock` (`Colorado/Cutscenes/cutscenes_default_freeroam.xml`,
+15.5 s) aims its five CarSpace cameras at `CameraTargetNode_0`. That node's
+trigger fires at 0.5 s with x 0.0039, y -0.373, z -0.534 and rotation
+1.003, and names `parent="PlacePlayerCar_0"`; `PlacePlayerCar_0` places the
+car at (-5431.5, 73.7, -3188.7), rotation 27.57. Read as world coordinates,
+the node put every camera near the world's origin, so the scene drew
+broken. The engine now resolves a placing trigger with a parent (a camera
+node or a PlacePlayerCar) in that parent's frame: the offset turned by the
+parent's heading, the headings added (`cutscene::Player::event_frame`,
+`cutscene_tests` "parented node"). Frames at the cameras' middles
+(1.5, 4.3, 7.1, 10 and 13.5 s, first30i `cut_*`, `carview --cutscene
+Skills_Unlock --cutscene-time <t>`) now frame the car and the crowd at the
+RACE SIGN UP stage.
+
+Open: no capture of the original's Skills_Unlock (the showcase-seed probe
+s0 failed on a blank frame), so the framing is checked against the XML,
+not frames; the y axis of a parent's frame is taken as the world's (the
+parent's pitch and roll are not applied).
