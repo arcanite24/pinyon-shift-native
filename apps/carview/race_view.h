@@ -81,6 +81,9 @@ class RaceView {
     // harness's (--race-auto-skill): the opponents are not changed.
     int autopilot_skill = 0;
     int opponent_skill = 0;  // > 0: every opponent drives at this AISkills row (a capture harness)
+    // > 0: every opponent stays braked on the grid this many seconds after GO
+    // (a capture harness, --race-ai-hold, for a run that needs a podium).
+    double opponent_hold_s = 0.0;
     bool rubberband = true;   // false: the "no rubber-banding" option
     uint64_t seed = 1;
     // The M5 gate's replay (SPEC-RACE-AI Tests): the player's car follows an

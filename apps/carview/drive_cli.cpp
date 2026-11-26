@@ -42,7 +42,8 @@ void drive_usage() {
                "           --difficulty easy|med|hard|pro --no-rubberband --race-auto (the AI drives the\n"
                "           player's car; the default headless) --race-auto-skill N (the autopilot drives\n"
                "           at AI skill row N, 1-80, not the event's; a capture harness) --race-ai-skill N (the\n"
-               "           opponents too) --race-seed N\n"
+               "           opponents too) --race-ai-hold s (the opponents braked on the grid s seconds\n"
+               "           after GO; a capture harness) --race-seed N\n"
                "           --race-replay <csv> (the player on an oracle path by race time; the M5 gate)\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad;\n"
@@ -141,6 +142,10 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       continue;
     }
     if (a == "--save-settings") { save_settings = true; continue; }
+    if (a == "--race-ai-hold") {
+      race_options.opponent_hold_s = std::clamp(std::atof(next()), 0.0, 600.0);
+      continue;
+    }
     if (a == "--no-title") { no_title = true; continue; }
     if (a == "--hub-studio") { cli_hub_studio = true; continue; }
     if (a == "--hub-shot") { cli_hub_shot_room = next(); cli_hub_shot_png = next(); continue; }

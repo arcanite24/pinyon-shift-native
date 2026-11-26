@@ -1182,6 +1182,8 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
   race::dls_update(line_.line, dls_cars_, n, lane_params_, dls_settings_, drive::Vehicle::kStep, dls_state_, lanes_, caps_);
   for (size_t k = 0; k < n; ++k) field_->set_lane(k, lanes_[k]), field_->set_speed_cap(k, caps_[k]);
   field_->drive(states_, inputs_);
+  if (o_.opponent_hold_s > 0.0 && session_->started() && session_->clock() < o_.opponent_hold_s)
+    for (size_t k = 0; k < n; ++k) inputs_[k] = countdown_grid_input({}, false, session_->clock());
   // Held on the grid in first until GO while passing player throttle through for launch revving.
   if (!session_->started()) return countdown_grid_input(user, o_.autopilot, session_->clock());
   if (o_.autopilot || session_->finished(n)) return inputs_[n];
