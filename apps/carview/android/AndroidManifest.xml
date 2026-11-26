@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The standalone Android app: Shift Drive under SDL's activity plus native
-     on-device SetupActivity (ISO/STFS extractor, mod manager, Turnip driver
-     importer, and in-process baker) with zero PC required. -->
+<!-- The standalone Android app: launcher-first Shift Engine Android Launcher
+     (SetupActivity: Play, Setup, Content/Mods, Saves, Wi-Fi Sync, Settings)
+     transitioning seamlessly into Shift Drive (DriveActivity / SDL3 Vulkan). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="net.shiftengine.drive"
     android:versionCode="3"
@@ -22,25 +22,27 @@
         android:extractNativeLibs="false"
         android:hardwareAccelerated="true"
         android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-        <activity android:name="net.shiftengine.drive.DriveActivity"
+        android:theme="@style/ShiftLauncherTheme">
+        <activity android:name="net.shiftengine.drive.SetupActivity"
             android:label="Shift Drive"
-            android:screenOrientation="sensorLandscape"
-            android:alwaysRetainTaskState="true"
-            android:launchMode="singleInstance"
+            android:screenOrientation="unspecified"
+            android:launchMode="singleTop"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:preferMinimalPostProcessing="true"
+            android:theme="@style/ShiftLauncherTheme"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name="net.shiftengine.drive.SetupActivity"
-            android:label="Shift Drive Setup"
+        <activity android:name="net.shiftengine.drive.DriveActivity"
+            android:label="Shift Drive"
             android:screenOrientation="sensorLandscape"
-            android:configChanges="layoutDirection|locale|fontScale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"
+            android:alwaysRetainTaskState="true"
+            android:launchMode="singleTask"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:theme="@style/ShiftDriveTheme"
+            android:preferMinimalPostProcessing="true"
             android:exported="false" />
     </application>
 </manifest>

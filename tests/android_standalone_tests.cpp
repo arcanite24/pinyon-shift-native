@@ -792,6 +792,43 @@ void test_android_setup_pill_layout_contract() {
       const std::string src = read_text(cand);
       CHECK(src.find("Gravity.TOP | Gravity.CENTER_HORIZONTAL") != std::string::npos);
       CHECK(src.find("Gravity.TOP | Gravity.END") == std::string::npos);
+      CHECK(src.find("SHIFT_SETTINGS") != std::string::npos);
+      CHECK(src.find("applyCrossFadeTransition") != std::string::npos);
+
+      // Verify launcher-first manifest, dark obsidian theme, and SetupBridge <-> JNI sync.
+      const fs::path android_root = probe / "apps" / "carview" / "android";
+      const std::string manifest = read_text(android_root / "AndroidManifest.xml");
+      const size_t setup_pos = manifest.find("net.shiftengine.drive.SetupActivity");
+      const size_t drive_pos = manifest.find("net.shiftengine.drive.DriveActivity");
+      const size_t launcher_cat_pos = manifest.find("android.intent.category.LAUNCHER");
+      CHECK(setup_pos != std::string::npos && drive_pos != std::string::npos);
+      CHECK(launcher_cat_pos != std::string::npos && setup_pos < launcher_cat_pos && launcher_cat_pos < drive_pos);
+      CHECK(manifest.find("@style/ShiftLauncherTheme") != std::string::npos);
+      CHECK(manifest.find("@style/ShiftDriveTheme") != std::string::npos);
+
+      const std::string styles = read_text(android_root / "res" / "values" / "styles.xml");
+      CHECK(styles.find("#0E1015") != std::string::npos);
+      CHECK(styles.find("ShiftLauncherTheme") != std::string::npos);
+      CHECK(styles.find("ShiftDriveTheme") != std::string::npos);
+
+      const std::string bridge = read_text(android_root / "java" / "net" / "shiftengine" / "drive" / "SetupBridge.java");
+      const std::string jni = read_text(android_root / "jni" / "android_setup_jni.cpp");
+      size_t pos = 0;
+      int native_count = 0;
+      while ((pos = bridge.find("public static native ", pos)) != std::string::npos) {
+        const size_t paren = bridge.find('(', pos);
+        CHECK(paren != std::string::npos);
+        if (paren == std::string::npos) break;
+        size_t name_end = paren;
+        while (name_end > pos && (bridge[name_end - 1] == ' ' || bridge[name_end - 1] == '\t')) --name_end;
+        size_t name_start = name_end;
+        while (name_start > pos && bridge[name_start - 1] != ' ' && bridge[name_start - 1] != '\t') --name_start;
+        const std::string method = bridge.substr(name_start, name_end - name_start);
+        CHECK(jni.find("Java_net_shiftengine_drive_SetupBridge_" + method) != std::string::npos);
+        ++native_count;
+        pos = paren + 1;
+      }
+      CHECK(native_count >= 13);
       break;
     }
     if (!probe.has_parent_path() || probe.parent_path() == probe) break;

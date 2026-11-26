@@ -1,12 +1,20 @@
 // JNI bridge connecting SetupBridge.java to libs/setup (XISO extractor, STFS
-// installer, Mod & Turnip installer, and in-process on-device baker).
+// installer, Mod & Turnip installer, and in-process on-device baker) and
+// libs/profile (save profiles, rolling backups, and save export ZIP import).
 #include <jni.h>
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <string>
+#include <unistd.h>
+#include <vector>
 
+#include "drive/save.h"
+#include "profile/backup.h"
+#include "profile/profiles.h"
+#include "profile/xenia_import.h"
 #include "setup/mod_installer.h"
 #include "setup/on_device_baker.h"
 #include "setup/stfs.h"
@@ -117,6 +125,16 @@ class JniProgressDispatcher {
   jobject listener_ = nullptr;
   jmethodID on_progress_ = nullptr;
   jmethodID on_log_ = nullptr;
+};
+
+struct TempDirGuard {
+  std::filesystem::path dir;
+  ~TempDirGuard() {
+    if (!dir.empty()) {
+      std::error_code ec;
+      std::filesystem::remove_all(dir, ec);
+    }
+  }
 };
 
 }  // namespace
@@ -340,6 +358,161 @@ JNIEXPORT jstring JNICALL Java_net_shiftengine_drive_SetupBridge_nativeRunOnDevi
      << "\"play_txt_written\":" << (rep.play_txt_written ? "true" : "false") << ","
      << "\"elapsed_seconds\":" << rep.elapsed_seconds << ","
      << "\"error\":\"" << json_escape(rep.error) << "\""
+     << "}";
+  return env->NewStringUTF(ss.str().c_str());
+}
+
+JNIEXPORT jstring JNICALL Java_net_shiftengine_drive_SetupBridge_nativeInspectSaves(JNIEnv* env, jclass,
+                                                                                    jstring user_dir_j) {
+  const std::filesystem::path user_dir(from_jstring(env, user_dir_j));
+  const std::filesystem::path default_save_dir = user_dir / "drive";
+
+  profile::profiles::Manager pm(user_dir, default_save_dir);
+  pm.load(nullptr);
+  const auto& active = pm.active();
+
+  drive::DriveSave save;
+  std::string save_err;
+  const bool has_save = drive::read_save(active.save_dir / "save.txt", save, &save_err);
+
+  profile::backup::Config bcfg;
+  bcfg.save_dir = active.save_dir;
+  bcfg.backups_dir = user_dir / "backups" / "saves";
+  const auto backups = profile::backup::list(bcfg);
+
+  std::ostringstream ss;
+  ss << "{"
+     << "\"active_profile\":\"" << json_escape(active.name) << "\","
+     << "\"gamertag\":\"" << json_escape(active.gamertag) << "\","
+     << "\"save_dir\":\"" << json_escape(active.save_dir.generic_string()) << "\","
+     << "\"has_save\":" << (has_save ? "true" : "false") << ","
+     << "\"car\":\"" << json_escape(has_save ? save.car : "") << "\","
+     << "\"credits\":" << (has_save ? save.credits : 0) << ","
+     << "\"total_winnings\":" << (has_save ? save.total_winnings : 0) << ","
+     << "\"wristband_points\":" << (has_save ? save.wristband_points : 0) << ","
+     << "\"level\":" << (has_save ? save.level : 0) << ","
+     << "\"garage_cars\":" << (has_save ? save.garage.size() : 0) << ","
+     << "\"signs_found\":" << (has_save ? save.signs_found.size() : 0) << ","
+     << "\"owned_garage\":" << ((has_save && save.owned_garage) ? "true" : "false") << ","
+     << "\"num_races\":" << (has_save ? save.num_races : 0) << ","
+     << "\"num_victories\":" << (has_save ? save.num_victories : 0) << ","
+     << "\"profiles\":[";
+  const auto& profs = pm.profiles();
+  for (size_t i = 0; i < profs.size(); ++i) {
+    if (i > 0) ss << ",";
+    drive::DriveSave ps;
+    const bool p_has = drive::read_save(profs[i].save_dir / "save.txt", ps, nullptr);
+    ss << "{\"name\":\"" << json_escape(profs[i].name) << "\","
+       << "\"gamertag\":\"" << json_escape(profs[i].gamertag) << "\","
+       << "\"active\":" << (profs[i].name == active.name ? "true" : "false") << ","
+       << "\"has_save\":" << (p_has ? "true" : "false") << ","
+       << "\"credits\":" << (p_has ? ps.credits : 0) << "}";
+  }
+  ss << "],\"backups\":[";
+  const size_t max_backups = backups.size() < 8 ? backups.size() : 8;
+  for (size_t i = 0; i < max_backups; ++i) {
+    if (i > 0) ss << ",";
+    const auto& b = backups[i];
+    ss << "{\"id\":\"" << json_escape(b.id) << "\","
+       << "\"reason\":\"" << json_escape(b.reason) << "\","
+       << "\"label\":\"" << json_escape(profile::backup::reason_label(b.reason)) << "\","
+       << "\"time_str\":\"" << json_escape(profile::backup::format_time(b.time)) << "\","
+       << "\"car\":\"" << json_escape(b.car) << "\","
+       << "\"credits\":" << b.credits << "}";
+  }
+  ss << "]}";
+  return env->NewStringUTF(ss.str().c_str());
+}
+
+JNIEXPORT jstring JNICALL Java_net_shiftengine_drive_SetupBridge_nativeBackupSave(JNIEnv* env, jclass,
+                                                                                  jstring user_dir_j) {
+  const std::filesystem::path user_dir(from_jstring(env, user_dir_j));
+  profile::profiles::Manager pm(user_dir, user_dir / "drive");
+  pm.load(nullptr);
+  const auto& active = pm.active();
+
+  profile::backup::Config bcfg;
+  bcfg.save_dir = active.save_dir;
+  bcfg.backups_dir = user_dir / "backups" / "saves";
+  bcfg.achievements = user_dir / "achievements.txt";
+  bcfg.replays_dir = user_dir / "replays";
+
+  profile::backup::Entry entry;
+  std::string err;
+  bool skipped = false;
+  const bool ok = profile::backup::snapshot(bcfg, "manual", &entry, &err, -1, &skipped);
+
+  std::ostringstream ss;
+  ss << "{"
+     << "\"ok\":" << (ok ? "true" : "false") << ","
+     << "\"skipped\":" << (skipped ? "true" : "false") << ","
+     << "\"id\":\"" << json_escape(entry.id) << "\","
+     << "\"error\":\"" << json_escape(err) << "\""
+     << "}";
+  return env->NewStringUTF(ss.str().c_str());
+}
+
+JNIEXPORT jstring JNICALL Java_net_shiftengine_drive_SetupBridge_nativeImportSaveZipFd(JNIEnv* env, jclass, jint fd,
+                                                                                       jstring display_name_j,
+                                                                                       jstring user_dir_j,
+                                                                                       jstring state_dir_j) {
+  const std::string display_name = from_jstring(env, display_name_j);
+  const std::filesystem::path user_dir(from_jstring(env, user_dir_j));
+  const std::filesystem::path state_dir(from_jstring(env, state_dir_j));
+
+  std::error_code ec;
+  TempDirGuard tmp_guard{user_dir / ".tmp_save_import"};
+  std::filesystem::remove_all(tmp_guard.dir, ec);
+  std::filesystem::create_directories(tmp_guard.dir, ec);
+
+  const std::filesystem::path tmp_zip = tmp_guard.dir / "import_save.zip";
+  {
+    std::ofstream out(tmp_zip, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      ::close(static_cast<int>(fd));
+      const std::string err = "cannot create temporary file for " + display_name;
+      const std::string json = "{\"ok\":false,\"error\":\"" + json_escape(err) + "\"}";
+      return env->NewStringUTF(json.c_str());
+    }
+    std::vector<char> buf(65536);
+    ssize_t n = 0;
+    bool write_ok = true;
+    while ((n = ::read(static_cast<int>(fd), buf.data(), buf.size())) > 0) {
+      if (!out.write(buf.data(), static_cast<std::streamsize>(n))) {
+        write_ok = false;
+        break;
+      }
+    }
+    ::close(static_cast<int>(fd));
+    if (!write_ok || n < 0) {
+      const std::string json = "{\"ok\":false,\"error\":\"failed reading selected save archive\"}";
+      return env->NewStringUTF(json.c_str());
+    }
+  }
+
+  profile::profiles::Manager pm(user_dir, user_dir / "drive");
+  pm.load(nullptr);
+  const auto& active = pm.active();
+
+  profile::import::Options opts;
+  opts.save_dir = active.save_dir;
+  opts.replace_existing = true;
+  opts.v4_available = !state_dir.empty() &&
+                      std::filesystem::is_regular_file(state_dir / "title-update-v4" / "media.zip", ec);
+  opts.backups.save_dir = active.save_dir;
+  opts.backups.backups_dir = user_dir / "backups" / "saves";
+
+  const profile::import::Result res = profile::import::run(tmp_zip, opts);
+
+  std::ostringstream ss;
+  ss << "{"
+     << "\"ok\":" << (res.ok ? "true" : "false") << ","
+     << "\"v4_save\":" << (res.v4_save ? "true" : "false") << ","
+     << "\"credits\":" << res.credits << ","
+     << "\"garage_cars\":" << res.garage_cars << ","
+     << "\"signs\":" << res.signs << ","
+     << "\"car\":\"" << json_escape(res.car) << "\","
+     << "\"error\":\"" << json_escape(res.error) << "\""
      << "}";
   return env->NewStringUTF(ss.str().c_str());
 }

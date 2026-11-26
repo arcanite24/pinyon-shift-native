@@ -89,7 +89,14 @@ def validate_android_sources() -> int:
         if req not in names:
             print(f"android-apk: missing required Java source {req}")
             return 1
-    print(f"android-apk: manifest ok ({pkg}, {len(activities)} activities), {len(java_files)} Java source(s) verified")
+    res_dir = ANDROID_DIR / "res"
+    res_xml_count = 0
+    if res_dir.is_dir():
+        for xml_file in sorted(res_dir.rglob("*.xml")):
+            ET.parse(xml_file)
+            res_xml_count += 1
+    res_note = f", {res_xml_count} resource XML(s)" if res_xml_count else ""
+    print(f"android-apk: manifest ok ({pkg}, {len(activities)} activities), {len(java_files)} Java source(s){res_note} verified")
     return 0
 
 
@@ -160,8 +167,20 @@ def main() -> int:
         run([tools / ("d8" + BAT), "--release", "--min-api", str(MIN_API), "--lib", android_jar, "--output", dex]
             + sorted(classes.rglob("*.class")))
         base = t / "base.apk"
-        run([tools / ("aapt2" + EXE), "link", "-o", base, "--manifest", ANDROID_DIR / "AndroidManifest.xml", "-I",
-             android_jar, "--min-sdk-version", str(MIN_API), "--target-sdk-version", str(TARGET_API)])
+        res_dir = ANDROID_DIR / "res"
+        link_cmd = [
+            tools / ("aapt2" + EXE), "link", "-o", base,
+            "--manifest", ANDROID_DIR / "AndroidManifest.xml",
+            "-I", android_jar,
+            "--min-sdk-version", str(MIN_API),
+            "--target-sdk-version", str(TARGET_API),
+            "--auto-add-overlay",
+        ]
+        if res_dir.is_dir() and any(res_dir.rglob("*")):
+            compiled_res = t / "res.zip"
+            run([tools / ("aapt2" + EXE), "compile", "--dir", res_dir, "-o", compiled_res])
+            link_cmd.append(compiled_res)
+        run(link_cmd)
         lib = t / "libmain.so"
         if strip:
             run([strip, "--strip-unneeded", "-o", lib, so])

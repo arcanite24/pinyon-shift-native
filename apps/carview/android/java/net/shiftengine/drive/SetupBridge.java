@@ -1,6 +1,7 @@
-// JNI bridge wrapper exposing libmain.so's libs/setup C++ routines to
-// SetupActivity for 100% on-device ISO/STFS extraction, mod management,
-// Turnip driver installation, and in-process baking.
+// JNI bridge wrapper exposing libmain.so's libs/setup & libs/profile C++
+// routines to SetupActivity for 100% on-device ISO/STFS extraction, mod
+// management, Turnip driver installation, save inspection/backup/import, and
+// in-process world indexing.
 package net.shiftengine.drive;
 
 public final class SetupBridge {
@@ -37,6 +38,13 @@ public final class SetupBridge {
     public static native String nativeRunOnDeviceBake(
             String gameDir, String stateDir, String playDir, boolean fullRoster, boolean resume,
             ProgressListener listener);
+
+    public static native String nativeInspectSaves(String userDir);
+
+    public static native String nativeBackupSave(String userDir);
+
+    public static native String nativeImportSaveZipFd(
+            int fd, String displayName, String userDir, String stateDir);
 
     public static native void nativeCancelSetup();
 }
