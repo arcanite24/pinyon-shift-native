@@ -73,7 +73,10 @@ std::vector<Screen> post_steps(const PostFacts& f) {
   if (f.crossed_line && f.kind != Kind::kRivals) {
     // CareerRewardsFlow.
     if (f.credits > 0) s.push_back(Screen::kCashReward);
-    const bool points = f.career_xp_event && f.kind != Kind::kShowcase && f.kind != Kind::kHeadline;
+    // The first-time career's heats: the cash, then the black and the load
+    // (first30i i3 h00273-h00279); its wristband comes with Wristband_Intro.
+    const bool points = f.career_xp_event && !f.first_time_career && f.kind != Kind::kShowcase &&
+                        f.kind != Kind::kHeadline;
     if (points) s.push_back(Screen::kPoints);
     if (f.reward_car)
       s.push_back(Screen::kRewardCar);
