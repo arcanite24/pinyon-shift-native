@@ -45,6 +45,40 @@ std::string achievement_name(std::string_view id) {
   return n;
 }
 
+bool query_cutscene_ground_snap(const drive::Ground* g, double x, double y_hint, double z, double& out_y) {
+  if (!g) return false;
+  double best_y = y_hint;
+  double best_d = 1e30;
+  bool best_flat = false;
+  for (const double from : {y_hint + 35.0, y_hint + 1000.0}) {
+    drive::Hit h{};
+    if (!g->raycast({x, from, z}, {0, -1, 0}, 2000.0, h) || h.normal.y < 0.2) continue;
+    const double y = from - h.distance;
+    const bool flat = h.normal.y >= 0.5;
+    const double d = std::abs(y - y_hint);
+    if ((flat && !best_flat) || (flat == best_flat && d < best_d)) {
+      best_flat = flat;
+      best_d = d;
+      best_y = y;
+    }
+  }
+  if (best_d >= 1e29) return false;
+  out_y = best_y;
+  return true;
+}
+
+bool query_cutscene_eye_ground(const drive::Ground* g, double x, double eye_y, double z, double& out_y) {
+  if (!g) return false;
+  // Probe from 2.5 m above the eye so low cameras dipping beneath a road crown
+  // or kerb are caught without hitting overhead bridges/arches (> 4.5 m up).
+  constexpr double kProbeAbove = 2.5;
+  constexpr double kProbeDepth = 5.5;
+  drive::Hit h{};
+  if (!g->raycast({x, eye_y + kProbeAbove, z}, {0, -1, 0}, kProbeDepth, h) || h.normal.y < 0.5) return false;
+  out_y = (eye_y + kProbeAbove) - h.distance;
+  return true;
+}
+
 }  // namespace
 
 // The player car's parts a PartSpace cutscene cam can follow, in body axes
@@ -84,6 +118,16 @@ struct DriveSession::FtcAutopilot {
 };
 
 drive::Input DriveSession::ftc_autopilot_input() {
+  // In the original flow (first_time_career.xml SetupFestivalDrive), AI player
+  // control is disabled before New_Diner_Cutscene_2 and New_Diner_Cutscene_3 so
+  // the Viper does not keep driving into the Diner lot while the camera pans.
+  if (const auto* cs = app.campaign.cutscenes().current()) {
+    if (iequal(cs->name, "New_Diner_Cutscene_2") || iequal(cs->name, "New_Diner_Cutscene_3")) {
+      drive::Input stop{};
+      stop.brake = 1.0;
+      return stop;
+    }
+  }
   // The original gives the car a race behaviour on route 170, whose
   // waypoints start at the diner and end in the festival; the engine drives
   // the sat-nav route the career set (to the diner under the opening, to
@@ -186,8 +230,35 @@ void DriveSession::apply_first_time_career() {
     if (c.ftc_active() && c.ftc().controls_enabled()) continue;
     prime_world_at(*this, at[0], at[2]);
   }
-  if (c.cutscenes().active())
+  if (c.cutscenes().active()) {
+    DriveWorldHost* h = &host;
+    c.cutscenes().set_ground_query([h](double x, double y_hint, double z, double& out_y) {
+      return query_cutscene_ground_snap(h->ground, x, y_hint, z, out_y);
+    });
+    c.cutscenes().set_eye_clearance_query([h](double x, double eye_y, double z, double& out_y) {
+      return query_cutscene_eye_ground(h->ground, x, eye_y, z, out_y);
+    });
+    c.cutscenes().set_car_body_offset_y(double(info.lift));
     c.cutscenes().set_car_parts(car_parts(vehicle, host.showroom.bounds_min(), host.showroom.bounds_max()));
+    // New_Diner_Cutscene_2 has TargetName="" cams (Cam[2], Cam[3]) intended to
+    // frame the parked Corrado (FestivalCar_4) at the Diner before the player's
+    // Viper is swapped to the Corrado. Anchor those cuts to FestivalCar_4.
+    if (const auto* cs = c.cutscenes().current(); cs && iequal(cs->name, "New_Diner_Cutscene_2")) {
+      std::optional<cutscene::Frame> hero_frame;
+      for (const auto& ev : cs->events) {
+        if (ev.type == cutscene::EventType::kCar && iequal(ev.name, "FestivalCar_4")) {
+          cutscene::Frame f{ev.position(), ev.rotation_deg()};
+          double gy = f.origin[1];
+          if (query_cutscene_ground_snap(host.ground, f.origin[0], f.origin[1], f.origin[2], gy)) f.origin[1] = gy;
+          hero_frame = f;
+          break;
+        }
+      }
+      c.cutscenes().set_car_frame_override(hero_frame);
+    } else {
+      c.cutscenes().set_car_frame_override(std::nullopt);
+    }
+  }
   std::array<double, 3> pos{};
   double heading = 0.0, speed = 0.0;
   if (c.take_place_car(pos, heading, speed)) {

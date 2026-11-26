@@ -8,6 +8,7 @@
 
 #include <array>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -74,6 +75,16 @@ class CutsceneRuntime {
   // The player car's parts the PartSpace cams follow (body axes, from the
   // car shown); empty = the car's origin.
   void set_car_parts(cutscene::CarParts parts) { parts_ = std::move(parts); }
+  // Vertical offset from the player car's ground-contact point to its CarSpace
+  // model origin (`car.lift`).
+  void set_car_body_offset_y(double lift_y) { player_.set_car_body_offset_y(lift_y); }
+  // Optional override for the car frame used by `TargetName == ""` cams.
+  void set_car_frame_override(std::optional<cutscene::Frame> frame) { player_.set_car_frame_override(frame); }
+  // Ground queries for `snapToGround="1"` target nodes and exterior eye clearance.
+  void set_ground_query(cutscene::Player::GroundQuery query) { player_.set_ground_query(std::move(query)); }
+  void set_eye_clearance_query(cutscene::Player::GroundQuery query) {
+    player_.set_eye_clearance_query(std::move(query));
+  }
   // The eye the world should stream around (the camera's, else nothing).
   bool streaming_focus(const std::array<double, 3>& car_pos, double car_heading_rad, std::array<double, 3>& out) const;
 

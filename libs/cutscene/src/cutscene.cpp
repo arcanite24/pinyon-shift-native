@@ -353,11 +353,27 @@ Pose pose_at_parameter(const std::vector<CamKey>& keys, double u) {
   size_t i = size_t(std::floor(u));
   if (i > n - 2) i = n - 2;
   const double f = u - double(i);
-  const auto c0 = channels(keys[i]), c1 = channels(keys[i + 1]);
+  auto unwrap_near = [](double val, double ref) {
+    while (val - ref > 180.0) val -= 360.0;
+    while (val - ref < -180.0) val += 360.0;
+    return val;
+  };
+  const auto c0 = channels(keys[i]);
+  auto c1 = channels(keys[i + 1]);
+  auto c_prev = i > 0 ? channels(keys[i - 1]) : c0;
+  auto c_next = (i + 1 < n - 1) ? channels(keys[i + 2]) : c1;
+  // Unwrap Euler angle channels (yaw=3, pitch=4, roll=5) across +-180 deg
+  // boundaries within the Catmull-Rom stencil so cuts like 361.99 -> -0.23
+  // pan smoothly instead of spinning 360 deg.
+  for (size_t ch = 3; ch <= 5; ++ch) {
+    if (i > 0) c_prev[ch] = unwrap_near(c_prev[ch], c0[ch]);
+    c1[ch] = unwrap_near(c1[ch], c0[ch]);
+    if (i + 1 < n - 1) c_next[ch] = unwrap_near(c_next[ch], c1[ch]);
+  }
   std::array<double, 7> m0{}, m1{}, out{};
   for (size_t ch = 0; ch < 7; ++ch) {
-    m0[ch] = (i == 0) ? c1[ch] - c0[ch] : 0.5 * (c1[ch] - channels(keys[i - 1])[ch]);
-    m1[ch] = (i + 1 == n - 1) ? c1[ch] - c0[ch] : 0.5 * (channels(keys[i + 2])[ch] - c0[ch]);
+    m0[ch] = (i == 0) ? c1[ch] - c0[ch] : 0.5 * (c1[ch] - c_prev[ch]);
+    m1[ch] = (i + 1 == n - 1) ? c1[ch] - c0[ch] : 0.5 * (c_next[ch] - c0[ch]);
     out[ch] = hermite(c0[ch], m0[ch], c1[ch], m1[ch], f, 1.0);
   }
   set(out);
@@ -468,10 +484,10 @@ WorldCamera to_world(const Pose& pose, const Frame& frame, bool in_cockpit) {
   const std::array<double, 3> up0 = {f[1] * right[2] - f[2] * right[1], f[2] * right[0] - f[0] * right[2],
                                      f[0] * right[1] - f[1] * right[0]};
   // up0 = forward x right (the frame is left-handed with y up). A positive
-  // roll turns the camera clockwise seen from behind: its top leans right.
+  // roll turns the camera counter-clockwise seen from behind: its top leans left.
   const double c = std::cos(roll), s = std::sin(roll);
   w.forward = normalise(f);
-  w.up = normalise({up0[0] * c + right[0] * s, up0[1] * c + right[1] * s, up0[2] * c + right[2] * s});
+  w.up = normalise({up0[0] * c - right[0] * s, up0[1] * c - right[1] * s, up0[2] * c - right[2] * s});
   w.fov_deg = pose.fov;
   w.interior = in_cockpit;
   return w;
@@ -486,6 +502,8 @@ void Player::start(const Cutscene* cs) {
   exit_vo_ = ExitVo::kNone;
   exit_vo_wait_ = 0.0;
   nodes_.clear();
+  node_meta_.clear();
+  car_frame_override_.reset();
   fired_.assign(cs ? cs->events.size() : 0, false);
 }
 
@@ -493,7 +511,20 @@ void Player::stop() {
   cs_ = nullptr;
   finished_ = true;
   nodes_.clear();
+  node_meta_.clear();
+  car_frame_override_.reset();
   fired_.clear();
+}
+
+Frame Player::snap_frame(const Frame& f, bool snap_to_ground) const {
+  if (!snap_to_ground || !ground_query_) return f;
+  double gy = f.origin[1];
+  if (ground_query_(f.origin[0], f.origin[1], f.origin[2], gy)) {
+    Frame snapped = f;
+    snapped.origin[1] = gy;
+    return snapped;
+  }
+  return f;
 }
 
 void Player::fire_range(double t0, double t1, bool inclusive_start, std::vector<const Event*>& out) {
@@ -505,15 +536,26 @@ void Player::fire_range(double t0, double t1, bool inclusive_start, std::vector<
     fired_[i] = true;
     const Event& ev = cs_->events[i];
     if (ev.type == EventType::kCameraNode) {
+      const bool snap = ev.number("snapToGround") != 0.0;
       const Frame f = event_frame(ev);
+      Frame raw = f;
+      // Store un-snapped world frame so lazy re-snapping works once world streams in.
+      if (snap) {
+        const std::string parent = ev.attr("parent");
+        if (parent.empty()) raw = Frame{ev.position(), ev.rotation_deg()};
+      }
       bool replaced = false;
-      for (auto& [n, fr] : nodes_) {
-        if (ieq(n, ev.name)) {
-          fr = f;
+      for (size_t ni = 0; ni < nodes_.size(); ++ni) {
+        if (ieq(nodes_[ni].first, ev.name)) {
+          nodes_[ni].second = f;
+          if (ni < node_meta_.size()) node_meta_[ni] = {ev.name, raw, snap};
           replaced = true;
         }
       }
-      if (!replaced) nodes_.emplace_back(ev.name, f);
+      if (!replaced) {
+        nodes_.emplace_back(ev.name, f);
+        node_meta_.push_back({ev.name, raw, snap});
+      }
     }
     if (ev.type == EventType::kVoiceOver && ev.number("exitCutsceneOnFinish") == 1.0) {
       exit_vo_ = ExitVo::kFired;
@@ -527,14 +569,20 @@ Frame Player::event_frame(const Event& e) const { return event_frame(e, 0); }
 
 Frame Player::event_frame(const Event& e, int depth) const {
   const Frame local{e.position(), e.rotation_deg()};
+  const bool snap = e.number("snapToGround") != 0.0;
   const std::string parent = e.attr("parent");
-  if (parent.empty() || depth > 4 || !cs_) return local;
+  if (parent.empty() || depth > 4 || !cs_) return snap_frame(local, snap);
   // The parent: a node already fired under that name, else the cutscene's
   // placing trigger of that name (a node or the placed car).
   Frame pf{};
   bool found = false;
-  for (const auto& [n, f] : nodes_)
-    if (ieq(n, parent)) pf = f, found = true;
+  for (size_t ni = 0; ni < nodes_.size(); ++ni) {
+    if (ieq(nodes_[ni].first, parent)) {
+      pf = (ni < node_meta_.size() && node_meta_[ni].snap_to_ground) ? snap_frame(node_meta_[ni].raw, true)
+                                                                     : nodes_[ni].second;
+      found = true;
+    }
+  }
   if (!found)
     for (const auto& p : cs_->events)
       if (&p != &e && ieq(p.name, parent) &&
@@ -543,9 +591,11 @@ Frame Player::event_frame(const Event& e, int depth) const {
         found = true;
         break;
       }
-  if (!found) return local;
+  if (!found) return snap_frame(local, snap);
   const auto off = rotate_heading(local.origin, pf.heading_deg * kDeg);
-  return {{pf.origin[0] + off[0], pf.origin[1] + off[1], pf.origin[2] + off[2]}, pf.heading_deg + local.heading_deg};
+  const Frame composed{{pf.origin[0] + off[0], pf.origin[1] + off[1], pf.origin[2] + off[2]},
+                       pf.heading_deg + local.heading_deg};
+  return snap_frame(composed, snap);
 }
 
 void Player::set_voice_playing(bool playing) {
@@ -613,24 +663,36 @@ Frame part_frame(const Frame& car, const std::array<double, 3>& part_pos) {
 
 Frame Player::frame_for(const Cam& cam, const Frame& player_car, const CarParts* parts, double local_t) const {
   if (!cam.target_name.empty()) {
-    for (const auto& [n, f] : nodes_)
-      if (ieq(n, cam.target_name)) return f;
+    for (size_t ni = 0; ni < nodes_.size(); ++ni) {
+      if (ieq(nodes_[ni].first, cam.target_name)) {
+        if (ni < node_meta_.size() && node_meta_[ni].snap_to_ground) return snap_frame(node_meta_[ni].raw, true);
+        return nodes_[ni].second;
+      }
+    }
     // Not fired yet (a seek, or a cut that starts with its node): the
     // cutscene's node trigger of that name.
-    if (cs_)
+    if (cs_) {
       for (const auto& e : cs_->events)
         if (e.type == EventType::kCameraNode && ieq(e.name, cam.target_name)) return event_frame(e);
+      for (const auto& e : cs_->events)
+        if (e.type == EventType::kAnimation && ieq(e.name, cam.target_name)) return event_frame(e);
+    }
     for (const auto& [n, f] : scene_nodes_)
       if (ieq(n, cam.target_name)) return f;
   }
+  const Frame car_base = car_frame_override_.value_or(player_car);
   if (cam.pos_space == AnimSpace::kPartSpace && parts && !cam.keys.empty()) {
     const double u = key_parameter(cam.keys, local_t);
     const size_t k = std::min(cam.keys.size() - 1, size_t(std::max(0.0, std::floor(u + 0.5))));
     std::array<double, 3> p{};
     if (find_part(*parts, cam.keys[k].car_part, p) || find_part(*parts, cam.keys[0].car_part, p))
-      return part_frame(player_car, p);
+      return part_frame(car_base, p);
   }
-  return player_car;
+  // CarSpace cams targeting the car are authored relative to the car's body
+  // origin (`car.lift` above the road contact point), matching model_to_world.
+  Frame car_space = car_base;
+  car_space.origin[1] += car_body_offset_y_;
+  return car_space;
 }
 
 bool Player::world_camera(const Frame& player_car, WorldCamera& out, const CarParts* parts) const {
@@ -640,6 +702,13 @@ bool Player::world_camera(const Frame& player_car, WorldCamera& out, const CarPa
   const Cam& cam = cs_->cams[size_t(s.cam_index)];
   if (cam.follow) return false;  // the game's own camera
   out = to_world(s.pose, frame_for(cam, player_car, parts, s.local_time), cam.in_cockpit);
+  if (!out.interior && eye_clearance_query_) {
+    double gy = 0.0;
+    if (eye_clearance_query_(out.eye[0], out.eye[1], out.eye[2], gy)) {
+      const double min_y = gy + kMinEyeGroundClearance;
+      if (out.eye[1] < min_y) out.eye[1] = min_y;
+    }
+  }
   return true;
 }
 

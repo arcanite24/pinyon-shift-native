@@ -253,7 +253,7 @@ void test_player_and_world() {
   cutscene::Pose rolled;
   rolled.roll = 90;
   const auto r = cutscene::to_world(rolled, cutscene::Frame{{0, 0, 0}, 0});
-  check(near(r.up[0], 1.0, 1e-9), "positive roll leans the top right");
+  check(near(r.up[0], -1.0, 1e-9), "positive roll leans the top left");
   const auto h = cutscene::to_world(cutscene::Pose{{1, 0, 0}, 0, 0, 0, 50}, cutscene::Frame{{10, 0, 10}, 180});
   check(near(h.eye[0], 9, 1e-9) && near(h.eye[2], 10, 1e-9) && near(h.forward[2], -1, 1e-9),
         "heading 180 mirrors the local axes");
@@ -377,6 +377,85 @@ void test_race_cutscenes() {
   check(pl.world_camera(car, w) && near(w.eye[0], 100.0, 1e-9), "the scene's nodes stay across start()");
 }
 
+// Ground-snapped camera nodes (`snapToGround="1"`), CarSpace body-origin lift,
+// exterior eye ground clearance, car-frame override, and +-180 deg angle unwrapping.
+void test_ground_snap_lift_and_angle_unwrap() {
+  static const char* kDoc2 = R"(<?xml version="1.0"?>
+<CutsceneManager>
+  <Cutscene name="Outro_Snap" PlaybackMode="Normal" Duration="4.0" LoopFrom="0.0">
+    <Cams CutQueueType="Cutscene" NumCams="2">
+      <Cam Version="3" Type="Animateable" StartCut="0.0" TargetName="CameraTargetNode_0" duration="2.0">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" NumKeys="3">
+          <Key Time="0.0" PosX="0" PosY="1.15" PosZ="0" Yaw="361.9" Pitch="0" Roll="-5" FOV="45"/>
+          <Key Time="0.5" PosX="0.5" PosY="1.20" PosZ="0" Yaw="-0.2" Pitch="-5" Roll="-5" FOV="45"/>
+          <Key Time="2.0" PosX="1.0" PosY="1.18" PosZ="0" Yaw="-2.5" Pitch="-11" Roll="-5" FOV="45"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Type="Animateable" StartCut="2.0" TargetName="" duration="2.0">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" NumKeys="2">
+          <Key Time="0.0" PosX="-1.36" PosY="-0.01" PosZ="0.08" Yaw="14" Pitch="-8" Roll="12" FOV="39"/>
+          <Key Time="2.0" PosX="-1.36" PosY="-0.50" PosZ="0.08" Yaw="14" Pitch="-8" Roll="12" FOV="39"/>
+        </Anim>
+      </Cam>
+    </Cams>
+    <Events>
+      <Event time="0.0">
+        <EventTrigger name="CameraTargetNode_0" id="CCutsceneCameraNodeTrigger" x="-731.25" y="28.77" z="-1227.18" rotation="133.8" parent="" snapToGround="1"/>
+      </Event>
+    </Events>
+  </Cutscene>
+</CutsceneManager>)";
+
+  cutscene::Library lib;
+  std::string err;
+  check(cutscene::parse_cutscenes(kDoc2, lib, &err), "ground-snap doc parses");
+  const auto* cs = lib.find("Outro_Snap");
+  if (!cs) return;
+
+  // 1) Yaw unwrapping: 361.9 -> -0.2 pans smoothly through ~360.85 deg (+Z), never ~180 deg (-Z).
+  const auto mid = cutscene::sample_pose(cs->cams[0], 0.25);
+  const double mid_rad = mid.yaw * 3.14159265358979323846 / 180.0;
+  check(std::cos(mid_rad) > 0.99, "yaw unwraps across 360 -> 0 boundary without spinning");
+
+  // 2) snapToGround="1" lifts CameraTargetNode_0 from authored y=28.77 to road y=34.5,
+  //    even if the ground query becomes available after start() / t=0.
+  cutscene::Player pl;
+  pl.start(cs);
+  pl.step(0.0);
+  cutscene::WorldCamera w;
+  const cutscene::Frame car{{100.0, 110.0, -200.0}, 0.0};
+  check(pl.world_camera(car, w) && near(w.eye[1], 28.77 + 1.15, 1e-4), "before ground query, uses authored y");
+  pl.set_ground_query([](double, double, double, double& out_y) {
+    out_y = 34.5;
+    return true;
+  });
+  check(pl.world_camera(car, w) && near(w.eye[1], 34.5 + 1.15, 1e-4),
+        "snapToGround=\"1\" lifts camera node onto road surface");
+
+  // 3) CarSpace body offset (`car.lift`): PosY = -0.01 is lifted by +0.48 m so it stays
+  //    well above the road instead of dipping under the tyre.
+  pl.step(2.0);
+  pl.set_car_body_offset_y(0.48);
+  check(pl.world_camera(car, w) && near(w.eye[1], 110.0 + 0.48 - 0.01, 1e-4),
+        "CarSpace cam adds car body lift offset");
+
+  // 4) Exterior eye clearance safeguard: if PosY drops to -0.50 (110.0 + 0.48 - 0.50 = 109.98),
+  //    the eye clearance query clamps it to road + 0.20 m = 110.20 m.
+  pl.set_eye_clearance_query([](double, double, double, double& out_y) {
+    out_y = 110.0;
+    return true;
+  });
+  pl.step(2.0);  // t = 4.0 -> PosY = -0.50
+  check(pl.world_camera(car, w) && near(w.eye[1], 110.0 + cutscene::Player::kMinEyeGroundClearance, 1e-4),
+        "exterior cutscene camera never sinks below ground clearance");
+
+  // 5) Car-frame override redirects TargetName="" cams (e.g. New_Diner_Cutscene_2 onto Corrado).
+  pl.set_car_frame_override(cutscene::Frame{{1553.88, 117.97, -1934.26}, -120.86});
+  pl.set_eye_clearance_query({});
+  check(pl.world_camera(car, w) && std::abs(w.eye[0] - 1553.88) < 3.0 && std::abs(w.eye[2] + 1934.26) < 3.0,
+        "car frame override anchors TargetName=\"\" cams to the scripted hero car");
+}
+
 }  // namespace
 
 int main() {
@@ -387,6 +466,7 @@ int main() {
   test_player_and_world();
   test_parts_and_nodes();
   test_parented_node();
+  test_ground_snap_lift_and_angle_unwrap();
   if (g_failures) {
     std::fprintf(stderr, "cutscene_tests: %d failure(s)\n", g_failures);
     return 1;

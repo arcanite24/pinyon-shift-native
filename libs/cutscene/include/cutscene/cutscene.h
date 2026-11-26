@@ -24,8 +24,9 @@
 //   sit at x < 0, the left-hand driver's seat; cams framing a placed car
 //   keep it in view under this convention and lose it under the mirrored
 //   one; cams set high above the car carry positive pitch). Roll is
-//   applied positive clockwise seen from behind (interim: its sign is not
-//   evidenced; SPEC_QUESTIONS Q61). A cam with a TargetName is relative
+//   applied positive counter-clockwise seen from behind (top leans left,
+//   matching the game's CarSpaceYPROffset z convention and original diner /
+//   festival-outro captures). A cam with a TargetName is relative
 //   to that camera target node (placed by a CCutsceneCameraNodeTrigger);
 //   without one it is relative to the player car. Node and car "rotation"
 //   attributes are headings in degrees: forward is (sin r, 0, cos r).
@@ -34,6 +35,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -316,14 +318,46 @@ class Player {
   // when the cutscene places none of that name. Kept across start().
   void set_scene_nodes(std::vector<std::pair<std::string, Frame>> nodes) { scene_nodes_ = std::move(nodes); }
 
+  // Ground-height query used to resolve `snapToGround="1"` camera target nodes
+  // (e.g. Festival_Race_Outro's CameraTargetNode_0) onto the world road surface.
+  // Kept across start().
+  using GroundQuery = std::function<bool(double x, double y_hint, double z, double& out_y)>;
+  void set_ground_query(GroundQuery query) { ground_query_ = std::move(query); }
+
+  // Local ground-surface probe for non-cockpit cutscene eye clearance: should
+  // only report surfaces near `y_hint` (e.g. within +2.5 m above) so overhead
+  // bridges/arches are not hit. If a surface is found, the exterior camera eye
+  // is clamped at least `kMinEyeGroundClearance` above it. Kept across start().
+  static constexpr double kMinEyeGroundClearance = 0.20;
+  void set_eye_clearance_query(GroundQuery query) { eye_clearance_query_ = std::move(query); }
+
+  // Vertical offset from the player car's ground-contact point (`player_car.origin[1]`)
+  // to the car's CarSpace model origin (`car.lift`). Applied to CarSpace cams
+  // targeting the car (`TargetName == ""`), not to PartSpace cams (whose parts
+  // are already in ground-relative car body coordinates) or world target nodes.
+  void set_car_body_offset_y(double offset_y) { car_body_offset_y_ = offset_y; }
+  double car_body_offset_y() const { return car_body_offset_y_; }
+
+  // Optional override for the car frame used by `TargetName == ""` cams (e.g.
+  // New_Diner_Cutscene_2 framing the parked Corrado before the player swap).
+  // Cleared automatically on start() and stop().
+  void set_car_frame_override(std::optional<Frame> frame) { car_frame_override_ = frame; }
+
   // A placing trigger's frame (a camera node, a PlacePlayerCar): its x/y/z
   // and rotation, which are in its parent's frame when it names one (Skills_Unlock's
   // CameraTargetNode_0 sits on PlacePlayerCar_0), else the world's.
   Frame event_frame(const Event& e) const;
 
  private:
+  struct NodeMeta {
+    std::string name;
+    Frame raw;
+    bool snap_to_ground = false;
+  };
+
   void fire_range(double t0, double t1, bool inclusive_start, std::vector<const Event*>& out);
   Frame event_frame(const Event& e, int depth) const;
+  Frame snap_frame(const Frame& f, bool snap_to_ground) const;
 
   const Cutscene* cs_ = nullptr;
   double t_ = 0.0;
@@ -334,7 +368,12 @@ class Player {
   double exit_vo_wait_ = 0.0;
   std::vector<bool> fired_;
   std::vector<std::pair<std::string, Frame>> nodes_;
+  std::vector<NodeMeta> node_meta_;
   std::vector<std::pair<std::string, Frame>> scene_nodes_;
+  GroundQuery ground_query_;
+  GroundQuery eye_clearance_query_;
+  double car_body_offset_y_ = 0.0;
+  std::optional<Frame> car_frame_override_;
 };
 
 }  // namespace cutscene
