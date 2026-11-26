@@ -31,6 +31,19 @@ enum class NotifyKind : uint8_t {
   kWristbandAvailable,  // NEW WRISTBAND AT RACE CENTRAL
 };
 
+// How long a notification of `kind` stays up, from its SHOW to its HIDE.
+// GlobalRegistry.xml's Notifications/DurationsInSeconds give the barn
+// finds' three 10 s; the others have no tunable there, and keep the
+// engine's `fallback` (Q351).
+constexpr double notify_seconds(NotifyKind kind, double fallback) {
+  switch (kind) {
+    case NotifyKind::kBarnRumour:
+    case NotifyKind::kBarnRestoring:
+    case NotifyKind::kBarnReady: return 10.0;
+    default: return fallback;
+  }
+}
+
 // The icon a notification shows (CombinedNotification/Icons).
 enum class NotifyIcon : uint8_t { kMisc, kSponsor, kMail };
 
