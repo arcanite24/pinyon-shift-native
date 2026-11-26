@@ -358,6 +358,7 @@ void DriveSession::init_session() {
         app.audio_host.clear_car();
       }
       if (app.skill_tracker) app.skill_tracker->reset_session_clock();
+      if (app.speed_tracker) app.speed_tracker->reset_session_clock();
       traffic.reset();
       if (app.status == 0 && app.race) {
         std::string e;

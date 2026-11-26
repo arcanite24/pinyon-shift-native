@@ -22,6 +22,7 @@
 #include "map_anim.h"
 #include "audio/xml.h"
 #include "pause_screen.h"
+#include "race/driving_tutor.h"
 #include "ui.h"
 #include "ui4_chrome.h"
 
@@ -1646,6 +1647,127 @@ int main() {
     CHECK(saved.action == carview::TitleMenu::Action::kSaveVideo);
     CHECK(!tm.first_profile);
     CHECK(tm.phase == carview::TitleMenu::Phase::kMenu);
+  }
+
+  // 6. WP-C: Minimap distance readout, default-hidden turn box, world-marker
+  //    suppression during large FTC banners, and DrivingTutor edge cases.
+  {
+    // Minimap distance formatting (1 decimal MI/KM, whole FT/M).
+    CHECK(carview::format_minimap_distance(4184.3, false) == "2.6 MI");
+    CHECK(carview::format_minimap_distance(3218.7, false) == "2.0 MI");
+    CHECK(carview::format_minimap_distance(100.0, false) == "328 FT");
+    CHECK(carview::format_minimap_distance(4184.3, true) == "4.2 KM");
+    CHECK(carview::format_minimap_distance(450.0, true) == "450 M");
+
+    // Non-turn states (none/straight/arrived) never show the turn banner.
+    carview::GpsHud gps;
+    gps.active = true;
+    gps.dist_to_dest_m = 4184.3;
+    gps.dist_to_turn_m = 200.0;
+    gps.turn_kind = 1;  // straight
+    CHECK(!carview::should_show_gps_turn_banner(gps));
+    gps.turn_kind = 9;  // arrived / destination pin
+    CHECK(!carview::should_show_gps_turn_banner(gps));
+    gps.turn_kind = 6;  // right turn
+    CHECK(carview::should_show_gps_turn_banner(gps));
+
+    // Default free-roam GPS hides invented top-center turn box (show_turn_arrow == false),
+    // while drawing the green destination pin + distance readout beneath the minimap.
+    carview::DriveHud d_base;
+    d_base.driving = true;
+    d_base.speedo_mode = 2;
+    List l_no_gps;
+    carview::build_drive_hud(l_no_gps, d_base, 1280.0f, 720.0f);
+
+    carview::DriveHud d_gps_default = d_base;
+    d_gps_default.gps = &gps;
+    List l_gps_no_mm;
+    carview::build_drive_hud(l_gps_no_mm, d_gps_default, 1280.0f, 720.0f);
+    CHECK(l_gps_no_mm.items().size() == l_no_gps.items().size());
+
+    // Opt-in show_turn_arrow draws the turn indicator.
+    gps.show_turn_arrow = true;
+    List l_gps_optin;
+    carview::build_drive_hud(l_gps_optin, d_gps_default, 1280.0f, 720.0f);
+    CHECK(l_gps_optin.items().size() > l_no_gps.items().size());
+    gps.show_turn_arrow = false;
+
+    // With minimap visible, draws green pin + distance glyphs beneath y=600.
+    carview::DriveHud d_mm = d_gps_default;
+    d_mm.minimap_visible = true;
+    d_mm.minimap_x = 90.0f;
+    d_mm.minimap_y = 420.0f;
+    d_mm.minimap_size = 180.0f;
+    d_mm.metric_units = false;
+    List l_mm_imp;
+    carview::build_drive_hud(l_mm_imp, d_mm, 1280.0f, 720.0f);
+    int under_mm_glyphs = 0;
+    for (const auto& it : l_mm_imp.items()) {
+      if (it.kind == kGlyph && it.rect[1] >= 600.0f && it.rect[0] >= 90.0f && it.rect[2] <= 270.0f) ++under_mm_glyphs;
+    }
+    CHECK(l_mm_imp.items().size() > l_no_gps.items().size());
+    CHECK(under_mm_glyphs >= 5);
+
+    d_mm.metric_units = true;
+    List l_mm_met;
+    carview::build_drive_hud(l_mm_met, d_mm, 1280.0f, 720.0f);
+    int under_mm_met_glyphs = 0;
+    for (const auto& it : l_mm_met.items()) {
+      if (it.kind == kGlyph && it.rect[1] >= 600.0f && it.rect[0] >= 90.0f && it.rect[2] <= 270.0f)
+        ++under_mm_met_glyphs;
+    }
+    CHECK(under_mm_met_glyphs >= 5);
+
+    // Large FTC banner suppresses 3D world-marker billboard ("DAK'S GARAGE / ENTER NOW").
+    carview::WorldMarkerHud wm;
+    wm.visible = true;
+    wm.in_range = true;
+    wm.screen_x = 640.0f;
+    wm.screen_y = 300.0f;
+    wm.title = "DAK'S GARAGE";
+    wm.prompt = "ENTER NOW";
+    carview::DriveHud d_wm = d_base;
+    d_wm.world_marker = &wm;
+    List l_wm_shown;
+    carview::build_drive_hud(l_wm_shown, d_wm, 1280.0f, 720.0f);
+    CHECK(l_wm_shown.items().size() > l_no_gps.items().size());
+
+    d_wm.suppress_world_marker = true;
+    List l_wm_hidden;
+    carview::build_drive_hud(l_wm_hidden, d_wm, 1280.0f, 720.0f);
+    CHECK(l_wm_hidden.items().size() == l_no_gps.items().size());
+
+    // DrivingTutor: zero turn_distance_m does not false-trigger e-brake; state 7 respects rewind cooldown/usage.
+    race::DrivingTutor tutor;
+    tutor.activate();
+    race::TutorInput tin;
+    tin.dt = 0.1;
+    tutor.update(tin);
+    tin.throttle = 1.0;
+    tutor.update(tin);
+    for (int i = 0; i < 160; ++i) tutor.update(tin);  // past brake delay & timeout -> state 4
+    CHECK(tutor.state() == 4);
+    tin.speed_mps = 30.0;
+    tin.turn_ahead = true;
+    tin.turn_distance_m = 0.0;
+    tutor.update(tin);
+    CHECK(tutor.message() == race::TutorMessage::kNone);
+    // Trigger e-brake at 60 m -> after timeout transitions to state 7 (camera);
+    // once player has used rewind, an impact during camera hint must not re-fire kRewind.
+    tin.turn_distance_m = 60.0;
+    tutor.update(tin);
+    CHECK(tutor.message() == race::TutorMessage::kEBrake);
+    tin.turn_ahead = false;
+    for (int i = 0; i < 66; ++i) tutor.update(tin);
+    CHECK(tutor.message() == race::TutorMessage::kCamera && tutor.state() == 7);
+    tin.rewind_pressed = true;
+    tutor.update(tin);
+    tin.rewind_pressed = false;
+    for (int i = 0; i < 25; ++i) tutor.update(tin);  // past kChangeCameraMessageMinimalTimeout (2.0 s)
+    tin.impact = true;
+    tin.rewind_available = true;
+    tutor.update(tin);
+    CHECK(tutor.message() != race::TutorMessage::kRewind);
   }
 
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {

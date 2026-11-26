@@ -254,6 +254,32 @@ int main() {
     auto ev3 = st.step(0.1, 6.0, 0, 297, 0, 303, 50.0);
     CHECK(ev3.size() == 1 && ev3[0].kind == SpeedActivityEvent::kZoneCompleted && ev3[0].is_new_pb);
     CHECK(st.best_zone_mph("average_speed_01") > 100.0);
+
+    // Session hot-reload clock reset: must clear active banner/flash/abort/cooldowns
+    // so an earlier speed trap never replays when vehicle.time() restarts from 0 and
+    // later crosses the old timestamp, while preserving personal bests.
+    const double saved_trap_pb = st.best_trap_mph("speed_camera_01");
+    const double saved_zone_pb = st.best_zone_mph("average_speed_01");
+    auto ev_late = st.step(0.1, 40.0, 0, 48, 0, 52, 55.0);
+    CHECK(ev_late.size() == 1 && ev_late[0].kind == SpeedActivityEvent::kTrapTriggered);
+    CHECK(st.hud(41.0).banner_active && st.hud(40.1).flash_alpha > 0.1f);
+    const double updated_trap_pb = st.best_trap_mph("speed_camera_01");
+    CHECK(updated_trap_pb > saved_trap_pb);
+    // Enter a zone too, then hot-reload the session clock back to 0.
+    auto ev_enter = st.step(0.1, 42.0, 0, 98, 0, 102, 50.0);
+    CHECK(ev_enter.size() == 1 && ev_enter[0].kind == SpeedActivityEvent::kZoneEntered);
+    CHECK(st.hud(42.5).zone_active);
+    st.reset_session_clock();
+    // Neither t=0.5 nor the old banner window t=40.5..41.0 may replay the stale toast.
+    CHECK(!st.hud(0.5).banner_active && !st.hud(0.5).zone_active && st.hud(0.5).flash_alpha == 0.0f);
+    CHECK(!st.hud(40.5).banner_active && !st.hud(41.0).banner_active && st.hud(40.1).flash_alpha == 0.0f);
+    // Personal bests and completed counts persist across the session reset.
+    CHECK(st.best_trap_mph("speed_camera_01") == updated_trap_pb);
+    CHECK(st.best_zone_mph("average_speed_01") == saved_zone_pb);
+    CHECK(st.traps_completed() == 1 && st.zones_completed() == 1);
+    // Cooldowns were cleared, so crossing the trap at t=1.0 in the new session fires normally.
+    auto ev_new = st.step(0.1, 1.0, 0, 48, 0, 52, 45.0);
+    CHECK(ev_new.size() == 1 && ev_new[0].kind == SpeedActivityEvent::kTrapTriggered && !ev_new[0].is_new_pb);
   }
 
   // Synthetic 54-skill tracker: MinSpeedToCancelFeats (cancel vs bank), TagAwardInterval,

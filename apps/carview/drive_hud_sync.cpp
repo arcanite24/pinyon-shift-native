@@ -381,6 +381,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           d.skills = &sk_hud;
         }
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
+        d.suppress_world_marker = app.campaign.ftc_active() && app.campaign.ftc().hud_visible() &&
+                                  (!app.campaign.ftc().large_instruction_1().empty() ||
+                                   !app.campaign.ftc().large_instruction_2().empty());
   if (event_summary_open() && !app.race) d.event_summary = &event_summary_hud;
         else if (entry_black && !app.race) {
           // The fade's end held black until the load screen (event entry).
@@ -982,10 +985,17 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool count_cut = app.race && race_cut_name == "prerace_countdown" && race_cutscene_camera(count_cut_cam);
         const bool pre_race_swoop_hide_hud = (pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85) || count_cut;
         const bool campaign_hide_hud = app.campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
-        if (mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
-            !grid_menu_open && st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !app.rally_hub_open &&
-            !app.rally_service_open && !app.rally_results_open && !club_open && !car_club_open)
+        const bool draw_minimap = mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud &&
+                                  !map_overlay.active && !grid_menu_open && st.menu.empty() && !career_page.is_open() &&
+                                  !hub_menu.open() && !app.rally_hub_open && !app.rally_service_open &&
+                                  !app.rally_results_open && !club_open && !car_club_open;
+        if (draw_minimap) {
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
+          d.minimap_visible = true;
+          d.minimap_x = mm_x;
+          d.minimap_y = mm_y;
+          d.minimap_size = mm_size;
+        }
         // The 1000 Club's screens hide the driving HUD (club_home.png).
         if ((club_open && club_menu.open()) || rally_entry != carview::RallyEntryPopup::kNone) d.driving = false;
         if (!campaign_hide_hud) carview::build_drive_hud(list, d, float(width), float(height));
@@ -1099,14 +1109,20 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           cctx.race_screens = race_screens.active() || entry_screens.active();
           // Headless runs do not step the career: its screens and fades would
           // stay frozen over every frame, so they are left out there.
+          const bool in_race_or_entry = app.race != nullptr || race_screens.active() || entry_screens.active() ||
+                                        event_summary_open() || entry_black || ftc_ticket_at >= 0.0 ||
+                                        h2h_screens.active();
           if (app.campaign.ftc_active()) {
             if (!(app.headless && app.campaign.ftc().show_controls_screen()))
               carview::ftc_ui::draw(list, app.campaign.ftc(), float(width), float(height), live_controls.layout_id,
-                                    live_controls.switch_handbrake_clutch, app.race != nullptr);
+                                    live_controls.switch_handbrake_clutch, in_race_or_entry);
           } else {
             carview::campaign_ui::draw(list, app.campaign.flow(), cctx);
           }
-          if (!app.campaign.is_blocking_gameplay())
+          const bool suppress_hint = race_screens.active() || entry_screens.active() || event_summary_open() ||
+                                     entry_black || ftc_ticket_at >= 0.0 || h2h_screens.active() ||
+                                     (app.race && app.race->player_finished());
+          if (!app.campaign.is_blocking_gameplay() && !suppress_hint)
             carview::ftc_ui::draw_hint(list, app.campaign.hint_message(), float(width), float(height));
         }
         if (app.fmv_player.active()) {

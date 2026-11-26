@@ -128,12 +128,17 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
   if (ftc.show_controls_screen()) {
     // The controller loading screen (ControllerLoadingBackground and the
     // layout diagram) while the opening loads.
-    l.rect(0, 0, w, h, ui::rgba(8, 8, 10, 255));
+    std::array<float, 4> bg_uv{};
+    if (ui4::texture("LOADING/BGLOADINGIMAGES/CONTROLLERLOADINGBACKGROUND", bg_uv)) {
+      l.image(0, 0, w, h, bg_uv, ui4::kWhite);
+    } else {
+      l.rect(0, 0, w, h, ui::rgba(8, 8, 10, 255));
+    }
     ui4::draw_controller_layout_diagram(l, 0.12f * w, 0.14f * h, 0.88f * w, 0.86f * h, s, controller_layout, swap);
     return;
   }
   if (kOpeningCardsShown && ftc.show_opening_credits()) draw_opening_titles(l, ftc.opening_credits_time(), w, h);
-  if (!ftc.hud_visible()) return;
+  if (racing || !ftc.hud_visible()) return;
   if (!ftc.large_instruction_1().empty()) {
     // The large two-line instruction as a stage starts.
     const std::string a = text_for("InGame", ftc.large_instruction_1());
@@ -141,7 +146,7 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
     l.text(0.5f * w, 0.30f * h, a, ui4::style(ui::Font::kE, 34.0f * s, ui4::kWhite, ui::Align::kCenter));
     l.text(0.5f * w, 0.30f * h + 40.0f * s, b, ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kCenter));
   }
-  if (!racing && !ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
+  if (!ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
   if (ftc.tickets_remaining() >= 0) {
     // The places counter, top right: GET TO THE FESTIVAL over PLACES LEFT
     // and the count (measured on f00420_first30a_orig.png at 1280x720).
@@ -168,19 +173,35 @@ std::string tip_text(std::string_view table, std::string_view id) { return text_
 void draw_hint(ui::List& l, race::TutorMessage m, float w, float h) {
   if (m == race::TutorMessage::kNone) return;
   const race::TutorHint hint = race::tutor_hint(m);
+  const char* glyph = hint.button;
+  if (ui4::glyph_set() == ui4::GlyphSet::kKeyboard) {
+    // On keyboard, button_glyph() maps gamepad face/trigger tokens to menu keys
+    // (e.g. A -> ENTER, RT -> +, LT -> -, RB -> E). Resolve driving tutor hints
+    // to their actual driving keys (matching drive::KeyBindings::defaults()).
+    switch (m) {
+      case race::TutorMessage::kAccelerate: glyph = "W"; break;
+      case race::TutorMessage::kBrake: glyph = "S"; break;
+      case race::TutorMessage::kRewind: glyph = "Y"; break;
+      case race::TutorMessage::kEBrake: glyph = "HANDBRAKE"; break;  // SPACE
+      case race::TutorMessage::kCamera: glyph = "CAMERA"; break;     // V
+      case race::TutorMessage::kMap: glyph = "MAP"; break;           // M
+      case race::TutorMessage::kNone: break;
+    }
+  }
   const float s = h / 720.0f;
   const auto st = ui4::style(ui::Font::kB, 22.0f * s, ui4::kWhite, ui::Align::kLeft);
   const std::string left = text_for("HelpButtons", hint.left_id);
   const std::string right = text_for("HelpButtons", hint.right_id);
   const float r = 13.0f * s, gap = 8.0f * s;
+  const float hw = ui4::button_glyph_half_width(glyph, r);
   const float lw = ui::List::measure(left, st), rw = ui::List::measure(right, st);
-  const float total = lw + gap + 2.0f * r + gap + rw;
-  const float y = 0.80f * h;
+  const float total = lw + gap + 2.0f * hw + gap + rw;
+  const float y = 0.88f * h;
   float x = 0.5f * w - 0.5f * total;
   l.text(x, y, left, st);
   x += lw + gap;
-  ui4::button_glyph(l, x + r, y + 0.5f * st.size * 0.8f, r, hint.button);
-  x += 2.0f * r + gap;
+  ui4::button_glyph(l, x + hw, y + 0.5f * st.size * 0.8f, r, glyph);
+  x += 2.0f * hw + gap;
   l.text(x, y, right, st);
 }
 

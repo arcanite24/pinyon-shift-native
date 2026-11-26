@@ -490,6 +490,7 @@ struct GpsHud {
   double dist_to_dest_m = 0;
   bool confirmed_uturn = false;  // true only when sustained wrong-way driving on an active route
   bool recalculating = false;    // subtle pulsing "RECALCULATING..." SatNav pill after wrong turn
+  bool show_turn_arrow = false;  // opt-in for top-center turn-arrow box (off by default to match retail)
   double time = 0.0;             // HUD clock for recalculating pulse animation
 };
 
@@ -640,6 +641,11 @@ struct DriveHud {
   double barn_radar_proximity = 0.0;  // 0..1 pulsing barn find proximity radar inside rumor circle
   std::string club_tag;               // optional 4-char Car Club [TAG]
   bool driving = true;
+  bool suppress_world_marker = false;  // suppresses 3D world-marker billboards while a large FTC banner is active
+  bool minimap_visible = false;
+  float minimap_x = 0.0f;
+  float minimap_y = 0.0f;
+  float minimap_size = 0.0f;
   bool touch_hud_active = false;  // compacts & lifts tach above Android touch pedals
   bool metric_units = false;      // true: km/h & km/m, false: MPH & mi/ft (global Units setting; miles by default, Q277)
   bool subtitle_active = false;   // true when bottom-center campaign subtitles are visible (lifts bottom banners)
@@ -693,7 +699,10 @@ const char* place_suffix(int place);
 std::string race_clock(double seconds);
 std::string format_speed_unit(double mph, bool metric, bool decimals = true);
 std::string format_distance_unit(double meters, bool metric);
+std::string format_minimap_distance(double meters, bool metric);
 std::string format_gap_unit(double meters, bool metric);
+void draw_minimap_distance_hud(ui::List& l, const GpsHud& gps, float mm_x, float mm_y, float mm_size, float s,
+                               bool metric_units);
 std::string format_boost_unit(double boost_psi, bool metric);
 std::string format_split_delta(double delta_s);
 // Elapsed seconds since entering the current post-race results page (measures from

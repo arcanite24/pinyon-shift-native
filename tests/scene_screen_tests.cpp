@@ -771,6 +771,9 @@ int main() {
     auto hzt = fh1::Archive::open(game_root / "media" / "ui" / "textures" / "Horizon.zip", nullptr);
     check(hzt && hzt->read("HUD/MASKS/DIRECTION_ARROWS.xds").ok() && hzt->read("DIRTMASKS/HUD/DIRECTIONARROWBG.xds").ok(),
           "arrow: its textures");
+    check(hzt && hzt->read("Hud/SatNavDest.xds").ok() &&
+              hzt->read("Loading/BGLoadingImages/ControllerLoadingBackground.xds").ok(),
+          "hud: SatNavDest and ControllerLoadingBackground textures present in Horizon.zip");
     // Every texture at the whole of a unit atlas, to read the drawn cells.
     carview::set_ui_textures([](const std::string&, std::array<float, 4>& uv) {
       uv = {0.0f, 0.0f, 1.0f, 1.0f};

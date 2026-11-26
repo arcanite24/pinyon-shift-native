@@ -33,7 +33,7 @@ void DrivingTutor::show(TutorMessage m) {
 bool DrivingTutor::ebrake_due(const TutorInput& in) const {
   if (ebrake_cool_ > 0.0) return false;
   if (in.speed_mps * 2.2369 < kSpeedThresholdForEBrakeMph) return false;
-  return in.turn_ahead && in.turn_distance_m <= kDistanceThresholdForEBrake;
+  return in.turn_ahead && in.turn_distance_m > 0.0 && in.turn_distance_m <= kDistanceThresholdForEBrake;
 }
 
 void DrivingTutor::update(const TutorInput& in) {
@@ -88,13 +88,16 @@ void DrivingTutor::update(const TutorInput& in) {
       }
       break;
     case 5:
-      if (timer_ >= kRewindMessageTimeout || !in.rewind_available) {
+      if (timer_ >= kRewindMessageTimeout || !in.rewind_available || in.rewind_pressed) {
         hide();
         state_ = 4;
       }
       break;
     case 6:
-      if (timer_ >= kEBrakeTimeout) {
+      if (in.ebrake_pressed) {
+        hide();
+        state_ = 4;
+      } else if (timer_ >= kEBrakeTimeout) {
         hide();
         state_ = 4;
         if (!camera_shown_) {
@@ -105,7 +108,10 @@ void DrivingTutor::update(const TutorInput& in) {
       }
       break;
     case 7:
-      if (rewind_request && timer_ >= kChangeCameraMessageMinimalTimeout) {
+      if (rewind_request && rewinds_left_ > 0 && in.rewind_available && rewind_cool_ <= 0.0 &&
+          timer_ >= kChangeCameraMessageMinimalTimeout) {
+        --rewinds_left_;
+        rewind_cool_ = kRewindCoolDown;
         show(TutorMessage::kRewind);
         state_ = 5;
       } else if (timer_ >= kChangeCameraMessageTimeout) {
