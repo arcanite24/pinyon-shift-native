@@ -48,4 +48,17 @@ struct BarnFindTuning {
   static BarnFindTuning from(const Registry& r);
 };
 
+// HeroCar: the car the first-time career hands over (the Corrado VR6 in its
+// colour sequence 2, upgraded to C 400 on the workshop's locked map, Q280).
+// upgrades: Career_Garage column -> Level (HeroCar/Upgrades/<column>, the
+// zero levels left out); wheel_style: List_Wheels Id (0 keeps the stock).
+struct HeroCarPreset {
+  int64_t car_id = 309;
+  int colour_index = 2;
+  int64_t wheel_style = 640;
+  std::map<std::string, int> upgrades;
+  static HeroCarPreset disc();  // the disc's GlobalRegistry values
+  static HeroCarPreset from(const Registry& r);
+};
+
 }  // namespace freeroam

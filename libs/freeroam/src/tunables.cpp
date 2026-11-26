@@ -100,4 +100,32 @@ BarnFindTuning BarnFindTuning::from(const Registry& r) {
   return t;
 }
 
+HeroCarPreset HeroCarPreset::disc() {
+  HeroCarPreset p;
+  p.upgrades = {{"Brakes", 3},     {"SpringDamper", 3},   {"Transmission", 3},       {"Differential", 2},
+                {"Flywheel", 2},   {"Ignition", 2},       {"OilCooling", 2},         {"RearBumper", 2},
+                {"TireWidthFront", 2}, {"TireWidthRear", 2}, {"Camshaft", 1},       {"ChassisStiffness", 1},
+                {"Clutch", 1},     {"Intake", 1},         {"PistonsCompression", 1}, {"RimSizeFront", 1},
+                {"RimSizeRear", 1}, {"SideSkirts", 1},    {"SuperchargerCSC", 1}};
+  return p;
+}
+
+HeroCarPreset HeroCarPreset::from(const Registry& r) {
+  HeroCarPreset p = disc();
+  const std::string up = "HeroCar/Upgrades/";
+  bool any = false;
+  for (const auto& [id, v] : r.values) {
+    if (id.compare(0, up.size(), up) != 0) continue;
+    const std::string col = id.substr(up.size());
+    if (col == "WheelStyle") continue;
+    if (!any) p.upgrades.clear();
+    any = true;
+    if (const int lvl = int(std::lround(v)); lvl > 0) p.upgrades[col] = lvl;
+  }
+  p.car_id = int64_t(std::llround(r.get("HeroCar/carID", double(p.car_id))));
+  p.colour_index = int(std::lround(r.get("HeroCar/colourIndex", p.colour_index)));
+  p.wheel_style = int64_t(std::llround(r.get("HeroCar/Upgrades/WheelStyle", double(p.wheel_style))));
+  return p;
+}
+
 }  // namespace freeroam

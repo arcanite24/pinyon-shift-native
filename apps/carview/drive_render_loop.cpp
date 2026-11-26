@@ -185,6 +185,11 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
 
             // Check whether a car swap requires restarting the session loop.
             std::string swap_target;
+            // The first-time career hands over the HeroCar Corrado (upgraded,
+            // C 400 on the locked map, Q280): owned and selected before the
+            // swap, so the next session loads it with its fitted parts.
+            if (ca.swap_car && ca.car_id == race::FirstTimeCareer::kCorradoCarId && app.campaign.ftc_active())
+              app.ensure_hero_car();
             if (ca.swap_car && !ca.car_media.empty()) {
               swap_target = find_baked_car(ca.car_media, ca.car_id);
               if (swap_target.empty()) {

@@ -226,6 +226,11 @@ bool same_showroom_options(const ShowroomOptions& a, const ShowroomOptions& b) {
 ShowroomOptions DriveWorldHost::build_car_options() {
       ShowroomOptions opts;
       opts.game_root = app.game_root_of();
+      // A career resumed in the Corrado from a save made before it was owned:
+      // the HeroCar is awarded now, so its paint and parts load with it.
+      if (app.campaign.ftc_active_or_resuming() &&
+          lower_ascii(app.car) == lower_ascii(race::FirstTimeCareer::kCorradoMedia))
+        app.ensure_hero_car();
       // The garage car's paint & fitted visual upgrades (body kits, wing, rims, brakes, stance).
       if (app.have_garage)
         if (const garage::Car* gc = app.career_garage.selected_car())

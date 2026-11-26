@@ -75,6 +75,20 @@ void test_registry_and_fast_travel() {
   const auto bt = freeroam::BarnFindTuning::from(reg);
   CHECK(bt.max_idle_time_s == 120.0 && bt.time_between_ticks_s == 60.0);
   CHECK(bt.min_time_before_spawn_s == 15.0);
+  // No HeroCar ids: the disc's preset; a registry with them replaces it.
+  const auto hero0 = freeroam::HeroCarPreset::from(reg);
+  CHECK(hero0.car_id == 309 && hero0.upgrades.size() == 19 && hero0.upgrades.at("Transmission") == 3);
+  freeroam::Registry hreg;
+  CHECK(freeroam::parse_registry(R"(<Registry>
+  <Value id="HeroCar/carID" type="int" value="12"/>
+  <Value id="HeroCar/Upgrades/Brakes" type="int" value="1"/>
+  <Value id="HeroCar/Upgrades/Clutch" type="int" value="0"/>
+  <Value id="HeroCar/Upgrades/WheelStyle" type="int" value="0"/>
+</Registry>)",
+                                hreg, &err));
+  const auto hero1 = freeroam::HeroCarPreset::from(hreg);
+  CHECK(hero1.car_id == 12 && hero1.colour_index == 2 && hero1.wheel_style == 0);
+  CHECK(hero1.upgrades.size() == 1 && hero1.upgrades.at("Brakes") == 1);
   freeroam::Registry empty;
   CHECK(!freeroam::parse_registry("<Registry/>", empty, &err));
 }
@@ -215,6 +229,39 @@ int corpus() {
     }
     std::printf("prize cars at their upgrade class: %d / %d\n", upgraded, prizes);
     CHECK(upgraded == prizes);
+
+    // The HeroCar preset (the first-time career's Corrado): every level has
+    // a row, and the car reads class C (C 400 on the original's locked map, Q280).
+    const auto hero = freeroam::HeroCarPreset::from(reg);
+    CHECK(hero.car_id == 309 && hero.colour_index == 2 && hero.wheel_style == 640);
+    CHECK(hero.upgrades.size() == 19 && hero.upgrades.at("Brakes") == 3 && hero.upgrades.at("SuperchargerCSC") == 1);
+    if (ok) {
+      garage::Garage g;
+      std::map<std::string, int64_t> stock;
+      db.stock_slots(hero.car_id, stock, &gerr);
+      garage::PiResult pi0;
+      CHECK(garage::compute_pi_for_car(db, hero.car_id, {}, phys, pi_cfg, bands, pi0, &gerr));
+      int64_t gid = 0;
+      CHECK(garage::award_prize_car(g, hero.car_id, pi0.raw_pi, pi0.class_id, hero.colour_index, stock, &gid));
+      std::string why;
+      const bool fit = garage::fit_upgrade_levels(g, db, gid, hero.upgrades, hero.wheel_style, &phys, &pi_cfg, &bands, &why);
+      if (!fit) std::printf("hero car: %s\n", why.c_str());
+      CHECK(fit);
+      const garage::Car* car = g.find(gid);
+      CHECK(car != nullptr);
+      if (car) {
+        const int shown = garage::shown_index(car->performance_index, bands);
+        std::printf("hero car: stock %s %d -> %s %d\n", bands[size_t(pi0.class_id)].name.c_str(),
+                    garage::shown_index(pi0.raw_pi, bands), bands[size_t(car->class_id)].name.c_str(), shown);
+        CHECK(bands[size_t(car->class_id)].name == "C");
+        // The fitted rows are the HeroCar's (Id suffix = the value: 309003
+        // springs, 309002 rear bumper, 63001 supercharger); the PI model
+        // reads 396 of the original's 400 (Q311).
+        CHECK(shown >= 394 && shown <= 400);
+        CHECK(car->slots.at("SpringDamper") == 309003 && car->slots.at("RearBumper") == 309002 &&
+              car->slots.at("SuperchargerCSC") == 63001 && car->slots.at("WheelStyle") == 640);
+      }
+    }
   }
 
   // The barn finds: 9, their spawn odds and restoration distances, and the

@@ -673,4 +673,59 @@ bool write_garage(const std::filesystem::path& path, const Garage& g, std::strin
   return true;
 }
 
+bool fit_upgrade_levels(Garage& g, const cars::PartsDb& db, int64_t garage_id,
+                        const std::map<std::string, int>& levels, int64_t wheel_style,
+                        const cars::PhysicsSettings* phys_settings, const PiConfig* pi_cfg,
+                        const std::vector<ClassBand>* bands, std::string* error) {
+  Car* car = g.find(garage_id);
+  if (!car) {
+    if (error) *error = "no garage car " + std::to_string(garage_id);
+    return false;
+  }
+  // The conversions first (they re-key the sub-part slots), then the rest.
+  auto converts = [](const cars::UpgradeSlot& s) { return s.part_enum <= 2 || is_aspiration_enum(s.part_enum); };
+  std::vector<const cars::UpgradeSlot*> order;
+  for (const auto& s : cars::upgrade_slots())
+    if (converts(s)) order.push_back(&s);
+  for (const auto& s : cars::upgrade_slots())
+    if (!converts(s)) order.push_back(&s);
+  std::string missing;
+  for (const cars::UpgradeSlot* s : order) {
+    const auto it = levels.find(s->column);
+    if (it == levels.end() || it->second <= 0) continue;
+    std::vector<cars::PartRow> opts;
+    if (!db.options(car->car_id, fitted(*car), opts, error)) return false;
+    // The value N is the slot's upgrade at Level N (the lowest Id there);
+    // where no row has that level, the Nth upgrade row in (Level, Id) order
+    // (the body kits offer several styles at level 1: RearBumper 2 of the
+    // HeroCar is the Corrado's second rear bumper).
+    std::vector<const cars::PartRow*> rows;
+    std::string offered;
+    for (const auto& o : opts) {
+      if (o.part_enum != s->part_enum) continue;
+      offered += (offered.empty() ? "" : "/") + std::to_string(o.level);
+      if (!o.is_stock) rows.push_back(&o);
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const cars::PartRow* a, const cars::PartRow* b) {
+      return a->level != b->level ? a->level < b->level : a->id < b->id;
+    });
+    const cars::PartRow* pick = nullptr;
+    for (const cars::PartRow* r : rows)
+      if (r->level == it->second && !pick) pick = r;
+    if (!pick && size_t(it->second) <= rows.size()) pick = rows[size_t(it->second) - 1];
+    const cars::PartRow row = pick ? *pick : cars::PartRow{};
+    int64_t free_credits = row.price;  // the preset's parts come free
+    if (!pick || !fit_part_full(g, db, garage_id, row, s->column, 0, free_credits).ok) {
+      missing += (missing.empty() ? "" : ", ") + std::string(s->column) + " " + std::to_string(it->second) +
+                 " (levels " + (offered.empty() ? "none" : offered) + ")";
+      continue;
+    }
+    car = g.find(garage_id);
+  }
+  if (wheel_style > 0) car->slots["WheelStyle"] = wheel_style;
+  if (phys_settings && pi_cfg && bands && db.is_open()) refresh_car_pi(*car, db, *phys_settings, *pi_cfg, *bands);
+  if (!missing.empty() && error) *error = "no row for " + missing;
+  return missing.empty();
+}
+
 }  // namespace garage
