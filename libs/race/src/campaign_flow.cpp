@@ -1623,16 +1623,19 @@ CampaignAction CampaignFlow::on_race_finished(const CareerEvent* ev, const RaceA
         {"darius_challenge_headline", CharacterId::kDariusFlynt, "", "", "PostFinalRace", "",
          "Not bad, rookie. You took the Horizon Finale — now meet me one-on-one in the Champion vs Champion Showdown for the crown and my Ferrari 599XX.",
          6.5, 10, false, true});
-  } else if (place == 1) {
-    dialogs_.enqueue(
-        {"post_race_win_" + tally_.event_title, CharacterId::kAliceHart, "", "", "FirstPostRaceWinner", "",
-         "Brilliant win! The crowd at the Festival is loving it — check your rewards and next unlocked events.",
-         5.0, 5, false, false});
-  } else if (place <= 3) {
-    dialogs_.enqueue(
-        {"post_race_podium_" + tally_.event_title, CharacterId::kHollyCruz, "", "", "FirstPostRacePodium", "",
-         "Solid podium finish! Keep banking points to climb to the next Horizon Wristband tier.",
-         5.0, 4, false, false});
+  } else if (wb_points_after - award.wristband_points <= 0) {
+    // Alice's feedback after the first race only (DialogueScript_EN.xml:
+    // FirstPostRaceWinner, FirstPostRacePodium, FirstPostRaceFourthBelow):
+    // the career's first points come from it. Later races return to free
+    // roam without a call-in (first30d's Gauntlet). One id for the three,
+    // so it plays once per career.
+    // interim (SPEC_QUESTIONS Q303): the subtitles are the engine's.
+    const char* vo = place == 1 ? "FirstPostRaceWinner" : place <= 3 ? "FirstPostRacePodium" : "FirstPostRaceFourthBelow";
+    const char* line = place == 1   ? "Brilliant win! The crowd at the Festival is loving it — check your rewards and next unlocked events."
+                       : place <= 3 ? "Solid podium finish! Keep banking points to climb to the next Horizon Wristband tier."
+                                    : "";
+    dialogs_.enqueue({"first_post_race", CharacterId::kAliceHart, "", "", vo, "", line, 5.0, 5, true, false},
+                     &heard_dialogs_);
   }
 
   // RACE-01: this runs when the player leaves the finish banner. The
@@ -2023,6 +2026,8 @@ CampaignSaveState infer_campaign_state(const CampaignImportInputs& in) {
       heard.insert("sc_unlock_" + std::string(sc.horizon_id));
     }
   }
+  // Alice's first-race feedback is done once any career race is.
+  if (!best.empty()) heard.insert("first_post_race");
   const auto& bands = wristband_milestones();
   for (int lv = 0; lv <= std::min(in.collected_wristband, int(bands.size()) - 1); ++lv)
     heard.insert("wb_collect_" + std::string(bands[size_t(lv)].key));
