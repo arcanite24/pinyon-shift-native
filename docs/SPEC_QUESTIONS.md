@@ -5576,3 +5576,24 @@ order), not by framing.
 Needed: an original save from the first free roam after the opening (or a
 capture route from a new profile through the opening), and a pass over the
 listed beats from the same seed.
+
+## Q285 (first30b, WORLD-14, not blocking): where the Gauntlet's start crowd stands
+
+The original's free roam has a crowd of about ten behind the barriers at
+the Gauntlet sign-up (FR06), right of the road and some 7 to 14 m past the
+start node (`idle_cam0_first30b_orig.png`, `cams_first30b_orig.png`). The
+engine had none there: its crowd clusters come from `GameObjs.xml` sites
+(Q109), capped at 96, and the file's planes and exhibitions used the cap up
+before `FR06_NODE` (the 484th cluster in file order). The cap now takes
+every site, so a cluster stands at FR06 (`world_polish_tests` passes with
+the corpus). But it is placed by the engine's own offsets: 9.2 m to the
+side of the node and centred on it along the road, so in the chase view it
+stands beside the car, out of frame (`crowd_first30b_engine_after.png`),
+not ahead behind the barriers. The FR06 objects around the node
+(`FR06_00`..`FR06_16`) lie 6 to 10.5 m to that side and from 9.5 m before
+to 11.3 m past it, the barrier line at 6 m; which of them, if any, places
+spectators is not known.
+
+Needed: the source of the start-line spectator instances (Q109): whether
+an event's `FR<n>_<k>` objects carry a crowd slot and its class, or where
+else the game reads them.
