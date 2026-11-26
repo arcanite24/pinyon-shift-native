@@ -4543,9 +4543,9 @@ through `CUnloadToPreGame`). The engine now draws that hub (UI_SCENE_SCREENS
   package, 1280x720 wmv3) opens, loops and decodes real frames, and
   `atlas_update("fmv.frame")` succeeds, but the frame's atlas texels
   never show on screen: a plain image of that atlas entry, drawn last,
-  is black too, at 1280x720 and at 640x360. So the fault is between the
-  queued atlas patch and the GPU atlas, not in the hub's scene. Not
-  fixed here (the renderer's UI upload is another branch's).
+  is black too, at 1280x720 and at 640x360. So the atlas entry reads
+  black on the GPU; the hub's scene does not cover it. Not diagnosed
+  further.
 
 Needed: the hub's button bar contents, whether locked tickets show, what
 fills BEST TIME and the points tape, and the restriction strings' table.
@@ -4559,27 +4559,30 @@ After a championship's last stage the engine now runs
 1. `H_POST_RACE_RALLY_FINISHED`: FINISHED and the place, as the festival
    banner. A CONTINUE; X RACE RESULTS shows the engine's standings page
    (B or A closes it).
-2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP, the Rally level
-   bar with the Rally wristbands' art, and PostRaceFlow's
-   "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY FINAL" /
-   "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the final's
-   `UnlockPointsReq`, with no line once champion.
+2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP and the Rally
+   level bar with the Rally wristbands' art. `TEXT_POINTS_TO_NEXT` is set
+   to PostRaceFlow's "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY
+   FINAL" / "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the
+   final's `UnlockPointsReq` (none once champion), but it does not show:
+   at the scene's rest it sits under the bar, as the career line does
+   (`17c_results_points_engine_wp2.png` shows only its last digits).
 3. Once, `H_HORIZON_RALLY_CHAMPION`, with `HorizonRallyChampion` (moved
    from the finish to this screen). A returns to the hub.
 
 The intro heats keep the engine's results page (`game_rally_intro_flow`
-ends differently). `club_rally_corpus_tests` renders the three
-(`rally_{finished,points,champion}_wp5.png`) and checks the lines and the
-steps.
+ends differently). `club_rally_corpus_tests` renders the three (the
+captures folder's `rally_{finished,points,champion}_offline_wp5.png`) and
+checks the lines and the steps. `carview --demo-rally-final` opens the
+sequence after a won first championship; the live captures are
+`rally_{finished,finished_results,points,champion,final_after}_live_wp5.png`.
 
 Interims: no earnings screen (the credits are on X's page); the prize-car
 step is not in the sequence; `Rally_Champion_Cutscene` is not played, so
 black is behind the champion screen; its texts are guesses, the title
 CareerEventUI's "HORIZON RALLY CHAMPION 2012" (0x2DD1) and the place on
 the position tape; the banner's help bar is guessed (no RESTART or
-REPLAY); the points line is set on `TEXT_POINTS_TO_NEXT`, which at the
-scene's rest sits under the bar (as on the career points screen, Q96);
-the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
+REPLAY); the points line is hidden under the bar (above; Q96's scene
+rest); the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
 before the champion screen shows. Between stages the engine's STAGE
 RESULTS page stays (Q147). `race_flow::post_steps` is unchanged: the
 sequence runs on the results state.
