@@ -1182,13 +1182,19 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             // MENU-02: the room's own track in Colorado's place, the car at its
             // origin with its wheels on the room's floor; the studio stage
             // stays for the rooms without a track and when one does not read.
-            const bool room_track = carview::hub_room_track(active_hub_room) != nullptr &&
-                                    !app.cli_hub_studio && host.enter_room_world(active_hub_room);
+            // MY GARAGE opened by the workshop's CHANGE CAR or BARN FINDS
+            // (the workshop's list still under it) stays in the workshop.
+            const HubRoom scene_room = (active_hub_room == HubRoom::kGarage && hub_menu.open() &&
+                                        hub_menu.top() == carview::HubMenu::kWorkshop)
+                                           ? HubRoom::kWorkshop
+                                           : active_hub_room;
+            const bool room_track = carview::hub_room_track(scene_room) != nullptr && !app.cli_hub_studio &&
+                                    host.enter_room_world(scene_room);
             if (!room_track) host.leave_room_world();
             if (room_track) {
               const carview::HubRoomScenery* rs = host.room_world_scenery();
               const float lift = fy - (rs ? rs->floor_y : 0.0f);
-              const float yaw = carview::hub_room_yaw(active_hub_room);
+              const float yaw = carview::hub_room_yaw(scene_room);
               const float cy = std::cos(yaw), sy = std::sin(yaw);
               // The room's game frame (the car's body axes, +Z forward) turned
               // by the room's yaw, then mirrored into the car model's frame
@@ -1715,9 +1721,17 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               else if (r == "paintshop") open_hub_menu(carview::HubMenu::kPaintBooth);
               else if (r == "paint") open_paint();
               else if (r == "garage") open_garage_browser(false);
+              else if (r == "workshop-garage") {  // the workshop's CHANGE CAR
+                open_hub_menu(carview::HubMenu::kWorkshop);
+                open_garage_browser(false);
+              }
               else if (r == "profile") open_hub_menu(carview::HubMenu::kProfile);
               else if (r == "options") open_hub_menu(carview::HubMenu::kOptions);
               else if (r == "photo") open_hub_menu(carview::HubMenu::kPhotoSelect);
+              else if (r == "difficulty") open_options_page(carview::OptionsPage::kDifficulty);
+              else if (r == "hud") open_options_page(carview::OptionsPage::kHud);
+              else if (r == "controls") open_options_page(carview::OptionsPage::kControls);
+              else if (r == "stats") open_stats();
               s_hub_shot_stage = 1;
               s_hub_shot_t0 = std::chrono::steady_clock::now();
             } else if ((s_hub_shot_stage == 1 || s_hub_shot_stage == 3) && due) {
