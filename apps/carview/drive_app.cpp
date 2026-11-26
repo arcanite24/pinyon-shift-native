@@ -252,6 +252,20 @@ CareerSummary DriveApp::career_summary(std::vector<cars::PackInfo>& packs) {
     cs.has_rally = saved.has_rally, cs.rallies = saved.num_rallies, cs.rally_stages = saved.num_rally_stages;
     cs.rally_victories = saved.num_rally_victories, cs.rally_winnings = saved.rally_winnings;
     cs.rally_xp = saved.rally_xp, cs.rally_level = saved.rally_level;
+    // The exploration counts from the same trackers the board's right column
+    // reads (VIS-24: the summary left them at 0 while the board showed the
+    // live counts).
+    cs.popularity_rank = current_pop_rank();
+    if (road_discovery.ready()) {
+      cs.roads_discovered = road_discovery.discovered_count();
+      cs.roads_total = road_discovery.total_roads();
+    }
+    if (have_outposts) {
+      cs.outposts_discovered = outpost_progress.discovered_count(outposts);
+      cs.outposts_total = int(outposts.outposts.size());
+      cs.pr_stunts_done = outpost_progress.completed_stunt_count(outposts);
+      cs.pr_stunts_total = int(outposts.stunts.size());
+    }
     const char* state = std::getenv("SHIFT_STATE_ROOT");
     packs = cars::list_packs(state ? state : "");
     // SPEC-V4-CONTENT, Progression: Rally needs its package (offer 1600).
