@@ -382,6 +382,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         }
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
   if (event_summary_open() && !app.race) d.event_summary = &event_summary_hud;
+        else if (entry_black && !app.race) {
+          // The fade's end held black until the load screen (event entry).
+          event_summary_hud.screen = race_flow::Screen::kEntryFade;
+          event_summary_hud.fade = 1.0;
+          d.event_summary = &event_summary_hud;
+        }
         carview::GpsHud gps_hud;
         static double s_gps_uturn_since = -1.0;
         static struct {
@@ -963,7 +969,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           else list.rect(0, 0, float(width), float(height), carview::ui::rgba(0, 0, 0));
         }
         // Minimap under HUD shapes; hidden in menus, title screen, ceremony, Rally/Club screens, campaign cinematics, and grid menu.
-        const bool pre_race_swoop_hide_hud = pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85;
+        // prerace_countdown's first cut (the car close up) shows no HUD; it
+        // comes with the Follow cut's driving camera (the recomp, frames
+        // 2425-2470 of first30d's race).
+        drive::CameraView count_cut_cam{};
+        const bool count_cut = app.race && race_cut_name == "prerace_countdown" && race_cutscene_camera(count_cut_cam);
+        const bool pre_race_swoop_hide_hud = (pre_race_blend_t >= 0.0 && pre_race_blend_t < 0.85) || count_cut;
         const bool campaign_hide_hud = app.campaign.is_blocking_gameplay() || pre_race_swoop_hide_hud;
         if (mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud && !map_overlay.active &&
             !grid_menu_open && st.menu.empty() && !career_page.is_open() && !hub_menu.open() && !app.rally_hub_open &&

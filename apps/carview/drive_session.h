@@ -511,6 +511,9 @@ struct DriveSession {
   bool results_table = false;
   bool results_points = false;
   std::string pending_event_launch;
+  // The entry fade ended and the event loads: the frames until the load
+  // screen stay black (no free-roam frame between the fade and the load).
+  bool entry_black = false;
   bool handoff_applied = false;
   std::vector<race::CampaignAction> queued_campaign_actions;
 

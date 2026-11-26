@@ -167,7 +167,7 @@ void DriveSession::update_race_screens(double dt) {
       const race::CareerEvent* ev = summary_event;
       const std::string car = event_car_media;
       close_event_summary();
-      if (ev) try_enter_event(*ev, car);
+      if (ev && try_enter_event(*ev, car) && !running) entry_black = true;
     }
   }
   event_summary_hud.screen = entry_screens.screen();
