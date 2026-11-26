@@ -354,9 +354,12 @@ destinations, and an outpost must be discovered (Q90).
   own). In the live render the FILTER title tape is greyer and
   taller than the original's white bar, and the list's scroll indicator is
   drawn by hand (a track and a thumb at the cursor's row) in place of the
-  scene's. The icons' open and pulse animations and the barn rumour's
-  reveal animation are not ported, and travel keeps the loading screen
-  without the original's fast travel camera.
+  scene's. The icons play their profile animations (intro `grow`, hover
+  `bulge`, `ghost` / `unghost`, the player's `radar` ping), and a barn
+  rumour opens the map on its reveal animation ("Map profile animations" in
+  `UI_SCENE_ANIMATION.md`); the career unlocks' `reveal` drops are not
+  played. Travel keeps the loading screen without the original's fast
+  travel camera.
 - **Route arrow.** A route's next turn is `DirectionArrows` at the top
   centre (`draw_hud_direction_arrow`): the dark box (`DIRECTIONARROWBG`,
   which the scene leaves at alpha 0) and the turn's cell of

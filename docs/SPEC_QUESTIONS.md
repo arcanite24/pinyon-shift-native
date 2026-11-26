@@ -4879,11 +4879,11 @@ Still not played:
   event hubs' (`AVAILABLE` / `UNAVAILABLE` / `BRONZE` / `SILVER` / `GOLD`)
   and each activity's (`Upright` / `UprightWarning`). The engine's map does
   not draw those icons from the scene, and the nodes it does draw have no
-  slides. The audit's MAP-05 (a perspective map, its zoom, and the icons'
-  `reveal_drop` / `bulge` / `grow` animations) and HUD-11 (the rumour's
-  map reveal) are `MapProfileFullscreen.xml` profile animations. Those are
-  not BGF timelines, and this work does not cover them. What this work
-  did under HUD-11 is `947_HUD`'s notification panel (`SHOW` / `HIDE`).
+  slides. The audit's MAP-05 icon animations (`grow`, `bulge`, `ghost`,
+  the radar ping) and HUD-11 (the rumour's map reveal) are
+  `MapProfileFullscreen.xml` profile animations; they are now decoded and
+  played (Q241). The perspective map itself and the career unlocks'
+  `reveal_drop` are not.
 - **The activity HUDs (ACT-01, ACT-02).** `947_HUD` has the slides:
   - `SpeedCamera`: `OFF` / `SHOW` / `ON` / `OLDPB`, and more;
   - its `Icon`: `SPEEDCAM` / `AVERAGESPEEDCAM`;
@@ -4995,7 +4995,8 @@ The engine meanwhile:
 - A barn with a running rumour gets the tan icon.
 - A found barn (restoring, ready or collected) gets the dark icon, the
   sheet's colour with no tint, as both profiles give it.
-- A selection fades the other icons to the profile's `ghost` alpha (0.3).
+- A hover plays the profile's `ghost` on the other icons (alpha 1 to 0.3
+  over 0.3 s) and `unghost` when it ends (Q241).
 
 Open:
 - Which fields bytes +44 and +513 are.
@@ -5190,3 +5191,39 @@ values since WP3).
 
 Needed: which screens turn on the blur (a scene flag or the screen's
 code), its strength and its fade in and out.
+
+## Q241 (MAP-05, HUD-11, not blocking): the map profile animations as the engine plays them
+
+The format, the eases, the loops, the triggers and the camera blend are
+decoded from the title ("Map profile animations" in
+`docs/UI_SCENE_ANIMATION.md`). These parts are the engine's reading:
+
+- **Zoom.** The title's camera has a distance; the engine's map is flat
+  with a zoom. The engine takes its opening zoom as the title's opening
+  distance (`UI/Map/Zoom_Default` 0.35 of `Map_Distance_Min..Max`, 2808 m)
+  and zooms as 1 / distance. That puts `UI/Map/Cursor_Zoom_Min` / `_Max`
+  (0.1, 0.4) at 2.97 times in and 1.13 out; the captures measured about
+  2.6 in and 1/6 out (`MapZoom`). A reveal can end at up to 2.97 times
+  (barns 5 and 9), past the player's 2.6, and the player's first zoom then
+  snaps back to 2.6.
+- **The reveal's end view.** The unlock animations' targets are not the
+  rumour circles' centres: they sit 100 m to 2 km from them, pulled
+  towards the middle of the map. With the zoom above, every circle's
+  centre ends in view at 1280 x 720 (`road_discovery_tests`). Barn 1's
+  `posX2` / `posY2` keys (1025, -4727) are not used.
+- **The cursor.** `set_cursor set` (2.1 s) gives the cursor back; the
+  engine puts it at the middle of the view. During the move the cursor
+  stays where it was and still locks onto icons passing under it.
+- **Events.** An icon plays one event at a time: `intro` from the opening,
+  `hover` / `ghost` while something is hovered, `unghost` after. The icon
+  hovered before goes back to its `default` when the cursor leaves for an
+  empty spot. When the player stands on an icon the cursor locks onto it
+  as the map opens, so the map opens ghosted; no capture shows that case.
+- **The time step.** The title advances the animations by at most 1/30 s a
+  frame; the engine uses the clock since the map opened.
+- **The rumour popup.** The engine still shows its NEW BARN FIND RUMOR
+  notification; it appears when the map closes.
+
+Needed: a capture series of a rumour reveal (the map opening on its own
+during a drive), and a capture of the map opened with the player on an
+icon.
