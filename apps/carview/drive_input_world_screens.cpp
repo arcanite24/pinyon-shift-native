@@ -420,6 +420,54 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                    e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL))
                 return true;
+              // The career's locked map (CLockMapScreenForFirstTimeCareer):
+              // no way out but A SET ROUTE on the Horizon Heats, which closes
+              // it; B, X and Y do nothing (the original's workshop map,
+              // first30a captures; Q275).
+              if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
+                const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
+                const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+                const bool a = (key && (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE)) ||
+                               (pad && e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH);
+                const bool other = (key && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_M || e.key.key == SDLK_BACKSPACE ||
+                                            e.key.key == SDLK_X || e.key.key == SDLK_F || e.key.key == SDLK_Y ||
+                                            e.key.key == SDLK_TAB)) ||
+                                   (pad && (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST ||
+                                            e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK ||
+                                            e.gbutton.button == SDL_GAMEPAD_BUTTON_START ||
+                                            e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST ||
+                                            e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH));
+                if (a) {
+                  // The heats' marker, or the cursor on its sign-up place
+                  // (the engine's map may not list the career's event).
+                  std::array<double, 3> hp{};
+                  const bool have_hp = app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp);
+                  bool heats = false;
+                  if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+                    const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+                    heats = m.kind == MapMarker::kEvent &&
+                            (m.id == std::to_string(race::FirstTimeCareer::kAllComerFinal) ||
+                             (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
+                  } else if (have_hp) {
+                    heats = std::hypot(map_cx - hp[0], map_cz - hp[2]) < 120.0;
+                  }
+                  if (heats && have_hp && app.gps_solver.ready()) {
+                    const drive::Vec3 at = vehicle.position();
+                    fire_satnav_event(app.gps_nav.set_destination(hp[0], hp[2], traffic::GpsDestKind::kFestivalRace,
+                                                                  "IDS_HudMsg_HorizonHeats",
+                                                                  at.x, at.z));
+                    app.audio_host.trigger_ui(audio::UiCue::kAccept);
+                    close_map();
+                  } else if (heats) {
+                    map_route_to_selected();
+                    close_map();
+                  } else {
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                  }
+                  return true;
+                }
+                if (other) return true;
+              }
               // The scene-driven map's filter popup, dialogs, LB and X first.
               if (map_screen_event(e)) return true;
               auto zoom_by = [&](double f) {

@@ -104,6 +104,7 @@ struct MapScreenHud {
   MapDialog dialog = MapDialog::kNone;
   std::string dialog_body;
   std::string band_texture;            // the player bar's wristband (empty: from the HUD)
+  std::string tip;                     // the top-left (i) tip (the career's locked map)
   // X DETAILS on an event: its ticket over the map (no cursor or popup), with
   // A SET ROUTE, B BACK and Y RESTRICTIONS (map_popup_event_details_orig.png).
   const EventSummaryHud* details = nullptr;

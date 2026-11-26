@@ -284,6 +284,12 @@ class FirstTimeCareer {
   // is (the career catalogue's triggers). Without them the events launch at
   // once and Race Central uses kRaceCentral / kRaceCentralRadius.
   void set_event_trigger(int64_t event_id, const std::array<double, 3>& pos, double radius);
+  // The sign-up place set for `event_id`; false when none was set.
+  bool event_trigger(int64_t event_id, std::array<double, 3>& pos) const {
+    for (const auto& t : triggers_)
+      if (t.id == event_id) return pos = t.pos, true;
+    return false;
+  }
   void set_race_central(const std::array<double, 3>& pos, double radius);
   // Route 170's waypoints (route_waypoint_NN in order). The route is the
   // race to the festival's: its grid is at the diner and its waypoints run

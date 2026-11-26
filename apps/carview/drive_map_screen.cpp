@@ -370,6 +370,17 @@ void DriveSession::map_screen_fill() {
       }
     }
   }
+  // The career's locked map: A SET ROUTE, LB FILTER, L MOVE, R ZOOM and no
+  // way out, under the Horizon Heats tip (the original's workshop map,
+  // first30a captures; Q275).
+  if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
+    ms.prompts.push_back({"A", text_of(map_text::kSetRoute)});
+    ms.prompts.push_back({"LB", text_of(map_text::kFilter)});
+    ms.prompts.push_back({"LS", text_of({"HelpButtons", "IDS_Move", 0, "MOVE"})});
+    ms.prompts.push_back({"RS", text_of({"HelpButtons", "IDS_ZOOM", 0, "ZOOM"})});
+    ms.tip = text_of({"InGame", "IDS_MapTip_SetRouteToHeats", 0, "Please set a route to the Horizon Heats event."});
+    return;
+  }
   // The help bar (map_popup_outpost_orig.png): A route, B exit, X the
   // icon's action, LB the filter.
   ms.prompts.push_back({"A", text_of(route ? map_text::kClearRoute : map_text::kSetRoute)});
