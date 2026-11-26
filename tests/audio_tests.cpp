@@ -170,6 +170,29 @@ void player_checks() {
     rec_sq += double(l) * l;
   }
   CHECK(std::sqrt(rec_sq / 480) > 1e-2);
+
+  // The FocusCar category gain goes in ahead of the chain (Q337): at FreeRoam's
+  // 0.35 with the mixer applying it after, the player's output times 0.35 is
+  // the engine-only render's; without a Trash the chain is linear, so half
+  // the gain is half the level.
+  auto level = [&](double cat, bool after) {
+    audio::EnginePlayer p(sound, {{&tone, &tone}}, 48000, 1000, 3000);
+    p.category_gain = cat;
+    p.category_applied_after = after;
+    std::vector<float> o(2 * 4800);
+    double e = 0;
+    for (int k = 0; k < 3; ++k) {
+      p.set({1000, 0, 0, 0});
+      p.render(o.data(), 4800);
+    }
+    for (int f = 0; f < 4800; ++f) e += double(o[2 * size_t(f)]) * o[2 * size_t(f)];
+    return std::sqrt(e / 4800);
+  };
+  const double ref = level(audio::EnginePlayer::kFreeRoamCategoryGain, false);
+  CHECK(ref > 1e-3);
+  CHECK(near(level(0.35, true) * 0.35, ref, 1e-3 * ref));
+  CHECK(near(level(0.175, false), 0.5 * ref, 1e-3 * ref));
+  CHECK(level(0.0, true) < 1e-9);
 }
 
 void r34_checks() {

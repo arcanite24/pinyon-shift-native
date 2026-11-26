@@ -3248,7 +3248,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       const float lfe_g =
           st.is_electric
               ? 0.0f
-              : 0.22f * view_lfe * std::clamp(0.25f + 0.75f * cur_thr, 0.0f, 1.0f) *
+              : 0.22f * engine_lfe_level_ * view_lfe * std::clamp(0.25f + 0.75f * cur_thr, 0.0f, 1.0f) *
                     std::clamp(0.35f + 0.65f * norm_rpm, 0.0f, 1.0f);
       // Authentic octave-law pitch anchored at 4000 RPM: pow(2, log2(rpm / 4000) * scale + offset).
       const float rpm_ref_ratio = std::clamp(std::max(300.0f, st.rpm) / 4000.0f, 0.075f, 4.0f);

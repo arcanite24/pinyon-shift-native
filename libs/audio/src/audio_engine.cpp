@@ -1240,6 +1240,9 @@ void AudioEngine::drain_commands() {
       case Command::kSwapSfx:
         retire_ptr(Retired::kSfx, sfx_);
         sfx_ = static_cast<SfxEngine*>(c.ptr0);
+        // The output is stereo, and the LFE buffer folds into it: no EngineLFE
+        // there, as in the original's stereo mix (Q337).
+        if (sfx_) sfx_->set_engine_lfe_level(0.0f);
         break;
       case Command::kSwapSatNav:
         retire_ptr(Retired::kSatNav, satnav_);
@@ -1404,6 +1407,11 @@ void AudioEngine::render_block(float* out, int frames) {
   float* sfx_buses[kBuses] = {};
 
   if (engine_) {
+    // The focus engine takes the FocusCar category gain ahead of its chain's
+    // shaper, as the original does (Q337); the matrix mix below applies the
+    // engine bus's gain again, so the player divides it back out.
+    engine_->category_applied_after = use_matrix_;
+    if (use_matrix_) engine_->category_gain = matrix_.bus_gain(Bus::kEngine);
     engine_->render(bus_bufs_[int(Bus::kEngine)].data(), frames);
     buses[int(Bus::kEngine)] = bus_bufs_[int(Bus::kEngine)].data();
   } else if (sfx_) {

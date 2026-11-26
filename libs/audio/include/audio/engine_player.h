@@ -58,6 +58,15 @@ class EnginePlayer {
 
   bool neg_raises = true;  // confirmed SPEC-ENGINE-SOUND: braking raises x
   double master = 1;       // overall level
+  // The FocusCar category gain of the snapshot matrix (Q337). The original
+  // applies it to the focus voices ahead of the chain's shaper: halving it
+  // lowers the idle 6 dB and the saturated limiter only about 3 dB. Without a
+  // matrix (an engine-only render) it stays at FreeRoam's 0.35.
+  double category_gain = kFreeRoamCategoryGain;
+  // Set when the caller's mixer multiplies this player's output by the same
+  // category gain after it (the live mixer's engine bus): the chain's output
+  // then divides it back out, so the gain counts once, before the shaper.
+  bool category_applied_after = false;
   double pitch_scale = 1;  // multiplies each loop's rate on the next set() (a 3D car's Doppler shift)
   // A 3D point source (another car, at the Default view): each group plays at
   // unity in both channels and the caller places the sum; the 5.1 speaker mix
@@ -83,9 +92,11 @@ class EnginePlayer {
   static constexpr double kDescriptorDspScalar = 0.9;
   static constexpr double kTrashGroupScale = 0.24;
   // The focus car's level into and out of its DSP chain, against the
-  // original's captures (Q322): its voices reach the chain with the snapshot
-  // and SFX volumes already on them, so the chain sees a quieter signal.
-  static constexpr double kFocusPreScale = 0.1;     // -20 dB
+  // original's captures (Q322, Q337). Into the chain the voices carry the
+  // FocusCar category gain (`category_gain`) times kFocusPreScale: Q322 fitted
+  // 0.1 (-20 dB) at FreeRoam's 0.35, so 0.1 / 0.35 per unit of category gain.
+  static constexpr double kFreeRoamCategoryGain = 0.35;
+  static constexpr double kFocusPreScale = 0.1 / kFreeRoamCategoryGain;
   static constexpr double kFocusPostScale = 2.24;   // +7 dB
   bool intake_chuff_active() const { return chuff_active_; }
 

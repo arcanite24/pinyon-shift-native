@@ -486,6 +486,10 @@ class SfxEngine {
   // into `lfe_out` instead of summing them into stereo L/R pre-compressor.
   void render(const VehicleAudioState& st, float* const* buses, int frames,
               EnginePlayer* focus_engine = nullptr, float* lfe_out = nullptr);
+  // The EngineLFE loop's level (1 by default). A stereo output that folds the
+  // LFE channel into L and R sets it to 0: the original's stereo matrix drops
+  // the LFE channel, and its front channels carry no EngineLFE (Q337).
+  void set_engine_lfe_level(float level) { engine_lfe_level_ = level; }
 
   int active_one_shots() const;
   bool is_one_shot_active(SfxSoundId id) const;
@@ -711,6 +715,7 @@ class SfxEngine {
   LoopVoice turbo_voice_{};
   LoopVoice sc_voice_{};
   LoopVoice engine_lfe_voice_{};
+  float engine_lfe_level_ = 1.0f;
   LoopVoice electric_voice_{};
   LoopVoice electric_mid_voice_{};
   LoopVoice electric_high_voice_{};

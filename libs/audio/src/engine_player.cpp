@@ -405,7 +405,12 @@ void EnginePlayer::render(float* out, int frames) {
   const bool run_focus_dsp = !positional;
   // The focus chain carries every emission group (Q322): the loops are summed
   // at their own level, shaped, then set to the group volume and `master`.
-  const double post_gain = cur_master_ * kFocusPostScale * (run_trash ? cur_trash_group_gain_ : 1.0);
+  // The FocusCar category gain goes in ahead of the shaper (Q337); a mixer
+  // that applies it again after the player has it divided back out here.
+  const double cat = std::isfinite(category_gain) ? std::clamp(category_gain, 0.0, 1.0) : kFreeRoamCategoryGain;
+  const double cat_out = category_applied_after ? (cat > 1e-4 ? 1.0 / cat : 0.0) : 1.0;
+  const double pre_gain = kFocusPreScale * cat;
+  const double post_gain = cur_master_ * kFocusPostScale * cat_out * (run_trash ? cur_trash_group_gain_ : 1.0);
   std::array<double, 3> out_gain{1, 1, 1};
   for (size_t b = 0; b < 3; ++b) out_gain[b] = std::pow(10.0, trash_now_[b].out_db * shift_factor_ / 20.0);
   auto shape_band = [&](double x, size_t b) {
@@ -433,7 +438,7 @@ void EnginePlayer::render(float* out, int frames) {
     for (size_t g = 0; g < state_.size(); ++g) {
       GroupState& st = state_[g];
       float* dst = run_focus_dsp ? scoped_buf : out_chunk;
-      const double group_post = run_focus_dsp ? kFocusPreScale : cur_master_;
+      const double group_post = run_focus_dsp ? pre_gain : cur_master_;
       for (int f = 0; f < n_chunk; ++f) {
         double sum = 0;
         for (size_t i = 0; i < st.voices.size(); ++i) {
