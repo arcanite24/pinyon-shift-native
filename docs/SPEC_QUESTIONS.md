@@ -6182,7 +6182,31 @@ r11 (2nd, 3,750 Cr) and r12 (1st, 4,250 Cr) show the same order. Their loading t
 
 The engine's award matches. e15 (1st with `--race-ai-hold 30`) paid 4,250 Cr: base 3,000, mileage 400, then 25%. That is r12's TOTAL. e13 (6th) paid 1,875 Cr and 20 wristband points; what the original pays for a finish outside the top 3 is not captured. The e13-e17 runs resume e8's save, so their balances (1,475 Cr before the final) are not the new profile's 500.
 
-The engine before this pass set the showcase's route itself and never opened the map. Now, after a top-3 final, it opens the locked map once the race is gone (e16 `f_00027`). The map has this tip and no route. A on the showcase routes there (HORIZON Presents Mustang vs Mustang, 5,000 Cr), PLEASE WAIT shows for 3 s, the map closes, and ENTER THE SHOWCASE EVENT follows (e16 `f_00030`-`f_00033`). The career's result now waits for the race's reward pages; the engine had DRIVE TO RACE CENTRAL and the Skills_Unlock cutscene over YOU WON A CAR (e16 `f_00385`-`f_00405`).
+The engine before this pass set the showcase's route itself and never opened the map. Now, after a top-3 final, it opens the locked map once the race is gone (e19 `f_00421`-`f_00422`). The map has this tip and no route. A on the showcase routes there (HORIZON Presents Mustang vs Mustang, 5,000 Cr), PLEASE WAIT shows for 3 s, the map closes, and ENTER THE SHOWCASE EVENT follows (e19 `f_00424`-`f_00426`).
+
+e19 runs the whole stretch in one go on this branch's tip. It seeds from e8's heats save under `--race-ai-hold 30`; the frames and beat log are in `E:\first30e\evidence` (`e19_*`). Seconds from the run's start:
+- 404: the heats final ends 1st.
+- 408-415: FINISHED 1ST PLACE, CASH REWARD 4,250 Cr (balance 5,725), POINTS EARNED +70.
+- 416-420: black load.
+- 421: the locked map fades in.
+- 425: the route is set.
+- 426: ENTER THE SHOWCASE EVENT.
+- 583: the showcase starts.
+- 765-769: 1st, 6,875 Cr, YOU WON A CAR.
+- 775-792: Skills_Unlock, still broken.
+- 793: DRIVE TO RACE CENTRAL.
+- 853-929: FMV_02.
+- 929-953: Wristband_Intro.
+- 954-956: rewards, black.
+- 957: the first autoshow's locked map.
+- 960: the route to Race Central.
+- 966-978: the autoshow.
+- 980: satnav_tutorial.
+- 983: complete.
+
+The e9-e18 frame folders were deleted for disk space, apart from the frames copied into evidence.
+
+The first autoshow's locked map is an interim; Q280 has the stall it fixes. Its tip is the disc's `IDS_MapTip_SetRouteToRaceCentral` with an English fallback of ours, and a route to Race Central lets it go (`ftc_map_target`, `drive_map_screen.cpp`). The original's map at that point is not captured. The career's result now waits for the race's reward pages; the engine had DRIVE TO RACE CENTRAL and the Skills_Unlock cutscene over YOU WON A CAR (e16 `f_00385`-`f_00405`).
 
 The showcase's ticket reads CAR PROVIDED Ford Mustang Boss 429. The engine's career launch raced it in the Corrado (e16); it now hands over the provided car, as the events page's launch does.
 
