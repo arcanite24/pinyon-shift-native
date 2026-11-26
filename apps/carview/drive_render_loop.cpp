@@ -231,11 +231,6 @@ void DriveSession::apply_campaign_action(const race::CampaignAction& ca) {
               app.pending_handoff.open_autoshow = ca.open_autoshow;
               app.pending_handoff.lock_viper_radio = ca.lock_viper_radio;
               app.campaign.save_to_save(app.saved);
-              // The in-memory save follows the swap: the next session's
-              // reload check (init_session) would otherwise read the last
-              // written car (the Viper) and queue it, and the queued swap
-              // fires at the next session end - the heats launch.
-              app.saved.car = swap_target;
               app.next_car = swap_target;
               running = false;
               return;
