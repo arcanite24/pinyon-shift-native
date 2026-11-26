@@ -85,9 +85,13 @@ struct HubCameraShot {
 // `paint_region`: the editor's PaintRegion (0 body .. 6 window tint);
 // `part_enum`: the upgrade shop's selected part, -1 off its part lists.
 HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int paint_region, bool colour_select);
-// The WorkshopCams.xml sequence for an upgrade part (Upgrade_Part_FRONT ..
-// REARWHEEL), empty for the parts without one.
+// The WorkshopCams.xml sequence for an upgrade part (the body parts and the
+// wheels), empty for the parts without one.
 std::string_view workshop_part_sequence(int part_enum);
+// The UICarTargetCameraPresets.xml preset for an engine or drivetrain part
+// (Upgrades_Engine_Front, Upgrades_Flywheel, Upgrades_Drivetrain), empty
+// for the others.
+std::string_view workshop_part_preset(int part_enum);
 
 // Smooth turntable camera for 3D Festival Hub screens.
 struct HubCamera {

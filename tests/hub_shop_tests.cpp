@@ -184,6 +184,10 @@ void test_hub_stage_and_camera() {
       CHECK(shot.sequence_member.empty() && shot.preset == "LiveryPaintMenu_Rims");
       shot = carview::hub_camera_shot(HubRoom::kWorkshop, 34, false, 0, false);
       CHECK(shot.sequence_member == "WorkshopCams.xml" && shot.sequence == "Upgrade_Part_FRONT");
+      shot = carview::hub_camera_shot(HubRoom::kWorkshop, 12, false, 0, false);  // camshaft
+      CHECK(shot.sequence_member.empty() && shot.preset == "Upgrades_Engine_Front");
+      shot = carview::hub_camera_shot(HubRoom::kWorkshop, 31, false, 0, false);
+      CHECK(shot.sequence_member.empty() && shot.preset == "Upgrades_Drivetrain");
       shot = carview::hub_camera_shot(HubRoom::kWorkshop, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, true);

@@ -258,18 +258,26 @@ std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor
 
 std::string_view workshop_part_sequence(int part_enum) {
   // UpgradeAreas' slots (cars/database.cpp upgrade_slots) on the seven
-  // sequences' names; the engine and drivetrain parts take the hood's and
-  // the rear wheel's (interim: the original's choice for them is not
-  // traced, Q221).
+  // sequences' names: the body parts and the wheels. The engine and
+  // drivetrain parts have no sequence; they take the presets named for
+  // them (workshop_part_preset). Interim, Q221.
   if (part_enum == 34) return "Upgrade_Part_FRONT";
   if (part_enum == 35 || part_enum == 18) return "Upgrade_Part_REAR";
   if (part_enum == 9) return "Upgrade_Part_WING";
-  if (part_enum == 36 || (part_enum >= 12 && part_enum <= 29)) return "Upgrade_Part_HOOD";
+  if (part_enum == 36) return "Upgrade_Part_HOOD";
   if (part_enum == 37) return "Upgrade_Part_SIDE";
   if (part_enum == 4 || part_enum == 5 || part_enum == 8 || part_enum == 10 || part_enum == 11 || part_enum == 38 ||
       part_enum == 39 || part_enum == 43)
     return "Upgrade_Part_FRONTWHEEL";
-  if (part_enum >= 30 && part_enum <= 33) return "Upgrade_Part_REARWHEEL";
+  return "";
+}
+
+std::string_view workshop_part_preset(int part_enum) {
+  // UICarTargetCameraPresets.xml's Upgrades_* for the parts WorkshopCams.xml
+  // has no sequence for (the engine is taken as front-mounted).
+  if (part_enum == 20) return "Upgrades_Flywheel";
+  if (part_enum >= 12 && part_enum <= 29) return "Upgrades_Engine_Front";
+  if (part_enum >= 30 && part_enum <= 33) return "Upgrades_Drivetrain";
   return "";
 }
 
@@ -297,6 +305,8 @@ HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int
       if (const std::string_view seq = workshop_part_sequence(part_enum); !seq.empty()) {
         s.sequence_member = "WorkshopCams.xml";
         s.sequence = seq;
+      } else if (const std::string_view preset = workshop_part_preset(part_enum); !preset.empty()) {
+        s.preset = preset;
       } else {
         s.sequence_member = kHomeSpace;
       }
