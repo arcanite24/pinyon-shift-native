@@ -20,10 +20,14 @@
 #include <vector>
 
 #include "cars/physics.h"
+#include "cars/shader_settings.h"
 #include "drive/from_physics.h"
 #include "garage/pi_calc.h"
 
 namespace garage {
+
+// GlobalRegistry HeroCar/Colours/LiveryPaintSection_Rims (4210752 = 0x404040 dark grey).
+inline constexpr int32_t kHeroCarRimPaintRgb = 0x404040;
 
 struct Car {
   int64_t id = 0, car_id = 0;
@@ -37,6 +41,7 @@ struct Car {
   CarStats cached_stats;                 // recomputed whenever parts change
   bool favorite = false;                 // player favorite flag (persisted in garage.txt)
   bool is_prize = false;                 // gift / prize / barn-find car (sells for 100 CR)
+  int32_t rim_paint_rgb = -1;            // packed 0xRRGGBB (LiveryPaintSection_Rims; < 0 = unpainted)
 };
 
 struct Bought {
@@ -200,7 +205,12 @@ bool load_class_bands(const std::filesystem::path& game_root, std::vector<ClassB
 bool fit_upgrade_levels(Garage& g, const cars::PartsDb& db, int64_t garage_id,
                         const std::map<std::string, int>& levels, int64_t wheel_style,
                         const cars::PhysicsSettings* phys_settings = nullptr, const PiConfig* pi_cfg = nullptr,
-                        const std::vector<ClassBand>* bands = nullptr, std::string* error = nullptr);
+                        const std::vector<ClassBand>* bands = nullptr, std::string* error = nullptr,
+                        int32_t rim_paint_rgb = -1);
+
+// Applies a car's stored rim_paint_rgb (LiveryPaintSection_Rims) into `paint.rims`
+// when `paintable` is true and `paint.rims` is not already customized by a livery.
+bool apply_car_rim_paint(const Car& car, cars::CarPaintSpec& paint, bool paintable = true);
 
 std::string to_text(const Garage& g);
 bool from_text(const std::string& text, Garage& out, std::string* error);

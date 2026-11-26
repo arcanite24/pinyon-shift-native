@@ -555,6 +555,9 @@ std::string to_text(const Garage& g) {
     if (!c.livery_file.empty()) {
       o << "livery " << c.id << " " << c.livery_file << "\n";
     }
+    if (c.rim_paint_rgb >= 0) {
+      o << "rim_paint " << c.id << " " << (c.rim_paint_rgb & 0xFFFFFF) << "\n";
+    }
   }
   if (!g.club_shared_garage_ids.empty()) {
     o << "club_shared";
@@ -633,6 +636,12 @@ bool from_text(const std::string& text, Garage& out, std::string* error) {
       if (l >> gid >> path) {
         if (Car* c = out.find(gid)) c->livery_file = path;
       }
+    } else if (key == "rim_paint") {
+      int64_t gid = 0;
+      int32_t rgb = -1;
+      if (l >> gid >> rgb && rgb >= 0) {
+        if (Car* c = out.find(gid)) c->rim_paint_rgb = rgb & 0xFFFFFF;
+      }
     } else if (key == "bought") {
       Bought b;
       if (l >> b.garage_id >> b.part_enum >> b.part_id >> b.manufacturer >> b.price_paid) out.bought.push_back(b);
@@ -676,7 +685,7 @@ bool write_garage(const std::filesystem::path& path, const Garage& g, std::strin
 bool fit_upgrade_levels(Garage& g, const cars::PartsDb& db, int64_t garage_id,
                         const std::map<std::string, int>& levels, int64_t wheel_style,
                         const cars::PhysicsSettings* phys_settings, const PiConfig* pi_cfg,
-                        const std::vector<ClassBand>* bands, std::string* error) {
+                        const std::vector<ClassBand>* bands, std::string* error, int32_t rim_paint_rgb) {
   Car* car = g.find(garage_id);
   if (!car) {
     if (error) *error = "no garage car " + std::to_string(garage_id);
@@ -723,9 +732,23 @@ bool fit_upgrade_levels(Garage& g, const cars::PartsDb& db, int64_t garage_id,
     car = g.find(garage_id);
   }
   if (wheel_style > 0) car->slots["WheelStyle"] = wheel_style;
+  if (rim_paint_rgb >= 0) {
+    car->rim_paint_rgb = rim_paint_rgb & 0xFFFFFF;
+  } else if (car->car_id == 309 && wheel_style == 640 && car->rim_paint_rgb < 0) {
+    // GlobalRegistry HeroCar/Colours/LiveryPaintSection_Rims (0x404040 dark grey).
+    car->rim_paint_rgb = kHeroCarRimPaintRgb;
+  }
   if (phys_settings && pi_cfg && bands && db.is_open()) refresh_car_pi(*car, db, *phys_settings, *pi_cfg, *bands);
   if (!missing.empty() && error) *error = "no row for " + missing;
   return missing.empty();
+}
+
+bool apply_car_rim_paint(const Car& car, cars::CarPaintSpec& paint, bool paintable) {
+  if (!paintable || car.rim_paint_rgb < 0 || paint.rims.active) return false;
+  paint.rims.active = true;
+  paint.rims.rgb = uint32_t(car.rim_paint_rgb & 0xFFFFFF);
+  paint.rims.finish = cars::PaintFinish::kNormal;
+  return true;
 }
 
 }  // namespace garage

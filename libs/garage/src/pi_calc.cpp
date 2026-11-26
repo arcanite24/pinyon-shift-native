@@ -323,7 +323,17 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
   const int dt_idx = p.layout == drive::CarParams::Layout::kFront ? 0
                      : p.layout == drive::CarParams::Layout::kAll ? 2 : 1;
   const double straight_grip = cfg.straight_accel_grip[size_t(dt_idx)];
-  const double corner_grip = cfg.corner_accel_grip[size_t(dt_idx)];
+  double corner_grip = cfg.corner_accel_grip[size_t(dt_idx)];
+  // Limited-slip differential recovers corner-exit drive traction as the inside
+  // driven wheel unloads laterally (open diff = 0 keeps the PI.xml baseline).
+  const double drive_lsd_accel =
+      p.layout == drive::CarParams::Layout::kFront ? p.front_lsd.accel
+      : p.layout == drive::CarParams::Layout::kRear ? p.rear_lsd.accel
+      : 0.5 * (p.front_lsd.accel + p.rear_lsd.accel);
+  if (drive_lsd_accel > 0.0 && corner_grip < 1.0) {
+    const double lsd_u = std::clamp(drive_lsd_accel / 1000.0, 0.0, 1.0);
+    corner_grip = std::min(1.0, corner_grip + 0.025 * lsd_u);
+  }
   const double lap_scale = cfg.lap_time_scale[size_t(dt_idx)];
 
   // Gear redline speeds in m/s: use PI.xml's 8 reference gears when present,
@@ -814,9 +824,34 @@ CarStats compute_car_stats(const drive::CarParams& p, const cars::CarPhysics& ca
 
 PiResult compute_pi(const cars::CarPhysics& fitted_phys, const cars::PhysicsSettings& settings, const PiConfig& cfg,
                     const std::vector<ClassBand>& bands, const cars::CarPhysics* stock_phys) {
+  auto apply_pi_ride_height = [](const cars::CarPhysics& phys, drive::CarParams& p) {
+    // apply_physics() adjusts CMHeight for Rally lift (Level 4); also reflect
+    // Sport/Race SpringDamper ride-height lowering in the virtual-lap CG height.
+    const int spring_level = int(std::llround(phys.get("List_UpgradeSpringDamper.Level", 0.0)));
+    if (spring_level == 4) return;
+    double delta_sum = 0.0;
+    int delta_n = 0;
+    for (int a = 0; a < 2; ++a) {
+      const std::string sd = a == 0 ? "FrontSpringDamper." : "RearSpringDamper.";
+      const std::string stk1 =
+          a == 0 ? "Data_CarBody.ModelFrontStockRideHeight" : "Data_CarBody.ModelRearStockRideHeight";
+      const std::string stk2 = a == 0 ? "Data_Car.FrontStockRideHeight" : "Data_Car.RearStockRideHeight";
+      if (phys.has(sd + "DefRideHeight") && (phys.has(stk1) || phys.has(stk2))) {
+        const double stk_rh = phys.has(stk1) ? phys.get(stk1) : phys.get(stk2);
+        delta_sum += (phys.get(sd + "DefRideHeight") - stk_rh);
+        ++delta_n;
+      }
+    }
+    if (delta_n > 0) {
+      const double delta = std::clamp(delta_sum / double(delta_n), -0.15, 0.15);
+      p.centre_of_mass.y = std::max(0.20, p.centre_of_mass.y + delta);
+    }
+  };
+
   drive::CarParams p_fit;
   drive::geometry_from_physics(fitted_phys, p_fit);
   drive::apply_physics(fitted_phys, settings, p_fit);
+  apply_pi_ride_height(fitted_phys, p_fit);
 
   PiResult res;
   res.lap_time_s = simulate_pi_lap(p_fit, &fitted_phys, cfg);
@@ -833,6 +868,7 @@ PiResult compute_pi(const cars::CarPhysics& fitted_phys, const cars::PhysicsSett
     drive::CarParams p_stk;
     drive::geometry_from_physics(*stock_phys, p_stk);
     drive::apply_physics(*stock_phys, settings, p_stk);
+    apply_pi_ride_height(*stock_phys, p_stk);
     const double t_stock = simulate_pi_lap(p_stk, stock_phys, cfg);
     const double dt = t_stock - res.lap_time_s;
     if (std::fabs(dt) < 1e-6) {
