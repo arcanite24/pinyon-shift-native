@@ -6246,6 +6246,10 @@ Not settled:
 Needed: a music-only capture through a pull, a capture of the popup at
 finer spacing, and a DJ trigger, such as a wristband or event unlock.
 
+**Partly answered (first30g):** Q335 has the music-only pull (no ducking),
+a switch while moving and the popup at 10-frame spacing. DJ intros are
+still open.
+
 ## Q293 (first30c, audio, not blocking): the focus engine's balance by rpm
 
 The MX-5 (`MAZ_Miata_94`, intake and exhaust level 3) was driven through
@@ -6643,3 +6647,36 @@ Unknown:
 
 Needed: head-on wall hits on the recomp at two or three speeds with only
 the collision sounds kept, and the engine's hits at the same speeds.
+
+## Q335 (first30g, radio, not blocking): the radio while driving: ducking, switching and the popup
+
+Measured with only the music bus kept, from the radio-off seed (recomp
+`.local/runs/first30g-g3-music` and `first30g-g3b-music`, route
+`orig-g3.fh1test`; engine `out/first30g/runs/g3-music` and `g3b-music`,
+`g3.script` with `--radio-press 10` from a radio-off save). Times are wall
+time from the trace (the recomp rendered about 34 frames a second).
+
+- **No ducking under the engine.** Bass Arena at rest read -23.0 to
+  -24.9 dB; through a full-throttle pull to 97 km/h on the same track,
+  -22.0 to -23.5 dB. The engine does not duck either. The music's level
+  depends on the track, so Q292's 2 dB difference at rest is not a gap on
+  this evidence (the engine's Bass Arena reads -21.3 to -23.5 dB).
+- **Switching while moving works** (Bass Arena to Pulse at 80 km/h), with
+  the same popup as at rest.
+- **The popup** is absent 0.57 to 0.68 s after the press, fading in at
+  0.85 s, full by 1.02 to 1.09 s, still up at 2.74 to 3.04 s and gone by
+  4.14 to 4.71 s. The engine shows it from 1.0 s to 5.0 s after the press,
+  which fits.
+- **The change itself is not a crossfade.** The old station fades out from
+  about 0.17 s after the press over about 0.45 s to silence, and the new
+  station comes in about 0.7 s after the press within 50 ms. Before, the
+  engine crossfaded both over `stationChangeFadeTimeUser` (0.25 s) with no
+  dip. It now fades the old station out over that time and brings the new
+  one in over 50 ms once the old is silent.
+
+Unknown:
+- why the fade-out takes about 0.45 s against the file's 0.25 s (a fade
+  stepped per rendered frame would explain it, as Q292's popup timer is);
+- the gap before the new station (about 0.25 s of silence on the recomp;
+  the engine has almost none);
+- DJ intros: none played in these runs, so their triggers are not measured.
