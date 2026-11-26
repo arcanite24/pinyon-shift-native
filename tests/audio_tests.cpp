@@ -134,7 +134,8 @@ void player_checks() {
     energy += out[2 * size_t(f)] * out[2 * size_t(f)];
     crossings += (out[2 * size_t(f) - 2] < 0) != (out[2 * size_t(f)] < 0);
   }
-  CHECK(energy > 100 && player.voices() == 1);
+  // A focus car: its chain sits 13 dB under the loops' own level (Q322).
+  CHECK(energy > 20 && player.voices() == 1);
   CHECK(crossings >= 9 && crossings <= 11);  // 100 Hz over 50 ms: 10 zero crossings
   // Up to 2,500 rpm: the first loop leaves its range and fades out in about
   // 0.15 s (x 0.2 per 1/30 s).

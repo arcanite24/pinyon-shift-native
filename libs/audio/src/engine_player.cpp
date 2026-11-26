@@ -400,7 +400,9 @@ void EnginePlayer::render(float* out, int frames) {
 
   const bool run_focus_peq = sound_.focus_peq.active && !positional;
   const bool run_trash = sound_.trash_dsp.active && !positional;
-  const bool run_focus_dsp = run_focus_peq || run_trash;
+  // Every focus car goes through the chain (its level in and out of it is
+  // the focus car's, with or without a FocusPEQ or Trash on the tuning).
+  const bool run_focus_dsp = !positional;
   // The focus chain carries every emission group (Q322): the loops are summed
   // at their own level, shaped, then set to the group volume and `master`.
   const double post_gain = cur_master_ * kFocusPostScale * (run_trash ? cur_trash_group_gain_ : 1.0);
