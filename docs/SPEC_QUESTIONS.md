@@ -3444,6 +3444,15 @@ right during the race to the festival (`f00417`, `f00537`
 `_first30a_orig.png`). Its scene and trigger are not traced, and the
 engine shows none (Q280).
 
+Update (first30e): statically, it is the HUD scene's `SHOW_SAVING` /
+`HIDE_SAVING` labels, held at least 3 s while a profile save is busy
+(driven by `sub_825D65B8`, not by `global.save_profile`). The engine now
+draws "SAVING" (`Main/IDS_Saving_Short`, upper-cased) and the load
+spinner left of the speedometer for 3 s from each save, placed to
+`f00417` (spinner centre 1020, 647 at 720p). Interim: the HUD scene's own
+element and animation are not played, and the engine shows it on every
+save, timed autosaves included.
+
 ## Q143 (V4-02..V4-07, not blocking): the 1000 Club screens' unmeasured parts
 
 The 1000 Club now runs on the title update's scenes (`H_CAR_CHALLENGE_HUB`,
@@ -5936,6 +5945,18 @@ Open:
 
 Needed: one Start press during FMV_01, and two A presses 1 s apart.
 
+Update (first30e, recomp probes `E:\first30e\r3`-`r5`, hidden, fresh profile):
+- r3: A at 3 s showed the bubble (`g00035`); A again at 4 s did not skip; Start alone at 12 s, with no bubble up, did not skip.
+- r4: A then, 1 s later, B, X, Y, Back, RB and LB in turn (7 s apart): none skipped. The bubble (`g00305`-`g00395`, `r4c_g00315.png`) is a dark box reading "SKIP" beside the Start glyph.
+- r5: A at 12 s, then Start held 8 frames 0.5 s later, skipped (`g00120` the movie, `g00130` black, then the tip card). The same pair at 3 s, with Start held 4 frames, did not.
+- r6: A at 3 s, then Start held 8 frames 0.5 s later, skipped. So the movie's first seconds do take the skip, and r5's miss at 3 s was the short hold.
+
+The r3 and r4 negatives (Start alone, and the other buttons) all used 4-frame presses, so they do not show that those presses cannot skip; they only show that a 4-frame press did not. What the probes do show: a press brings up the bubble, and an 8-frame Start while it is up skips. That agrees with the static two-step reading (`confirmskip="true"`: the first press asks, Start confirms).
+
+The engine now does that: Start or Esc skips only while the bubble is up, and any other press (or Start/Esc with none up) shows it. Tab stays a dev skip.
+
+Still open: whether Start alone (held long enough) skips with no bubble up, and whether a second A confirms; the bubble's time on screen (interim 3 s; hidden-mode timing is too slow to measure). Needed: 8-frame probes of Start alone and of A, A.
+
 ## Q275 (INTRO-05, MAP, not blocking): the workshop's locked map
 
 After FMV_01 and a STREET RACES loading screen (`f01272`), the original opens the map locked (`map_locked_for_first_time_career` loops `map.map_screen` while `CLockMapScreenForFirstTimeCareer` says locked). In the capture (`f01281`, `f01290`, through `f02397`):
@@ -5963,6 +5984,15 @@ Engine run `eng6` shows these (`lockmap_route_first30a_engine_final.png`, `lockm
 
 Needed: a capture with the cursor moved onto the heats marker, then A, then B.
 
+Update (first30e): what releases the lock is settled, from the title's code and recomp probes (`E:\first30e\r5`, `r6`, hidden, fresh profile, FMV_01 skipped).
+- Statically: `CLockMapScreenForFirstTimeCareer` lets go once a route is set to an `ActivityCareerEventActivation` or `ActivityRaceCentral` target (`sub_828DC8A0`, through the route toggle `sub_827FAE38`). B then leaves the map. Setting the route does not close it. While locked, the help bar has no BACK slot.
+- r5 and r6: A on a plain point routes there and leaves the map open, and B then does nothing (`o*` frames).
+- r6 `m0`-`m5`: the map opens zoomed out, then zooms in onto the festival (`g00135`-`g00145`). The cursor moved 12 frames right (LX 20000) snaps onto the heats marker. There it shows the "HORIZON Heats" tooltip with 1,000 Cr, the event's route in red, and A SET ROUTE plus a DETAILS button (`m1`).
+
+- r7 (`m0`, `n0`, `o00`-`o05`, `h*`): the same cursor move, then A on the marker, then B. With the heats routed (the marker's tooltip now reads 3,000 Cr), B left the map, and the Corrado drove round the festival with the tip "Head to the Horizon Heats" (`h00042` onward), with no stick or trigger in the route (whether the title or the harness drives it is not known). The heats' banner reads SIGN ME UP with the X glyph (`h00318`). Five minutes of A every 5 s did not sign up.
+
+The engine now routes to the heats on A over them, keeps the map open and releases the lock, so B exits. It does not yet have the zoom-in opening, the marker's tooltip, its route preview or the DETAILS button on the locked map.
+
 ## Q276 (BOOT-04, BOOT-07, not blocking): the first profile's VIDEO screen and the boot disclaimer
 
 On a fresh profile, Press Start leads to the `830_GAMMA_ADJUST` screen before the menu (orig1 `f00027`-`f00039`). It is titled VIDEO and has:
@@ -5976,6 +6006,8 @@ Before `T10_MS_Combined` the original also shows a legal disclaimer for about 3 
 The engine has neither: it goes from the splashes to Press Start, and from Press Start to the menu. Not fixed: the VIDEO screen needs `830_GAMMA_ADJUST` as a SceneScreen and a brightness and subtitle setting behind it.
 
 Needed: the gamma screen's bindings and whether it shows only on a new profile; the disclaimer's duration and scene.
+
+Update (first30e): the disclaimer is drawn. The boot now opens on `T:P_Map/P_STA/<LANG>/P_STA_Disclaimer` full screen (EN when the profile's language has no folder) for 3 s, and the splash queue starts after it; a skip of the boot skips it too. The recomp's render tests show it on their first frame (`r1 f00001`). Its scene and exact duration are still not read (interim 3 s). The VIDEO screen is still not built.
 
 ## Q277 (HUD-03, INTRO-08, not blocking): the hand-over HUD's units, pin and name tags
 
@@ -5994,6 +6026,8 @@ Not changed here:
 - The pin is the engine's sat-nav marker, used everywhere.
 
 Needed: the title's default units by region, and whether any sat-nav world pin exists in the original.
+
+Update (first30e): the engine's default is now miles (settings page, `--units metric` opts into km/h; an old saved `--units imperial` loads as the default). The pin and the name tags are unchanged.
 
 ## Q278 (ACT-01, INTRO-10, not blocking): skills in the career's opening, and PopularitySkillsFlow
 
@@ -6048,3 +6082,40 @@ Seen up to the map and not resolved:
 - The driving tutor. The original showed only PRESS RT TO ACCELERATE on the initial drive (with the AI holding the car). The engine shows the brake, rewind and e-brake hints too. The AI-driven capture cannot tell whether a human's input would have raised them.
 
 Needed: a capture that resumes at the heats checkpoint (the recomp seeded from the first pass's save), with the map passed by a cursor move onto the heats.
+
+Update (first30e): settled from the title's data and new recomp probes (`E:\first30e\r5`, `m*` frames: "Volkswagen Corrado VR6", C 400, 500 Cr on the locked map).
+- Credits: 500 is the new profile's default (`media/profileschema/ForzaProfile.sch`, Credits = 500). The engine's new career now starts with 500 (`FirstTimeCareer::kNewProfileCredits`).
+- PI: the Corrado is GlobalRegistry's `HeroCar`: car 309, colour 2, wheel style 640 and 19 upgrades (`HeroCar/Upgrades/*`: Brakes, SpringDamper and Transmission 3; Differential, Flywheel, Ignition, OilCooling, RearBumper and both tyre widths 2; Camshaft, ChassisStiffness, Clutch, Intake, PistonsCompression, both rim sizes, SideSkirts and SuperchargerCSC 1). The engine now owns, selects and fits that car when the career swaps to the Corrado (or resumes in it). It reads C 396 (Q311).
+- The loading screen: a tip card from the freeroam group with PLEASE WAIT, then the map (r5 `g00135`-`g00190`). r5's tip was HORIZON PULSE and first30a's STREET RACES, so the tip is picked at random from the group. The engine now shows the freeroam group's card before the locked map (Q312).
+- The resume under the boot splashes: the career no longer updates during the boot. A save resumed at the heats now waits in free roam (`e2`) instead of launching the race under the T10 splash (`e1`, 24.6 s).
+- The resumed Corrado was black: its colour rule now also holds while a resume is pending.
+- PRESS RT TO ACCELERATE under `--race-auto`: the race autopilot's throttle now counts as the player's for the tutor (a harness fix).
+- The head-to-head offer between the heats: festival racers make no head-to-head offer while the first-time career runs.
+- The access violation on the session restart after a failed launch: not reproduced on this tip. An autoplay `launch` of an unknown event (77 twice, then NO_SUCH_EVENT) from a resumed heats save restarts the session each time ("gamedb: no event 77"), and the engine runs on for 70 s after the last one without a fault (`E:\first30e\c1`). The career itself no longer launches by `Events.Id`. The original crash's build (before `6ffa82bb`) was not rebuilt, so its cause is still unknown.
+
+## Q311 (INTRO-05, GARAGE, not blocking): the HeroCar reads C 396, not C 400
+
+The original's locked map shows the career's Corrado at C 400 (first30a `f01281`, first30e r5 `m*`). The engine fits GlobalRegistry's `HeroCar/Upgrades` (`garage::fit_upgrade_levels`) and its PI model reads C 396 (`progression_tests --corpus`, "hero car: stock D 282 -> C 396").
+
+How a value maps to a row: upgrade N is the slot's non-stock row at Level N, else its Nth non-stock row in (Level, Id) order. The rows this gives all have Id = base + value (309003 springs, 309002 rear bumper, 62003 transmission, 63001 supercharger), which suggests the title keys them the same way. Two slots need the fallback or the level reading:
+- RearBumper 2: the Corrado's rear bumpers are one stock row and five level-1 styles, so 2 is the second style (309002). The five styles give the same PI.
+- SpringDamper 3: its rows are levels 1 (stock), 2 and 3, so 3 is the level.
+
+Not settled:
+- The 4 points. Candidates: the PI model's reading of the supercharger or wheel style 640 (with no wheel: 394), or a row picked differently.
+- `HeroCar/Colours/LiveryPaintSection_Rims` (4210752, 0x404040) is not applied. The engine has no rim paint.
+- When the title fits the HeroCar. The engine does it at the diner's swap to the Corrado. The first frame showing the PI is the locked map after FMV_01, so fitting it later (after FMV_01) is not ruled out. It shows only on the drive from the diner to the workshop.
+
+Needed: the title's code that applies `HeroCar/Upgrades` (row choice), and its PI for the fitted car.
+
+## Q312 (INTRO-05, LOAD, not blocking): the loading screen before the locked map
+
+The original shows a loading card after FMV_01 and before the map (first30a `f01272`, first30e r5 `g00135`-`g00190`). Statically, it is `CShowLoadingScreen resource_package="Loading"`, and the tips are `media/ui/LoadingDefs.xml`'s. r5 showed HORIZON PULSE and first30a STREET RACES. Both are in the freeroam group (line 9, displaytime 8, tipcount 2, random); STREET RACES is also in festivalevent (line 97).
+
+The engine now starts the freeroam group's card when the career enters the workshop map. It holds it for `LoadingScreen::kEventMinSeconds` (3 s) and until the world is in, with the map open behind it.
+
+Open:
+- How the group is chosen. The engine uses freeroam.
+- How long the card stays up. The hidden render test showed it for about 6 s, but hidden mode slows the title's timing, so it cannot be measured there.
+
+Needed: a visible (not hidden) capture of the FMV_01 skip to the map, with timestamps.
