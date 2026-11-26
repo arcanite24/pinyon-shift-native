@@ -100,6 +100,18 @@ void main() {
                    sky.atmo_haze_p.w;
 
     vec3 lin_rgb = mix(base_rgb, sky.atmo_haze.rgb, haze_t) * sky.sun_dir.w;
+    // Golden-hour HDR solar Mie aureole: broad warm glow across the sunward horizon
+    // feeding the bloom pass cleanly when the sun is low, while keeping midday crisp and night dark.
+    if (sky.haze_dir.w < 0.5) {
+      float sun_elev = S.y;
+      float day_vis = smoothstep(-0.06, 0.12, sun_elev);
+      float golden = (1.0 - smoothstep(0.06, 0.52, max(sun_elev, 0.0))) * day_vis;
+      float cos_s = max(dot(V, S), 0.0);
+      vec3 glow_col = mix(sky.atmo_haze.rgb, max(sky.fog_scatter.rgb, sky.sun_obj_col.rgb * 0.85), 0.62);
+      float wide_glow = pow(cos_s, 6.0) * (1.0 - smoothstep(0.0, 0.55, vy)) * (0.22 + 0.68 * golden);
+      float core_glow = pow(cos_s, 28.0) * (0.32 + 0.85 * golden);
+      lin_rgb += glow_col * (wide_glow + core_glow) * sky.sun_dir.w * day_vis;
+    }
     // Below the geometric horizon, transition smoothly into the exact world fog colour so
     // distant terrain gaps or far-ring silhouettes never reveal a glowing cyan/white strip.
     if (V.y < 0.0) {
@@ -122,11 +134,21 @@ void main() {
   float acc_a = 0.0;
   float sky_gain = max(sky.sun_dir.w, 0.1);
   {
-    // 3. Sun / Moon billboard disc (SPEC-SKY-AND-TOD §3.4).
+    // 3. Sun / Moon billboard disc + soft HDR solar corona (SPEC-SKY-AND-TOD §3.4).
     vec3 D = normalize(sky.sun_obj_dir.xyz);
     float rad = max(sky.sun_obj_dir.w, 0.005);
     float cos_ang = dot(V, D);
     if (cos_ang > 0.0 && sky.sun_obj_col.w > 0.001) {
+      float day_vis = smoothstep(-0.06, 0.10, D.y);
+      float golden = (1.0 - smoothstep(0.06, 0.52, max(D.y, 0.0))) * day_vis;
+      float horizon_vis = smoothstep(-0.03, 0.05, V.y);
+      if (sky.haze_dir.w < 0.5 && day_vis > 0.001) {
+        // Soft radial solar corona that melts the disc into golden-hour HDR bloom.
+        float corona = pow(cos_ang, 72.0) * mix(0.65, 1.85, golden) +
+                       pow(cos_ang, 320.0) * mix(1.40, 3.40, golden);
+        vec3 corona_col = mix(sky.sun_obj_col.rgb, max(sky.fog_scatter.rgb, sky.sun_obj_col.rgb), 0.35 * golden);
+        acc_premul += corona_col * (corona * horizon_vis * day_vis * sky.sun_obj_col.w);
+      }
       vec3 up_ref = abs(D.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
       vec3 right_d = normalize(cross(up_ref, D));
       vec3 up_d = cross(D, right_d);
@@ -136,7 +158,7 @@ void main() {
         vec4 tex = texture(tex_disc, duv);
         // Sun/Moon textures are authored in sRGB; decode to linear radiance.
         vec3 disc_rgb = pow(max(tex.rgb, vec3(0.0)), vec3(2.2)) * sky.sun_obj_col.rgb;
-        if (sky.haze_dir.w < 0.5) disc_rgb *= 2.5;  // solar disc HDR bloom punch
+        if (sky.haze_dir.w < 0.5) disc_rgb *= mix(3.2, 5.2, golden);  // solar disc HDR bloom punch
         float disc_a = clamp(tex.a * sky.sun_obj_col.w * smoothstep(-0.02, 0.04, V.y), 0.0, 1.0);
         acc_premul = disc_rgb * disc_a + acc_premul * (1.0 - disc_a);
         acc_a = disc_a + acc_a * (1.0 - disc_a);
