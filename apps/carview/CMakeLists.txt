@@ -168,6 +168,7 @@ set(carview_sources
   drive_rally_post.cpp
   drive_benchmark_runner.cpp
   drive_headless_runner.cpp
+  focus_audio_state.cpp
   drive_input_world_screens.cpp
   drive_input_hub_screens.cpp
   drive_input_overlay_screens.cpp

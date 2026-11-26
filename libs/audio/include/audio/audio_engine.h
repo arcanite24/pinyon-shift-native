@@ -92,6 +92,8 @@ class AudioEngine {
   // Synchronous offline rendering (for headless --audio-out and tests; call
   // only when the render thread is not running).
   void render_offline(float* out, int frames);
+  // True while the SFX engine's background bank decoders still run.
+  bool sfx_decoding() const;
 
   // Main-thread lock-free parameter & player handoff.
   void set_engine_input(const EnginePlayer::Update& u);
@@ -346,7 +348,7 @@ class AudioEngine {
   // Owned/used exclusively by the audio thread while running.
   EnginePlayer* engine_ = nullptr;
   SfxEngine* sfx_ = nullptr;
-  std::mutex sfx_reload_mu_;
+  mutable std::mutex sfx_reload_mu_;
   SfxEngine* sfx_control_ptr_ = nullptr;  // control-thread mirror valid until reclaimed
   SatNavVoPlayer* satnav_ = nullptr;
   CoDriverVoPlayer* codriver_ = nullptr;

@@ -1,6 +1,7 @@
 #include "drive_session.h"
 #include "cutscene_runtime.h"
 #include "hud_screen.h"
+#include "focus_audio_state.h"
 
 #include <algorithm>
 #include <chrono>
@@ -143,32 +144,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
             const drive::Vec3 vpos = vehicle.position();
             const drive::Vec3 vvel = vehicle.velocity();
             const drive::Vec3 vright = drive::rotate(vehicle.orientation(), {1, 0, 0});
-            vst.speed_mph = float(std::fabs(vehicle.speed()) * 2.2369363);
-            vst.top_speed_mph = float(std::clamp(
-                double(drive::CockpitAnimState::estimate_dial_max_speed_mps(vehicle.params())) * 2.2369363, 90.0,
-                280.0));
-            vst.rpm = float(vehicle.rpm());
-            vst.idle_rpm = float(vp.idle_rpm);
-            vst.redline_rpm = float(vp.redline_rpm);
-            vst.throttle = float(vehicle.engine_throttle());
-            vst.engine_load = float(std::clamp(std::max(eng_in.pos_torque, std::fabs(eng_in.neg_torque)), 0.0, 1.0));
-            vst.gear = vehicle.gear();
-            if (vst.gear < 0) {
-              vst.gear_ratio = float(std::fabs(vp.reverse_gear * vp.final_drive));
-            } else if (vst.gear >= 1 && size_t(vst.gear - 1) < vp.gears.size()) {
-              vst.gear_ratio = float(std::fabs(vp.gears[size_t(vst.gear - 1)] * vp.final_drive));
-            }
-            vst.shifting = vehicle.shifting();
-            vst.clutch_pos = float(1.0 - vehicle.clutch());
-            vst.forced_induction = vp.has_turbo ? 1 : (vp.has_supercharger ? 2 : 0);
-            vst.turbo_psi = float(vehicle.boost_psi());
-            vst.turbo_norm_rpm = vp.has_turbo && vp.boost_max_psi > 1.0
-                                     ? float(std::clamp(vehicle.boost_psi() / vp.boost_max_psi, 0.0, 1.2))
-                                     : 0.0f;
-            vst.bov_open = vehicle.bov_open();
-            vst.supercharger_norm_rpm = vp.has_supercharger && vp.redline_rpm > 1.0
-                                            ? float(std::clamp(vehicle.rpm() / vp.redline_rpm, 0.0, 1.2))
-                                            : 0.0f;
+            fill_focus_audio_state(vehicle, eng_in, host.collision, app.audio_host, vst);
             vst.trans_level = audio_trans_level;
             vst.turbo_level = audio_turbo_level;
             vst.sc_level = audio_sc_level;
@@ -200,51 +176,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               if (autoshow.is_open()) app.audio_host.set_ui_scene(kShowroomScene);
               else if (app.audio_host.ui_scene() == kShowroomScene) app.audio_host.set_ui_scene({});
             }
-            const auto& body_c = vehicle.strongest_body_contact();
-            vst.scraping = body_c.force > 150.0 && vst.speed_mph > 4.0f;
-            vst.scrape_intensity = vst.scraping ? float(std::clamp(body_c.force / 20000.0, 0.2, 1.0)) : 0.0f;
-            const auto& ws = vehicle.wheels();
             const auto& surfs = host.collision.surfaces();
-            if (vst.scraping && body_c.surface >= 0 && size_t(body_c.surface) < surfs.size()) {
-              const std::string sn = lower_ascii(surfs[size_t(body_c.surface)].name);
-              if (sn.find("metal") != std::string::npos || sn.find("guard") != std::string::npos ||
-                  sn.find("steel") != std::string::npos) {
-                vst.scrape_surface_hint = 3;
-              } else if (sn.find("wood") != std::string::npos || sn.find("tree") != std::string::npos) {
-                vst.scrape_surface_hint = 4;
-              } else if (sn.find("dirt") != std::string::npos || sn.find("grass") != std::string::npos ||
-                         sn.find("gravel") != std::string::npos || sn.find("mud") != std::string::npos) {
-                vst.scrape_surface_hint = 2;
-              }
-            }
-            for (int wi = 0; wi < 4; ++wi) {
-              auto& wa = vst.wheels[size_t(wi)];
-              const auto& wstate = ws[size_t(wi)];
-              wa.slip_ratio = float(std::fabs(wstate.slip_ratio));
-              wa.slip_angle = float(std::fabs(wstate.slip_angle));
-              wa.slip_combined = float(std::hypot(wstate.slip_ratio, wstate.slip_angle));
-              wa.wheel_rpm = float(wstate.omega * 9.5492966);
-              const double sload = std::max(100.0, vehicle.static_load(wi));
-              wa.load = wstate.contact ? float(std::clamp(wstate.load / sload, 0.0, 2.0)) : 0.0f;
-              const int axle = wi < 2 ? 0 : 1;
-              if (wstate.contact && wstate.compression > vp.bump_travel[size_t(axle)] * 0.92)
-                wa.bottom_out_force = float(wstate.compression - vp.bump_travel[size_t(axle)] * 0.92);
-              uint8_t sgrp = 0;
-              int16_t sidx = -1;
-              if (wstate.surface >= 0 && size_t(wstate.surface) < surfs.size()) {
-                const auto& sf = surfs[size_t(wstate.surface)];
-                if (!sf.name.empty()) {
-                  sgrp = app.audio_host.map_tire_surface_group(sf.name);
-                  sidx = app.audio_host.map_tire_surface_index(sf.name);
-                } else if (sf.off_roadness > 0.5f) {
-                  sgrp = 2;
-                } else if (sf.off_roadness > 0.05f) {
-                  sgrp = 1;
-                }
-              }
-              wa.surface_group = sgrp;
-              wa.surface_index = sidx;
-            }
             auto set_listener_from_cam = [&](const drive::CameraView& cv) {
               const auto& cf = cv.forward;
               const auto& cu = cv.up;

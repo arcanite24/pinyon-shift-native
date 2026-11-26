@@ -320,7 +320,7 @@ void DriveSession::init_session() {
           std::printf("%s\n", sound_note.c_str());
         else
           std::fprintf(stderr, "carview: no engine sound (%s)\n", sound_note.c_str());
-        if (!app.headless || app.bench_audio || app.bench_full_fx) {
+        if (!app.headless || app.bench_audio || app.bench_full_fx || app.audio_mix) {
           const auto game_root = app.game_root_of();
           const auto sfx_cache = !app.sound_dir.empty() ? app.sound_dir : (app.state_root / "sound-cache");
           if (!game_root.empty()) {

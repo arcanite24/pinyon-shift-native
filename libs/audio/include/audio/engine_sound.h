@@ -75,26 +75,45 @@ struct DistortionConfig {
   double volume_compensate = 1.0;
 };
 
+// One band of iZotope Trash (SPEC-ENGINE-SOUND "Focus DSP", Q321). The static
+// attributes are what the game sends when UseCurves is 0; with UseCurves 1 the
+// child curves give each value instead.
 struct TrashBandConfig {
-  double input_gain = 1.0;
-  double overdrive = 0.0;
-  double mix = 0.0;
-  double output_gain = 1.0;
+  int effect_type = 0;        // 0 copy, 1 soft y(1+|y|)/(1+y^2), 2 parabolic with a hard clip
+  double input_gain = 1.0;    // linear, from inputgain dB (-30..20)
+  double overdrive = 0.0;     // 0..10, the drive is 10^(4*overdrive/20)
+  double mix = 0.0;           // 0..1, from the percentage
+  double output_gain = 1.0;   // linear, from outputgain dB (-40..10)
+  double input_gain_db = 0.0, output_gain_db = 0.0;
+  Param input_gain_curve, overdrive_curve, mix_curve, output_gain_curve;  // dB, 0..10, percent, dB
 };
 
 struct TrashDspConfig {
   bool active = false;
+  bool use_curves = false;
   double cutoff1_hz = 300.0;
   double cutoff2_hz = 2500.0;
-  double volume_compensate = 1.0;  // TrashDSP VolumeCompensate: the bands' sum is scaled by it
+  // VolumeCompensate: the focus engine group's volume while Trash runs is
+  // VolumeCompensate x kTrashGroupScale (it is not a factor inside the DSP).
+  double volume_compensate = 1.0;
   std::array<TrashBandConfig, 3> bands{};
+};
+
+// <DSPScalar>: offsets added at load, each times s = DSPMaxScalar x a per-car
+// value of the game's car descriptor (Q322).
+struct DspScalarConfig {
+  bool present = false;
+  double peq_gain_max = 0, peq_freq_max = 0, peq_bandwidth_max = 0;  // onto the FocusPEQ curves
+  std::array<double, 3> trash_od_max{0, 0, 0};                         // onto each band's overdrive
+  double trash_volcomp_min = 0;                                        // onto VolumeCompensate
+  double dsp_max_scalar = 0;
 };
 
 struct ShiftVolumeScalarConfig {
   bool present = false;
-  double boost_up_pct = 0.0;      // ShiftVolBoostUpPct (normalized fractional gain delta)
+  double boost_up_pct = 1.0;      // ShiftVolBoostUpPct: the starting factor on the Trash output dB
   double boost_up_time_s = 0.0;   // ShiftVolBoostUpTime (seconds)
-  double boost_down_pct = 0.0;    // ShiftVolBoostDownPct (normalized fractional gain delta)
+  double boost_down_pct = 1.0;    // ShiftVolBoostDownPct
   double boost_down_time_s = 0.0; // ShiftVolBoostDownTime (seconds)
 };
 
@@ -164,7 +183,9 @@ struct EngineSound {
   PeqConfig focus_peq;
   DistortionConfig distortion;
   TrashDspConfig trash_dsp;
-  // Emission group scope for FocusPEQ / Distortion / TrashDSP (default 2 = ExhaustL/ExhaustR).
+  DspScalarConfig dsp_scalar;
+  // Where the tuning file put FocusPEQ / Distortion / TrashDSP (default 2 = EmissionGroup2). The
+  // focus chain itself carries every group's loops (Q322).
   int focus_peq_group = 2;
   int distortion_group = 2;
   int trash_dsp_group = 2;

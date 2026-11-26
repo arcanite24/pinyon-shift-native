@@ -134,7 +134,8 @@ void player_checks() {
     energy += out[2 * size_t(f)] * out[2 * size_t(f)];
     crossings += (out[2 * size_t(f) - 2] < 0) != (out[2 * size_t(f)] < 0);
   }
-  CHECK(energy > 100 && player.voices() == 1);
+  // A focus car: its chain sits 13 dB under the loops' own level (Q322).
+  CHECK(energy > 20 && player.voices() == 1);
   CHECK(crossings >= 9 && crossings <= 11);  // 100 Hz over 50 ms: 10 zero crossings
   // Up to 2,500 rpm: the first loop leaves its range and fades out in about
   // 0.15 s (x 0.2 per 1/30 s).
@@ -2418,9 +2419,77 @@ void phase_r2_5_audio_completeness_checks() {
     ep.render(buf.data(), 960);
     ep.set({3400.0, 1.0, 1.0, 0.0, audio::View::kFollow});
     CHECK(near(ep.audio_rpm(), mapped, 1e-9));
-    CHECK(rms(buf) > 0.02);
-    CHECK(ep.distortion_level() > 0.1);
+    // Audible: Trash's group volume is VolumeCompensate x kTrashGroupScale (Q322).
+    CHECK(rms(buf) > 2e-3);
+    // The focus car runs Trash, never the FMOD Distortion (Q322).
+    CHECK(ep.distortion_level() == 0.0);
+    CHECK(near(ep.trash_group_gain(), 0.5 * audio::EnginePlayer::kTrashGroupScale, 1e-9));
     for (float v : buf) CHECK(std::isfinite(v));
+  }
+
+  // 4b. Trash as decoded (Q321, Q322): static values with UseCurves 0, the
+  // child curves with UseCurves 1, DSPScalar offsets, and the shift factor on
+  // the bands' output dB.
+  {
+    const std::string et_xml = R"(
+      <Engine>
+        <EngineSettings audio_rpm_idle="800" audio_rpm_redline="7000"/>
+        <ShiftVolumeScalar ShiftVolBoostUpPct="2.0" ShiftVolBoostUpTime="0.5"
+                           ShiftVolBoostDownPct="1.5" ShiftVolBoostDownTime="0.5"/>
+        <TrashDSP Active="1" UseCurves="1" VolumeCompensate="0.4" Cutoff1="261" Cutoff2="3300">
+          <Band1 effecttype="1" inputgain="0" overdrive="4" mix="80" outputgain="1">
+            <overdrive>
+              <PhysicsCoeff RPM="1" Throttle="0" PosTorque="0" NegTorque="0"/>
+              <ThreePointCurve x0="0" y0="2" x1="0.5" y1="3" x2="1" y2="4"/>
+            </overdrive>
+          </Band1>
+          <Band2 effecttype="2" inputgain="0" overdrive="4" mix="80" outputgain="1"/>
+          <Band3 effecttype="0" inputgain="0" overdrive="0" mix="0" outputgain="-1"/>
+        </TrashDSP>
+        <DSPScalar PEQGainMax="0.4" PEQFreqMax="1200" PEQBandwidthMax="1.3" TrashBand1ODMax="1.4"
+                   TrashBand2ODMax="1.2" TrashBand3ODMax="2.6" TrashVolCompMin="-0.08" DSPMaxScalar="1"/>
+      </Engine>
+    )";
+    audio::XmlNode et_node;
+    std::string err;
+    CHECK(audio::parse_xml(et_xml, et_node, &err));
+    audio::EngineSound es;
+    std::vector<audio::HarmonicRef> refs;
+    CHECK(audio::read_engine_tuning(et_node, es, refs, &err));
+    const auto& td = es.trash_dsp;
+    CHECK(td.active && td.use_curves);
+    CHECK(td.bands[0].effect_type == 1 && td.bands[1].effect_type == 2 && td.bands[2].effect_type == 0);
+    CHECK(near(td.bands[0].overdrive, 4.0, 1e-9) && td.bands[0].overdrive_curve.present);
+    CHECK(es.dsp_scalar.present && near(es.dsp_scalar.trash_od_max[2], 2.6, 1e-9));
+    CHECK(near(es.shift_volume_scalar.boost_up_pct, 2.0, 1e-9));
+
+    audio::Group g;
+    g.name = "ExhaustL";
+    g.loops.push_back(loop(500, 3000, 9000));
+    es.groups.push_back(g);
+    const audio::PcmSample tone = make_tone(150.0, 4800, 48000, 0.5f);
+    audio::EnginePlayer ep(es, {{&tone}}, 48000, 800.0, 7000.0);
+    const double s = audio::EnginePlayer::kDescriptorDspScalar;
+    CHECK(near(ep.dsp_scalar(), s, 1e-12));
+    ep.set({3000.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+    CHECK(near(ep.trash_group_gain(), (0.4 - 0.08 * s) * audio::EnginePlayer::kTrashGroupScale, 1e-9));
+    std::vector<float> buf(4800 * 2, 0.0f);
+    ep.render(buf.data(), 4800);
+    const double steady = rms(buf);
+    CHECK(steady > 1e-4);
+    for (float v : buf) CHECK(std::isfinite(v));
+    // An upshift starts the factor at 2 and it returns to 1 over 0.5 s.
+    ep.trigger_shift_boost(true);
+    CHECK(near(ep.shift_factor(), 2.0, 1e-9));
+    ep.advance_dsp(0.25);
+    CHECK(near(ep.shift_factor(), 1.5, 1e-9));
+    ep.advance_dsp(0.3);
+    CHECK(near(ep.shift_factor(), 1.0, 1e-9));
+    // The factor scales dB, not the level: a few dB at most, never the old 3x boost.
+    ep.trigger_shift_boost(true);
+    ep.render(buf.data(), 2400);
+    const double during = rms(buf);
+    CHECK(during < steady * 1.5 && during > steady * 0.5);
   }
 
   // 5. Bus::kEngineDamage output (procedural fallback & bank sample), Burble vs Backfire, ExhNoise, Multi-band EV.

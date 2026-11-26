@@ -1,7 +1,9 @@
 #include "drive_session.h"
+#include "focus_audio_state.h"
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -622,6 +624,39 @@ void DriveSession::run_headless_drive() {
         const int steps = int(std::lround(app.seconds / drive::Vehicle::kStep));
         const int stride = std::max(1, int(std::lround(app.every / drive::Vehicle::kStep)));
         double longest_step = 0;  // wall time of one step with its streaming, s
+        // --audio-mix: the tyres, wind, surfaces and impacts follow the car in
+        // the render, as in a windowed drive; the SFX banks decode first.
+        if (app.audio_mix) {
+          const auto w0 = std::chrono::steady_clock::now();
+          while (app.audio_host.sfx_decoding() &&
+                 std::chrono::steady_clock::now() - w0 < std::chrono::seconds(240))
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          std::printf("audio mix: sfx banks ready after %.1f s\n",
+                      std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count());
+        }
+        auto feed_headless_mix = [&]() {
+          const audio::View view = audio_view();
+          const audio::EnginePlayer::Update eng = sound_inputs(view);
+          audio::VehicleAudioState vst{};
+          fill_focus_audio_state(vehicle, eng, host.collision, app.audio_host, vst);
+          vst.cockpit_view = view == audio::View::kCockpit;
+          vst.in_race = app.race != nullptr;
+          app.audio_host.update_vehicle(vst, app.race != nullptr, false, false, 0);
+          const drive::Vec3 vpos = vehicle.position();
+          const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+          app.audio_host.update_world_acoustics(float(vpos.x), float(vpos.y), float(vpos.z),
+                                                float(std::atan2(vfwd.x, vfwd.z)));
+          // World impacts as the windowed loop sends them (its frame is one step here).
+          const auto& bc = vehicle.strongest_body_contact();
+          const double dv_world = bc.force * drive::Vehicle::kStep / std::max(100.0, vehicle.params().mass);
+          if (dv_world > 1.0) {
+            audio::CollisionHit hit{};
+            hit.rel_speed_mps = float(dv_world);
+            hit.pos = {float(bc.point.x), float(bc.point.y), float(bc.point.z)};
+            hit.surface_hint = collision_surface_hint(host.collision, bc.surface);
+            app.audio_host.trigger_collision(hit);
+          }
+        };
         double race_done_at = -1;
         for (int s = 0; s <= steps && app.status == 0; ++s) {
           const auto t0 = std::chrono::steady_clock::now();
@@ -631,6 +666,7 @@ void DriveSession::run_headless_drive() {
             const double t = vehicle.time(), was = t - drive::Vehicle::kStep;
             if (std::floor(t / app.radio_press_every) > std::floor(was / app.radio_press_every)) radio_press(+1);
           }
+          if (app.audio_mix && app.audio_host.has_audio() && s > 0) feed_headless_mix();
           if (app.audio_host.has_audio() && s > 0) {
             const int frames = int(std::lround(kAudioRate * drive::Vehicle::kStep));
             const size_t at = audio_track.size();

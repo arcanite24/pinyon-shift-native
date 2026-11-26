@@ -948,6 +948,8 @@ void SfxEngine::populate_procedural_fallbacks() {
   }
 }
 
+bool SfxEngine::decoding() const { return decoders_running_.load(std::memory_order_acquire) > 0; }
+
 int SfxEngine::loaded_sample_count() const {
   int n = 0;
   for (const PcmSample* p : samples_)
@@ -1957,7 +1959,9 @@ bool SfxEngine::load_rally_sfx(const std::filesystem::path& rally_root_or_state_
   if (rally_worker_.joinable()) rally_worker_.join();
   stop_rally_worker_.store(false, std::memory_order_release);
   const size_t n_jobs = jobs.size();
+  decoders_running_.fetch_add(1, std::memory_order_acq_rel);
   rally_worker_ = std::thread([this, jobs = std::move(jobs), cache_dir]() {
+    const DecoderRunning running{decoders_running_};
     lower_decoder_thread_priority();
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code tec;
@@ -2053,7 +2057,9 @@ void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const
   if (jobs.empty()) return;
 
   stop_burble_worker_.store(false, std::memory_order_release);
+  decoders_running_.fetch_add(1, std::memory_order_acq_rel);
   burble_worker_ = std::thread([this, jobs = std::move(jobs), cache_dir, game_root]() {
+    const DecoderRunning running{decoders_running_};
     lower_decoder_thread_priority();
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code tec;
@@ -2090,8 +2096,10 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
   stop_worker_.store(true, std::memory_order_release);
   if (worker_.joinable()) worker_.join();
   stop_worker_.store(false, std::memory_order_release);
+  decoders_running_.fetch_add(1, std::memory_order_acq_rel);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir = std::move(cache_dir),
                          game_root = std::move(game_root)]() {
+    const DecoderRunning running{decoders_running_};
     lower_decoder_thread_priority();
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code ec;

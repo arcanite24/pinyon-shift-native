@@ -1,4 +1,5 @@
 #include "drive_session.h"
+#include "focus_audio_state.h"
 
 #include <algorithm>
 #include <chrono>
@@ -15,29 +16,6 @@
 
 namespace carview {
 namespace {
-
-uint8_t collision_surface_hint(const world::Collision& col, int surf_idx) {
-  const auto& surfs = col.surfaces();
-  if (surf_idx < 0 || size_t(surf_idx) >= surfs.size()) return 0;
-  const auto& sf = surfs[size_t(surf_idx)];
-  const std::string name = lower_ascii(sf.name);
-  const std::string cat = lower_ascii(sf.category);
-  if (cat == "guardrail" || name.find("guardrail") != std::string::npos || name.find("metal") != std::string::npos ||
-      name.find("steel") != std::string::npos || name.find("rail") != std::string::npos) {
-    return 3;  // Metal/Guardrail
-  }
-  if (name.find("wood") != std::string::npos || name.find("timber") != std::string::npos ||
-      name.find("plank") != std::string::npos || name.find("fence") != std::string::npos) {
-    return 4;  // Wood/Prop
-  }
-  if (cat == "softworld" || sf.off_roadness >= 0.25f || name.find("dirt") != std::string::npos ||
-      name.find("grass") != std::string::npos || name.find("gravel") != std::string::npos ||
-      name.find("sand") != std::string::npos || name.find("mud") != std::string::npos ||
-      name.find("snow") != std::string::npos) {
-    return 2;  // Dirt/Grass
-  }
-  return 0;  // Asphalt/Concrete
-}
 
 uint8_t landing_surface_hint(const world::Collision& col, int surf_idx) {
   const auto& surfs = col.surfaces();

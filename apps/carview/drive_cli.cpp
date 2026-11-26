@@ -55,7 +55,7 @@ void drive_usage() {
                "           --autoplay script [--autoplay-out dir] (timed keys, PNG captures, autopilot\n"
                "           driving and a beat log, beats.csv; the format is in autoplay.h)\n"
                "  scripted and headless: --run name | --script file --speed kmh --seconds N --every S\n"
-               "           --headless --out prefix.png --audio-out file.wav --bench --world-reference file.json\n"
+               "           --headless --out prefix.png --audio-out file.wav [--audio-mix] --bench --world-reference file.json\n"
                "           --bench-scenario noon_cruise|midnight_lights|cockpit_mirrors|race_pack|autoshow_studio|ui4_heavy|cold_boot_switch\n"
                "           --bench-json file.json --bench-csv file.csv --bench-full-fx --bench-audio --bench-warmup sec\n"
                "           --menu-png file.png --map-png prefix (the pause map and the minimap at the end)\n"
@@ -320,6 +320,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     else if (a == "--traffic-seed") traffic_seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--audio-out") audio_out = next();
+    else if (a == "--audio-mix") audio_mix = true;
     else if (a == "--async-stream") async_stream = true;
     else if (a == "--contacts-log") contacts_log_path = next();
     else if (a == "--texture-census") texture_census = true;

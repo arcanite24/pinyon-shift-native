@@ -491,6 +491,8 @@ class SfxEngine {
   float last_lfe_pitch() const { return engine_lfe_voice_.pitch; }
   float last_rewind_pitch() const { return rewind_voice_.pitch; }
   int loaded_sample_count() const;
+  // True while a background bank decoder still runs (headless renders wait for it).
+  bool decoding() const;
   uint32_t backfire_count() const { return backfire_count_.load(std::memory_order_relaxed); }
   uint32_t burble_count() const { return burble_count_.load(std::memory_order_relaxed); }
   SfxSoundId last_one_shot_id() const { return last_one_shot_id_.load(std::memory_order_acquire); }
@@ -605,6 +607,11 @@ class SfxEngine {
   std::mutex direct_q_mu_;
   std::mutex reclaim_mu_;    // guards control-thread reclaim_retired() only (never locked on audio thread)
   std::mutex lifecycle_mu_;  // guards control-thread worker start/stop only (never locked on audio thread)
+  std::atomic<int> decoders_running_{0};
+  struct DecoderRunning {
+    std::atomic<int>& n;
+    ~DecoderRunning() { n.fetch_sub(1, std::memory_order_acq_rel); }
+  };
   std::atomic<bool> stop_worker_{false};
   std::thread worker_;
   std::atomic<bool> stop_burble_worker_{false};
