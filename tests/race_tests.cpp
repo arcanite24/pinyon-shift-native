@@ -332,13 +332,12 @@ void test_ai_reset_rules() {
     CHECK(o.ai > 19.95 && o.ai < 20.25 && o.ai_reason == "stuck on the line");
   }
   {
-    // Crawling at 2.5 m/s past a point a metre: too slow after 10 s, unless
-    // the cancel distance (20 m, reached after 8 s) restarts the timers.
+    // Crawling at 2.5 m/s past a point a metre: too slow after 10 s. Moving
+    // on (20 m by 8 s) does not cancel it: the cancel distance is measured
+    // from the stuck-distance anchor, which follows the car (Q232).
     race::CarSample crawl = still;
     crawl.speed = 2.5;
-    race::AiResetRules nc = r;
-    nc.cancel_moved_m = 1e9;
-    auto s = make(&nc);
+    auto s = make(&r);
     Run o;
     {
       // The line point follows the car (1 m apart).
@@ -352,13 +351,14 @@ void test_ai_reset_rules() {
           if (i == 0) o.ai = s.clock(), o.ai_reason = s.car(0).reason;
       }
     }
-    CHECK(o.ai > 9.9 && o.ai < 10.15 && o.ai_reason == "too slow");
+    CHECK(o.ai > 9.9 && o.ai < 10.25 && o.ai_reason == "too slow");
+    // A jump past the cancel distance restarts the timers.
     auto c = make(&r);
     bool any = false;
     race::CarSample ai = crawl, pl = still;
     pl.speed = 20;
-    for (int k = 0; k < 300; ++k) {
-      ai.x0 = ai.x1, ai.z0 = ai.z1, ai.z1 += 0.25, ai.waypoint = std::floor(ai.z1);
+    for (int k = 0; k < 150; ++k) {
+      ai.x0 = ai.x1, ai.z0 = ai.z1, ai.z1 += (k == 60 ? 25.0 : 0.25), ai.waypoint = std::floor(ai.z1);
       race::CarSample cs[2] = {ai, pl};
       c.step(0.1, cs);
       for (size_t i : c.resets()) any |= i == 0;
@@ -366,7 +366,26 @@ void test_ai_reset_rules() {
     CHECK(!any);
     // The timers ride along in a Rewind snapshot.
     const auto snap = c.snapshot();
-    CHECK(snap.cars[0].ai.slow_t > 0 && snap.cars[0].ai.slow_t < 8.1);
+    CHECK(snap.cars[0].ai.slow_t > 8.0 && snap.cars[0].ai.slow_t < 9.1);
+  }
+  {
+    // The waypoint bands share one timer: two points past the anchor (under
+    // N2 = 3) fires at MinTime2 (21 s), not at MinTime1.
+    race::AiResetRules w = r;
+    w.stuck_distance_time = 1e9, w.slow_time = 1e9;
+    auto s = make(&w);
+    race::CarSample two = still;
+    Run o;
+    race::CarSample pl = still;
+    pl.speed = 20;
+    for (int k = 0; k < 300 && o.ai < 0; ++k) {
+      two.waypoint = k < 50 ? 5 : 7;
+      race::CarSample cs[2] = {two, pl};
+      s.step(0.1, cs);
+      for (size_t i : s.resets())
+        if (i == 0) o.ai = s.clock(), o.ai_reason = s.car(0).reason;
+    }
+    CHECK(o.ai > 20.95 && o.ai < 21.25 && o.ai_reason == "stuck on the line");
   }
   {
     // No AI rules: the AI does not reset (or, asked, by the player's triggers).

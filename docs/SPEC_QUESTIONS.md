@@ -5056,3 +5056,57 @@ Still open:
 
 Needed: a retail pad trace at walking pace and at speed (rate and
 centring), or the writer of the overrides for the player's car.
+
+## Q232 (WORLD-04/16, not blocking): the AI reset check and the post-reset collision timers
+
+Decoded from 82B84808, the AI driver's per-frame reset check. It copies
+MetaAIDriver/ResetParameters (60 bytes at MetaAIDriver+152) to a global
+(0x83338980) and keeps a tracker per car. The engine runs the rules
+below (`Session::step_ai_rules`).
+
+- **The cancel.** When the car is more than CancelResetIfMovedThisFar_m
+  (horizontal) from the stuck-distance anchor, every timer and anchor
+  restarts. That anchor moves whenever the car leaves its stuck
+  distance, so only a jump (a reset, a teleport) reaches 20 m. The
+  engine's earlier reading, 20 m of travel from where the timers started,
+  cancelled a crawling car's "too slow" timer; it no longer does.
+- **The waypoints.** One timer and one anchor waypoint, not three. While
+  the car is fewer than N1 waypoints past the anchor the limit is
+  MinTime1, fewer than N2 MinTime2, fewer than N3 MinTime3; at N3 or more
+  the anchor moves to the current waypoint and the timer restarts.
+- **The stuck distance, too slow, upside down.** As the attribute names
+  say. Slow and upside down use the horizontal speed. Upside down also
+  needs vt124 of the car's physics object to be at most 2 (probably the
+  wheels in contact).
+- **Fell.** World Y below ResetIfFellThisLow, at once.
+- Every timer fires once its time is past (>) its limit.
+
+Gate after the port (3-seed AI mean, s): FR22 166.3, FR16 127.4, FR24
+109.7, FR01 102.1, NR02 171.8, EXHIBITION_FEST_003 184.4 (before: 166.1,
+126.9, 109.7, 102.1, 171.7, 184.3). Crawling cars now reset at the slow
+limit, as the original's do.
+
+Open:
+
+- A per-car flag (vt116 of the driver) gates two rules: the fell test
+  runs only while it is set, and the cancel (and the cancel of a pending
+  request) only while it is clear. What it means is not known; the engine
+  runs both always.
+- When the car's state (vt204 of car+896) is 8, the tracker restarts
+  (82B84760). The state is not identified.
+- The original counts route waypoints (82E56EA0); the engine counts the
+  AI line's points. The wheels-down condition and the horizontal speed
+  are not modelled (the engine uses the forward speed).
+- **WORLD-16.** HandOfGodReset is bound by 82521200 into the tunables
+  singleton (0x832E5130, built by 82520970): PostResetNonCollideTime at
+  +0x45C, OptimalSpeedScale +0x460, FadeOutTime +0x464, FadeInTime
+  +0x468, CollisionsOffTime +0x46C, FallYSpeed +0x474, the suction rows
+  from +0x478. No direct float load of +0x45C or +0x46C from that
+  singleton was found in the generated code, so their consumers (and so
+  when CollisionsOffTime runs relative to the fade) are still read from
+  the names: no car contact for CollisionsOffTime leading into the
+  reset, and for PostResetNonCollideTime after it.
+
+Needed: the consumer of the two collision timers (likely through a
+pointer to the singleton kept by the reset code), and the meaning of
+the driver flag and car state above.

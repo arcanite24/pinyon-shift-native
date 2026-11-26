@@ -172,44 +172,45 @@ void apply_hand_of_god(const HandOfGodReset& h, Session::Options& o) {
   o.off_route_far_time = h.off_track_time1;
 }
 
-// AIRacing.xml MetaAIDriver/ResetParameters (SPEC-RACE-AI, Routes with no
-// AI line; the rule's code is not decoded, so how each condition is
-// measured is read from the attribute names, interim):
-// - stuck within N_k waypoints for MinTime_k: the car has not moved N_k
-//   points along the line from where the timer started;
-// - stuck within the distance for its MinTime: it has stayed within that
-//   many metres of where the timer started;
-// - slower than Speed_mpers for MinTime; upside down (up.y below the
+// AIRacing.xml MetaAIDriver/ResetParameters (SPEC-RACE-AI; decoded from
+// 82B84808, the AI driver's per-frame check, SPEC_QUESTIONS Q232):
+// - the cancel: a car more than CancelResetIfMovedThisFar_m (horizontally)
+//   from the stuck-distance anchor restarts every timer and anchor. The
+//   anchor moves whenever the car leaves its stuck distance, so only a
+//   jump (a reset or a teleport) reaches it;
+// - the waypoints: one timer since the car was last N3 waypoints past its
+//   anchor waypoint. While it is under N1 waypoints past, the timer fires
+//   after MinTime1; under N2, MinTime2; under N3, MinTime3;
+// - the stuck distance: within Distance_m of the anchor for its MinTime;
+// - slower than Speed_mpers for its MinTime; upside down (up.y below the
 //   rollover threshold) and slower than its speed for its MinTime;
-// - fell below ResetIfFellThisLow: the world height, at once;
-// - CancelResetIfMovedThisFar_m: once the car is that far (horizontally)
-//   from where the running timers started, they all start again.
+// - ResetIfFellThisLow: the world height, at once.
+// Each timer fires once its time is past (>) the limit. Interim: the line's
+// points stand in for the route's waypoints, the speed is the forward
+// speed (the original's is horizontal), and the original's upside-down
+// rule also needs at most two wheels on something (not modelled).
 const char* Session::step_ai_rules(Car& c, const CarSample& q, double dt, const AiResetRules& r) {
   Car::AiTimers& a = c.ai;
-  if (q.y < r.fell_low) return "fell";
-  const bool running = a.waypoint_t[0] > 0 || a.waypoint_t[1] > 0 || a.waypoint_t[2] > 0 || a.near_t > 0 ||
-                       a.slow_t > 0 || a.upside_down_t > 0;
-  if (!running || !a.moved_set) {
-    a.moved_x = q.x1, a.moved_z = q.z1, a.moved_set = true;
-  } else if (std::hypot(q.x1 - a.moved_x, q.z1 - a.moved_z) > r.cancel_moved_m) {
-    a = {};
-    a.moved_x = q.x1, a.moved_z = q.z1, a.moved_set = true;
-  }
+  if (a.near_set && std::hypot(q.x1 - a.near_x, q.z1 - a.near_z) > r.cancel_moved_m) a = {};
   const double speed = std::fabs(q.speed);
-  for (int k = 0; k < 3; ++k) {
-    const auto& rule = r.stuck_waypoints[size_t(k)];
-    if (q.waypoint < 0 || rule.count <= 0) {
-      a.waypoint_t[k] = 0;
-      continue;
+  if (q.waypoint >= 0) {
+    if (a.waypoint_anchor < 0) a.waypoint_anchor = q.waypoint;
+    const double n = std::trunc(std::fabs(q.waypoint - a.waypoint_anchor));
+    a.waypoint_tier = -1;
+    for (int k = 0; k < 3; ++k) {
+      if (n < r.stuck_waypoints[size_t(k)].count) {
+        a.waypoint_tier = k;
+        break;
+      }
     }
-    if (a.waypoint_anchor[k] < 0 || std::fabs(q.waypoint - a.waypoint_anchor[k]) >= rule.count) {
-      a.waypoint_anchor[k] = q.waypoint;
-      a.waypoint_t[k] = 0;
+    if (a.waypoint_tier < 0) {
+      a.waypoint_anchor = q.waypoint;
+      a.waypoint_t = 0;
     } else {
-      a.waypoint_t[k] += dt;
+      a.waypoint_t += dt;
     }
   }
-  if (!a.near_set || std::hypot(q.x1 - a.near_x, q.z1 - a.near_z) > r.stuck_distance_m) {
+  if (!a.near_set || std::hypot(q.x1 - a.near_x, q.z1 - a.near_z) >= r.stuck_distance_m) {
     a.near_x = q.x1, a.near_z = q.z1, a.near_set = true;
     a.near_t = 0;
   } else {
@@ -217,11 +218,12 @@ const char* Session::step_ai_rules(Car& c, const CarSample& q, double dt, const 
   }
   a.slow_t = speed < r.slow_speed ? a.slow_t + dt : 0;
   a.upside_down_t = (q.up_y < r.upside_down_up_y && speed < r.upside_down_speed) ? a.upside_down_t + dt : 0;
-  if (a.upside_down_t >= r.upside_down_time) return "upside down";
-  for (int k = 0; k < 3; ++k)
-    if (a.waypoint_t[k] > 0 && a.waypoint_t[k] >= r.stuck_waypoints[size_t(k)].min_time) return "stuck on the line";
-  if (a.near_t >= r.stuck_distance_time) return "stuck in place";
-  if (a.slow_t >= r.slow_time) return "too slow";
+  if (a.waypoint_tier >= 0 && a.waypoint_t > r.stuck_waypoints[size_t(a.waypoint_tier)].min_time)
+    return "stuck on the line";
+  if (a.near_t > r.stuck_distance_time) return "stuck in place";
+  if (a.slow_t > r.slow_time) return "too slow";
+  if (a.upside_down_t > r.upside_down_time) return "upside down";
+  if (q.y < r.fell_low) return "fell";
   return "";
 }
 
@@ -300,7 +302,8 @@ void Session::step(double dt, std::span<const CarSample> s) {
       if (by_ai_rules) {
         c.reason = step_ai_rules(c, q, dt, *o_.ai_rules);
         const AiResetRules& r = *o_.ai_rules;
-        for (int k = 0; k < 3; ++k) left(c.ai.waypoint_t[k], r.stuck_waypoints[size_t(k)].min_time);
+        if (c.ai.waypoint_tier >= 0)
+          left(c.ai.waypoint_t, r.stuck_waypoints[size_t(c.ai.waypoint_tier)].min_time);
         left(c.ai.near_t, r.stuck_distance_time);
         left(c.ai.slow_t, r.slow_time);
         left(c.ai.upside_down_t, r.upside_down_time);

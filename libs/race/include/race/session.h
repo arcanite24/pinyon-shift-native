@@ -112,14 +112,13 @@ class Session {
     bool collisions_off = false;     // within CollisionsOffTime of a pending reset
     // The AI rules' timers (s) and anchors (Options::ai_rules).
     struct AiTimers {
-      double waypoint_t[3]{};               // within N_k waypoints of waypoint_anchor[k]
-      double waypoint_anchor[3]{-1, -1, -1};
+      double waypoint_t = 0;                // since the car was last N3 waypoints past waypoint_anchor
+      double waypoint_anchor = -1;
+      int waypoint_tier = -1;               // the N_k band the car is in (-1: none)
       double near_t = 0;                    // within the stuck distance of (near_x, near_z)
-      double near_x = 0, near_z = 0;
+      double near_x = 0, near_z = 0;        // also the cancel distance's anchor
       bool near_set = false;
       double slow_t = 0, upside_down_t = 0;
-      double moved_x = 0, moved_z = 0;      // where the running timers started (the cancel distance)
-      bool moved_set = false;
     } ai;
   };
   struct Snapshot {
