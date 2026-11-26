@@ -210,12 +210,14 @@ std::string DriveApp::award_garage_car(int64_t car_id, int colour_seq, bool sele
 }
 
 bool DriveApp::ensure_hero_car() {
-    freeroam::HeroCarPreset hero = freeroam::HeroCarPreset::disc();
-    {
+    // The registry is read once (this runs with every car load in the opening).
+    static const freeroam::HeroCarPreset hero = [&] {
       freeroam::Registry reg;
       std::string why;
-      if (!world_dir.empty() && freeroam::load_registry(game_root_of(), reg, &why)) hero = freeroam::HeroCarPreset::from(reg);
-    }
+      if (!world_dir.empty() && freeroam::load_registry(game_root_of(), reg, &why))
+        return freeroam::HeroCarPreset::from(reg);
+      return freeroam::HeroCarPreset::disc();
+    }();
     for (const auto& gc : career_garage.cars)
       if (gc.car_id == hero.car_id) {
         if (career_garage.selected != gc.id) {
