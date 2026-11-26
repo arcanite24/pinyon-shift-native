@@ -40,7 +40,8 @@ void drive_usage() {
                "           s seconds); in the window , and . (D-pad left and right) change the station\n"
                "  race:    --event <id> (FR22, FR16, ...): the event's race on its route, grid and opponents;\n"
                "           --difficulty easy|med|hard|pro --no-rubberband --race-auto (the AI drives the\n"
-               "           player's car; the default headless) --race-seed N\n"
+               "           player's car; the default headless) --race-auto-skill N (the autopilot drives\n"
+               "           at AI skill row N, 1-80, not the event's; a capture harness) --race-seed N\n"
                "           --race-replay <csv> (the player on an oracle path by race time; the M5 gate)\n"
                "  free roam: --reveal (unfound signs and barns on the map) --distance m (added to the total\n"
                "           driven) --no-collectibles; M opens the map (+ - zoom, arrows pan), Back on a pad;\n"
@@ -289,6 +290,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       if (race_options.ai_mode == race::AiMode::kStock) race_options.ai_mode = race::AiMode::kFair;
     }
     else if (a == "--race-auto") race_auto = 1;
+    else if (a == "--race-auto-skill") race_options.autopilot_skill = std::clamp(std::atoi(next()), 1, 80);
     else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
     else if (a == "--radio-press") radio_press_every = std::atof(next());

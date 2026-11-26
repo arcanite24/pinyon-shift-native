@@ -545,7 +545,8 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     c.start_progress = field_->progress(k);
   }
   {
-    const race::SkillRow* sk = event_.skill(std::clamp(event_.event_skill, 1, 80));
+    const int player_skill = o.autopilot_skill > 0 ? o.autopilot_skill : event_.event_skill;
+    const race::SkillRow* sk = event_.skill(std::clamp(player_skill, 1, 80));
     player_ai_.init(sk ? *sk : race::SkillRow{}, nullptr, o.seed * 7919u, false);
     const auto& s = slots_[size_t(player_slot_)];
     field_->place_near(cars_.size(), s.x, s.z, from, line_.gate_progress + 1);
