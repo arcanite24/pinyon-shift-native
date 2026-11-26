@@ -2708,6 +2708,10 @@ namespace {
 // The game scales its tyre events by tunables and per-car values it reads at
 // run time (in its tyre audio level setup); this one level stands for their product (Q331).
 constexpr float kTyreEventLevel = 0.83f;  // -1.6 dB: wheelspin on tarmac -0.8, on dirt -2.4
+// Q331: OffRoad Skid (group 1, kind 1) reads +2.1 dB loud on dirt slides and +1.0 dB
+// on dirt wheelspin; trimming OffRoad Skid by -1.8 dB brings both within 0.8 dB of the
+// original without shifting tarmac or rolling levels.
+constexpr float kOffRoadSkidScale = 0.81f;
 }  // namespace
 
 float SfxEngine::mix_event(EventLoop& el, const std::array<float, int(EvParam::kCount)>& in, float gain, float pitch,
@@ -3044,9 +3048,11 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         in[int(EvParam::kLoad)] = std::max(0.0f, wh.load);
         in[int(EvParam::kCombinedSlip)] = wh.slip_combined;
         for (int g = 0; g < kTyreGroups; ++g)
-          for (int k = 0; k < 2; ++k)
+          for (int k = 0; k < 2; ++k) {
+            const float offroad_trim = (g == 1 && k == 1) ? kOffRoadSkidScale : 1.0f;
             mix_event(tyre_events_[size_t(g)][size_t(w)][size_t(k)], in,
-                      g == grp ? view_tyre * kTyreEventLevel : 0.0f, 1.0f, pl, pr, tyre_bus, frames);
+                      g == grp ? view_tyre * kTyreEventLevel * offroad_trim : 0.0f, 1.0f, pl, pr, tyre_bus, frames);
+          }
       } else if (tyre_bus) {
         // Distinct SurfaceIndex character: preserve individual FH1 surface_index timbre even
         // when two surfaces share an LOD1 group (e.g. SmoothTarmac vs RoughAsphalt vs Leaves).
@@ -3181,11 +3187,26 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       if (shift_rising) {
         spawn_one_shot(resolve_fallback(kShiftStartTiers[tlv], SfxSoundId::kShiftStart), tbus, 0.35f * sv_scale,
                        0.707f, 0.707f);
-        if (focus_engine) focus_engine->trigger_shift_boost(st.gear >= prev_gear_);
+        if (st.gear != prev_gear_) {
+          if (focus_engine) focus_engine->trigger_shift_boost(st.gear > prev_gear_);
+          shift_boost_pending_ = false;
+        } else {
+          // Gear number may update on a subsequent block during st.shifting; defer
+          // direction selection so downshifts trigger ShiftVolBoostDown instead of Up.
+          shift_boost_pending_ = true;
+        }
+      } else if (shift_boost_pending_ && st.gear != prev_gear_) {
+        if (focus_engine) focus_engine->trigger_shift_boost(st.gear > prev_gear_);
+        shift_boost_pending_ = false;
       }
-      if (!st.shifting && prev_shifting_)
+      if (!st.shifting && prev_shifting_) {
+        if (shift_boost_pending_) {
+          if (focus_engine) focus_engine->trigger_shift_boost(st.gear >= prev_gear_);
+          shift_boost_pending_ = false;
+        }
         spawn_one_shot(resolve_fallback(kShiftDoneTiers[tlv], SfxSoundId::kShiftComplete), tbus, 0.30f * sv_scale,
                        0.707f, 0.707f);
+      }
       prev_shifting_ = st.shifting;
       if (!st.shifting) prev_gear_ = st.gear;
     }

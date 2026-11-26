@@ -408,12 +408,74 @@ void test_ambience_params() {
   CHECK(audio::ambience_event_hash("Default_Crickets_Bed") == audio::ambience_event_hash("default_crickets_bed"));
 }
 
+// Q372 + shift boost direction: the focus engine's 12 kHz top-end rolloff
+// trims 12 kHz by ~3 dB while keeping 1 kHz flat, and SfxEngine resolves a
+// downshift that updates gear mid-shift to ShiftVolBoostDown instead of Up.
+void test_focus_top_rolloff_and_downshift_boost() {
+  audio::EngineSound es;
+  es.audio_rpm_idle = 800.0;
+  es.audio_rpm_redline = 7000.0;
+  es.shift_volume_scalar.present = true;
+  es.shift_volume_scalar.boost_up_pct = 2.0;
+  es.shift_volume_scalar.boost_up_time_s = 0.5;
+  es.shift_volume_scalar.boost_down_pct = 0.5;
+  es.shift_volume_scalar.boost_down_time_s = 0.5;
+  audio::Group grp;
+  grp.name = "ExhaustL";
+  audio::Loop lp;
+  lp.rpm_min = 500;
+  lp.rpm_sample = 3000;
+  lp.rpm_max = 9000;
+  grp.loops = {lp};
+  es.groups.push_back(grp);
+
+  auto measure_db = [&](double hz) {
+    audio::PcmSample tone = make_tone(hz, 4800, 48000, 0.5f);
+    audio::EnginePlayer ep(es, {{&tone}}, 48000, 800.0, 7000.0);
+    std::vector<float> buf(4800 * 2, 0.0f);
+    for (int b = 0; b < 3; ++b) {
+      ep.set({3000.0, 1.0, 1.0, 0.0, audio::View::kFollow});
+      ep.render(buf.data(), 4800);
+    }
+    const double r = rms(buf);
+    return 20.0 * std::log10(std::max(1e-12, r));
+  };
+  const double db_1k = measure_db(1000.0);
+  const double db_12k = measure_db(12000.0);
+  const double drop_db = db_1k - db_12k;
+  std::printf("focus top-end rolloff: 1 kHz %.2f dB, 12 kHz %.2f dB (drop %.2f dB)\n", db_1k, db_12k, drop_db);
+  CHECK(drop_db > 2.4 && drop_db < 3.8);
+
+  // Downshift whose gear decrements on the second block of st.shifting triggers downshift boost (0.5).
+  audio::PcmSample tone = make_tone(200.0, 4800, 48000, 0.5f);
+  audio::EnginePlayer ep(es, {{&tone}}, 48000, 800.0, 7000.0);
+  audio::SfxEngine sfx(48000);
+  std::vector<float> tr(512 * 2, 0.0f);
+  float* buses[audio::kBuses]{};
+  buses[int(audio::Bus::kTransmission)] = tr.data();
+  audio::VehicleAudioState vs{};
+  vs.rpm = 4000.0f;
+  vs.idle_rpm = 800.0f;
+  vs.redline_rpm = 7000.0f;
+  vs.speed_mph = 50.0f;
+  vs.gear = 3;
+  vs.shifting = false;
+  sfx.render(vs, buses, 512, &ep);  // establish prev_gear_ = 3
+  vs.shifting = true;              // shift begins before gear updates
+  sfx.render(vs, buses, 512, &ep);
+  CHECK(std::fabs(ep.shift_factor() - 1.0) < 1e-6);
+  vs.gear = 2;                     // gear decrements mid-shift -> downshift
+  sfx.render(vs, buses, 512, &ep);
+  CHECK(ep.shift_factor() < 0.75);  // boost_down_pct = 0.5
+}
+
 int run_unit() {
   test_title_snapshot_only_without_matrix();
   test_ambience_params();
   test_fev_evaluator();
   test_ui_catalog();
   test_other_car_engines();
+  test_focus_top_rolloff_and_downshift_boost();
   return failures;
 }
 

@@ -766,6 +766,7 @@ class SfxEngine {
   // Edge detection & timers (audio thread).
   SfxSoundId resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const;
   bool prev_shifting_ = false;
+  bool shift_boost_pending_ = false;
   int prev_gear_ = 1;
   bool prev_bov_open_ = false;
   struct ThrottleHistEntry {

@@ -109,6 +109,10 @@ class EnginePlayer {
   static constexpr double kFreeRoamCategoryGain = 0.35;
   static constexpr double kFocusPreScale = 0.1 / kFreeRoamCategoryGain;
   static constexpr double kFocusPostScale = 2.24;   // +7 dB
+  // Q372: 1-pole top-end rolloff after the focus DSP chain (~-1.6 dB @ 8 kHz,
+  // -2.3 dB @ 10 kHz, -3.3 dB @ 12.8 kHz; <0.05 dB below 1 kHz) matching the
+  // original's 10-13 kHz spectrum across full gas, limiter, and closed throttle.
+  static constexpr double kFocusTopRolloffHz = 12000.0;
   bool intake_chuff_active() const { return chuff_active_; }
 
  private:
@@ -240,6 +244,7 @@ class EnginePlayer {
     }
   };
   std::array<OnePole, 2> trash_lp1_{}, trash_hp1_{}, trash_lp2_{}, trash_hp2_{};
+  std::array<OnePole, 2> focus_top_lp_{};
   bool trash_c1_on_ = true, trash_c2_on_ = true;
   double cur_master_ = 1.0;
 
