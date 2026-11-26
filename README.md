@@ -4,7 +4,7 @@
 
 # Shift Engine
 
-A native C++20 and Vulkan 1.3 clean-room engine for playing your own copy of *Forza Horizon* (2012, Xbox 360) on Windows, Linux, the Steam Deck, Apple Silicon Macs, and Android.
+A native C++20 clean-room engine (Vulkan 1.3, Metal 3, DirectX 12) for playing your own copy of *Forza Horizon* (2012, Xbox 360) on Windows, Linux, the Steam Deck, Apple Silicon Macs, and Android.
 
 [Download](https://github.com/arcanite24/pinyon-shift-native/releases/latest) · [Documentation](https://arcanite24.github.io/pinyon-shift-native/) · [Install guide](docs/player/INSTALL.md) · [Modding](docs/player/MODS.md) · [Benchmarks](docs/BENCHMARK.md)
 
@@ -12,8 +12,8 @@ A native C++20 and Vulkan 1.3 clean-room engine for playing your own copy of *Fo
 
 This repository and its release packages contain **only independently written engine source code, tools, and compiled shaders**. They do **not** contain the game, extracted assets, executable modules, generated translations, or any copyrighted game data.
 
-- **You supply your own game files.** Point the launcher or setup script at your extracted *Forza Horizon* retail disc (`media/` and `default.xex`), and optionally your own Title Update v4 and DLC packages.
-- **Nothing is downloaded or uploaded.** Setup bakes your files locally into your user data folder and never writes back to your disc folder or the repository.
+- **You supply your own game files.** Point the launcher or setup script at your *Forza Horizon* retail `.iso` image or extracted disc folder (`media/` and `default.xex`), and optionally your own Title Update v4 and DLC STFS packages.
+- **Nothing is downloaded or uploaded.** Setup indexes your files locally into your user data folder, streams vehicles directly from disc without modifying your disc folder or the repository, and imports existing saves strictly read-only.
 - **Clean-room boundary.** All code here is written from format and behavioral specifications, never from disassembly, decompiled output, or recompiled guest code. Every commit is checked by `tools/check-provenance.py`, and release packages can be checked against your game tree with `tools/check-binary-content.py`.
 
 Not affiliated with or endorsed by Microsoft, Xbox, Turn 10 Studios, or Playground Games.
@@ -22,17 +22,18 @@ Not affiliated with or endorsed by Microsoft, Xbox, Turn 10 Studios, or Playgrou
 
 | Platform | Graphics API | Packaging | Notes |
 | --- | --- | --- | --- |
-| Windows 10 / 11 (x64) | Vulkan 1.3 | Portable `.zip` with `shift-launcher.exe` | Tested on NVIDIA RTX and Intel UHD 620 |
+| Windows 10 / 11 (x64) | Vulkan 1.3 / DirectX 12 | Portable `.zip` with `shift-launcher.exe` | Tested on NVIDIA RTX, AMD Radeon, and Intel integrated GPUs |
 | Linux / Steam Deck (x86-64) | Vulkan 1.3 (RADV / NVIDIA) | `.zip` with `shift-launcher` + Steam shortcut | Requires glibc 2.38+ (SteamOS 3.7+, Ubuntu 24.04+) |
-| macOS 13.3+ (Apple Silicon) | Vulkan via MoltenVK (Metal) | `Shift Engine.app` bundling `libMoltenVK.dylib` | Unsigned bundle; approve once in System Settings |
-| Android 10+ (arm64, API 29+) | Vulkan 1.1+ (system or Turnip) | `shift-drive-arm64.apk` + LAN Wi-Fi Sync | Multi-touch driving HUD and gamepad support |
+| macOS 13.3+ (Apple Silicon) | Metal 3 / Vulkan via MoltenVK | `Shift Engine.app` bundling `libMoltenVK.dylib` | Unsigned bundle; approve once in System Settings |
+| Android 10+ (arm64, API 29+) | Vulkan 1.1+ (system or Mesa Turnip) | `shift-drive-arm64.apk` (launcher-first + Wi-Fi Sync) | On-device ISO/STFS/mod setup, save manager, touch HUD, and full gamepad support |
 
 ## Quick start (players)
 
 1. Download the release archive for your platform from [GitHub Releases](https://github.com/arcanite24/pinyon-shift-native/releases/latest) and verify its checksum against `SHA256SUMS.txt`.
 2. Unpack the archive and launch **`shift-launcher`** (`shift-launcher.exe` on Windows, `./shift-launcher` on Linux, or `Shift Engine.app` on macOS).
-3. On the **Setup** tab, select your extracted disc folder (containing `media/`) and run setup. Setup verifies your files, bakes cars (`carbake`), decodes engine audio when FFmpeg is installed (`soundbake`), and builds the Colorado world index.
-4. Click **Play** (or run `carview` directly).
+3. On the **Setup** tab, drop or browse your `.iso` image or extracted disc folder (containing `media/`) and click **Run Setup**. Setup verifies your disc and builds the compact Colorado world index — vehicles stream directly from disc with no multi-gigabyte car bake required.
+4. *(Optional)* Use the **Saves** tab to manage career profiles or import an existing save read-only from **PinyonShift** / Horizon 1 exports, **Content** to drag-and-drop Title Update v4 / Rally / 1000 Club / DLC STFS packages, **Mods** / **Radio** / **Controls** to customize your install, or **Android** to sync files over local Wi-Fi.
+5. Configure your graphics preset, resolution, window mode, backend, VSync, and FPS cap on the **Play** tab (kept bidirectionally in sync with in-game `settings.txt`) and click **Play**.
 
 Prefer the command line? Run setup directly:
 
@@ -46,7 +47,7 @@ Prefer the command line? Run setup directly:
 ./setup.sh ~/fh1/disc
 ```
 
-See [docs/player/INSTALL.md](docs/player/INSTALL.md) and the [Install documentation](https://arcanite24.github.io/pinyon-shift-native/install/) for Portable Mode, Steam Deck Gaming Mode, macOS shortcuts, Android Wi-Fi Sync, and controls.
+See [docs/player/INSTALL.md](docs/player/INSTALL.md) and the [Install documentation](https://arcanite24.github.io/pinyon-shift-native/install/) for Portable Mode, Steam Deck Gaming Mode, macOS shortcuts, Android on-device setup & Wi-Fi Sync, and wheel/controller configuration.
 
 ## Building from source
 
@@ -85,7 +86,7 @@ ctest --test-dir build -LE corpus --output-on-failure
 
 ### Android (arm64 APK)
 
-Requires Android SDK (API 35 platform and build-tools), Android NDK, and JDK 11+:
+Requires Android SDK (API 35 platform and build-tools), Android NDK r27+, and JDK 11+:
 
 ```sh
 cmake -S . -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -104,15 +105,18 @@ See the [Building guide](https://arcanite24.github.io/pinyon-shift-native/buildi
 | --- | --- |
 | `libs/fh1data` | Format readers: FH1 ZIP/LZX archives, `.xds` textures, `.carbin` models, Colorado geometry/PVS/materials, `.bgf`/`.bsg`/`.fbf` UI scenes, vector fonts |
 | `libs/data` | Game database rules and event restriction decoding (`gamedb.slt`, opened read-only) |
-| `libs/cars` | Install resolver (disc, Title Update v4, DLC), merged car catalog, `.shiftbake` baker/reader, mod overlay |
+| `libs/cars` | Install resolver (disc, Title Update v4, DLC), merged car catalog, direct-from-disc & `.shiftbake` loader, mod overlay |
 | `libs/drive` | Car physics, suspension/tyres, driving assists, rewind buffer, driving line, AI drivers, cameras, rumble/wheel/DualSense input |
 | `libs/world` | Colorado world streaming, collision, time-of-day sky, smashables, world animations |
 | `libs/audio` | Engine sound synthesis, FSB4/XMA2 parsing, radio scheduler (`dr_mp3`), voiceover, acoustics |
 | `libs/traffic`, `libs/freeroam`, `libs/race` | Road network and traffic, collectibles/barn finds/outposts/PR stunts, race modes, Rally, and 1000 Club |
-| `libs/garage`, `libs/profile` | Garage, upgrades/tuning/PI, livery/paint, career saves, backups, Xenia import, LAN save sync |
-| `apps/carview` | Main Vulkan 1.3 + SDL3 engine runtime, GPU-driven world renderer, UI4 renderer, benchmark harness |
-| `apps/launcher` | Native SDL3 + Vulkan cross-platform GUI launcher (`shift-launcher`) |
-| `apps/carbake`, `apps/soundbake`, `apps/profile-import` | Offline car baker, engine audio baker, and save import CLI tools |
+| `libs/garage`, `libs/profile` | Garage, upgrades/tuning/PI, livery/paint, multi-profile career saves, backups, read-only PinyonShift/Xenia import, LAN save sync |
+| `libs/rhi` | Multi-backend graphics abstraction (Vulkan 1.3, DirectX 12, Metal 3) |
+| `libs/setup` | Clean-room GDFX/XISO extractor, STFS (v4/DLC) installer, mod & Mesa Turnip installer, zero-bake world indexer |
+| `apps/carview` | Main engine runtime (`carview`), GPU-driven world renderer, UI4 renderer, benchmark harness, and Android launcher-first app (`SetupActivity` + `DriveActivity`) |
+| `apps/launcher` | Native SDL3 + Vulkan cross-platform GUI launcher (`shift-launcher`) with synced settings, save manager, PinyonShift import, custom radio builder, controls calibration, updater, and Android Wi-Fi Sync |
+| `apps/carbake`, `apps/soundbake`, `apps/profile-import` | Optional offline car baker, engine audio baker, and save import CLI tools |
+| `assets/branding` | Shift Engine vector marks, app icon, Windows `.ico`, and macOS `.icns` |
 | `tests/` | Synthetic-data unit tests (`ctest -LE corpus`) and optional local-disc corpus tests |
 | `tools/` | Setup, packaging (`package.py`, `android-apk.py`), benchmarks (`benchmark.py`), shader regeneration, provenance/binary checks |
 | `site/` | Zero-dependency static documentation site generator (`python site/build.py`) |
