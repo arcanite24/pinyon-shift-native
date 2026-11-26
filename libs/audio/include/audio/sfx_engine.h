@@ -544,9 +544,6 @@ class SfxEngine {
   void set_event_sample(int slot, PcmSample sample);
   // Tyre event voices loaded from Tires.fev (LOD1: 5 groups x 4 wheels x Roll/Skid).
   int tyre_event_count() const;
-  // The last block's summed target level of the focus tyre events and of the wind event.
-  float last_tyre_event_level() const { return last_tyre_level_; }
-  float last_wind_event_level() const { return last_wind_level_; }
 
  private:
   // One FEV event played as loops: each layer instance is a voice whose level is
@@ -704,8 +701,6 @@ class SfxEngine {
   std::array<std::array<std::array<EventLoop, 2>, 4>, kTyreGroups> tyre_events_{};
   EventLoop wind_event_{};
   std::array<PcmSample*, kMaxEventSamples> event_samples_{};
-  float last_tyre_level_ = 0.0f;
-  float last_wind_level_ = 0.0f;
   // Real-time synth stand-ins (damage knock, showcase aircraft) run only in the
   // explicit no-assets mode set by populate_procedural_fallbacks().
   bool procedural_mode_ = false;

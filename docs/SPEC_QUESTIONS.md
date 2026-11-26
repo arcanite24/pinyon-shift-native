@@ -6325,6 +6325,28 @@ Needed:
 - then the same states on both sides, and the impacts, which the route
   did not take.
 
+**Partly answered (first30g, 2026-11-26):** the harness exists (carview
+`--drive --headless --audio-mix` renders the live mixer, and the run logs a
+`tyres t` line per 0.1 s with each wheel's slips, surface group and rpm).
+The tyres and the wind now play their FEV events (Q331, Q332). Measured on
+the g1 and g2 routes against the recomp with its telemetry probe:
+
+| bus, state | original | engine before | engine after |
+|---|---|---|---|
+| tyres, wheelspin on tarmac | -29.0 dB, 889 Hz | -31.9 dB, 1,083 Hz | -30.5 dB, 816 Hz (g2: -28.4 against -28.6) |
+| tyres, wheelspin on dirt | -31.1 dB | -34.6 dB | -30.1 dB, bands within 4 % |
+| tyres, slide on dirt | -29.1 dB | -32.2 dB | -27.0 dB (2.1 dB loud) |
+| tyres, rolling on tarmac | -42.5 dB at 82 km/h | | -44.9 dB at 51 km/h, same bands |
+| wind, 100 km/h | -58.9 dB | | -58.8 dB |
+| wind, 110 to 113 km/h | -52.7 dB | | -51.8 dB |
+| wind, 118 km/h | -48.8 dB | | -49.6 dB |
+
+Runs: `.local/runs/first30g-g1-tyres`, `first30g-g2-tyres`,
+`first30c-c3-wind` (recomp); `out/first30g/runs/{before,after3}-g1-tyres`,
+`after3-g2-tyres`, `st1b-wind` (engine). Still open: the impacts, the
+rolling level at matched speed (the engine's car is slower on the same
+inputs), lock and slide on tarmac (no matching windows on both sides).
+
 ## Q301 (first30d, UI, not blocking): how long the points page waits with a wristband to collect
 
 The recomp's points page after a race that reaches a wristband shows
@@ -6508,3 +6530,80 @@ Still open:
 - whether a split cascades more than one first-order section;
 - the FMOD Distortion for the other cars (not modelled: no capture);
 - the 6 dB idle-to-full difference left in the solo groups' top end.
+
+## Q331 (first30g, audio, not blocking): the tyre events' feed, pitch units and level
+
+The engine plays `Tires/Tires/LOD1/<group>/<Roll|Skid>_<LF|RF|LR|RR>` for
+each wheel, in every group at once, with only the wheel's current group at
+full gain (the others fade out). Decoded:
+- **Feed** (sub_82BC35A0, sub_82BC4828): `SlipAngle` takes the normalised
+  slip angle's magnitude, `SlipRatio` the normalised slip ratio, signed
+  against the direction of roll (positive spinning, negative locking: the
+  original plays PeelOut for a reverse burnout too), `SurfaceIndex` the
+  surface's index from `Tires.xml`, `TireRPM` the wheel's rpm, `Load` the
+  normalised load. `TireTemperature` is never set and sits at its minimum.
+- **Groups.** `Tires.xml` maps each physics surface to a LOD1 group
+  (OnRoad, OffRoad, Grass, Brick, Trackway) and a SurfaceIndex (OnRoad 0
+  to 10, OffRoad and Grass 11 to 16: Dirt 11, Gravel 12, Sand 13, Grass 15).
+- **Pitch units.** An event's and a sound-definition template's pitch are
+  in units of 4 octaves; a pitch envelope's y spans -4 to +4 octaves,
+  `(y - 0.5) x 8`. Evidence: PeelOut uses template 4 (pitch -0.05) and an
+  envelope at 0.4896, so 2^(-0.2 - 0.083) = 0.822, and the original's
+  spectrum matches the sample at k = 0.820; the envelopes' y values sit on
+  0.5 +- n/96 (a semitone grid); event and template pitches times 4 give
+  round octaves. The template's pitch is the float at byte 36 of the
+  70-byte v0x40 record.
+- **Level.** One constant, 0.83 (-1.6 dB), puts the events at the
+  original's level: wheelspin on tarmac -0.8 dB of it, on dirt -2.4 dB.
+  The g2 route (spin, coast, full lock, hard brake, handbrake) left it
+  where it was.
+
+Measured results are in Q294.
+
+Still open:
+- slides on dirt are 2.1 dB loud; the suspects are the Skid events'
+  `map 1` envelopes, curve shape 2 and the Load normalisation, not a second
+  constant;
+- the Stones one-shots (play mode 6, spawned) are skipped;
+- parameter smoothing (the events' `vel`/`seek`) and the hold while a
+  wheel is airborne are not modelled;
+- the rally mode and the unit tests still use the old invented path;
+- LOD2 (other cars' tyres) is not played;
+- the probe's surface byte (wheel + 337, values 0 to 2) is not confirmed
+  as the LOD1 group.
+
+## Q332 (first30g, audio, not blocking): the wind event's high-pass and top-speed scale
+
+`Wind/Wind/Wind` plays one loop whose volume is the product of a Speed
+curve (0 below 56.5 mph, 91 km/h, full at 175 mph), a TopSpeedPercent
+curve (0.71 to 1 by 75 %), BoostCarWindAudio (0.71 at 0) and MusicActive
+(Q333). An FMOD Highpass follows TopSpeedPercent (`map 1`: 0.51 at 0 to
+0.22 at 97 %). The engine assumes:
+- the Highpass's cutoff is `10 x 2,200^y` Hz (a log axis over FMOD's 10
+  to 22,000 Hz), through a two-pole high-pass with Q 1;
+- `TopSpeedPercent` is speed over the car's top speed in mph as the
+  dial-max reports it.
+
+With those, the engine is within 1 dB of the original at 100 to 118 km/h
+(Q294) and the third-octave difference is within about 4 dB down to 63 Hz.
+
+Still open:
+- the Highpass's real axis mapping and the top-speed denominator;
+- 150 km/h and above: the original's runs did not reach it;
+- the original's wind bus at 50 and 75 km/h is not clean (the launch, a
+  shift and 4.3 kHz bursts leak into it), so those levels are not measured.
+
+## Q333 (first30g, audio, not blocking): who sets the wind's MusicActive and BoostCarWindAudio
+
+`MusicActive`'s volume curve on the wind goes from 1 at 0 to 0 at 1 (shape
+2), so at 1 the wind is silent; `BoostCarWindAudio` lifts the wind from
+0.71 to 1 above 0.9. The recomp's spec (`AUDIO_EVENTS.md`) says MusicActive
+is 1 while radio music plays and BoostCarWindAudio is set in boost or
+airborne states, but no code that sets either was found. The engine leaves
+both at 0, which matches the original's wind levels on the c3 route; it is
+not known whether the radio was playing in those captures with its bus at
+0.
+
+Needed: the setter for each parameter (a by-name lookup or an index into
+the event's parameters), or a wind capture with the radio playing and its
+bus muted, compared with one with the radio off.

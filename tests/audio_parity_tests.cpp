@@ -588,6 +588,9 @@ void corpus_ui_catalog(const std::filesystem::path& game) {
   CHECK(sfx.load(game, {}, {}, &note));
   std::printf("%s\n", note.c_str());
   CHECK(sfx.ui_catalog() != nullptr);
+  // Every LOD1 tyre event binds: 5 surface groups x 4 wheels x Roll/Skid (Q331).
+  std::printf("tyre events bound: %d\n", sfx.tyre_event_count());
+  CHECK(sfx.tyre_event_count() == 40);
   std::vector<float> ui(256 * 2, 0.0f);
   float* buses[audio::kBuses]{};
   buses[int(audio::Bus::kUi)] = ui.data();

@@ -2835,8 +2835,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     in[int(EvParam::kTopSpeedPercent)] =
         st.top_speed_mph > 1.0f ? std::clamp(st.speed_mph / st.top_speed_mph, 0.0f, 1.0f) : 0.0f;
     // BoostCarWindAudio and MusicActive stay at 0: their setters are not decoded (Q333).
-    last_wind_level_ = wind_bus_ptr ? mix_event(wind_event_, in, view_wind, 1.0f, 0.707f, 0.707f, wind_bus_ptr, frames)
-                                    : 0.0f;
+    if (wind_bus_ptr) mix_event(wind_event_, in, view_wind, 1.0f, 0.707f, 0.707f, wind_bus_ptr, frames);
   } else if (float* wind_bus = wind_bus_ptr) {
     const float sp = std::clamp((st.speed_mph - 12.0f) / 180.0f, 0.0f, 1.0f);
     const float music_duck = st.music_active ? 0.75f : 1.0f;
@@ -2852,7 +2851,6 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     static constexpr float kWheelPanR[4] = {0.54f, 0.84f, 0.58f, 0.80f};
     bool tyre_events_loaded = false;
     for (const auto& g : tyre_events_) tyre_events_loaded = tyre_events_loaded || g[0][0].ok;
-    float tyre_level = 0.0f;
     for (int w = 0; w < 4; ++w) {
       const auto& wh = st.wheels[size_t(w)];
       const float pl = kWheelPanL[w];
@@ -2931,8 +2929,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         in[int(EvParam::kCombinedSlip)] = wh.slip_combined;
         for (int g = 0; g < kTyreGroups; ++g)
           for (int k = 0; k < 2; ++k)
-            tyre_level += mix_event(tyre_events_[size_t(g)][size_t(w)][size_t(k)], in,
-                                    g == grp ? view_tyre * kTyreEventLevel : 0.0f, 1.0f, pl, pr, tyre_bus, frames);
+            mix_event(tyre_events_[size_t(g)][size_t(w)][size_t(k)], in,
+                      g == grp ? view_tyre * kTyreEventLevel : 0.0f, 1.0f, pl, pr, tyre_bus, frames);
       } else if (tyre_bus) {
         // Distinct SurfaceIndex character: preserve individual FH1 surface_index timbre even
         // when two surfaces share an LOD1 group (e.g. SmoothTarmac vs RoughAsphalt vs Leaves).
@@ -2983,7 +2981,6 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                  frames);
       }
     }
-    last_tyre_level_ = tyre_level;
   }
 
   // 3. Dedicated subsystem buses (Transmission, Turbo, Supercharger, EngineDamage, Backfire) + FocusCar EngineLFE / EV / ExhNoise
