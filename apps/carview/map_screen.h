@@ -105,6 +105,9 @@ struct MapScreenHud {
   std::string dialog_body;
   std::string band_texture;            // the player bar's wristband (empty: from the HUD)
   std::string tip;                     // the top-left (i) tip (the career's locked map)
+  // The help bar replaced by a spinner and PLEASE WAIT (the career's map
+  // after A on the heats, before it closes by itself; first30e r7 n0).
+  bool please_wait = false;
   // X DETAILS on an event: its ticket over the map (no cursor or popup), with
   // A SET ROUTE, B BACK and Y RESTRICTIONS (map_popup_event_details_orig.png).
   const EventSummaryHud* details = nullptr;

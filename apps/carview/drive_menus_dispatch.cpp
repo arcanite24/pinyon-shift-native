@@ -658,6 +658,7 @@ void DriveSession::open_map() {
 
 void DriveSession::close_map() {
           map_open = false;
+          map_heats_close_left = -1.0;
           // A rumour reveal's forced Barn Finds filter ends with the map.
           map_reveal_anim = nullptr;
           map_reveal_locked = false;

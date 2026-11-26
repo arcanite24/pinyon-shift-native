@@ -84,6 +84,14 @@ void DriveSession::map_screen_open() {
 }
 
 void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axis) {
+  if (map_heats_close_left >= 0.0) {
+    map_heats_close_left -= dt;
+    if (map_heats_close_left < 0.0) {
+      map_heats_close_left = -1.0;
+      close_map();
+    }
+    return;
+  }
   if (map_filter_open || map_dialog != MapDialog::kNone || map_details || map_w <= 64 || map_h <= 64) return;
   const SceneFrame f = SceneScreen::frame(float(map_w), float(map_h));
   bool changed = false;
@@ -374,6 +382,14 @@ void DriveSession::map_screen_fill() {
   // The career's locked map: A SET ROUTE, LB FILTER, L MOVE, R ZOOM and no
   // way out, under the Horizon Heats tip (the original's workshop map,
   // first30a captures; Q275).
+  // A on the heats: PLEASE WAIT in place of the help bar until the map
+  // closes by itself, under the same tip (first30e r7 n0-o05).
+  if (app.campaign.ftc_active() && map_heats_close_left >= 0.0) {
+    ms.please_wait = true;
+    ms.tip = text_of({"InGame", "IDS_MapTip_SetRouteToHeats", 0, "Please set a route to the Horizon Heats event."});
+    ms.band_texture = std::string(kNoPlayerBarTopRow);
+    return;
+  }
   if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
     ms.prompts.push_back({"A", text_of(route ? map_text::kClearRoute : map_text::kSetRoute)});
     ms.prompts.push_back({"LB", text_of(map_text::kFilter)});

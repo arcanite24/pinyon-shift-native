@@ -814,6 +814,11 @@ struct DriveSession {
   drive::Input ftc_autopilot_input();
   double ftc_last_impact_seen = -10.0;
   void close_map();
+  // The career's locked map after A on the heats: PLEASE WAIT, then it closes
+  // by itself. r7 closed about 10 s after A in hidden mode, which runs the
+  // title slow; interim 3 s (Q275). -1: not counting.
+  static constexpr double kMapHeatsCloseSeconds = 3.0;
+  double map_heats_close_left = -1.0;
   // The scene-driven pause map (drive_map_screen.cpp).
   void map_screen_open();
   void map_screen_step(double dt, float sx, float sy, float zoom_axis);

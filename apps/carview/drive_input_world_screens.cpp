@@ -423,13 +423,21 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                    e.type == SDL_EVENT_GAMEPAD_BUTTON_UP || e.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL))
                 return true;
+              // After A on the heats the map shows PLEASE WAIT and closes by
+              // itself; it takes no input meanwhile (first30e r7: B 4 s
+              // after A did nothing visible).
+              if (map_heats_close_left >= 0.0 &&
+                  (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
+                   e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_WHEEL))
+                return true;
               // The career's locked map (CLockMapScreenForFirstTimeCareer):
               // B, X and Y do nothing; A elsewhere sets and clears a route
               // with the map left open (the original's workshop map,
               // f01281/f01290_first30a_orig.png); A on the Horizon Heats
               // routes there and lets go of the lock (sub_828DC8A0 on a
-              // route to a career event, Q275): the map stays open and B
-              // then leaves it.
+              // route to a career event, Q275). The help bar then gives way
+              // to PLEASE WAIT and the map closes by itself (first30e r7
+              // n0-h00045; interim delay kMapHeatsCloseSeconds).
               if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
                 const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
                 const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
@@ -463,11 +471,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                                                                   at.x, at.z));
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
                     app.campaign.ftc_release_map_lock();
+                    map_heats_close_left = kMapHeatsCloseSeconds;
                     map_dirty = true;
                     return true;
                   } else if (heats) {
                     map_route_to_selected();
                     app.campaign.ftc_release_map_lock();
+                    map_heats_close_left = kMapHeatsCloseSeconds;
                     map_dirty = true;
                     return true;
                   }
