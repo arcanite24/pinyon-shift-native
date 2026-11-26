@@ -843,8 +843,11 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kRewards:
-      if (stage_t_ >= kLargeHudInstructionDisplayTime) return go(FtcStage::kFirstAutoshow);
-      break;
+      // first_time_career.xml: after blackout_1 the award's behaviours
+      // (achievement, the ring, the DJ, unlocks, the cash) run back to back
+      // and map_flow_with_race_central_vo opens at once; nothing waits on
+      // the black. The engine held it kLargeHudInstructionDisplayTime.
+      return go(FtcStage::kFirstAutoshow);
 
     case FtcStage::kFirstAutoshow:
       if (step_ == 0 && waited(in.screen_open)) {
