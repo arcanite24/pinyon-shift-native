@@ -192,6 +192,8 @@ void DriveSession::autoplay_frame() {
   ap.observe("credits_card", f.show_opening_credits() ? std::to_string(card) : "off");
   const auto* cs = c.cutscenes().current();
   ap.observe("cutscene", cs ? cs->name : "");
+  // The cutscene's own clock, a row a second (against the wall's t).
+  ap.observe("cutscene_s", cs ? std::to_string(int(c.cutscenes().time())) : "");
   ap.observe("tutor_hint", std::to_string(int(c.hint_message())));
   const auto ov = c.screen_overlay();
   const float a = std::round(ov.alpha * 4.0f) / 4.0f;
