@@ -1480,7 +1480,8 @@ void DriveSession::apply_world_rewind_scrub() {
           const auto& ws_s = (alpha < 0.5) ? ws_a : ws_b;
           const auto unhidden = app.smashables.restore_rewind(ws_s.smashables);
           for (const auto& hs : unhidden) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
-          if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+          host.world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
+          if (host.streamer) host.streamer->set_hidden_positions(host.world_gather_options.hidden_positions);
         }
 }
 
@@ -1498,7 +1499,8 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           if (app.skill_tracker && ws.has_skills) app.skill_tracker->restore_rewind(ws.skills);
           const auto unhidden = app.smashables.restore_rewind(ws.smashables);
           for (const auto& hs : unhidden) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
-          if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+          host.world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
+          if (host.streamer) host.streamer->set_hidden_positions(host.world_gather_options.hidden_positions);
           car_damage = ws.car_damage;
           const drive::DamageMultipliers dm = car_damage.multipliers();
           drive::Vehicle::DamageMods vdm;
@@ -1559,7 +1561,11 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
       s.host.streamer->set_async(false);
       const double dist_centre = std::hypot(cx - s.host.streamer->centre_x(), cz - s.host.streamer->centre_z());
       if (s.host.streamer->gathers() == 0 || dist_centre > prime_radius) {
+        if (s.host.free_roam) s.host.hidden_sent = s.host.free_roam->hidden();
+        s.host.world_gather_options.hidden = s.host.hidden_sent;
+        s.host.world_gather_options.hidden_positions = s.app.smashables.broken_hidden_positions();
         s.host.streamer->set_hidden(s.host.hidden_sent);
+        s.host.streamer->set_hidden_positions(s.host.world_gather_options.hidden_positions);
         bool ch = false;
         s.host.streamer->update(cx, cz, &ch, &s.app.error);
         any_changed = any_changed || ch;
@@ -1700,7 +1706,11 @@ void prime_world_at(DriveSession& s, double x, double z) {
   s.host.streamer->set_async(false);
   const double dist_centre = std::hypot(x - s.host.streamer->centre_x(), z - s.host.streamer->centre_z());
   if (s.host.streamer->gathers() == 0 || dist_centre > prime_radius) {
+    if (s.host.free_roam) s.host.hidden_sent = s.host.free_roam->hidden();
+    s.host.world_gather_options.hidden = s.host.hidden_sent;
+    s.host.world_gather_options.hidden_positions = s.app.smashables.broken_hidden_positions();
     s.host.streamer->set_hidden(s.host.hidden_sent);
+    s.host.streamer->set_hidden_positions(s.host.world_gather_options.hidden_positions);
     bool ch = false;
     s.host.streamer->update(x, z, &ch, &s.app.error);
     any_changed = any_changed || ch;

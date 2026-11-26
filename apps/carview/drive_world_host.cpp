@@ -790,6 +790,7 @@ bool DriveWorldHost::open_world_and_car() {
             }
           }
           loaded_world_route = active_route;
+          gather_options.hidden_positions = app.smashables.broken_hidden_positions();
           world_gather_options = gather_options;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        app.render_ground ? nullptr : &collision);
@@ -1061,6 +1062,9 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             const bool route_changed = (want_route != loaded_world_route);
             loaded_world_route = want_route;
             world_gather_options.route = want_route;
+            if (free_roam) hidden_sent = free_roam->hidden();
+            world_gather_options.hidden = hidden_sent;
+            world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
             auto run_hot_gather = [&](std::string* err_out) -> bool {
               // Reuse the resident Streamer so set_options() / update() swaps the old
               // Mesh and MeshGround into async destruction instead of blocking the main thread.

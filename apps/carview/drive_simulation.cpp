@@ -568,7 +568,9 @@ bool DriveSession::free_roam_step() {
         if (!host.free_roam && app.colorado_world() && !app.collectibles.signs.empty()) {
           host.free_roam = std::make_unique<freeroam::FreeRoam>(app.collectibles, app.progress);
           app.progress_loaded = true;
-          if (host.streamer) host.streamer->set_hidden(host.hidden_sent = host.free_roam->hidden());
+          host.hidden_sent = host.free_roam->hidden();
+          host.world_gather_options.hidden = host.hidden_sent;
+          if (host.streamer) host.streamer->set_hidden(host.hidden_sent);
           if (host.free_roam->hidden()) app.smashables.sync_barns_from_hidden(*host.free_roam->hidden());
         }
         if (!host.free_roam || app.campaign.flow().is_onboarding()) return false;
@@ -617,10 +619,12 @@ bool DriveSession::free_roam_step() {
             sign_smashed_now = true;
             const auto& sign_at = app.collectibles.signs[size_t(ev.index)].at;
             const std::array<float, 3> sign_pos{float(sign_at.x), float(sign_at.y), float(sign_at.z)};
-            // Immediately hide the intact static billboard mesh on the GPU and persist across regathers.
-            host.showroom.hide_world_props_near(sign_pos, 3.5f);
+            // Immediately hide the intact static billboard mesh on the GPU (persistent so
+            // nearby smashable respawns / reset_broken() never unhide it) and persist across regathers.
+            host.showroom.hide_world_props_near(sign_pos, 3.5f, true);
             app.smashables.record_hidden_prop(sign_pos, 3.5f);
-            if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+            host.world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
+            if (host.streamer) host.streamer->set_hidden_positions(host.world_gather_options.hidden_positions);
             app.audio_host.trigger_ui(audio::UiCue::kSignSmash);
             audio::CollisionHit bhit{};
             bhit.rel_speed_mps = float(std::fabs(cs.speed));
@@ -704,7 +708,11 @@ bool DriveSession::free_roam_step() {
           }
           save_due = true;
         }
-        if (host.streamer && host.free_roam->hidden() != host.hidden_sent) host.streamer->set_hidden(host.hidden_sent = host.free_roam->hidden());
+        if (host.free_roam->hidden() != host.hidden_sent) {
+          host.hidden_sent = host.free_roam->hidden();
+          host.world_gather_options.hidden = host.hidden_sent;
+          if (host.streamer) host.streamer->set_hidden(host.hidden_sent);
+        }
         return sign_smashed_now;
 }
 
@@ -1268,7 +1276,8 @@ bool DriveSession::step(const drive::Input& user_in) {
             step_object_impact_accum = std::max(step_object_impact_accum, std::max(0.25, std::fabs(vehicle.speed()) / 25.0));
             // Hide intact static world prop immediately on smash and persist across regathers.
             host.showroom.hide_world_props_near(sev.pos, sev.hide_radius);
-            if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+            host.world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
+            if (host.streamer) host.streamer->set_hidden_positions(host.world_gather_options.hidden_positions);
             const std::string stype = freeroam::club::classify_smashable_type(sev.prop_stem, sev.object_type_index);
             club_pending.smashables.push_back(stype);
             const std::string stem_l = lower_ascii(sev.prop_stem);

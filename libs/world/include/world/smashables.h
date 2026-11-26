@@ -212,8 +212,22 @@ class SmashableWorld {
   void sync_barns_from_hidden(const std::set<std::string>& hidden_ids);
 
   // Synthetic setup helpers for unit tests.
+  struct PvszPlacement {
+    uint32_t object_id = 0;
+    uint32_t global_index = 0;
+    int32_t intact_member = -1;
+    std::array<float, 3> pos{};
+    std::array<float, 3> x_axis{1, 0, 0};
+    std::array<float, 3> y_axis{0, 1, 0};
+    std::array<float, 3> z_axis{0, 0, 1};
+    std::vector<uint8_t> routes;
+    std::string name;
+  };
   void set_definitions(PhysicsDefinitions defs) { defs_ = std::move(defs); }
   void add_prop(const CollObjPlacement& p, const PropPhysicsDef* explicit_def = nullptr);
+  // Links existing CollObjs.xml placements against .pvsz placements (exact pass -> guarded
+  // loose pass -> drops unmatched ghost CollObjs when pvsz_list is non-empty -> Pass 3 extras).
+  void link_pvsz(std::span<const PvszPlacement> pvsz_list);
   void add_barn_door(const BarnDoorCollider& door) { barn_doors_.push_back(door); }
   void add_solid_barrier(const SolidBarrier& barrier);
 

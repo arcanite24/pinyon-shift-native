@@ -15,45 +15,8 @@ namespace {
 // Per-prop-instance index spans recorded off-thread in stage_world() from cached RAM.
 // Allows smashing a single fence panel / sign / pole inside a 64m or 256m merged draw
 // without hiding neighboring intact props or failing on wide/sloped cell AABBs.
-using PropInstanceSpan = Showroom::StagedWorld::PropSpan;
-
-struct HiddenSphereRec {
-  std::array<float, 3> pos{};
-  float radius = 2.0f;
-};
-
-struct SmashHideState {
-  std::unordered_map<uint64_t, std::vector<PropInstanceSpan>> by_draw_key;
-  std::vector<HiddenSphereRec> active_spheres;
-};
-
 std::mutex g_smash_hide_mutex;
-std::unordered_map<const Showroom*, SmashHideState> g_smash_hide;
-
-bool span_matches_origin(const PropInstanceSpan& sp, const std::array<float, 3>& game_pos, float radius_m) {
-  // .pvsz / CollObjs prop origins match within centimetres; keep the origin radius tight
-  // so neighboring fence panels 3-4 m away stay intact.
-  const float r = std::clamp(radius_m * 0.72f, 1.15f, 2.35f);
-  const float dx = sp.gx - game_pos[0];
-  const float dy = sp.gy - game_pos[1];
-  const float dz = sp.gz - game_pos[2];
-  return (dx * dx + dz * dz <= r * r) && (std::fabs(dy) <= r + 1.6f);
-}
-
-bool span_matches_aabb_fallback(const PropInstanceSpan& sp, const std::array<float, 3>& game_pos, float pad_m) {
-  const float ex = sp.bmax[0] - sp.bmin[0];
-  const float ey = sp.bmax[1] - sp.bmin[1];
-  const float ez = sp.bmax[2] - sp.bmin[2];
-  // Never hide giant buildings via fallback AABB overlap.
-  if (ex > 14.0f || ey > 14.0f || ez > 14.0f) return false;
-  const float cx = std::clamp(game_pos[0], sp.bmin[0], sp.bmax[0]);
-  const float cy = std::clamp(game_pos[1], sp.bmin[1], sp.bmax[1]);
-  const float cz = std::clamp(game_pos[2], sp.bmin[2], sp.bmax[2]);
-  const float dx = game_pos[0] - cx;
-  const float dy = game_pos[1] - cy;
-  const float dz = game_pos[2] - cz;
-  return (dx * dx + dz * dz <= pad_m * pad_m) && (std::fabs(dy) <= pad_m + 1.5f);
-}
+std::unordered_map<const Showroom*, gpuworld::SmashHideTracker> g_smash_hide;
 
 }  // namespace
 
@@ -512,6 +475,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
                                  std::vector<WorldGpu::Copy>& index_copies, std::string& error,
                                  bool* deferred_busy, bool allow_blocking_reset) {
   if (deferred_busy) *deferred_busy = false;
+  st.uploaded_keys.clear();
   auto& res = gpu_world_->resident();
   const uint32_t cap_v = res.vertex_capacity();
   const uint32_t cap_i = res.index_capacity();
@@ -536,6 +500,10 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
         std::string clear_err;
         (void)gpu_world_->set_table({}, clear_err);
       }
+      {
+        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+        if (auto it = g_smash_hide.find(this); it != g_smash_hide.end()) it->second.by_draw_key.clear();
+      }
       release_retired();
       arena_lru_.reset(cap_v, cap_i);
       res.reset(cap_v, cap_i);
@@ -556,6 +524,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
     auto attempt_lru = [&]() {
       vertex_copies.clear();
       index_copies.clear();
+      st.uploaded_keys.clear();
       vertex_copies.reserve(st.draws.size());
       index_copies.reserve(st.draws.size());
       for (size_t i = 0; i < st.draws.size(); ++i) {
@@ -569,12 +538,14 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
                                 r_.frames_done());
         if (!rd) {
           fail_idx = i;
+          st.uploaded_keys.clear();
           for (size_t k = 0; k < i; ++k)
             if (placed[k]) arena_lru_.release(st.draws[k].key, 0);
           return false;
         }
         placed[i] = rd;
         if (!known) {
+          st.uploaded_keys.insert(d.key);
           vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
                                    VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
                                    VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
@@ -610,6 +581,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
           need_i += d.index_count;
         }
         if (live_v + need_v <= uint64_t(cap_v) && live_i + need_i <= uint64_t(cap_i)) {
+          st.uploaded_keys.clear();
           *deferred_busy = true;
           return true;
         }
@@ -639,6 +611,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
         arena_lru_.reset(cap_v, cap_i);
         vertex_copies.clear();
         index_copies.clear();
+        st.uploaded_keys.clear();
         std::fill(placed.begin(), placed.end(), nullptr);
         std::vector<size_t> order(st.draws.size());
         for (size_t i = 0; i < st.draws.size(); ++i) order[i] = i;
@@ -669,6 +642,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
           }
           placed[idx] = rd;
           if (!known) {
+            st.uploaded_keys.insert(d.key);
             vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
                                      VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
                                      VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
@@ -706,6 +680,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
   auto attempt_rt = [&]() {
     vertex_copies.clear();
     index_copies.clear();
+    st.uploaded_keys.clear();
     vertex_copies.reserve(st.draws.size());
     index_copies.reserve(st.draws.size());
     for (size_t i = 0; i < st.draws.size(); ++i) {
@@ -718,12 +693,14 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
         rd = res.place(d.key, d.vertex_count, d.index_count, st.origin_x, st.origin_z, generation, r_.frames_done());
       if (!rd) {
         fail_idx = i;
+        st.uploaded_keys.clear();
         for (size_t k = 0; k < i; ++k)
           if (placed[k]) res.release(st.draws[k].key, 0);
         return false;
       }
       placed[i] = rd;
       if (!known) {
+        st.uploaded_keys.insert(d.key);
         vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
                                  VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
                                  VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
@@ -737,6 +714,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
   if (!attempt_rt()) {
     if (!allow_blocking_reset && deferred_busy && res.count() > res.referenced() &&
         r_.frames_submitted() > r_.frames_done()) {
+      st.uploaded_keys.clear();
       *deferred_busy = true;
       return true;
     }
@@ -761,6 +739,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
       res.reset(cap_v, cap_i);
       vertex_copies.clear();
       index_copies.clear();
+      st.uploaded_keys.clear();
       std::fill(placed.begin(), placed.end(), nullptr);
       std::vector<size_t> order(st.draws.size());
       for (size_t i = 0; i < st.draws.size(); ++i) order[i] = i;
@@ -790,6 +769,7 @@ bool Showroom::place_world_arena(StagedWorld& st, std::vector<WorldGpu::Copy>& v
         }
         placed[idx] = rd;
         if (!known) {
+          st.uploaded_keys.insert(d.key);
           vertex_copies.push_back({VkDeviceSize(d.vertex_begin) * sizeof(WorldVertex),
                                    VkDeviceSize(rd->vertex_base) * sizeof(WorldVertex),
                                    VkDeviceSize(d.vertex_count) * sizeof(WorldVertex)});
@@ -825,91 +805,59 @@ void Showroom::install_world_prop_spans(StagedWorld& st) {
   if (!arena_on()) return;
   std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
   auto& state = g_smash_hide[this];
-  for (auto& [key, spans] : st.prop_spans) {
-    if (spans.empty()) continue;
-    auto it = state.by_draw_key.find(key);
-    if (it == state.by_draw_key.end()) {
-      auto [ins, ok] = state.by_draw_key.emplace(key, std::move(spans));
-      it = ins;
-    }
-    if (!state.active_spheres.empty()) {
-      uint32_t idx_base = 0;
-      if (!arena_lookup_draw(key, idx_base)) continue;
-      for (auto& sp : it->second) {
-        if (sp.hidden) continue;
-        for (const auto& hs : state.active_spheres) {
-          if (span_matches_origin(sp, hs.pos, hs.radius)) {
-            sp.hidden = true;
-            gpu_world_->queue_index_zero(idx_base + sp.rel_index_offset, sp.index_count);
-            break;
-          }
-        }
-      }
-    }
-  }
-  st.prop_spans.clear();
+  state.install_spans(
+      st.prop_spans, st.uploaded_keys,
+      [this](uint64_t key) { return arena_contains_draw(key); },
+      [this](uint64_t key, uint32_t& base) { return arena_lookup_draw(key, base); },
+      [this](uint32_t first, uint32_t count) { gpu_world_->queue_index_zero(first, count); });
+  st.uploaded_keys.clear();
 }
 
 // The table the culling pass reads: one row per resident opaque or cut-out draw,
 // plus template rows for hardware-instanced tree sprites.
 bool Showroom::is_smashable_prop_draw(uint32_t flags, uint8_t decal, float ex, float ey, float ez) {
   // Never hide sky dome (2), terrain layers (4 vertex-blend, 8 splat, 16384 layer-C),
-  // roads (1048576), or projected road decals.
+  // roads (1048576), or projected world-space road decals (fade == 0).
   constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 16384u | 1048576u;
-  if ((flags & kNonPropMask) != 0u || decal != 0u) return false;
-  // Compact individual props (signs, bollards, mailboxes, bushes, small fence posts).
-  if (ex <= 12.0f && ey <= 12.0f && ez <= 12.0f) return true;
+  constexpr uint32_t kPropFadeMask = 128u | 256u | 512u;
+  if ((flags & kNonPropMask) != 0u) return false;
+  if (decal != 0u && (flags & kPropFadeMask) == 0u) return false;
+  // Compact individual props (signs, bollards, mailboxes, bushes, small fence posts, tall slender poles).
+  if (ex <= 12.0f && ez <= 12.0f && ey <= 24.0f) return true;
   // Merged roadside wooden/wire fence & barrier batches: low vertical profile
   // (<= 4.5 m) extending up to 64 m along the roadside (buildings are taller).
   if (ey <= 4.5f && std::max(ex, ez) <= 64.0f) return true;
   return false;
 }
 
-size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
-  if (world_draws_.empty() || radius_m <= 0.0f) return 0;
+size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m, bool persistent) {
+  if (radius_m <= 0.0f) return 0;
   const float r = std::max(0.5f, radius_m);
   size_t hidden_spans = 0;
 
   // 1. Exact per-instance GPU index masking in the resident arena (covers 100% of 64m & 256m
-  //    batched prop draws across opaque, cutout, Z-prepass, shadows, and reflections with zero
-  //    collateral damage to neighboring intact props).
+  //    batched prop draws across opaque, cutout, decal, blended, Z-prepass, shadows, and
+  //    reflections with zero collateral damage to neighboring intact props).
   if (arena_on()) {
+    std::vector<uint64_t> resident_keys;
+    resident_keys.reserve(world_draws_.size() + (fading_on_ ? fading_.draws.size() : 0));
+    for (const auto& d : world_draws_) {
+      if (d.resident && d.index_count > 0 && d.cull) resident_keys.push_back(d.key);
+    }
+    if (fading_on_) {
+      for (const auto& d : fading_.draws) {
+        if (d.resident && d.index_count > 0 && d.cull) resident_keys.push_back(d.key);
+      }
+    }
     std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
     auto& state = g_smash_hide[this];
-    state.active_spheres.push_back({game_pos, r});
-    if (state.active_spheres.size() > 2048) {
-      state.active_spheres.erase(state.active_spheres.begin(), state.active_spheres.begin() + 512);
-    }
-
-    auto hide_in_list = [&](const std::vector<WorldGeometry::Draw>& draws, bool aabb_fallback) {
-      std::unordered_set<uint64_t> visited;
-      for (const auto& d : draws) {
-        if (!d.resident || d.index_count == 0 || !d.cull) continue;
-        if (!visited.insert(d.key).second) continue;
-        auto it = state.by_draw_key.find(d.key);
-        if (it == state.by_draw_key.end()) continue;
-        uint32_t idx_base = 0;
-        if (!arena_lookup_draw(d.key, idx_base)) continue;
-        for (auto& sp : it->second) {
-          if (sp.hidden) continue;
-          const bool match = aabb_fallback ? span_matches_aabb_fallback(sp, game_pos, 0.85f)
-                                           : span_matches_origin(sp, game_pos, r);
-          if (match) {
-            sp.hidden = true;
-            gpu_world_->queue_index_zero(idx_base + sp.rel_index_offset, sp.index_count);
-            ++hidden_spans;
-          }
-        }
-      }
-    };
-
-    hide_in_list(world_draws_, false);
-    if (fading_on_) hide_in_list(fading_.draws, false);
-    if (hidden_spans == 0) {
-      hide_in_list(world_draws_, true);
-      if (fading_on_) hide_in_list(fading_.draws, true);
-    }
+    hidden_spans = state.hide_near(
+        game_pos, r, persistent, resident_keys,
+        [this](uint64_t key, uint32_t& base) { return arena_lookup_draw(key, base); },
+        [this](uint32_t first, uint32_t count) { gpu_world_->queue_index_zero(first, count); });
   }
+
+  if (world_draws_.empty()) return hidden_spans;
 
   // 2. Fallback draw-level hiding for non-arena / CPU draws (or if no arena span matched).
   size_t hidden_draws = 0;
@@ -949,47 +897,33 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
 }
 
 size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, float radius_m) {
-  if (world_draws_.empty() || radius_m <= 0.0f) return 0;
+  if (radius_m <= 0.0f) return 0;
   const float r = std::max(0.5f, radius_m);
   size_t restored_spans = 0;
 
   if (arena_on()) {
+    std::vector<uint64_t> resident_keys;
+    resident_keys.reserve(world_draws_.size() + (fading_on_ ? fading_.draws.size() : 0));
+    for (const auto& d : world_draws_) {
+      if (d.resident && d.index_count > 0 && d.cull) resident_keys.push_back(d.key);
+    }
+    if (fading_on_) {
+      for (const auto& d : fading_.draws) {
+        if (d.resident && d.index_count > 0 && d.cull) resident_keys.push_back(d.key);
+      }
+    }
     std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
     if (auto sit = g_smash_hide.find(this); sit != g_smash_hide.end()) {
-      auto& state = sit->second;
-      state.active_spheres.erase(
-          std::remove_if(state.active_spheres.begin(), state.active_spheres.end(),
-                         [&](const HiddenSphereRec& hs) {
-                           const float dx = hs.pos[0] - game_pos[0];
-                           const float dy = hs.pos[1] - game_pos[1];
-                           const float dz = hs.pos[2] - game_pos[2];
-                           return (dx * dx + dz * dz <= r * r) && (std::fabs(dy) <= r + 1.6f);
-                         }),
-          state.active_spheres.end());
-
-      auto restore_in_list = [&](const std::vector<WorldGeometry::Draw>& draws) {
-        std::unordered_set<uint64_t> visited;
-        for (const auto& d : draws) {
-          if (!d.resident || d.index_count == 0 || !d.cull) continue;
-          if (!visited.insert(d.key).second) continue;
-          auto it = state.by_draw_key.find(d.key);
-          if (it == state.by_draw_key.end()) continue;
-          uint32_t idx_base = 0;
-          if (!arena_lookup_draw(d.key, idx_base)) continue;
-          for (auto& sp : it->second) {
-            if (!sp.hidden) continue;
-            if (span_matches_origin(sp, game_pos, r) || span_matches_aabb_fallback(sp, game_pos, r)) {
-              sp.hidden = false;
-              gpu_world_->queue_index_restore(idx_base + sp.rel_index_offset, sp.saved_indices);
-              ++restored_spans;
-            }
-          }
-        }
-      };
-      restore_in_list(world_draws_);
-      if (fading_on_) restore_in_list(fading_.draws);
+      restored_spans = sit->second.unhide_near(
+          game_pos, r, resident_keys,
+          [this](uint64_t key, uint32_t& base) { return arena_lookup_draw(key, base); },
+          [this](uint32_t first, const std::vector<uint32_t>& indices) {
+            gpu_world_->queue_index_restore(first, indices);
+          });
     }
   }
+
+  if (world_draws_.empty()) return restored_spans;
 
   size_t restored_draws = 0;
   const float sx = float(double(game_pos[0]) - world_origin_[0]);
@@ -1002,6 +936,13 @@ size_t Showroom::unhide_world_props_near(const std::array<float, 3>& game_pos, f
     const float cz = std::clamp(sz, d.box_min[2], d.box_max[2]);
     const float dx = sx - cx, dy = sy - cy, dz = sz - cz;
     if (dx * dx + dz * dz <= r * r && std::fabs(dy) <= r + 1.5f) {
+      {
+        std::lock_guard<std::mutex> lock(g_smash_hide_mutex);
+        if (auto sit = g_smash_hide.find(this); sit != g_smash_hide.end()) {
+          if (sit->second.box_overlaps_persistent_sphere(d.box_min, d.box_max, world_origin_[0], world_origin_[1]))
+            continue;
+        }
+      }
       d.index_count = d.hidden_index_count;
       d.hidden_index_count = 0;
       ++restored_draws;

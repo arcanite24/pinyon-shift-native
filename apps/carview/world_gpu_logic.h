@@ -8,8 +8,11 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace carview::gpuworld {
@@ -165,5 +168,54 @@ struct IndirectBatches {
   }
 };
 IndirectBatches build_indirect(const std::vector<DrawGpu>& table, const CullView& view, uint32_t max_per_batch);
+
+// ---- Per-prop-instance smashable index-masking tracker (pure C++, unit-tested) ----
+struct PropSpan {
+  float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // prop placement origin (game frame)
+  float bmin[3] = {0.0f, 0.0f, 0.0f};     // world-space AABB (game frame)
+  float bmax[3] = {0.0f, 0.0f, 0.0f};
+  uint32_t rel_index_offset = 0;          // offset within this draw's index range
+  uint32_t index_count = 0;
+  bool hidden = false;
+  std::vector<uint32_t> saved_indices;    // original indices for lossless Rewind restore
+};
+
+struct HiddenSphereRec {
+  std::array<float, 3> pos{};
+  float radius = 2.0f;
+  bool persistent = false;
+  bool origin_matched = false;
+  bool used_aabb_fallback = false;
+};
+
+bool prop_span_matches_origin(const PropSpan& sp, const std::array<float, 3>& game_pos, float radius_m);
+bool prop_span_matches_aabb_fallback(const PropSpan& sp, const std::array<float, 3>& game_pos, float pad_m);
+bool prop_span_matches_same_instance(const PropSpan& sp, const std::array<float, 3>& origin);
+
+struct SmashHideTracker {
+  std::unordered_map<uint64_t, std::vector<PropSpan>> by_draw_key;
+  std::vector<HiddenSphereRec> active_spheres;
+
+  void prune_non_resident(const std::function<bool(uint64_t)>& is_resident);
+
+  void install_spans(std::vector<std::pair<uint64_t, std::vector<PropSpan>>>& prop_spans,
+                     const std::unordered_set<uint64_t>& uploaded_keys,
+                     const std::function<bool(uint64_t)>& is_resident,
+                     const std::function<bool(uint64_t, uint32_t&)>& lookup_index_base,
+                     const std::function<void(uint32_t, uint32_t)>& queue_zero);
+
+  size_t hide_near(const std::array<float, 3>& game_pos, float radius_m, bool persistent,
+                   const std::vector<uint64_t>& resident_draw_keys,
+                   const std::function<bool(uint64_t, uint32_t&)>& lookup_index_base,
+                   const std::function<void(uint32_t, uint32_t)>& queue_zero);
+
+  size_t unhide_near(const std::array<float, 3>& game_pos, float radius_m,
+                     const std::vector<uint64_t>& resident_draw_keys,
+                     const std::function<bool(uint64_t, uint32_t&)>& lookup_index_base,
+                     const std::function<void(uint32_t, const std::vector<uint32_t>&)>& queue_restore);
+
+  bool box_overlaps_persistent_sphere(const float box_min[3], const float box_max[3],
+                                      double origin_x, double origin_z) const;
+};
 
 }  // namespace carview::gpuworld
