@@ -295,6 +295,9 @@ void set_button_bar_drawer(ButtonBarDrawer drawer);
 float button_glyph_half_width(const char* button, float r);
 // Draws a single controller button glyph centred at (cx, cy) with radius `r`.
 void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, float alpha = 1.0f);
+// The (i) tip top left over a faint band: the first-time career's HUD
+// instruction, the locked map's tip (f00420 / f01290_first30a_orig.png).
+void draw_info_tip(ui::List& l, const std::string& text, float screen_w, float screen_h);
 
 // Authentic PICLASS/CLASS_* badge + crisp dark PI numerals inside the white square.
 void class_badge(ui::List& l, float x, float y, float h, std::string_view class_name, int pi,

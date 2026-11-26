@@ -1199,7 +1199,9 @@ bool DriveSession::step(const drive::Input& user_in) {
         }
         // game_free_roam_flow.xml: a wristband ready to collect enters radiodj.special_wristband
         // (CongratsWinnersOfWristband<n>), once per wristband.
-        if (!app.race && app.have_career_catalog) {
+        // Not in the career's opening: its rewards hand over the yellow band (no
+        // toast or DJ line for it before; first30a captures).
+        if (!app.race && app.have_career_catalog && !app.campaign.ftc_active()) {
           const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
           if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
           if (ready >= 0 && ready != notified_wristband) {

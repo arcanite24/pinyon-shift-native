@@ -817,6 +817,22 @@ void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, f
   draw_callout(false, 5, "A", maybe_swap(lm.a), fc_x, fc_y + fd);
 }
 
+void draw_info_tip(ui::List& l, const std::string& text, float w, float h) {
+  // The (i) tip, top left over a faint band (f00420_first30a_orig.png and
+  // the locked map's f01290: the icon at 80,46, the text from 96 at 720p).
+  if (text.empty()) return;
+  (void)w;
+  const float s = h / 720.0f;
+  const auto st = ui4::style(ui::Font::kB, 21.0f * s, ui4::kWhite, ui::Align::kLeft);
+  const float tw = ui::List::measure(text, st);
+  l.rect(67.0f * s, 32.0f * s, 96.0f * s + tw + 6.0f * s, 59.0f * s, ui::rgba(0, 0, 0, 90));
+  const float cx = 80.0f * s, cy = 46.0f * s, r = 11.0f * s;
+  l.circle(cx, cy, r, ui4::kWhite);
+  l.circle(cx, cy, r - 2.0f * s, ui::rgba(20, 20, 20, 255));
+  l.text(cx, cy - 8.0f * s, "i", ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite, ui::Align::kCenter));
+  l.text(96.0f * s, cy - 11.0f * s, text, st);
+}
+
 void button_glyph(ui::List& l, float cx, float cy, float r, const char* button, float alpha) {
   const std::string b = button ? std::string(button) : std::string("A");
   if (active_glyph_set() == GlyphSet::kKeyboard && draw_keyboard_glyph(l, cx, cy, r, b, alpha)) {

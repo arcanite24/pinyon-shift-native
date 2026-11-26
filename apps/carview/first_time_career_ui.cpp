@@ -59,6 +59,9 @@ const char* fallback_for(std::string_view id) {
       {"IDS_InputHint_Camera_R", "TO CHANGE THE CAMERA"},
       {"IDS_InputHint_Map_L", "PRESS"},
       {"IDS_InputHint_Map_R", "TO OPEN THE MAP"},
+      {"IDS_Get_to_the_Festival", "GET TO THE FESTIVAL"},
+      {"IDS_Places_Left", "PLACES LEFT"},
+      {"IDS_MapTip_SetRouteToHeats", "Please set a route to the Horizon Heats event."},
   };
   for (const auto& r : kRows)
     if (id == r.id) return r.text;
@@ -67,42 +70,6 @@ const char* fallback_for(std::string_view id) {
 
 std::string text_for(std::string_view table, std::string_view id) {
   return loc_str(table, id, fallback_for(id));
-}
-
-// A line with the string tables' {{colour='r g b a'}} markup: each run in its
-// colour, centred on cx as a whole.
-void coloured_line(ui::List& l, float cx, float y, std::string_view text, ui::TextStyle base) {
-  struct Run {
-    std::string text;
-    uint32_t color;
-  };
-  std::vector<Run> runs;
-  uint32_t color = base.color;
-  size_t i = 0;
-  while (i < text.size()) {
-    const size_t open = text.find("{{colour='", i);
-    if (open == std::string_view::npos) {
-      runs.push_back({std::string(text.substr(i)), color});
-      break;
-    }
-    if (open > i) runs.push_back({std::string(text.substr(i, open - i)), color});
-    const size_t close = text.find("'}}", open);
-    if (close == std::string_view::npos) break;
-    int r = 255, g = 255, b = 255, a = 255;
-    std::sscanf(std::string(text.substr(open + 10, close - open - 10)).c_str(), "%d %d %d %d", &r, &g, &b, &a);
-    color = ui::rgba(uint8_t(r), uint8_t(g), uint8_t(b), uint8_t(a));
-    i = close + 3;
-  }
-  base.align = ui::Align::kLeft;
-  float total = 0;
-  for (const auto& run : runs) total += ui::List::measure(run.text, base);
-  float x = cx - 0.5f * total;
-  for (const auto& run : runs) {
-    ui::TextStyle st = base;
-    st.color = run.color;
-    l.text(x, y, run.text, st);
-    x += ui::List::measure(run.text, base);
-  }
 }
 
 // H_OPENING_TITLES: the four opening title cards over the diner cutscenes,
@@ -167,18 +134,29 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
     l.text(0.5f * w, 0.30f * h, a, ui4::style(ui::Font::kE, 34.0f * s, ui4::kWhite, ui::Align::kCenter));
     l.text(0.5f * w, 0.30f * h + 40.0f * s, b, ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kCenter));
   }
-  if (!ftc.hud_instruction().empty()) {
-    const std::string text = text_for("InGame", ftc.hud_instruction());
-    l.text(0.5f * w, 0.12f * h, text, ui4::style(ui::Font::kB, 22.0f * s, ui4::kWhite, ui::Align::kCenter));
-  }
+  if (!ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
   if (ftc.tickets_remaining() >= 0) {
-    std::string line = text_for("InGame", "IDS_HudInstruction_Tickets_Remaining");
-    const auto at = line.find("{0}");
-    if (at != std::string::npos) line.replace(at, 3, std::to_string(ftc.tickets_remaining()));
-    coloured_line(l, 0.5f * w, 0.12f * h + 28.0f * s, line,
-                  ui4::style(ui::Font::kB, 20.0f * s, ui4::kWhite, ui::Align::kCenter));
+    // The places counter, top right: GET TO THE FESTIVAL over PLACES LEFT
+    // and the count (measured on f00420_first30a_orig.png at 1280x720).
+    const uint32_t band = ui::rgba(0, 0, 0, 110);
+    const std::string top = text_for("InGame", "IDS_Get_to_the_Festival");
+    const std::string mid = text_for("InGame", "IDS_Places_Left");
+    const std::string num = std::to_string(ftc.tickets_remaining());
+    const auto ts = ui4::style(ui::Font::kE, 24.0f * s, ui4::kWhite, ui::Align::kRight);
+    const auto ms = ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite, ui::Align::kRight);
+    const auto ns = ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kRight);
+    const float right = 1178.0f * s + (w - 1280.0f * s);
+    const float nw = ui::List::measure(num, ns);
+    l.rect(right - ui::List::measure(top, ts) - 10.0f * s, 36.0f * s, right + 8.0f * s, 61.0f * s, band);
+    l.rect(right + 27.0f * s - nw - ui::List::measure(mid, ms) - 14.0f * s, 60.0f * s, right + 27.0f * s - nw, 80.0f * s,
+           band);
+    l.text(right, 36.0f * s, top, ts);
+    l.text(right + 27.0f * s - nw - 4.0f * s, 60.0f * s, mid, ms);
+    l.text(right + 27.0f * s, 56.0f * s, num, ns);
   }
 }
+
+std::string tip_text(std::string_view table, std::string_view id) { return text_for(table, id); }
 
 void draw_hint(ui::List& l, race::TutorMessage m, float w, float h) {
   if (m == race::TutorMessage::kNone) return;

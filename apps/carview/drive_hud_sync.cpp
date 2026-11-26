@@ -640,7 +640,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         // Career header panels (pause menu & sub-menus).
         d.credits = app.career.credits;
         d.popularity_rank = app.current_pop_rank();
-        if (!app.wristbands.levels.empty()) {
+        // No wristband row in the career's opening: the yellow band comes with
+        // its rewards (the original's locked map, first30a captures).
+        if (!app.wristbands.levels.empty() && !app.campaign.ftc_active()) {
           const int cur_i = std::clamp(app.collected_wristband, 0, int(app.wristbands.levels.size()) - 1);
           const int pending = app.have_career_catalog ? app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband) : -1;
           d.band_points = app.career.wristband_points;
