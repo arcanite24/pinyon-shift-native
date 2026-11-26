@@ -5898,3 +5898,127 @@ be probed at small pedal travel.
 Needed: the writer of the brake control at rest (the player controller's
 code, or a body oracle trace with the wheels' brake value), or a trace at
 finer spacing with a coast down to zero on a slope.
+
+Checked since (first30c):
+- Reverse from the hold. A full brake from a held rest selects reverse
+  (the brake is the reverse gas, so the hold lets go), and the gas then
+  drives forwards (`drive_tests`, `test_rest_hold`). A car that is let go
+  of in reverse rolls on unheld until it stops.
+- Rolling with no input. In `first30c-c3-engine` the original's car was
+  knocked to about 11 km/h before the route's idle and then rolled for
+  about 11 s in gear 1 with gas and brake at 0.00. Its speed went from 9.5
+  to 12.6 km/h at 1100 to 1500 rpm, so the idle pulls a car that is
+  already moving and nothing holds it. The engine does the same after a
+  brake-and-gas release (c1: 12.3 km/h; the original 12.2 km/h). The
+  `c3-all`, `c3-tyres` and `c3-engine2` runs sat held at 0.00 km/h with
+  the brake at 1.00.
+
+## Q292 (first30c, radio, partly answered): the radio at the start of free roam
+
+The original keeps the radio in the profile. `Main/RadioStation` is a u8
+index into the player cycle of `RadioSystem.xml` (0 to 2 are Radio1 to
+Radio3, and 3 is Radio4_Silent, the off station). The profile also holds
+`Main/RadioDJ` (bool) and `Main/RadioVolume` (float). The imported profile
+(`out/profile/user`) reads RadioStation 3, RadioDJ 1 and RadioVolume 1,
+and so the original starts free roam on RADIO OFF.
+
+The engine's import read none of these. A fresh import left the station
+empty, so carview started on the first station (Radio1). The import now
+carries all three into the drive save (`radio Radio4_Silent 1 1`). As with
+the co-driver, the profile's value replaces the local one.
+
+First30c-c4-radio (original) against `e4-radiooff` (engine), both from the
+radio-off seed:
+
+- D-pad right turns the radio on. The cycle wraps from the off station to
+  Radio1 on both sides. The original's popup (`radio-popup-1`) shows the
+  HORIZON BASS ARENA logo with the track and artist in pink on the right,
+  above the speedometer.
+- At rest, the original's front channels read -20.8 dB with Radio1
+  playing; the engine's stereo mix reads -23 dB. The original's music is
+  on the front pair only (its centre channel is at -39.9 dB).
+- Pressing D-pad right in default carview steps Radio1, Radio2, Radio3,
+  then Off.
+
+Not settled:
+- The music's ducking under the engine. The pull capture mixes the two,
+  and no music-only run was made.
+- The original's second press while moving (frame 2700) showed no popup
+  20 frames later, and the station could not be confirmed.
+- DJ intros and their triggers.
+- The switch popup's timing against the engine's popup.
+
+Needed: a music-only capture through a pull, a capture of the popup at
+finer spacing, and a DJ trigger, such as a wristband or event unlock.
+
+## Q293 (first30c, audio, not blocking): the focus engine's balance by rpm
+
+The MX-5 (`MAZ_Miata_94`, intake and exhaust level 3) was driven through
+the same states on both sides: at rest, a full-gas pull, a lift in gear,
+a light brake, and full-lock donuts on the dirt shoulder near the limiter.
+The original's runs were `first30c-c3-engine2`, with every bus but the
+engine at 0 (`--pinyon_shift_mix_*=0`). The engine's run was
+`out/first30c/runs/e3-engine-tr`: carview headless, `--no-radio
+--no-traffic`, every bus but the engine at 0, and the log written every
+0.25 s. The windows were matched by state, not by time. On the original's
+side, each capture's start comes from the physics trace's `t_ms`; on the
+engine's side, from the carview log (`harness/c3state.py`). Levels are
+the dBFS of the front fold.
+
+| state | original | engine |
+|---|---|---|
+| rest, 800 rpm | -41.9 dB, centroid 121 Hz, 94 % under 150 Hz | -33.4 dB, 69 Hz, 99 % |
+| full gas, about 7,200 to 7,500 rpm | -21.7 dB, 952 Hz, 79 % in 500 Hz to 2 kHz | -17.7 dB, 535 Hz, 59 % in 150 to 500 Hz |
+
+- The idle matches. The peaks at 25, 74 and 123 Hz are the same on both
+  sides.
+- The span from idle to full gas does not match. The original's is
+  20.2 dB; the engine's is 15.7 dB. So the engine's idle is about 4.5 dB
+  too loud for its top end.
+- The master compressor is not the cause: `--full-dynamic-range` leaves
+  the engine's numbers within 0.1 dB.
+- The top end's spectrum does not match. The original's strongest peaks
+  are at 700 and 822 Hz, the 6th and 7th multiples of about 117 Hz. The
+  engine's strongest peak is at 217 Hz, the second multiple of 108.5 Hz,
+  and everything above it is 5 to 15 dB down.
+- The lift in gear was not like for like: the original was at 5,000 to
+  5,500 rpm and the engine at 3,500 rpm, because the original pulled to
+  gear 3 and the engine only to gear 2. Both read about -24 to -26 dB, but
+  the original's centroid is about 850 Hz and the engine's 260 Hz.
+
+The likely places are the focus exhaust DSP (TrashDSP: its overdrive of 4
+is clamped to 1, and its curves are not read, Q82), and the loops'
+crossfade weights between the intake, exhaust and ambient groups at high
+rpm. These were not changed in this pass.
+
+Needed:
+- per-group levels from the original at fixed rpm and load (the three
+  groups muted in turn, if the recomp can do that);
+- the TrashDSP's shaping (Q82).
+
+## Q294 (first30c, audio, not blocking): the tyre and wind levels, and the engine's offline render
+
+The original's tyre and wind buses were measured on the c3 route, with
+every other bus at 0 (`first30c-c3-tyres`, `first30c-c3-wind`):
+
+| bus | state | level | centroid | bands |
+|---|---|---|---|---|
+| tyres | full-lock donuts on dirt, 7,600 rpm, about 12 km/h | -28 to -29 dB | 800 to 1,050 Hz | 57 % in 500 Hz to 2 kHz, 27 % in 150 to 500 Hz |
+| tyres | straight pull on tarmac, 5,400 rpm, 68 km/h | -34.7 dB | 1,020 Hz | |
+| tyres | at rest | silent | | |
+| wind | 99 km/h | -46.0 dB | 570 Hz | 55 % in 150 to 500 Hz |
+| wind | 13 km/h | -57.9 dB | 2.6 kHz | |
+
+On the engine's side these could not be compared. In carview headless
+(`--audio-out`), `render_offline` feeds only the engine's input, and
+headless skips `init_sfx`. So the tyres, the wind, the impacts and the
+ambience are all silent in the render: `e3-tyres-tr` is digital silence.
+Comparing them needs either:
+- an offline render path that drives the SFX inputs (slip, speed,
+  surface, contacts) each step; or
+- a capture of the live mixer.
+
+Needed:
+- that harness;
+- then the same states on both sides, and the impacts, which the route
+  did not take.
