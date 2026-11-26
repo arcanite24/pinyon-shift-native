@@ -811,17 +811,11 @@ class Showroom {
       uint32_t texture;
     };
     std::vector<TreeRaw> trees;
-    struct PropSpan {
-      float gx = 0.0f, gy = 0.0f, gz = 0.0f;  // prop placement origin (game frame)
-      float bmin[3] = {0.0f, 0.0f, 0.0f};     // world-space AABB (game frame)
-      float bmax[3] = {0.0f, 0.0f, 0.0f};
-      uint32_t rel_index_offset = 0;          // offset within this draw's index range
-      uint32_t index_count = 0;
-      bool hidden = false;
-      std::vector<uint32_t> saved_indices;    // original indices for lossless Rewind restore
-    };
+    using PropSpan = gpuworld::PropSpan;
     // Per-prop-draw smashable instance spans extracted off-thread in stage_world() from cached RAM.
     std::vector<std::pair<uint64_t, std::vector<PropSpan>>> prop_spans;
+    // Draw keys freshly allocated and copied into the GPU arena in place_world_arena() (intact indices).
+    std::unordered_set<uint64_t> uploaded_keys;
   };
   // `origin_x/z`: what the geometry's positions are relative to, for the content keys of the GPU-driven world.
   bool stage_world(WorldGeometry geometry, StagedWorld& out, std::string& error, double origin_x = 0,
@@ -1120,7 +1114,9 @@ class Showroom {
   bool has_showcase_texture() const { return showcase_tex_set_ != VK_NULL_HANDLE; }
   // Immediately hides intact static world prop draws overlapping a smashed prop's
   // sphere (game frame) without waiting for the next world regather.
-  size_t hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m);
+  // `persistent = true` protects permanent hides (e.g. collected discount signs)
+  // from `unhide_world_props_near()` and active-sphere cap pruning.
+  size_t hide_world_props_near(const std::array<float, 3>& game_pos, float radius_m, bool persistent = false);
   // Restores previously hidden static world prop draws overlapping `game_pos`
   // (used when Rewind rolls back a smashed prop).
   size_t unhide_world_props_near(const std::array<float, 3>& game_pos, float radius_m);

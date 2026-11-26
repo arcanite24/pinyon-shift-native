@@ -1147,7 +1147,8 @@ void DriveSession::run_window_loop() {
               }
               if (auto respawned = app.smashables.consume_respawned_hidden(); !respawned.empty()) {
                 for (const auto& hs : respawned) host.showroom.unhide_world_props_near(hs.pos, hs.radius);
-                if (host.streamer) host.streamer->set_hidden_positions(app.smashables.broken_hidden_positions());
+                host.world_gather_options.hidden_positions = app.smashables.broken_hidden_positions();
+                if (host.streamer) host.streamer->set_hidden_positions(host.world_gather_options.hidden_positions);
               }
               drive::RewindCameraState cs;
               if (have_rig) cs.rig = rig;

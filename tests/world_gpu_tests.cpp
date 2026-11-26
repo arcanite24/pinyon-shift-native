@@ -353,6 +353,144 @@ void test_flag_encoding_and_visual_invariants() {
   CHECK(!hiz_stable(0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f));                          // uninitialized prev_vp
 }
 
+void test_smash_hide_tracker() {
+  SmashHideTracker tracker;
+
+  auto make_span = [](float gx, float gy, float gz, float hx, float hy, float hz, uint32_t rel_off,
+                      uint32_t count) -> PropSpan {
+    PropSpan sp{};
+    sp.gx = gx;
+    sp.gy = gy;
+    sp.gz = gz;
+    sp.bmin[0] = gx - hx;
+    sp.bmax[0] = gx + hx;
+    sp.bmin[1] = gy;
+    sp.bmax[1] = gy + hy;
+    sp.bmin[2] = gz - hz;
+    sp.bmax[2] = gz + hz;
+    sp.rel_index_offset = rel_off;
+    sp.index_count = count;
+    sp.saved_indices.assign(count, 7u);
+    return sp;
+  };
+
+  constexpr uint64_t kDrawLod0 = 101;
+  constexpr uint64_t kDrawLod2 = 102;
+  constexpr uint64_t kDrawDecal = 103;
+  constexpr uint64_t kDrawFallback = 104;
+
+  std::unordered_map<uint64_t, uint32_t> arena = {
+      {kDrawLod0, 1000},
+      {kDrawLod2, 2000},
+      {kDrawDecal, 3000},
+      {kDrawFallback, 4000},
+  };
+  auto is_res = [&](uint64_t k) { return arena.count(k) != 0; };
+  auto lookup = [&](uint64_t k, uint32_t& base) {
+    auto it = arena.find(k);
+    if (it == arena.end()) return false;
+    base = it->second;
+    return true;
+  };
+
+  std::vector<std::pair<uint32_t, uint32_t>> zeroed;
+  auto q_zero = [&](uint32_t first, uint32_t count) { zeroed.emplace_back(first, count); };
+  std::vector<uint32_t> restored;
+  auto q_restore = [&](uint32_t first, const std::vector<uint32_t>&) { restored.push_back(first); };
+
+  // Tall 18 m pole at (10, 0, 10) across LOD00, LOD02, and a decal sign-face submesh,
+  // plus an intact neighboring fence panel at (13.5, 0, 10) whose AABB touches x = 10.5.
+  // Also a discount sign at (50, 0, 50) and a normal prop right next to it at (51.0, 0, 50).
+  auto build_fresh_spans = [&]() {
+    std::vector<std::pair<uint64_t, std::vector<PropSpan>>> ps;
+    ps.push_back({kDrawLod0,
+                  {make_span(10.0f, 0.0f, 10.0f, 0.4f, 18.0f, 0.4f, 0, 36),
+                   make_span(13.5f, 0.0f, 10.0f, 3.0f, 2.0f, 0.2f, 36, 24),
+                   make_span(50.0f, 0.0f, 50.0f, 0.8f, 2.5f, 0.3f, 60, 18),
+                   make_span(51.0f, 0.0f, 50.0f, 0.5f, 1.5f, 0.5f, 78, 12)}});
+    // LOD02 origin quantized by 0.08 m relative to LOD00.
+    ps.push_back({kDrawLod2, {make_span(10.08f, 0.0f, 10.0f, 0.4f, 18.0f, 0.4f, 0, 18)}});
+    // Decal submesh on the same tall pole.
+    ps.push_back({kDrawDecal, {make_span(10.0f, 0.0f, 10.0f, 0.5f, 18.0f, 0.5f, 0, 6)}});
+    // Offset-origin prop (origin at (30, 0, 30), wide AABB covering (26.5, 0, 30)) to exercise AABB fallback.
+    ps.push_back({kDrawFallback, {make_span(30.0f, 0.0f, 30.0f, 4.0f, 16.0f, 1.0f, 0, 30)}});
+    return ps;
+  };
+
+  auto initial = build_fresh_spans();
+  std::unordered_set<uint64_t> uploaded = {kDrawLod0, kDrawLod2, kDrawDecal, kDrawFallback};
+  tracker.install_spans(initial, uploaded, is_res, lookup, q_zero);
+  CHECK(zeroed.empty());
+  CHECK(tracker.by_draw_key.size() == 4);
+
+  // 1. Smash the tall pole at (10, 0, 10): LOD00, LOD02, and decal submesh ALL hide,
+  //    while the neighboring fence panel at (13.5, 0, 10) stays intact!
+  const std::vector<uint64_t> res_keys = {kDrawLod0, kDrawLod2, kDrawDecal, kDrawFallback};
+  const size_t n_pole = tracker.hide_near({10.0f, 0.0f, 10.0f}, 2.0f, false, res_keys, lookup, q_zero);
+  CHECK(n_pole == 3);
+  CHECK(tracker.by_draw_key[kDrawLod0][0].hidden);
+  CHECK(!tracker.by_draw_key[kDrawLod0][1].hidden);  // neighbor intact
+  CHECK(tracker.by_draw_key[kDrawLod2][0].hidden);
+  CHECK(tracker.by_draw_key[kDrawDecal][0].hidden);
+
+  // 2. Smash offset-origin tall prop at (26.5, 0, 30): origin doesn't match (3.5 m away),
+  //    so AABB fallback hides it and marks used_aabb_fallback on the sphere.
+  const size_t n_fb = tracker.hide_near({26.5f, 0.0f, 30.0f}, 2.0f, false, res_keys, lookup, q_zero);
+  CHECK(n_fb == 1);
+  CHECK(tracker.by_draw_key[kDrawFallback][0].hidden);
+
+  // 3. Evict kDrawLod0 and kDrawFallback from GPU arena, then re-upload them with fresh intact indices!
+  //    Even if stale entries lingered in by_draw_key (before prune), uploaded_keys MUST overwrite them
+  //    with hidden=false and re-queue queue_zero for both origin-matched and AABB-fallback spheres!
+  zeroed.clear();
+  auto reuploaded = build_fresh_spans();
+  std::unordered_set<uint64_t> reup_keys = {kDrawLod0, kDrawFallback};
+  tracker.install_spans(reuploaded, reup_keys, is_res, lookup, q_zero);
+  CHECK(tracker.by_draw_key[kDrawLod0][0].hidden);
+  CHECK(!tracker.by_draw_key[kDrawLod0][1].hidden);  // neighbor STILL intact after re-upload!
+  CHECK(tracker.by_draw_key[kDrawFallback][0].hidden);
+  // Both freshly uploaded hidden spans MUST have been re-zeroed on the GPU!
+  bool zeroed_lod0 = false, zeroed_fb = false;
+  for (const auto& [first, count] : zeroed) {
+    if (first == 1000 && count == 36) zeroed_lod0 = true;
+    if (first == 4000 && count == 30) zeroed_fb = true;
+  }
+  CHECK(zeroed_lod0 && zeroed_fb);
+
+  // 4. Persistent discount sign at (50, 0, 50) vs adjacent normal prop at (51, 0, 50):
+  //    unhide_near() at (51, 0, 50) or (50, 0, 50) MUST NEVER remove the persistent sphere
+  //    or restore the discount sign's span!
+  zeroed.clear();
+  restored.clear();
+  CHECK(tracker.hide_near({50.0f, 0.0f, 50.0f}, 3.5f, true, res_keys, lookup, q_zero) >= 1);
+  CHECK(tracker.by_draw_key[kDrawLod0][2].hidden);
+  CHECK(tracker.hide_near({51.0f, 0.0f, 50.0f}, 2.0f, false, res_keys, lookup, q_zero) == 0 ||
+        tracker.by_draw_key[kDrawLod0][3].hidden);
+  tracker.unhide_near({50.0f, 0.0f, 50.0f}, 3.5f, res_keys, lookup, q_restore);
+  CHECK(tracker.by_draw_key[kDrawLod0][2].hidden);  // discount sign MUST remain hidden!
+  bool has_persistent = false;
+  for (const auto& hs : tracker.active_spheres) {
+    if (hs.persistent) has_persistent = true;
+  }
+  CHECK(has_persistent);
+
+  // 5. Cap pruning (> 2048 spheres) MUST NEVER evict persistent discount sign spheres!
+  for (int i = 0; i < 2100; ++i) {
+    tracker.hide_near({1000.0f + float(i) * 5.0f, 0.0f, 0.0f}, 1.5f, false, {}, lookup, q_zero);
+  }
+  size_t persistent_left = 0;
+  for (const auto& hs : tracker.active_spheres) {
+    if (hs.persistent) ++persistent_left;
+  }
+  CHECK(persistent_left == 1);
+
+  // 6. Pruning non-resident draw keys drops evicted keys cleanly.
+  arena.erase(kDrawDecal);
+  tracker.prune_non_resident(is_res);
+  CHECK(tracker.by_draw_key.count(kDrawDecal) == 0);
+  CHECK(tracker.by_draw_key.count(kDrawLod0) == 1);
+}
+
 }  // namespace
 
 int main() {
@@ -365,6 +503,7 @@ int main() {
   test_hiz();
   test_early_z_batch_routing();
   test_flag_encoding_and_visual_invariants();
+  test_smash_hide_tracker();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

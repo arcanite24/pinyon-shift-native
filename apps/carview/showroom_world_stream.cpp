@@ -605,12 +605,15 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     }
     // Extract per-prop-instance index spans off-thread from normal cached CPU RAM
     // (never map/read back write-combined GPU staging buffers on the main thread).
-    // Only keep smashable-sized spans (<= 1500 triangles and <= 14 m AABB extent) so
-    // giant buildings/landmarks never allocate saved_indices or get accidentally hidden.
+    // Only keep smashable-sized spans (<= 1500 triangles, <= 14 m XZ footprint, <= 24 m height
+    // for tall slender poles) so giant buildings/landmarks never allocate saved_indices or get
+    // accidentally hidden. Placed prop decals (sign faces, painted panels) carry fade flags
+    // (128 | 256 | 512) whereas world-space road decals have fade == 0, so include prop decals too.
     {
       constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 32u | 16384u | 32768u | 1048576u;
       constexpr uint32_t kMaxSmashableSpanIndices = 1500u * 3u;
-      constexpr float kMaxSmashableSpanExtent = 14.0f;
+      constexpr float kMaxSmashableSpanExtentXZ = 14.0f;
+      constexpr float kMaxSmashableSpanExtentY = 24.0f;
       const auto* verts = geometry.textured_vertices.data();
       const auto* idxs = geometry.indices.data();
       std::unordered_set<uint64_t> seen_prop_keys;
@@ -618,7 +621,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
         if (d.index_count < 3) continue;
         const uint32_t flags = uint32_t(std::lround(d.push.params[1]));
         const bool is_prop_draw =
-            (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u && d.decal == 0u;
+            (flags & (128u | 256u | 512u)) != 0u && (flags & kNonPropMask) == 0u;
         if (!is_prop_draw) continue;
         if (!seen_prop_keys.insert(d.key).second) continue;
 
@@ -675,7 +678,7 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
           const float ey = sp.bmax[1] - sp.bmin[1];
           const float ez = sp.bmax[2] - sp.bmin[2];
           if (sp.index_count == 0 || sp.index_count > kMaxSmashableSpanIndices ||
-              ex > kMaxSmashableSpanExtent || ey > kMaxSmashableSpanExtent || ez > kMaxSmashableSpanExtent) {
+              std::max(ex, ez) > kMaxSmashableSpanExtentXZ || ey > kMaxSmashableSpanExtentY) {
             continue;
           }
           sp.saved_indices.assign(idxs + size_t(base_idx) + sp.rel_index_offset,

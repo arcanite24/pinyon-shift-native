@@ -298,6 +298,7 @@ struct GatherOptions {
   struct HiddenSphere {
     std::array<float, 3> pos{};
     float radius = 2.0f;
+    bool persistent = false;  // true for permanent hides (e.g. smashed discount signs)
   };
   std::shared_ptr<const std::vector<HiddenSphere>> hidden_positions;
 };

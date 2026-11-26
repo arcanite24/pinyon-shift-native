@@ -1344,17 +1344,6 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
       // 1. Scan all .pvsz zones in parallel for smashable placements (extended && word < MaxGlobalIndex)
       //    and static placed props (potential festival crowd barriers / barricades).
       const auto pvsz_names = impl_->source.with_suffix(".pvsz");
-      struct PvszSmash {
-        uint32_t object_id = 0;
-        uint32_t global_index = 0;
-        int32_t intact_member = -1;
-        std::array<float, 3> pos{};
-        std::array<float, 3> x_axis{1, 0, 0};
-        std::array<float, 3> y_axis{0, 1, 0};
-        std::array<float, 3> z_axis{0, 0, 1};
-        std::vector<uint8_t> routes;
-        std::string name;
-      };
       struct PvszStatic {
         uint32_t object_id = 0;
         uint32_t member = 0;
@@ -1366,7 +1355,7 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         std::string name;
       };
       const uint32_t max_g = uint32_t(defs_.global_to_list.size());
-      std::vector<std::vector<PvszSmash>> per_zone(pvsz_names.size());
+      std::vector<std::vector<PvszPlacement>> per_zone(pvsz_names.size());
       std::vector<std::vector<PvszStatic>> per_zone_static(pvsz_names.size());
       {
         const size_t n = pvsz_names.size();
@@ -1390,7 +1379,7 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
                 continue;
               const uint32_t oid = fh1::pvsz_object_id(zone.ids[k]);
               if (rec.extended && rec.word < max_g) {
-                PvszSmash s;
+                PvszPlacement s;
                 s.object_id = oid;
                 s.global_index = rec.word;
                 if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
@@ -1434,174 +1423,19 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         }
       }
 
-      // Deduplicate by object_id and build a 1 m spatial index for exact CollObjs.xml linking.
-      std::unordered_map<uint32_t, PvszSmash> unique_pvsz;
+      // Deduplicate by object_id and link CollObjs.xml against .pvsz placements.
+      std::unordered_map<uint32_t, PvszPlacement> unique_pvsz;
       for (auto& zv : per_zone) {
         for (auto& s : zv) unique_pvsz.try_emplace(s.object_id, std::move(s));
       }
       per_zone.clear();
 
-      std::vector<const PvszSmash*> pvsz_list;
+      std::vector<PvszPlacement> pvsz_list;
       pvsz_list.reserve(unique_pvsz.size());
-      std::unordered_map<int64_t, std::vector<size_t>> pvsz_grid;
-      for (const auto& [oid, s] : unique_pvsz) {
-        const size_t si = pvsz_list.size();
-        pvsz_list.push_back(&s);
-        pvsz_grid[spatial_key_1m(s.pos[0], s.pos[1], s.pos[2])].push_back(si);
-      }
+      for (auto& [oid, s] : unique_pvsz) pvsz_list.push_back(std::move(s));
+      unique_pvsz.clear();
 
-      std::vector<uint8_t> pvsz_claimed(pvsz_list.size(), 0);
-      std::unordered_map<std::string, int32_t> stem_to_global;
-      std::unordered_map<std::string, int32_t> stem_to_intact;
-
-      // Pass 1: exact positional link from CollObjs.xml -> .pvsz GlobalIndex.
-      for (auto& pp : props_) {
-        const int32_t ix0 = int32_t(std::floor(pp.place.pos[0]));
-        const int32_t iy0 = int32_t(std::floor(pp.place.pos[1] * 0.5f));
-        const int32_t iz0 = int32_t(std::floor(pp.place.pos[2]));
-        size_t best_si = SIZE_MAX;
-        float best_d2 = 0.65f * 0.65f;
-        for (int32_t dz = -1; dz <= 1; ++dz) {
-          for (int32_t dy = -1; dy <= 1; ++dy) {
-            for (int32_t dx = -1; dx <= 1; ++dx) {
-              const int64_t key =
-                  (int64_t(ix0 + dx) * 73856093ll) ^ (int64_t(iy0 + dy) * 19349663ll) ^ (int64_t(iz0 + dz) * 83492791ll);
-              auto it = pvsz_grid.find(key);
-              if (it == pvsz_grid.end()) continue;
-              for (size_t si : it->second) {
-                const auto& ps = *pvsz_list[si];
-                const float ddx = ps.pos[0] - pp.place.pos[0];
-                const float ddy = ps.pos[1] - pp.place.pos[1];
-                const float ddz = ps.pos[2] - pp.place.pos[2];
-                const float d2 = ddx * ddx + ddy * ddy + ddz * ddz;
-                if (d2 < best_d2) {
-                  best_d2 = d2;
-                  best_si = si;
-                }
-              }
-            }
-          }
-        }
-        if (best_si != SIZE_MAX) {
-          const auto& ps = *pvsz_list[best_si];
-          pvsz_claimed[best_si] = 1;
-          pp.global_index = int32_t(ps.global_index);
-          pp.intact_member = ps.intact_member;
-          pp.routes = ps.routes;
-          const uint16_t list_idx = defs_.global_to_list[ps.global_index];
-          if (list_idx < defs_.definitions.size()) {
-            pp.def = &defs_.definitions[list_idx];
-            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
-          }
-          stem_to_global.try_emplace(pp.place.stem, pp.global_index);
-          if (pp.intact_member >= 0) stem_to_intact.try_emplace(pp.place.stem, pp.intact_member);
-        }
-      }
-
-      // Pass 2: propagate stem -> GlobalIndex to any CollObjs.xml entry not directly matched.
-      for (auto& pp : props_) {
-        if (pp.global_index >= 0) continue;
-        if (const auto it = stem_to_global.find(pp.place.stem); it != stem_to_global.end()) {
-          pp.global_index = it->second;
-          const uint16_t list_idx = defs_.global_to_list[size_t(it->second)];
-          if (list_idx < defs_.definitions.size()) {
-            pp.def = &defs_.definitions[list_idx];
-            pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
-          }
-          if (const auto mit = stem_to_intact.find(pp.place.stem); mit != stem_to_intact.end()) {
-            pp.intact_member = mit->second;
-          }
-        }
-      }
-
-      // Pass 3: include unclaimed breakable .pvsz smashables not in CollObjs.xml, and register
-      // unclaimed unbreakable solid barriers (excluding Flyer signs, BF_* barn doors, and RaceActivation arches).
-      std::unordered_set<int64_t> extra_seen;
-      std::unordered_set<int64_t> barrier_seen;
-      for (size_t si = 0; si < pvsz_list.size(); ++si) {
-        if (pvsz_claimed[si]) continue;
-        const auto& ps = *pvsz_list[si];
-        if (ps.name.rfind("bf_", 0) == 0 || ps.name.rfind("flyer_", 0) == 0) continue;
-        const uint16_t list_idx = defs_.global_to_list[ps.global_index];
-        if (list_idx >= defs_.definitions.size()) continue;
-        const PropPhysicsDef& d = defs_.definitions[list_idx];
-        if (d.object_type_index == 1 || d.object_type_index == 3) continue;
-        const int64_t pos_key =
-            (int64_t(std::lround(ps.pos[0] * 4.0f)) * 73856093ll) ^
-            (int64_t(std::lround(ps.pos[1] * 4.0f)) * 19349663ll) ^
-            (int64_t(std::lround(ps.pos[2] * 4.0f)) * 83492791ll);
-        if (d.unbreakable()) {
-          if (!barrier_seen.insert(pos_key).second) continue;
-          bool added_shape = false;
-          for (const auto& sh : d.shapes) {
-            if (sh.kind != PropShapeKind::kObb) continue;
-            const auto& m = sh.transform;
-            SolidBarrier sb;
-            sb.pos = {
-                ps.pos[0] + ps.x_axis[0] * m[12] + ps.y_axis[0] * m[13] + ps.z_axis[0] * m[14],
-                ps.pos[1] + ps.x_axis[1] * m[12] + ps.y_axis[1] * m[13] + ps.z_axis[1] * m[14],
-                ps.pos[2] + ps.x_axis[2] * m[12] + ps.y_axis[2] * m[13] + ps.z_axis[2] * m[14],
-            };
-            sb.x_axis = {
-                ps.x_axis[0] * m[0] + ps.y_axis[0] * m[1] + ps.z_axis[0] * m[2],
-                ps.x_axis[1] * m[0] + ps.y_axis[1] * m[1] + ps.z_axis[1] * m[2],
-                ps.x_axis[2] * m[0] + ps.y_axis[2] * m[1] + ps.z_axis[2] * m[2],
-            };
-            sb.y_axis = {
-                ps.x_axis[0] * m[4] + ps.y_axis[0] * m[5] + ps.z_axis[0] * m[6],
-                ps.x_axis[1] * m[4] + ps.y_axis[1] * m[5] + ps.z_axis[1] * m[6],
-                ps.x_axis[2] * m[4] + ps.y_axis[2] * m[5] + ps.z_axis[2] * m[6],
-            };
-            sb.z_axis = {
-                ps.x_axis[0] * m[8] + ps.y_axis[0] * m[9] + ps.z_axis[0] * m[10],
-                ps.x_axis[1] * m[8] + ps.y_axis[1] * m[9] + ps.z_axis[1] * m[10],
-                ps.x_axis[2] * m[8] + ps.y_axis[2] * m[9] + ps.z_axis[2] * m[10],
-            };
-            sb.local_center = {0.0f, 0.0f, 0.0f};
-            sb.half_extents = {
-                std::max(0.18f, sh.half_extents[0]),
-                std::max(0.35f, sh.half_extents[1]),
-                std::max(0.18f, sh.half_extents[2]),
-            };
-            sb.routes = ps.routes;
-            add_solid_barrier(sb);
-            added_shape = true;
-          }
-          if (!added_shape) {
-            SolidBarrier sb;
-            sb.pos = ps.pos;
-            sb.x_axis = ps.x_axis;
-            sb.y_axis = ps.y_axis;
-            sb.z_axis = ps.z_axis;
-            sb.local_center = d.aabb_centre_offset;
-            sb.half_extents = {
-                std::max(0.18f, d.half_extents[0]),
-                std::max(0.35f, d.half_extents[1]),
-                std::max(0.18f, d.half_extents[2]),
-            };
-            sb.routes = ps.routes;
-            add_solid_barrier(sb);
-          }
-          continue;
-        }
-        if (!extra_seen.insert(pos_key).second) continue;
-
-        PlacedProp pp;
-        pp.place.pos = ps.pos;
-        pp.place.x_axis = ps.x_axis;
-        pp.place.y_axis = ps.y_axis;
-        pp.place.z_axis = ps.z_axis;
-        pp.place.stem = !ps.name.empty() ? ps.name : ("pvsz_g" + std::to_string(ps.global_index));
-        pp.place.physics_type = pp.place.stem;
-        pp.def = &d;
-        pp.global_index = int32_t(ps.global_index);
-        pp.intact_member = ps.intact_member;
-        pp.routes = ps.routes;
-        pp.radius = std::clamp(d.bounding_radius, 0.35f, 12.0f);
-        const uint32_t idx = uint32_t(props_.size());
-        props_.push_back(std::move(pp));
-        grid_[cell_key(ps.pos[0], ps.pos[2])].push_back(idx);
-      }
+      link_pvsz(pvsz_list);
 
       // Pass 4 (engine extra, off by default, Q106): register static .pvsz solid festival crowd
       // barriers / barricades / chain-link fences whose render models are solid barriers not already
@@ -1686,6 +1520,16 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
           }
           return false;
         };
+
+        std::unordered_set<int64_t> barrier_seen;
+        barrier_seen.reserve(solid_barriers_.size() * 2 + unique_static.size() / 4 + 16);
+        for (const auto& existing : solid_barriers_) {
+          const int64_t existing_key =
+              (int64_t(std::lround(existing.pos[0] * 4.0f)) * 73856093ll) ^
+              (int64_t(std::lround(existing.pos[1] * 4.0f)) * 19349663ll) ^
+              (int64_t(std::lround(existing.pos[2] * 4.0f)) * 83492791ll);
+          barrier_seen.insert(existing_key);
+        }
 
         for (const auto& [oid, st] : unique_static) {
           const auto bit = barrier_models.find(st.member);
@@ -1886,6 +1730,207 @@ void SmashableWorld::add_prop(const CollObjPlacement& p, const PropPhysicsDef* e
   grid_[cell_key(p.pos[0], p.pos[2])].push_back(idx);
 }
 
+void SmashableWorld::link_pvsz(std::span<const PvszPlacement> pvsz_list) {
+  if (pvsz_list.empty()) return;
+
+  std::unordered_map<int64_t, std::vector<size_t>> pvsz_grid;
+  pvsz_grid.reserve(pvsz_list.size() * 2 + 16);
+  for (size_t si = 0; si < pvsz_list.size(); ++si) {
+    const auto& s = pvsz_list[si];
+    pvsz_grid[spatial_key_1m(s.pos[0], s.pos[1], s.pos[2])].push_back(si);
+  }
+
+  std::vector<uint8_t> pvsz_claimed(pvsz_list.size(), 0);
+  std::unordered_map<std::string, std::unordered_set<uint32_t>> stem_globals;
+  std::unordered_map<uint32_t, std::unordered_set<std::string>> global_to_stems;
+
+  auto apply_match = [&](PlacedProp& pp, size_t best_si) {
+    const auto& ps = pvsz_list[best_si];
+    pvsz_claimed[best_si] = 1;
+    // Snap collider/debris/hide placement to the exact rendered .pvsz visual prop pose.
+    pp.place.pos = ps.pos;
+    pp.place.x_axis = ps.x_axis;
+    pp.place.y_axis = ps.y_axis;
+    pp.place.z_axis = ps.z_axis;
+    pp.global_index = int32_t(ps.global_index);
+    pp.intact_member = ps.intact_member;
+    pp.routes = ps.routes;
+    if (ps.global_index < defs_.global_to_list.size()) {
+      const uint16_t list_idx = defs_.global_to_list[ps.global_index];
+      if (list_idx < defs_.definitions.size()) {
+        pp.def = &defs_.definitions[list_idx];
+        pp.radius = std::clamp(pp.def->bounding_radius, 0.35f, 12.0f);
+      }
+    }
+    stem_globals[pp.place.stem].insert(ps.global_index);
+    global_to_stems[ps.global_index].insert(pp.place.stem);
+  };
+
+  auto find_best = [&](const PlacedProp& pp, float max_dist, bool loose_guarded) -> size_t {
+    const int32_t ix0 = int32_t(std::floor(pp.place.pos[0]));
+    const int32_t iy0 = int32_t(std::floor(pp.place.pos[1] * 0.5f));
+    const int32_t iz0 = int32_t(std::floor(pp.place.pos[2]));
+    size_t best_si = SIZE_MAX;
+    float best_d2 = max_dist * max_dist;
+    const auto sit = loose_guarded ? stem_globals.find(pp.place.stem) : stem_globals.end();
+    for (int32_t dz = -1; dz <= 1; ++dz) {
+      for (int32_t dy = -1; dy <= 1; ++dy) {
+        for (int32_t dx = -1; dx <= 1; ++dx) {
+          const int64_t key =
+              (int64_t(ix0 + dx) * 73856093ll) ^ (int64_t(iy0 + dy) * 19349663ll) ^ (int64_t(iz0 + dz) * 83492791ll);
+          auto it = pvsz_grid.find(key);
+          if (it == pvsz_grid.end()) continue;
+          for (size_t si : it->second) {
+            if (pvsz_claimed[si]) continue;
+            const auto& ps = pvsz_list[si];
+            if (loose_guarded) {
+              if (ps.name.rfind("bf_", 0) == 0 || ps.name.rfind("flyer_", 0) == 0) continue;
+              if (ps.global_index < defs_.global_to_list.size()) {
+                const uint16_t li = defs_.global_to_list[ps.global_index];
+                if (li < defs_.definitions.size()) {
+                  const auto& d = defs_.definitions[li];
+                  if (d.object_type_index == 1 || d.object_type_index == 3) continue;
+                }
+              }
+              // Guard against pairing an unmatched XML stem with an unrelated nearby .pvsz prop.
+              if (sit != stem_globals.end()) {
+                if (sit->second.count(ps.global_index) == 0) continue;
+              } else if (const auto git = global_to_stems.find(ps.global_index); git != global_to_stems.end()) {
+                if (git->second.count(pp.place.stem) == 0) continue;
+              }
+            }
+            const float ddx = ps.pos[0] - pp.place.pos[0];
+            const float ddy = ps.pos[1] - pp.place.pos[1];
+            const float ddz = ps.pos[2] - pp.place.pos[2];
+            const float d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 < best_d2) {
+              best_d2 = d2;
+              best_si = si;
+            }
+          }
+        }
+      }
+    }
+    return best_si;
+  };
+
+  // Pass 1a: tight co-located link (d < 0.15 m) so exact CollObjs.xml <-> .pvsz pairs
+  // always claim each other before any loose matches are considered.
+  for (auto& pp : props_) {
+    if (pp.global_index >= 0) continue;
+    const size_t best_si = find_best(pp, 0.15f, false);
+    if (best_si != SIZE_MAX) apply_match(pp, best_si);
+  }
+
+  // Pass 1b: guarded loose link (d < 0.55 m) only for compatible stem <-> GlobalIndex pairs.
+  for (auto& pp : props_) {
+    if (pp.global_index >= 0) continue;
+    const size_t best_si = find_best(pp, 0.55f, true);
+    if (best_si != SIZE_MAX) apply_match(pp, best_si);
+  }
+
+  // When .pvsz zones are loaded, drop any ghost CollObjs.xml entries that failed to match a
+  // visual .pvsz prop (otherwise they spawn invisible colliders / debris with no visual prop)
+  // and rebuild the spatial grid after pruning and pose snapping.
+  props_.erase(
+      std::remove_if(props_.begin(), props_.end(), [](const PlacedProp& pp) { return pp.global_index < 0; }),
+      props_.end());
+  grid_.clear();
+  for (uint32_t i = 0; i < uint32_t(props_.size()); ++i) {
+    grid_[cell_key(props_[i].place.pos[0], props_[i].place.pos[2])].push_back(i);
+  }
+
+  // Pass 3: include unclaimed breakable .pvsz smashables not in CollObjs.xml, and register
+  // unclaimed unbreakable solid barriers (excluding Flyer signs, BF_* barn doors, and RaceActivation arches).
+  std::unordered_set<int64_t> extra_seen;
+  std::unordered_set<int64_t> barrier_seen;
+  for (size_t si = 0; si < pvsz_list.size(); ++si) {
+    if (pvsz_claimed[si]) continue;
+    const auto& ps = pvsz_list[si];
+    if (ps.name.rfind("bf_", 0) == 0 || ps.name.rfind("flyer_", 0) == 0) continue;
+    if (ps.global_index >= defs_.global_to_list.size()) continue;
+    const uint16_t list_idx = defs_.global_to_list[ps.global_index];
+    if (list_idx >= defs_.definitions.size()) continue;
+    const PropPhysicsDef& d = defs_.definitions[list_idx];
+    if (d.object_type_index == 1 || d.object_type_index == 3) continue;
+    const int64_t pos_key =
+        (int64_t(std::lround(ps.pos[0] * 4.0f)) * 73856093ll) ^
+        (int64_t(std::lround(ps.pos[1] * 4.0f)) * 19349663ll) ^
+        (int64_t(std::lround(ps.pos[2] * 4.0f)) * 83492791ll);
+    if (d.unbreakable()) {
+      if (!barrier_seen.insert(pos_key).second) continue;
+      bool added_shape = false;
+      for (const auto& sh : d.shapes) {
+        if (sh.kind != PropShapeKind::kObb) continue;
+        const auto& m = sh.transform;
+        SolidBarrier sb;
+        sb.pos = {
+            ps.pos[0] + ps.x_axis[0] * m[12] + ps.y_axis[0] * m[13] + ps.z_axis[0] * m[14],
+            ps.pos[1] + ps.x_axis[1] * m[12] + ps.y_axis[1] * m[13] + ps.z_axis[1] * m[14],
+            ps.pos[2] + ps.x_axis[2] * m[12] + ps.y_axis[2] * m[13] + ps.z_axis[2] * m[14],
+        };
+        sb.x_axis = {
+            ps.x_axis[0] * m[0] + ps.y_axis[0] * m[1] + ps.z_axis[0] * m[2],
+            ps.x_axis[1] * m[0] + ps.y_axis[1] * m[1] + ps.z_axis[1] * m[2],
+            ps.x_axis[2] * m[0] + ps.y_axis[2] * m[1] + ps.z_axis[2] * m[2],
+        };
+        sb.y_axis = {
+            ps.x_axis[0] * m[4] + ps.y_axis[0] * m[5] + ps.z_axis[0] * m[6],
+            ps.x_axis[1] * m[4] + ps.y_axis[1] * m[5] + ps.z_axis[1] * m[6],
+            ps.x_axis[2] * m[4] + ps.y_axis[2] * m[5] + ps.z_axis[2] * m[6],
+        };
+        sb.z_axis = {
+            ps.x_axis[0] * m[8] + ps.y_axis[0] * m[9] + ps.z_axis[0] * m[10],
+            ps.x_axis[1] * m[8] + ps.y_axis[1] * m[9] + ps.z_axis[1] * m[10],
+            ps.x_axis[2] * m[8] + ps.y_axis[2] * m[9] + ps.z_axis[2] * m[10],
+        };
+        sb.local_center = {0.0f, 0.0f, 0.0f};
+        sb.half_extents = {
+            std::max(0.18f, sh.half_extents[0]),
+            std::max(0.35f, sh.half_extents[1]),
+            std::max(0.18f, sh.half_extents[2]),
+        };
+        sb.routes = ps.routes;
+        add_solid_barrier(sb);
+        added_shape = true;
+      }
+      if (!added_shape) {
+        SolidBarrier sb;
+        sb.pos = ps.pos;
+        sb.x_axis = ps.x_axis;
+        sb.y_axis = ps.y_axis;
+        sb.z_axis = ps.z_axis;
+        sb.local_center = d.aabb_centre_offset;
+        sb.half_extents = {
+            std::max(0.18f, d.half_extents[0]),
+            std::max(0.35f, d.half_extents[1]),
+            std::max(0.18f, d.half_extents[2]),
+        };
+        sb.routes = ps.routes;
+        add_solid_barrier(sb);
+      }
+      continue;
+    }
+    if (!extra_seen.insert(pos_key).second) continue;
+
+    PlacedProp pp;
+    pp.place.pos = ps.pos;
+    pp.place.x_axis = ps.x_axis;
+    pp.place.y_axis = ps.y_axis;
+    pp.place.z_axis = ps.z_axis;
+    pp.place.stem = !ps.name.empty() ? ps.name : ("pvsz_g" + std::to_string(ps.global_index));
+    pp.place.physics_type = pp.place.stem;
+    pp.def = &d;
+    pp.global_index = int32_t(ps.global_index);
+    pp.intact_member = ps.intact_member;
+    pp.routes = ps.routes;
+    pp.radius = std::clamp(d.bounding_radius, 0.35f, 12.0f);
+    const uint32_t idx = uint32_t(props_.size());
+    props_.push_back(std::move(pp));
+    grid_[cell_key(ps.pos[0], ps.pos[2])].push_back(idx);
+  }
+}
+
 void SmashableWorld::add_solid_barrier(const SolidBarrier& barrier) {
   SolidBarrier b = barrier;
   b.half_extents[0] = std::max(0.15f, b.half_extents[0]);
@@ -1927,7 +1972,7 @@ void SmashableWorld::rebuild_broken_positions() {
   next_hidden->reserve(persistent_hidden_.size() + 32);
   for (const auto& hs : persistent_hidden_) next_hidden->push_back(hs);
   for (const auto& pp : props_) {
-    if (pp.broken) next_hidden->push_back({pp.place.pos, hide_radius_for(pp)});
+    if (pp.broken) next_hidden->push_back({pp.place.pos, hide_radius_for(pp), is_discount_sign(pp)});
   }
   broken_positions_ = next_hidden->empty() ? nullptr : std::move(next_hidden);
 }
@@ -1940,11 +1985,12 @@ void SmashableWorld::record_hidden_prop(const std::array<float, 3>& pos, float h
     const float dz = existing.pos[2] - pos[2];
     if (dx * dx + dy * dy + dz * dz < 0.25f) {
       existing.radius = std::max(existing.radius, r);
+      existing.persistent = true;
       rebuild_broken_positions();
       return;
     }
   }
-  persistent_hidden_.push_back({pos, r});
+  persistent_hidden_.push_back({pos, r, true});
   rebuild_broken_positions();
 }
 

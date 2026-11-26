@@ -197,6 +197,7 @@ void test_corpus() {
   CHECK(sw.unique_prop_count() >= 5000 && sw.unique_prop_count() < 12000);
   CHECK(sw.loaded_debris_model_count() >= 640);
   CHECK(sw.matched_global_index_count() >= 4500);
+  CHECK(sw.matched_global_index_count() == sw.unique_prop_count());
   std::printf("corpus 1:1 debris: unique_props=%zu matched_global=%zu rmb_models=%zu\n",
               sw.unique_prop_count(), sw.matched_global_index_count(), sw.loaded_debris_model_count());
 
@@ -698,6 +699,133 @@ void test_smashable_respawn_and_skidmark_truncate() {
   }
 }
 
+void test_pvsz_linking_no_ghosts_no_double_claim() {
+  world::PhysicsDefinitions defs;
+  world::PropPhysicsDef speed35{};
+  speed35.object_type_index = 2;
+  speed35.break_speed_mph = 5.0f;
+  speed35.mass = 0.2f;
+  speed35.bounding_radius = 1.0f;
+
+  world::PropPhysicsDef route109{};
+  route109.object_type_index = 2;
+  route109.break_speed_mph = 5.0f;
+  route109.mass = 0.25f;
+  route109.bounding_radius = 1.1f;
+
+  defs.definitions = {speed35, route109};
+  defs.global_to_list = {0u, 1u};  // global 0 -> speed35, global 1 -> route109
+
+  world::SmashableWorld sw;
+  sw.set_definitions(defs);
+
+  // 1. Exact co-located pair for speed35 at (0, 0, 10) establishes stem_globals["co_clrd_sign_speed35"] = {0}.
+  world::CollObjPlacement p_exact_speed{};
+  p_exact_speed.physics_type = "CO_CLRD_Sign_Speed35.0.rmb";
+  p_exact_speed.stem = "co_clrd_sign_speed35";
+  p_exact_speed.pos = {0.0f, 0.0f, 10.0f};
+  sw.add_prop(p_exact_speed);
+
+  // 2. Exact co-located pair for route109 at (0, 0, 30) establishes stem_globals["co_clrd_signcountya_route109"] = {1}.
+  world::CollObjPlacement p_exact_route{};
+  p_exact_route.physics_type = "CO_CLRD_SignCountyA_Route109.0.rmb";
+  p_exact_route.stem = "co_clrd_signcountya_route109";
+  p_exact_route.pos = {0.0f, 0.0f, 30.0f};
+  sw.add_prop(p_exact_route);
+
+  // 3. Two XML entries near ONE .pvsz at (0, 0, 50): exact entry at 0.02 m MUST claim it,
+  //    and the second entry 0.08 m away must NOT double-claim it (and gets dropped as unmatched ghost).
+  world::CollObjPlacement p_dup_far{};
+  p_dup_far.physics_type = "CO_CLRD_Sign_Speed35.0.rmb";
+  p_dup_far.stem = "co_clrd_sign_speed35";
+  p_dup_far.pos = {0.0f, 0.0f, 50.08f};
+  sw.add_prop(p_dup_far);
+
+  world::CollObjPlacement p_dup_exact{};
+  p_dup_exact.physics_type = "CO_CLRD_Sign_Speed35.0.rmb";
+  p_dup_exact.stem = "co_clrd_sign_speed35";
+  p_dup_exact.pos = {0.0f, 0.0f, 50.02f};
+  sw.add_prop(p_dup_exact);
+
+  // 4. Mismatch test: a ghost co_clrd_sign_speed35 at (0, 0, 70.40) is 0.40 m away from an
+  //    unclaimed route109 .pvsz at (0, 0, 70.0). Pass 1b MUST refuse to pair them!
+  //    The ghost XML entry is dropped, and the real route109 .pvsz enters cleanly via Pass 3.
+  world::CollObjPlacement p_mismatch_ghost{};
+  p_mismatch_ghost.physics_type = "CO_CLRD_Sign_Speed35.0.rmb";
+  p_mismatch_ghost.stem = "co_clrd_sign_speed35";
+  p_mismatch_ghost.pos = {0.0f, 0.0f, 70.40f};
+  sw.add_prop(p_mismatch_ghost);
+
+  // 5. Compatible loose match: route109 XML at (0, 0, 90.35) is 0.35 m from route109 .pvsz at (0, 0, 90.0).
+  //    Pass 1b SHOULD match it and snap its pose to (0, 0, 90.0)!
+  world::CollObjPlacement p_loose_ok{};
+  p_loose_ok.physics_type = "CO_CLRD_SignCountyA_Route109.0.rmb";
+  p_loose_ok.stem = "co_clrd_signcountya_route109";
+  p_loose_ok.pos = {0.0f, 0.0f, 90.35f};
+  sw.add_prop(p_loose_ok);
+
+  // 6. Isolated ghost XML collider at (0, 0, 120.0) with NO .pvsz prop anywhere nearby: MUST be dropped!
+  world::CollObjPlacement p_isolated_ghost{};
+  p_isolated_ghost.physics_type = "CO_CLRD_Sign_Speed35.0.rmb";
+  p_isolated_ghost.stem = "co_clrd_sign_speed35";
+  p_isolated_ghost.pos = {0.0f, 0.0f, 120.0f};
+  sw.add_prop(p_isolated_ghost);
+
+  std::vector<world::SmashableWorld::PvszPlacement> pvsz;
+  auto add_ps = [&](uint32_t oid, uint32_t gi, float z) {
+    world::SmashableWorld::PvszPlacement s{};
+    s.object_id = oid;
+    s.global_index = gi;
+    s.pos = {0.0f, 0.0f, z};
+    pvsz.push_back(s);
+  };
+  add_ps(1, 0, 10.0f);  // exact speed35
+  add_ps(2, 1, 30.0f);  // exact route109
+  add_ps(3, 0, 50.0f);  // single .pvsz for the two close XML entries
+  add_ps(4, 1, 70.0f);  // route109 0.40 m from unrelated speed35 ghost
+  add_ps(5, 1, 90.0f);  // route109 0.35 m from compatible route109 XML
+
+  sw.link_pvsz(pvsz);
+
+  // Exactly 5 visual .pvsz props -> 5 PlacedProps, 100% matched, 0 ghosts, 0 duplicates!
+  CHECK(sw.unique_prop_count() == 5);
+  CHECK(sw.matched_global_index_count() == 5);
+
+  // Drive through the isolated ghost location (0, 0, 120.0): must NOT smash anything!
+  drive::FlatGround ground(0.0);
+  drive::CarParams cp{};
+  drive::Vehicle car(cp);
+  std::vector<world::SmashEvent> evs;
+  car.launch({0.0, 0.0, 117.0}, 0.0, 20.0);
+  for (int i = 0; i < 40; ++i) {
+    car.step({0.0, 0.4, 0.0, false}, ground);
+    sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+  }
+  CHECK(evs.empty());
+  CHECK(sw.broken_prop_count() == 0);
+
+  // Drive through (0, 0, 70.0): must smash global_index == 1 (route109), NOT global_index == 0 (speed35)!
+  car.launch({0.0, 0.0, 67.0}, 0.0, 20.0);
+  for (int i = 0; i < 40 && evs.empty(); ++i) {
+    car.step({0.0, 0.4, 0.0, false}, ground);
+    sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+  }
+  CHECK(evs.size() == 1);
+  CHECK(evs[0].global_index == 1);
+  CHECK(std::fabs(evs[0].pos[2] - 70.0f) < 0.01f);
+
+  // Drive through (0, 0, 90.0): loose match must have snapped to exact .pvsz pos z = 90.0!
+  evs.clear();
+  car.launch({0.0, 0.0, 87.0}, 0.0, 20.0);
+  for (int i = 0; i < 40 && evs.empty(); ++i) {
+    car.step({0.0, 0.4, 0.0, false}, ground);
+    sw.step(car, ground, float(drive::Vehicle::kStep), evs);
+  }
+  CHECK(evs.size() == 1);
+  CHECK(evs[0].global_index == 1);
+  CHECK(std::fabs(evs[0].pos[2] - 90.0f) < 0.01f);
+}
+
 }  // namespace
 
 int main() {
@@ -707,6 +835,7 @@ int main() {
   test_solid_festival_barriers_and_ground_height();
   test_road_sign_debris_and_barn_door_no_launch();
   test_smashable_respawn_and_skidmark_truncate();
+  test_pvsz_linking_no_ghosts_no_double_claim();
   test_corpus();
   if (g_failures == 0) {
     std::printf("smashables_tests: all checks passed\n");

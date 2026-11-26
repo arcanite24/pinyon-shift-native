@@ -243,6 +243,59 @@ int main() {
     CHECK(barn.update(1418.5, -5366.8, nullptr, &error));
     std::printf("barn find 01: %zu of %zu props hidden by name\n", barn.stats().props_hidden, barn.stats().props);
     CHECK(barn.stats().props_hidden == 5);
+
+    // Regression: Streamer::set_options() across a route change (0 -> 42 -> 0) MUST preserve
+    // hidden discount signs (options.hidden + options.hidden_positions) and clear any stale
+    // pending_hidden_positions_ so the smashed sign never reappears after a race!
+    {
+      world::GatherOptions ro;
+      ro.route = 0;
+      world::Streamer sign_stream(w, ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_hidden == 0);
+
+      // Simulate smashing flyer_001 during free roam: update hidden + hidden_positions,
+      // and leave a stale pending_hidden_positions_ (nullptr) queued before set_options.
+      ro.hidden = std::make_shared<const std::set<std::string>>(std::set<std::string>{"flyer_001"});
+      auto hpos = std::make_shared<std::vector<world::GatherOptions::HiddenSphere>>();
+      hpos->push_back({{1410.35f, 128.44f, 3126.53f}, 3.5f, true});
+      ro.hidden_positions = hpos;
+      sign_stream.set_hidden_positions(nullptr);  // stale pending clear that set_options must discard
+
+      // Enter race route 42 (free-roam-only discount signs are filtered out by route),
+      // then return to free roam route 0 via set_options(): flyer_001 MUST stay hidden!
+      ro.route = 42;
+      sign_stream.set_options(ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_off_route > 0);
+
+      ro.route = 0;
+      sign_stream.set_options(ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_hidden >= 1);
+
+      // Verify persistent hidden_positions alone (even without options.hidden) still hides flyer_001.
+      ro.hidden = nullptr;
+      sign_stream.set_options(ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_hidden >= 1);
+
+      // Verify a non-persistent hidden sphere with large radius (4.5 m) placed 2.5 m away from
+      // flyer_001 does NOT accidentally hide flyer_001, while placing it at flyer_001 (< 0.05 m) DOES.
+      auto non_persist_far = std::make_shared<std::vector<world::GatherOptions::HiddenSphere>>();
+      non_persist_far->push_back({{1412.85f, 128.44f, 3126.53f}, 4.5f, false});
+      ro.hidden_positions = non_persist_far;
+      sign_stream.set_options(ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_hidden == 0);
+
+      auto non_persist_exact = std::make_shared<std::vector<world::GatherOptions::HiddenSphere>>();
+      non_persist_exact->push_back({{1410.35f, 128.44f, 3126.53f}, 4.5f, false});
+      ro.hidden_positions = non_persist_exact;
+      sign_stream.set_options(ro);
+      CHECK(sign_stream.update(1410.35, 3126.53, nullptr, &error));
+      CHECK(sign_stream.stats().props_hidden >= 1);
+    }
   }
 
   world::Spawn spawn;

@@ -210,6 +210,8 @@ void Streamer::set_options(const GatherOptions& options) {
   if (job_.valid()) (void)job_.get();
   options_ = options;
   pending_hidden_ = options.hidden;
+  pending_hidden_positions_ = options.hidden_positions;
+  has_pending_hidden_positions_ = false;
   preload_active_ = false;
   force_ = true;
 }

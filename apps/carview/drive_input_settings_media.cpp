@@ -1321,6 +1321,9 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                     app.progress.signs_found = std::move(restored_signs);
                     if (host.free_roam) {
                       host.free_roam = std::make_unique<freeroam::FreeRoam>(app.collectibles, app.progress);
+                      host.hidden_sent = host.free_roam->hidden();
+                      host.world_gather_options.hidden = host.hidden_sent;
+                      if (host.streamer) host.streamer->set_hidden(host.hidden_sent);
                     }
                   }
                 }
