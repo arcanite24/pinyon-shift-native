@@ -28,8 +28,7 @@ uint32_t hub_room_record_base(HubRoom room) { return kHubRoomRecordBase + (uint3
 
 float hub_room_yaw(HubRoom) { return 0.0f; }
 
-bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, const std::filesystem::path& cache_dir,
-                   HubRoomScenery& out, std::string* error) {
+bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoomScenery& out, std::string* error) {
   out = HubRoomScenery{};
   out.room = room;
   const char* track = hub_room_track(room);
@@ -43,10 +42,9 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, const s
     if (error) *error = folder.string() + ": no bin.zip";
     return false;
   }
-  std::filesystem::create_directories(cache_dir, ec);
   world::World w;
   std::string e;
-  if (!w.open(folder, cache_dir / (std::string(track) + ".models"), &e)) {
+  if (!w.open(folder, {}, &e)) {
     if (error) *error = folder.string() + ": " + e;
     return false;
   }

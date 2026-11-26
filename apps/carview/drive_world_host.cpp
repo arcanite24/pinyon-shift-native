@@ -1172,9 +1172,7 @@ bool DriveWorldHost::enter_room_world(HubRoom room) {
     auto s = std::make_shared<HubRoomScenery>();
     std::string e;
     const auto t0 = std::chrono::steady_clock::now();
-    const std::filesystem::path cache_dir =
-        app.cache_path.empty() ? std::filesystem::temp_directory_path() : app.cache_path.parent_path();
-    if (!load_hub_room(app.game_root_of(), room, cache_dir, *s, &e)) {
+    if (!load_hub_room(app.game_root_of(), room, *s, &e)) {
       std::fprintf(stderr, "carview: hub room %s: %s (the studio stage stays)\n", hub_room_track(room), e.c_str());
       room_scenery.erase(room);
       room_failed.insert(room);

@@ -60,10 +60,10 @@ struct HubRoomScenery {
 // right at it.
 inline constexpr float kHubRoomLightmapGain = 5.0f;
 
-// Reads the room's track from `game_root`/media/tracks (the model index
-// cached in `cache_dir`). False with `error` when the folder is missing or
-// unreadable; the caller then keeps the studio stage.
-bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, const std::filesystem::path& cache_dir,
-                   HubRoomScenery& out, std::string* error);
+// Reads the room's track from `game_root`/media/tracks. The model index is
+// not cached on disk (a room has one to five models). False with `error`
+// when the folder is missing or unreadable; the caller then keeps the
+// studio stage.
+bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoomScenery& out, std::string* error);
 
 }  // namespace carview
