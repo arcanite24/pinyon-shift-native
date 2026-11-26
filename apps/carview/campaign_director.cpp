@@ -464,14 +464,21 @@ race::CampaignAction CampaignDirector::update_ftc(double dt, FmvPlayer& fmv, Aud
   in.throttle = ftc_in_.throttle;
   in.confirm = ftc_confirm_;
   in.screen_open = ftc_in_.screen_open;
-  in.race_finished = ftc_race_finished_;
+  // A race's result reaches the career once the race is gone: the award is
+  // committed at the finish banner, and the reward pages (CASH REWARD, YOU
+  // WON A CAR) still follow. The original shows them before the career's
+  // next beat (first30e r10: rewards, a loading tip, then the showcase's
+  // map); the engine had the Skills_Unlock cutscene and DRIVE TO RACE
+  // CENTRAL over them (e16).
+  const bool result_due = ftc_race_finished_ && !ftc_in_.racing;
+  in.race_finished = result_due;
   in.race_event_id = ftc_race_event_;
   in.race_place = ftc_race_place_;
   in.racing = ftc_in_.racing;
   in.sign_up = ftc_sign_up_;
   ftc_confirm_ = false;
   ftc_sign_up_ = false;
-  ftc_race_finished_ = false;
+  if (result_due) ftc_race_finished_ = false;
   auto act = apply_ftc(ftc_.update(in), fmv, audio);
   if (ftc_.complete()) {
     act.intro_completed = true;
