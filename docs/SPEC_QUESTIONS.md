@@ -3765,19 +3765,22 @@ service menu and no stage or rollup scoreboard screen (those are the
 Car Club's and online's). After the last stage come the earnings, the
 Rally points screen (`CIsRallyXPEvent`), a pending prize car and, once,
 the champion sequence (`Rally_Champion_Cutscene`,
-`CPlayRallyChampionDialogue`, `H_HORIZON_RALLY_CHAMPION`,
+`CPlayRallyChampionDialogue`, `H_HORIZON_CHAMPION`,
 `CSetHasSeenRallyEndSequence`).
 
 The engine now drops the Service Area: between stages it shows the
 stage's result and standings under rally.str's STAGE RESULTS with
 A CONTINUE, repairs the car and loads the next stage. Quitting a stage
 from the pause menu ends the event and returns to the Rally world.
-Interim: that between-stage page is the engine's layout, not the game's
-finish-position screen, and it shows the standings the game's flow does
-not; the stage intro and pep talk are not played.
+Changed (WP5b, V4-13): between stages the engine now shows the stage's
+finish position on `H_POST_RACE_FINISHED` (`CPostRaceFinishPosition`,
+the help bar of Q251), A loads the next stage, and X RACE RESULTS opens
+the engine's STAGE RESULTS page (A or B closes it). The pep talk now
+plays (Q149); `CRallyStageIntro` plays nothing. Which place the banner
+shows is Q255.
 
-Needed: the finish-position screen as shown after a Rally stage, and
-the next-stage loading screen's content.
+Needed: the next-stage loading screen's content
+(`CShowNextMultiStageLoadingScreen`).
 
 V4-12, the multi-stage event select (ALL STAGES or one stage): the
 flows place `CShowMultiStageEventSelectionScreen`
@@ -3806,7 +3809,7 @@ the dialogue script also has `ChampionAgain` and `PlayerWonRally`).
 Changed (WP5, Q212): a championship's end now shows
 `H_POST_RACE_RALLY_FINISHED`, `H_POST_RACE_RALLY_POINTS` and, once,
 `H_HORIZON_RALLY_CHAMPION`; the engine's page is X on the banner and the
-heats' end. Still interim: `Rally_Champion_Cutscene` is not played. rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
+heats' end. Changed again (WP5b, Q212): the scenes are `H_POST_RACE_FINISHED` and `H_HORIZON_CHAMPION`, the earnings come before the points, `Rally_Champion_Cutscene` plays under the champion and `rally_end_seen` is saved when it ends; the line is `ChampionAgain` or `HorizonRallyChampion` (`CPlayRallyChampionDialogue`). rally.str's `IDS_RallyFinalTop_1..4` / `IDS_RallyFinalBottom_1`
 read "NEW EVENT UNLOCKED", "NOW GET OVER TO THE", "NOW GET TO THE",
 "YOU'VE UNLOCKED THE" / "HORIZON RALLY FINAL": the final's unlock
 notice, not the champion screen.
@@ -3846,34 +3849,56 @@ BgLoop.wmv, a paused menu. The engine now draws that scene. Driving
 ColoradoDirt (the FREE ROAM COLORADO DIRT extra, its world triggers and
 speed traps) is the engine's own, kept off the hub's main layout.
 
-V4-21, the co-driver and Alice: the first visit now plays
+V4-21, the co-driver and Alice: the first visit plays
 `PostraceHeatsQualification`, `ToTheAutoshow`, `ChampionshipStructure`
-and `CoDriverIntro` (Q145), and becoming champion (the final on the podium,
-once) plays `HorizonRallyChampion` (Q147); `club_rally_corpus_tests`
-checks that each resolves to a sample in `Rally_VO_EN`. Not played: `CCoDriverPepTalk` before
-every countdown and `CRallyStageIntro` on a first start. Both behaviours
-take no parameters; the dialogue script's candidates are `PreRace`,
-`PreRaceFirstStage`, `PreRaceLastStage`, `FinalPreRaceFirstStage`,
-`FinalPreRaceSecondStage`, `FinalPreRaceFinalStage` and
-`PreraceHeatsIntro`, and for the finish `FinishedStage`,
-`FinishedStageFirst`, `FinishedStageLast`, `FinishedIntroRace` and
-`PlayerWonStage`. The finish call's Good/Bad split at 10th place is
-still the engine's.
+and `CoDriverIntro` (Q145). Settled (WP5b) from the behaviours in the TU
+image (`race/rally_dialogue.h`; `rally_tests` checks the table and
+`club_rally_corpus_tests` that every line and forced row plays from
+`Rally_VO_EN`):
 
-V4-23, the driver-level gift cars: unchanged; `driver_level_gift_car`
-returns the level's first `Rewards_DriverLevelv3` row, with no
-ownership filter for DLC cars. In v4's `pause.xml` the Message Centre
-(`CShowMessageCentreScreen`) has `onGiftCarPrepare` /
-`onGiftCarUnprepare` transitions, so a gift is claimed from a message,
-which suggests a choice among the level's rows (`MaxGiftCars` 5 to 7).
-The UI archive also has `UI4/BuyCar/GiftCarChoice.xds` (the recomp's UI
-catalogue), more support for a choice. WP5 searched the recomp's derived
-source for `CCoDriverPepTalk`, `CRallyStageIntro` and the gift message
-and found no decompiled body, so V4-21's and V4-23's rules stay open.
+- `CCoDriverPepTalk`, as each stage's countdown runs: stage 1 nothing;
+  stage 2 `PreRace`; stage 3 `FinalPreRaceSecondStage` in the final
+  (series 7, `MS_RALLY_02`), else `PreRace`; stage 4
+  `FinalPreRaceFinalStage` in the final, else `PreRaceLastStage`. The
+  final's two lines take row 0 when the player leads the standings, row 1
+  when not. The heats have their own intro (not this behaviour).
+- `CRallyStageIntro` plays no line.
+- The finish call, stages 1 to 3 only: first place `FinishedStageFirst`,
+  below 10th `FinishedStageLast`, else `FinishedStage`; the heats take
+  `FinishedStage` row 3. Nothing after the last stage. This replaces the
+  engine's `CoDriver/FinishGood` / `FinishBad` cues, which no behaviour
+  plays.
+- After the last stage (`CPostRaceResults`): a win in the final plays
+  `PlayerWonRally` row 2; another win `PlayerWonFirstRally` the first
+  time (the profile's flag 4, `DriveSave::rally_first_win_vo`), then
+  `PlayerWonRally`; no win `PostRaceNoWinFeedback` (the base game's
+  script; the corpus test loads only the Rally bank, so this one line is
+  not checked there).
+- The champion's line is `ChampionAgain` or `HorizonRallyChampion` (Q212).
 
-Needed: which line each of `CCoDriverPepTalk`, `CRallyStageIntro` and
-the finish picks; the gift message's rule (one of N or all N) and its
-DLC filter; and the Rally ticket's trigger radius and speed.
+`VoPlayer::trigger` takes the forced row (`variant`). Interim: the pep
+talk starts when the race clock first moves below zero after the grid
+menu closes; the original's countdown state starts it, possibly earlier.
+
+V4-23, the driver-level gift cars: decoded, trigger vestigial. The data
+rule (WP5b): a level's `Rewards_DriverLevelv3` rows, in `SortOrder`,
+filtered by `IsCarInstalledAndPurchased` only (an owned car is not
+removed), and capped at that level's `PlayerLevelDef.MaxGiftCars` (7 at
+levels 0 and 1, else 5). One eligible car is given outright; two or more
+become a pick-one list. The engine now builds exactly that
+(`ProgressionTables::driver_level_gift_choices`, `ProgressionUpdate::gift_picks`;
+`race_tests`). Nothing in v4 reaches the gift on a level-up, so the rule is
+data without a trigger; the engine's own level-up path that uses it is the
+legacy FM4 progression, off by default. Correction to the reading above:
+`pause.xml`'s `onGiftCarPrepare` / `onGiftCarUnprepare` belong to the
+online gift through the Message Centre, not to level rewards. Open (Q254):
+the pick screen (`GiftCarChoice.xds`) is not built, so a list gives its
+first car; which `PlayerLevelDef` row (`Id` = the level or the level - 1)
+caps a level is a guess (the same key as `DriverLevel`).
+
+Needed: whether anything should trigger the gift at all (an owner
+decision: the original never does in v4); and, still open from V4-11,
+the Rally ticket's trigger radius and speed.
 
 Needed: `CTriggerRallyEventUnlocks`, `CIsRallyXPEvent` and the Rally
 reward path in the generated v4 code.
@@ -5048,40 +5073,120 @@ fills BEST TIME and the points tape, and the restriction strings' table.
 
 ## Q212 (V4-14, RACE-23, not blocking): the Rally final's screens
 
-After a championship's last stage the engine now runs
-`game_rally_race_flow`'s end on the Rally's own scenes
-(`rally_post_steps`, drawn by `game_hud_core.cpp`):
+Changed (WP5b) on the TU image's flows and behaviours (the RE of
+`game_rally_race_flow`, `CareerRewardsFlow` and `RallyChampionSequence`).
+WP5's scene names were wrong: the Rally has no `H_POST_RACE_RALLY_FINISHED`
+or `H_HORIZON_RALLY_CHAMPION`; the banner is the festival's
+`H_POST_RACE_FINISHED` (screen 292) and the champion is
+`H_HORIZON_CHAMPION` (screen 90). After a championship's last stage the
+engine runs (`rally_post_steps`, `drive_rally_post.cpp`):
 
-1. `H_POST_RACE_RALLY_FINISHED`: FINISHED and the place, as the festival
-   banner. A CONTINUE; X RACE RESULTS shows the engine's standings page
-   (B or A closes it).
-2. `H_POST_RACE_RALLY_POINTS`: POINTS EARNED, +N Rally XP and the Rally
-   level bar with the Rally wristbands' art. `TEXT_POINTS_TO_NEXT` is set
-   to PostRaceFlow's "{0} POINTS TO RALLY FINAL" / "{0} POINT TO RALLY
-   FINAL" / "WIN TO BE CHAMPION!" (0xC2FD, 0x481D, 0xC923) against the
-   final's `UnlockPointsReq` (none once champion), but it does not show:
-   at the scene's rest it sits under the bar, as the career line does
-   (`17c_results_points_engine_wp2.png` shows only its last digits).
-3. Once, `H_HORIZON_RALLY_CHAMPION`, with `HorizonRallyChampion` (moved
-   from the finish to this screen). A returns to the hub.
+1. `postrace_results`: `H_POST_RACE_FINISHED`, FINISHED and the place.
+   Its help bar is Q251.
+2. `CareerRewardsFlow`: `H_POST_RACE_CREDITS_BREAKDOWN` (screen 294) when
+   the championship paid credits (the cash breakdown: the prize, the
+   difficulty and assists bonus, the total and the balance), then
+   `H_POST_RACE_RALLY_POINTS` (288, `CIsRallyXPEvent`), then
+   `H_POST_RACE_WON_CAR` (316) when `CIsPendingCarReward`. No Rally
+   event has a `Rewards_EventPrizes` row, so that step never shows with
+   the disc's data; the engine keeps it in the order for completeness.
+3. Once (`CShouldShowRallyEndSequence`), `RallyChampionSequence`:
+   black-out, `CLoadCutscene Rally_Champion_Cutscene` (from the last
+   stage's `cutscenes_<DevName>.xml` in the DLC's
+   `gamemodes\ColoradoDirt\Cutscenes\Tracks`),
+   `CPlayRallyChampionDialogue`, the cutscene, and
+   `ShowRallyChampionScreen` (`H_HORIZON_CHAMPION`,
+   `doneOnCutsceneFinish`) over it, then the achievement and
+   `CSetHasSeenRallyEndSequence`. The engine loads and can run the
+   cutscene (its camera, its `PlacePlayerCar_0` placement and its audio
+   triggers, closing the screen when it ends), but that path is off
+   (Q253): the screen holds the cutscene's 9.2 s over black. It saves
+   `rally_end_seen` (with the championship's results) when the screen
+   closes, not at the finish. A does nothing on this screen: it has
+   no help bar. `CPlayRallyChampionDialogue` plays `ChampionAgain` when
+   the career has a first place in a `CareerEventStyle` 6 event (the
+   Festival's headline race), else `HorizonRallyChampion`.
+4. Then the flow loads the Rally's free roam: the hub.
 
-The intro heats keep the engine's results page (`game_rally_intro_flow`
-ends differently). `club_rally_corpus_tests` renders the three (the
-captures folder's `rally_{finished,points,champion}_offline_wp5.png`) and
-checks the lines and the steps. `carview --demo-rally-final` opens the
-sequence after a won first championship; the live captures are
-`rally_{finished,finished_results,points,champion,final_after}_live_wp5.png`.
+The champion screen's title is CareerEventUI's `IDS_HorizonRallyChampion`
+(0x2DD1, HORIZON RALLY CHAMPION 2012) in Rally mode. Its
+`TEXT_POSITION` and the pink tape are hidden (Q252).
+`club_rally_corpus_tests` renders the banner, earnings, points and
+champion screens and checks the steps and strings;
+`carview --demo-rally-final` opens the sequence after a won final;
+`carview --demo-rally-last-stage --race-auto` switches to the Rally
+world, records the final's stages 1-3 in the lead and drives stage 4
+live, so the real finish runs the sequence and the hub after it reads the
+saved result. The live captures are `rally_*_live_wp5b.png` (an 18th
+place without the champion step, and a win with it).
 
-Interims: no earnings screen (the credits are on X's page); the prize-car
-step is not in the sequence; `Rally_Champion_Cutscene` is not played, so
-black is behind the champion screen; its texts are guesses, the title
-CareerEventUI's "HORIZON RALLY CHAMPION 2012" (0x2DD1) and the place on
-the position tape; the banner's help bar is guessed (no RESTART or
-REPLAY); the points line is hidden under the bar (above; Q96's scene
-rest); the bar's span starts at 0 XP; `rally_end_seen` is saved at the finish,
-before the champion screen shows. Between stages the engine's STAGE
-RESULTS page stays (Q147). `race_flow::post_steps` is unchanged: the
-sequence runs on the results state.
+Still interim: the cutscene is off (Q253);
+the points line is hidden under the bar (Q96's scene rest); the bar's
+span starts at 0 XP. Between stages the banner now shows (Q147, V4-13).
 
-Needed: the final's help bars, the champion screen's texts and timing
-against the cutscene, and whether the earnings come before the points.
+## Q251 (V4-14, not blocking): the Rally banner's help bar
+
+`CPostRaceFinishPosition`'s help bar (`sub_828165C8`) is CONTINUE;
+RESTART only when flag 473 is set (`!sub_825FFAC8(0)`, read here as
+"has finished a first Rally"; inferred); RACE RESULTS when offline and the
+game type is not 19 or 20; VIEW REPLAY when a replay exists. The engine
+draws A CONTINUE and X RACE RESULTS (its standings page) after the last
+stage. Interim: no RESTART (the engine has no restart of a whole
+championship from its last stage) and no VIEW REPLAY (no replay of a
+four-stage run is kept).
+
+Needed: what `sub_825FFAC8(0)` reads, and whether RESTART on the
+banner restarts the stage or the championship.
+
+## Q252 (V4-14, not blocking): the champion screen's position line
+
+`H_HORIZON_CHAMPION` has `TEXT_POSITION` on a pink tape under the title.
+In the Festival's ending it carries the gamertag (inferred from the
+behaviour's string setup; no capture of the Rally variant exists). The
+engine has no gamertag, so it hides `TEXT_POSITION` and that tape (WP5
+showed "1ST PLACE" there, a guess). Interim until the player's name is
+modelled.
+
+Needed: a capture of the Rally champion screen.
+
+## Q253 (V4-14, not blocking): what Rally_Champion_Cutscene plays that the engine does not
+
+The cutscene places the player car (`PlacePlayerCar_0`), hides every
+other car (`HideAllCars`, `CCutsceneShowDriverTrigger`), starts eleven
+animated props and people (Alice clapping, pit girls, a photographer, a
+crane cameraman, the crowd: `CCutsceneAnimationTrigger`) and three UI
+sounds. The engine has the path (`drive_rally_post.cpp`: the loose
+`cutscenes_<DevName>.xml` loaded, the place event, the sounds, the end
+closing the screen), and live it plays (`rally_champion_cutscene_live_wp5b.png`),
+but its CarSpace cams frame the ground beside a barrier and then the
+terrain's underside, not the car: the placement at (2795, 140, -2435)
+and the `CameraTargetNode_0` frame parented to it do not land in the
+Rally world's frame. So the path is off (`kChampionCutsceneLive`) and the
+screen holds 9.2 s over black. The props and people are not built (the
+engine has no animated-object player), and the AI cars are not hidden.
+
+Needed: the Rally world's frame for the cutscene's place event and its
+parented nodes, and an animated-object player (shared with the
+Festival's cutscenes).
+
+## Q255 (V4-13, V4-14, not blocking): which place the Rally banner shows
+
+`CPostRaceFinishPosition` shows after every stage and after the last.
+The engine shows the stage's place between stages and the overall
+championship place after the last stage. Inferred: the behaviour reads
+the race's finish position, which after the last stage would be the
+stage's, not the championship's.
+
+Needed: what the banner shows after the final stage when the stage place
+and the overall place differ.
+
+## Q254 (V4-23, not blocking): the gift-car pick screen and its cap's row
+
+A level whose gift is two or more eligible cars is a pick-one list
+(Q149). The engine has no pick screen (`UI4/BuyCar/GiftCarChoice.xds`
+is in the UI archive), so its legacy level-up path gives the list's first
+car. `ProgressionTables::max_gift_cars` reads the `PlayerLevelDef` row
+whose `Id` equals the `Rewards_DriverLevelv3` level; if the original
+keys it by level - 1, the cap at level 2 is 7, not 5.
+
+Needed: the pick screen's flow, and the row the cap is read from.
