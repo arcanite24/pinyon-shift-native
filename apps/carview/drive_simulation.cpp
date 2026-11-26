@@ -1199,7 +1199,9 @@ bool DriveSession::step(const drive::Input& user_in) {
         if (!app.race && app.have_career_catalog) {
           const int ready = app.career_catalog.pending_wristband(app.career.wristband_points, app.collected_wristband);
           if (ready >= 0) app.audio_host.radio_wristband_ready(ready);
-          if (ready >= 0 && ready != notified_wristband) {
+          if (notified_wristband == -2) {
+            notified_wristband = ready;
+          } else if (ready >= 0 && ready != notified_wristband) {
             notified_wristband = ready;
             popup = Popup::notify(NotifyKind::kWristbandAvailable, vehicle.time());
           }

@@ -246,11 +246,12 @@ void draw_post_race_results_stage(ui::List& l, const race::RewardTallyState& tal
 }  // namespace
 
 void draw_objective_tracker(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
-  if (flow.stage() != race::CampaignStage::kViperIntroDrive && flow.stage() != race::CampaignStage::kFreeRoam) return;
+  // Free roam has no objective banner: the original's HUD shows none (the
+  // whole first30b free-roam run with a wristband to collect, 95 frames);
+  // the next wristband is named in the pause menu's header only.
+  if (flow.stage() != race::CampaignStage::kViperIntroDrive) return;
   const auto obj = flow.next_objective(ctx.wristband_points, ctx.collected_wristband, ctx.popularity_rank, ctx.catalog);
   if (!obj.valid) return;
-  // In free roam, show the compact tracker when an urgent objective or active dialog is on screen.
-  if (flow.stage() == race::CampaignStage::kFreeRoam && !obj.is_urgent && !flow.dialogs().active()) return;
 
   const float s = ctx.screen_h / 720.0f;
   const float alpha = flow.hud_reveal_alpha();
