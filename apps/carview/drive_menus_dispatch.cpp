@@ -640,11 +640,6 @@ void DriveSession::open_map() {
           map_zoom = std::max(2.0, map_cam.min_zoom());
           map_cx = vehicle.position().x;
           map_cz = vehicle.position().z;
-          // The career's locked map opens on the Horizon Heats, the one
-          // place it routes to (f01281_first30a_orig.png; Q275).
-          if (std::array<double, 3> hp{}; app.campaign.ftc_active() && app.campaign.ftc().map_locked() &&
-                                          app.campaign.ftc().event_trigger(race::FirstTimeCareer::kAllComerFinal, hp))
-            map_cx = hp[0], map_cz = hp[2];
           map_cam.reset(map_cx, map_cz, map_zoom);
           map_cx = map_cam.cx();
           map_cz = map_cam.cz();

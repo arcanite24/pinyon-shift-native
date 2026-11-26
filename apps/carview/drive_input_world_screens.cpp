@@ -421,9 +421,10 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                    e.type == SDL_EVENT_MOUSE_BUTTON_UP || e.type == SDL_EVENT_MOUSE_MOTION || e.type == SDL_EVENT_MOUSE_WHEEL))
                 return true;
               // The career's locked map (CLockMapScreenForFirstTimeCareer):
-              // no way out but A SET ROUTE on the Horizon Heats, which closes
-              // it; B, X and Y do nothing (the original's workshop map,
-              // first30a captures; Q275).
+              // B, X and Y do nothing; A elsewhere sets and clears a route
+              // with the map left open (the original's workshop map,
+              // f01281/f01290_first30a_orig.png); A on the Horizon Heats
+              // routes there and closes it (interim, Q275).
               if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
                 const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
                 const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
@@ -449,7 +450,7 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                             (m.id == std::to_string(race::FirstTimeCareer::kAllComerFinal) ||
                              (have_hp && std::hypot(m.x - hp[0], m.z - hp[2]) < 60.0));
                   } else if (have_hp) {
-                    heats = std::hypot(map_cx - hp[0], map_cz - hp[2]) < 120.0;
+                    heats = std::hypot(map_cx - hp[0], map_cz - hp[2]) < 40.0;
                   }
                   if (heats && have_hp && app.gps_solver.ready()) {
                     const drive::Vec3 at = vehicle.position();
@@ -458,13 +459,13 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
                                                                   at.x, at.z));
                     app.audio_host.trigger_ui(audio::UiCue::kAccept);
                     close_map();
+                    return true;
                   } else if (heats) {
                     map_route_to_selected();
                     close_map();
-                  } else {
-                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return true;
                   }
-                  return true;
+                  // Not the heats: the map's own A (route / clear route).
                 }
                 if (other) return true;
               }
