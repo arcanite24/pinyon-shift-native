@@ -5659,9 +5659,7 @@ No capture shows MY GARAGE itself.
 
 Update (first30j): still open; see Q365.
 
-Needed: captures of MY GARAGE from the pause menu, from an outpost and
-from the workshop, and the camera the original uses on the current car
-there.
+Update (first30l): settled (Q365). Outpost CHANGE CAR opens CAR SELECT over the live Colorado world with no room track; the engine now keeps the live Colorado world and close orbit camera behind MY GARAGE and the outpost hub when opened outside Dak's Garage or the Paint Shop.
 
 ## Q231 (FEEL-15/16, not blocking): the pad filter's branches and rate
 
@@ -6133,6 +6131,8 @@ Needed: the gamma screen's bindings and whether it shows only on a new profile; 
 
 Update (first30j): the VIDEO screen is built and shows only on a new profile (Q363); the boot's lengths are Q364.
 
+Update (first30l): VIDEO (`830_GAMMA_ADJUST`) is now scene-bound with live brightness, subtitle gating, held-repeat slider cadence, and first-boot persistence on A SAVE (Q363).
+
 Update (first30e): the disclaimer is drawn. The boot now opens on `T:P_Map/P_STA/<LANG>/P_STA_Disclaimer` full screen (EN when the profile's language has no folder) for 3 s, and the splash queue starts after it; a skip of the boot skips it too. The recomp's render tests show it on their first frame (`r1 f00001`). Its scene and exact duration are still not read (interim 3 s). The VIDEO screen is still not built.
 
 ## Q277 (HUD-03, INTRO-08, not blocking): the hand-over HUD's units, pin and name tags
@@ -6156,6 +6156,8 @@ Needed: the title's default units by region, and whether any sat-nav world pin e
 Update (first30e): the engine's default is now miles (settings page, `--units metric` opts into km/h; an old saved `--units imperial` loads as the default). The pin and the name tags are unchanged.
 
 Update (first30j): the remaining km defaults (the career, photo mode, replays, the story intro, the GPS voice and the driving HUD's own default) are miles too, so every path without a settings file reads mph; `--units metric` still gives km/h. The name tags' distance scaling is Q361.
+
+Update (first30l): race name tags are now fitted to 1280x720 captures and capped at the 3 nearest opponents (Q361).
 
 ## Q278 (ACT-01, INTRO-10, not blocking): skills in the career's opening, and PopularitySkillsFlow
 
@@ -7116,30 +7118,38 @@ FR01's AI winner is slot 3 instead of slot 0 in 1 of 10 baseline seeds and
 and winner checks fail with and without the change. NR02's time failure is
 one AI car whose time varies from 140 to 168 s between seeds.
 
-## Q361 (first30j, HUD, not blocking): the AI name tags' size and reach with distance
+## Q361 (first30j, HUD, settled in part): the AI name tags' size and reach with distance
 
-The original's race tags (the Gauntlet, first30d `c03900`-`c04425`) show
-the surname in white capitals on a faint dark pill, about 1.65 m over the
-car's middle. They shrink with distance and still show on the pack about
-100 m ahead. Read by eye from the 640x360 frames at estimated distances,
-the capitals are roughly 14 px at 12 m, 11 px at 18 m, 8 px at 40 m and
-7 px past 90 m (720 lines). The original's free-roam traffic carries no
-tags (first30j `roam-map`).
+The original's race tags (the Gauntlet, first30d `c03900`-`c04425`, and 1280x720
+captures in first30l `first30l-race-tags` `t4120`/`t4200`/`t4260`/`t4340` and
+`parity-race` `race-moving`) show the surname in white capitals on a faint dark
+pill with a small bottom-center notch, about 1.85 m over the car's middle:
 
-The engine passed no distance with its tags, so its size-and-fade by
-distance never ran. Now each tag carries its distance, and the scale falls
-about as 0.33 + 5.8 / d (floored at 0.4), full to 100 m and gone at 120 m,
-and a race tag reads the surname only, as the original's do. Interim: the
-sizes are eyeballed and the fade distances are not captured. Engine
-frames: `out/first30j/tmpb/race-after2.png` (the Gauntlet, `--event FR06`).
+- **Count cap:** the original shows **at most 3 nearest opponent name tags** at
+  once (`t4120` shows POLLOCK, MALONE and OKADA with 3 further cars untagged;
+  when ESTRADA passes in `t4200`, OKADA drops off immediately so ESTRADA,
+  POLLOCK and MALONE show; `t4260` and `race-moving` keep 3 tags on the pack).
+- **Size curve (1280x720):** measuring capital height and car widths at the
+  camera's 48.50 deg vertical FOV gives ~17-19 px at 7 m (ESTRADA `t4200`),
+  16-17 px at 8 m (POLLOCK `t4120`), 14 px at 15-19 m (MALONE/OKADA `t4120`,
+  POLLOCK `t4200`), 12-13 px at 22-23 m (MALONE `t4200`, POLLOCK `race-moving`),
+  10-12 px at 36-40 m (MALONE `race-moving`, ESTRADA `t4260`) and 9-11 px at
+  70-90 m (MALONE `t4260`), still at full white luminance (p90 = 244). This
+  fits `scale = clamp(0.46 + 7.5 / (d + 8), 0.50, 1.0)` at 18 px base size
+  within < 0.6 px rms.
+- **Traffic:** free-roam civilian traffic carries no tags (`roam-map`,
+  `first30l-outpost-garage2`).
+
+The engine now uses the 1280x720 fit (`0.46 + 7.5 / (d + 8)`, floored at 0.50 =
+9 px, full alpha to 100 m and gone at 120 m), caps race tags to the 3 nearest
+visible opponents (`layout_world_labels`), keeps race tags surname-only, and
+leaves civilian traffic untagged (`out/first30l/runs/ap-race`).
 
 Open:
-- The free-roam festival drivers' tags: the engine tags them with class,
-  PI and full name; no capture shows the original's (its traffic has none).
-- Where the original's tags fade out.
-
-Needed: 1280x720 race captures with the opponents' poses (render-test
-vehicle trace for the AI) at known distances out to 200 m.
+- The free-roam festival drivers' tags (whether the original tags free-roam
+  festival AI cars and in what format; civilian traffic has none).
+- The exact distance past 90 m where tags finish fading out (the Gauntlet pack
+  crests out of sight between `t4260` and `t4340`).
 
 ## Q362 (first30j, HUD, settled): the minimap's camera
 
@@ -7172,46 +7182,45 @@ Open: the fit rests on one place (eight points in three frames); a check
 at a second place, and the original's minimap in a race (route, opponents,
 checkpoint), are not captured.
 
-## Q363 (first30j, BOOT, settled in part): a new profile's VIDEO screen
+## Q363 (first30j, first30l, BOOT, settled): a new profile's VIDEO screen
 
 Settles Q276's open part. On a new profile Press Start leads, after the
 profile step, to VIDEO (`830_GAMMA_ADJUST`, orig1 `f00027`-`f00039`,
-`out/first30j/orig/gamma/f00030.png`): a black test panel with NOT
-VISIBLE, BARELY VISIBLE and EASILY VISIBLE (dark text on boxes of about
-5, 9 and 20 grey), BRIGHTNESS's slider at 60 on the selected pink row,
-SUBTITLES: DISABLE under it, a DESCRIPTION panel with the row's text
-(MyProfile.str), and A SAVE, Y RESET TO DEFAULT; the block is turned
-about 3 degrees. A boot with a profile goes from Press Start (LOADING...
-PLEASE WAIT bottom left) straight to the menu (first30j `boot-profile2`,
-`p0420`-`p0800`).
+first30l `first30l-vid1` `v0470`..`v-sub`): a black test panel with NOT
+VISIBLE, BARELY VISIBLE and EASILY VISIBLE (dark text on boxes of Material788
+rgba 0.02, 0.05 and 0.10), BRIGHTNESS's slider at 60 on the selected pink row,
+SUBTITLES: DISABLE under it (default 0 when UI and audio languages match, else
+1), a DESCRIPTION panel with the row's text (`MyProfile.str`), and A SAVE, Y
+RESET TO DEFAULT; the block is turned about 3 degrees.
 
-The engine now has the screen (`TitleMenu::Phase::kVideo`,
-`draw_video_screen`): with no save, Press Start leads to it; up/down pick
-the row, left/right change it, Y resets, B does nothing, A saves and goes
-to the menu, and it does not come again in the session. Interim: it is
-drawn by hand at the capture's places; the scene's text nodes rest where
-the capture has them, so binding `830_GAMMA_ADJUST` through SceneScreen
-(as 837's sliders are) is the follow-up. The strings are MyProfile.str's
-(BARELY VISIBLE and ENABLE by raw key). Side by side: `out/first30j/tmpb/video-cmp4.png` (original
-`f00030`, engine `runs/video-after4/video.png`; the run's other frames
-show the controls and the menu after A).
+Measured behaviour from first30l `first30l-vid1` and `first30l-vid2`:
+- **Brightness formula & step:** `Main/Gamma` (Float32, default 0.6, range
+  0..1, step 0.05 = 5 points on the 0..100 scale, snapped via
+  `floor(g * 20 + 0.5) * 0.05`). Applied live as an additive offset
+  `(2 * g - 1) * 0.2` clamped to `[0, 1]` (+0.04 at 60, -0.20 at 0, +0.20 at
+  100). On Xbox 360 hardware/recomp the display PWL curve maps the default 60
+  surround and boxes to 3 / 5 / 9 / 20 (35 / 39 / 47 / 62 at 100; 0 at 0); on
+  PC sRGB the direct additive offset gives 10 / 15 / 23 / 36 at 60.
+- **Held-repeat cadence:** `first30l-vid1` `h0542`..`h0548` shows one initial
+  step (+5) on press, then repeat after ~0.40 s at ~0.10 s/step (65 -> 85 over
+  0.494 s, 85 -> 100 over 0.651 s).
+- **Persistence & second boot:** `Main/Flags` bit `0x40000` is persisted when
+  VIDEO is saved (`A SAVE` writes `ForzaProfile` immediately at frame 960).
+  Booting a second time from that saved profile without ever entering career
+  (`first30l-vid2` `p0360`, `p0470`) skips VIDEO and goes straight to SINGLE
+  PLAYER / MULTIPLAYER.
 
-The controls, from first30j `boot-fresh3` (fresh profile, `g-*` frames,
-`out/first30j/tmpb/bf3.png`): a 6-frame d-pad right (about 1 s at the
-recomp's pace there) took BRIGHTNESS from 60 to 100, so a held right
-repeats; down moves to SUBTITLES (its description shows), up back; Y
-resets to 60; A goes to the menu (`m0970`). The test boxes brighten live
-with the slider (at 100 the BARELY and EASILY boxes read clearly).
-
-Open:
-- BRIGHTNESS's step and repeat rate (the engine steps 1 per press and
-  does not repeat), and its effect: the engine has no brightness
-  (gamma) or movie-subtitle setting, so the values stay on the title's
-  model and change nothing.
-- The screen's entry animation and the slider's look.
-- Whether the original writes the profile at A SAVE (the engine writes its
-  save when the career starts, so quitting from the menu shows VIDEO
-  again next boot).
+The engine now binds `830_GAMMA_ADJUST` through `SceneScreen` and
+`SceneTimeline` (FEEDBACK slide, 100 ms `GAMMA_SLIDER` / `SUBTITLE_SPINNER`
+Focus/Blur transitions, `StatBarEmpty`/`StatBarFill` width, `OPT_BAR_ARROW`
+with 50% dim at ends, calibration boxes and dark description backdrop), applies
+the live brightness offset `(2 * g - 1) * 0.2` in `hdr_output.frag` across both
+3D and UI/FMV frames, gates movie and VO subtitles on the Subtitles setting,
+implements step-5 and 0.40 s / 0.10 s held repeat, exposes Brightness and
+Subtitles in Display settings (`--brightness`, `--subtitles`/`--no-subtitles`),
+imports/exports `Main/Gamma`, `Main/Subtitles` and `Main/Flags` bit `0x40000`,
+and persists `video_seen` on A SAVE so quitting before career skips VIDEO on
+the next boot (`out/first30l/runs/ap-vid1`, `ap-vid2`).
 
 ## Q364 (first30j, BOOT, settled): the boot's order and lengths
 
@@ -7225,19 +7234,23 @@ and splashes. The engine's order and its 3 s disclaimer match; the frame
 pacing on Press Start in the recomp (about 4 fps) is too slow to time the
 profile step.
 
-## Q365 (first30j, VIS, open): MY GARAGE's room
+## Q365 (first30j, first30l, VIS, settled): MY GARAGE's room
 
-Q262 still stands. The first30j `garage` route (the Gauntlet's car
-select, right, A, down, down, B) went from CAR SELECT into the event
-(`out/first30j/tmpb/gar.png`): the original's CAR SELECT draws over the
-world where it opened, and the pause menu has no MY GARAGE row (MAP,
-SETTINGS, PHOTO MODE, MESSAGE CENTER, SPONSOR CHALLENGES, MY PROFILE,
-QUIT). The disc's UI rooms are `uiautoshow`, `uiworkshop`, `uipaintshop`
-and the thumbnail tracks; there is no garage track, so MY GARAGE likely
-uses one of these or the world. The engine is unchanged.
+Settles Q262. Captured in first30l `first30l-outpost-garage2` (fast-travel to
+Gladstone Creek Horizon Outpost, enter Outpost `outpost-menu.png`, select
+CHANGE CAR `outpost-a1.png` / `outpost-a2.png`): Outpost CHANGE CAR opens CAR
+SELECT (`108_C_BUY_CARSELECT`) directly **over the live Colorado world** with
+zero interior room track loads, continuing the outpost's close low orbit camera
+(`mode=21`, `fov=48.14 deg`, eye tracking along the parked car's left flank at
+`dist = 1.67..2.40 m`, `dy = 0.37..0.56 m`). Pause has no MY GARAGE row; only
+Dak's Garage (`uiworkshop`) and the Paint Shop (`uipaintshop`) load interior
+room tracks.
 
-Needed: a capture of MY GARAGE opened from an outpost (its file opens
-name the room's track).
+The engine now keeps the live Colorado world and a low close-orbit camera
+(48.14 deg FOV, right-stick orbitable, tires grounded per previewed car) behind
+MY GARAGE and the outpost hub when opened outside Dak's Garage or the Paint
+Shop (`out/first30l/runs/ap-garage`), while preserving `uiworkshop` and
+`uipaintshop` when opened from inside those rooms.
 
 ## Q371 (first30k, audio, not blocking): the shift and lift transients against the original
 
