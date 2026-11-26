@@ -1,5 +1,7 @@
 #include "cars/mods.h"
 
+#include "fh1data/fs_walk.h"
+
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
@@ -48,8 +50,11 @@ std::vector<Mod> list(const std::filesystem::path& root) {
     for (const char* sub : {"bake", "sound", "media", "radio"}) {
       const auto d = m.dir / sub;
       if (!std::filesystem::is_directory(d, ec)) continue;
-      for (const auto& f : std::filesystem::recursive_directory_iterator(d, ec))
-        if (f.is_regular_file(ec)) ++m.files;
+      fh1::walk_tree(d, [&](const std::filesystem::directory_entry& f) {
+        std::error_code fec;
+        if (f.is_regular_file(fec)) ++m.files;
+        return true;
+      });
     }
     out.push_back(std::move(m));
   }

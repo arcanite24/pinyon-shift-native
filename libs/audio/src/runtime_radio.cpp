@@ -15,6 +15,7 @@
 
 #include "audio/bake.h"
 #include "audio/stream.h"
+#include "fh1data/fs_walk.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -740,12 +741,12 @@ std::vector<RuntimeTrack> scan_audio_folder(const std::filesystem::path& folder)
   std::vector<std::filesystem::path> files;
   std::error_code ec;
   if (!folder.empty() && std::filesystem::is_directory(folder, ec)) {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(
-             folder, std::filesystem::directory_options::skip_permission_denied, ec)) {
-      if (entry.is_regular_file(ec) && is_runtime_audio_file(entry.path())) {
-        files.push_back(entry.path());
-      }
-    }
+    fh1::walk_tree(folder, [&](const std::filesystem::directory_entry& entry) {
+      std::error_code fec;
+      if (entry.is_regular_file(fec) && is_runtime_audio_file(entry.path()))
+        files.push_back(fh1::usable_path(entry.path()));
+      return true;
+    });
   }
   std::sort(files.begin(), files.end(), [&](const std::filesystem::path& a, const std::filesystem::path& b) {
     return lower_str(a.lexically_relative(folder).generic_string()) <
@@ -954,9 +955,13 @@ std::filesystem::path find_ytdlp() {
     if (std::filesystem::is_directory(packages, ec)) {
       for (const auto& entry : std::filesystem::directory_iterator(packages, ec)) {
         if (lower_str(entry.path().filename().string()).find("yt-dlp") == std::string::npos) continue;
-        for (const auto& sub : std::filesystem::recursive_directory_iterator(entry.path(), ec)) {
-          if (lower_str(sub.path().filename().string()) == "yt-dlp.exe") return sub.path();
-        }
+        std::filesystem::path found;
+        fh1::walk_tree(entry.path(), [&](const std::filesystem::directory_entry& sub) {
+          if (lower_str(sub.path().filename().string()) != "yt-dlp.exe") return true;
+          found = fh1::usable_path(sub.path());
+          return false;
+        });
+        if (!found.empty()) return found;
       }
     }
   }

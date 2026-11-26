@@ -43,6 +43,34 @@ Surface classify(const std::string& object, const std::string& material);
 // Whether a world-space object or submesh is left out of the gather.
 bool skipped_object(const std::string& object);
 bool skipped_material(const std::string& material);
+// The far ring's level of a world-space object (GatherOptions::far_radius):
+// 1 MIDDIST, 2 UberLOD, 0 near scenery (and the TERR_CUBE, CAGE, occluder
+// and shadow objects, drawn by neither). By the name, else by `effects`,
+// the object's effect per submesh (upper case): one drawn only with
+// H_BLND1_SPEC, the UberLOD patches' effect, is an UberLOD patch.
+uint8_t far_level(const std::string& object, const std::vector<std::string>& effects = {});
+
+// The near ground's footprint on an x-z grid round a point (ours; the far
+// ring's hole filling, GatherOptions::far_inner): a cell is covered when a
+// triangle added holds its centre, or the cell holds the centroid of a
+// triangle smaller than a cell. Outside the grid every point is covered.
+class GroundCover {
+ public:
+  GroundCover(double x, double z, double half_width, double cell);
+  void add(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c);
+  bool covered(double x, double z) const;
+  // The cell of a point, -1 outside the grid.
+  long cell_of(double x, double z) const;
+
+ private:
+  double x0_ = 0, z0_ = 0, cell_ = 1;
+  int side_ = 0;
+  std::vector<uint8_t> covered_;
+};
+// Seven points that stand for a triangle's footprint (x, z): its corners,
+// its edges' midpoints and its centroid.
+std::array<std::array<double, 2>, 7> footprint_samples(const std::array<float, 3>& a, const std::array<float, 3>& b,
+                                                       const std::array<float, 3>& c);
 // Whether a world-space object is driven on in the stand-in ground. Thin,
 // upright things (armco, barriers, railings, cables, gates, fences) are
 // not: with nothing but wheel rays they act as ramps. Props never are.
@@ -272,6 +300,7 @@ struct GatherOptions {
 struct GatherStats {
   size_t world_models = 0, objects = 0, skipped_lod = 0, skipped_far = 0, props = 0, prop_unresolved = 0;
   size_t far_models = 0, far_triangles = 0;  // the far ring
+  size_t far_fill_triangles = 0;             // of those, within the inner cut over near-ground holes
   size_t trees = 0, trees_untextured = 0;    // tree sprites; those whose atlas has no file
   size_t props_off_route = 0, trees_off_route = 0;  // left out by the route rule
   size_t props_hidden = 0;   // named props left out (GatherOptions::hidden)

@@ -300,6 +300,38 @@ int main() {
     CHECK(world::skipped_object("Underground_NOLOD"));
     CHECK(world::skipped_object("World_Cage_01"));
     CHECK(!world::skipped_object("Terrain_Road_LOD00"));
+    // The far ring's level: by the name, else an object drawn only with the
+    // UberLOD effect (a far terrain sheet named like near terrain).
+    CHECK(world::far_level("TERR_Zone_MIDDIST_01_LOD00") == 1);
+    CHECK(world::far_level("UberLOD_01_LOD00") == 2);
+    CHECK(world::far_level("UberLOD_01_CAGE_LOD00") == 0);
+    CHECK(world::far_level("TERR_CUBE_Area_01") == 0);
+    CHECK(world::far_level("Hills_Terrain_LOD00") == 0);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC"}) == 2);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC", "H_BLND1_SPEC"}) == 2);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1_SPEC", "H_VBLND_NORM_AO_LM"}) == 0);
+    CHECK(world::far_level("Hills_Terrain_07_LOD00", {"H_BLND1"}) == 0);
+    CHECK(world::far_level("Hills_MIDDIST_07_LOD00", {"H_BLND1_SPEC"}) == 1);
+    CHECK(world::far_level("Hills_CAGE_LOD00", {"H_BLND1_SPEC"}) == 0);
+
+    // The near ground's footprint for the far ring's hole filling: a 100 m
+    // square round (1000, -500) in 10 m cells; a near quad covers its west
+    // half, a sliver triangle (smaller than a cell) one cell, an edge-on
+    // triangle (an armco) none.
+    world::GroundCover cover(1000, -500, 50, 10);
+    cover.add({950, 0, -550}, {1000, 0, -550}, {1000, 0, -450});
+    cover.add({950, 0, -550}, {1000, 0, -450}, {950, 0, -450});
+    cover.add({1031, 0, -531}, {1033, 0, -531}, {1031, 0, -533});
+    cover.add({1010, 0, -490}, {1040, 3, -490}, {1040, 0, -490});
+    CHECK(cover.covered(960, -540) && cover.covered(995, -455));
+    CHECK(!cover.covered(1005, -545) && !cover.covered(1045, -455));
+    CHECK(cover.covered(1035, -535));   // the sliver's cell
+    CHECK(!cover.covered(1025, -495));  // the armco's footprint is a line
+    CHECK(cover.covered(2000, 0));      // outside the grid
+    CHECK(cover.cell_of(2000, 0) == -1 && cover.cell_of(955, -545) == 0);
+    const auto samples = world::footprint_samples({0, 0, 0}, {30, 0, 0}, {0, 0, 30});
+    CHECK(samples[3][0] == 15 && samples[3][1] == 0);
+    CHECK(samples[6][0] == 10 && samples[6][1] == 10);
   }
 
   // 5b2. Clean-room Round 2 world material resolution & TrackSettings road/lightmap parsing:

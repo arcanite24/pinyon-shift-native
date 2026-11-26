@@ -99,7 +99,31 @@ void DriveSession::open_garage_browser(bool barn_finds) {
             }
           }
           garage_open = true;
+          garage_from = GarageFrom::kNone;  // the caller says where it came from
           app.audio_host.trigger_ui(audio::UiCue::kMenuOpen);
+}
+
+void DriveSession::close_garage_browser() {
+          garage_open = false;
+          garage_barn_finds = false;
+          garage_sell_confirm_id = -1;
+          app.hub_orbit_dragging = false;
+          app.hub_orbit_dragged = false;
+          app.audio_host.trigger_ui(audio::UiCue::kCancel);
+          // Back one screen, as the original's B: the outpost's hub or the
+          // pause menu it was chosen on, not free roam.
+          const GarageFrom from = garage_from;
+          garage_from = GarageFrom::kNone;
+          if (from == GarageFrom::kOutpostHub && !outpost_hub_id.empty()) {
+            const size_t pick = outpost_hub_pick;
+            open_outpost_hub(outpost_hub_id);
+            if (pick < outpost_hub_items.size()) outpost_hub_pick = pick;
+          } else if (from == GarageFrom::kPause) {
+            menu.open = true;
+            menu.screen = garage_pause_screen;  // the EXTRAS list, GARAGE kept
+            menu.selected = garage_pause_selected;
+            menu.shown_selected = -1;
+          }
 }
 
 void DriveSession::sync_livery_preview(bool recomposite_vinyls) {
@@ -956,11 +980,18 @@ void DriveSession::choose() {
             cycle_difficulty(+1);
             return;
           }
+          const PauseMenu::Screen chosen_on = menu.screen;
+          const int chosen_row = menu.selected;
           menu.open = false;
           menu.screen = PauseMenu::Screen::kList;
           if (act == PauseMenu::kMap) open_map();
           if (act == PauseMenu::kEvents) open_events_browser(0);
-          if (act == PauseMenu::kGarage) open_garage_browser(false);
+          if (act == PauseMenu::kGarage) {
+            open_garage_browser(false);
+            garage_from = GarageFrom::kPause;
+            garage_pause_screen = chosen_on;
+            garage_pause_selected = chosen_row;
+          }
           if (act == PauseMenu::kUpgrades) open_shop_or_autoshow(false);
           if (act == PauseMenu::kAutoshow) open_shop_or_autoshow(true);
           if (act == PauseMenu::kPaint) open_paint();

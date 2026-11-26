@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -206,6 +207,20 @@ void test_macos_shortcuts_and_portable() {
   }
   assert(carview::resolve_portable_data_root(mac_bin, true) == root / "data");
   std::filesystem::remove_all(root, ec);
+
+  // The save without --save: inside the portable folder in portable mode,
+  // never the pref path (%APPDATA%) then; the pref path otherwise. (Checked
+  // in release builds too, where assert is off.)
+  auto require = [](bool ok, const char* what) {
+    if (ok) return;
+    std::printf("FAIL: %s\n", what);
+    std::exit(1);
+  };
+  const std::filesystem::path portable_data = root / "data", pref = root / "appdata" / "shift-engine" / "drive";
+  require(carview::resolve_default_save_path(portable_data, pref) == portable_data / "drive" / "save.txt",
+          "portable save stays in the portable folder");
+  require(carview::resolve_default_save_path({}, pref) == pref / "save.txt", "pref path save without portable.txt");
+  require(carview::resolve_default_save_path({}, {}).empty(), "no save folder known");
 
   std::printf("  [ok] macOS Cmd shortcuts & portable-path resolution\n");
 }

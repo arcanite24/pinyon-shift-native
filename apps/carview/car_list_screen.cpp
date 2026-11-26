@@ -72,6 +72,24 @@ void draw_notice(ui::List& l, const std::string& notice, float w, float h) {
 constexpr float kInfoTextWidth = 440.0f;
 constexpr int kInfoTextLines = 7;
 
+// The player bar's class follows the car's name (19_autoshow_orig.png),
+// its pill cut after it: the garage, the autoshow's lists and its makes.
+void place_bar_class(SceneScreen& sc, const DriveHud& st) {
+  const SceneDraw& sd = sc.scene();
+  const int bar = sc.node("PlayerBar");
+  const int car = sc.node("MiddleRow/TEXT_CAR", bar), cls = sc.node("MiddleRow/CLASS_SM", bar);
+  const int pill = sc.node("MiddleRow/pill_middle", bar);
+  if (car < 0 || cls < 0 || st.car_class.empty()) return;
+  const float name_end = sd.at(car)[0] + 0.9f * sd.measure(car, st.car_name);
+  const float cls_left = sd.rect(sc.node("Group/CLASS_A", cls))[0];
+  sc.at(cls).dx = name_end + kClassGap - cls_left;
+  if (pill >= 0) {
+    const auto pr = sd.rect(pill);
+    const float cls_right = sd.rect(sc.node("Group/CLASS_A", cls))[2] + sc.at(cls).dx;
+    sc.at(pill).visible_width = cls_right + kPillTail - pr[0];
+  }
+}
+
 }  // namespace
 
 const std::vector<const char*>& car_list_nodes() {
@@ -282,23 +300,7 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
   }
 
   bind_player_bar(sc, st);
-  // The player bar's class follows the car's name (19_autoshow_orig.png),
-  // its pill cut after it.
-  {
-    const int bar = sc.node("PlayerBar");
-    const int car = sc.node("MiddleRow/TEXT_CAR", bar), cls = sc.node("MiddleRow/CLASS_SM", bar);
-    const int pill = sc.node("MiddleRow/pill_middle", bar);
-    if (car >= 0 && cls >= 0 && !st.car_class.empty()) {
-      const float name_end = sd.at(car)[0] + 0.9f * sd.measure(car, st.car_name);
-      const float cls_left = sd.rect(sc.node("Group/CLASS_A", cls))[0];
-      sc.at(cls).dx = name_end + kClassGap - cls_left;
-      if (pill >= 0) {
-        const auto pr = sd.rect(pill);
-        const float cls_right = sd.rect(sc.node("Group/CLASS_A", cls))[2] + sc.at(cls).dx;
-        sc.at(pill).visible_width = cls_right + kPillTail - pr[0];
-      }
-    }
-  }
+  place_bar_class(sc, st);
   sc.draw(l, f);
   for (const Shown& s : shown_tiles) {
     draw_tile(l, f, s.cx, s.cy, s.hw, s.hh, -0.052f, s.car, s.selected);
@@ -463,6 +465,7 @@ bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float
   }
 
   bind_player_bar(sc, st);
+  place_bar_class(sc, st);
   sc.draw(l, f);
   for (const Label& lb : labels) {
     l.turn(f.x(lb.cx), f.y(lb.cy), -0.052f);

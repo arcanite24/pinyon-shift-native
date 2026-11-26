@@ -134,7 +134,7 @@ void DriveSession::rebuild_outpost_hub() {
           item.dest_z = world::kSpawnZ;
           const double dist_m = std::hypot(item.dest_x - at.x, item.dest_z - at.z);
           const std::string dist_line =
-              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   FREE FAST TRAVEL";
+              "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   0 CR";
           item.detail_title = "HORIZON FESTIVAL";
           item.detail_lines = {"RETURN TO RACE CENTRAL, AUTOSHOW,", "DAK'S GARAGE AND THE PAINT SHOP", dist_line};
           outpost_hub_items.push_back(std::move(item));
@@ -152,7 +152,7 @@ void DriveSession::rebuild_outpost_hub() {
           const int64_t ft_cost = outpost_travel_fee(other.id);  // the map's fee
           const std::string dist_line =
               "DISTANCE: " + carview::format_distance_unit(dist_m, app.metric_units) + "   •   " +
-              (ft_cost <= 0 ? std::string("FREE FAST TRAVEL") : carview::thousands(ft_cost) + " CR");
+              carview::thousands(std::max<int64_t>(0, ft_cost)) + " CR";
           item.detail_title = other.display_name;
           item.detail_lines = {"FAST TRAVEL DIRECTLY TO THIS REGIONAL", "HORIZON OUTPOST", dist_line};
           outpost_hub_items.push_back(std::move(item));
@@ -1083,6 +1083,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               mc.status_line = mc.completed ? "COMPLETED (REPLAY)" : "NEW PR STUNT";
             } else {
               mc.is_stunt = false;
+              mc.is_garage = item.kind == OutpostHubItem::kGarage;
               mc.kind_label = (item.kind == OutpostHubItem::kGarage)       ? "GARAGE"
                               : (item.kind == OutpostHubItem::kNearbyEvents) ? "EVENTS"
                                                                              : "FAST TRAVEL";
@@ -1092,9 +1093,9 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               // which the card does not draw).
               if (item.kind == OutpostHubItem::kFastTravelOutpost) {
                 const int64_t fee = outpost_travel_fee(item.ref_id);
-                mc.reward_line = fee > 0 ? carview::thousands(fee) + " CR" : std::string("FREE FAST TRAVEL");
+                mc.reward_line = carview::thousands(std::max<int64_t>(0, fee)) + " CR";
               } else if (item.kind == OutpostHubItem::kFastTravelFestival) {
-                mc.reward_line = "FREE FAST TRAVEL";
+                mc.reward_line = "0 CR";  // the map's FAST TRAVEL (0 Cr)
               }
               mc.status_line = "SELECT";
             }

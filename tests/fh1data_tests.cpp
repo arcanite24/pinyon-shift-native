@@ -16,6 +16,7 @@
 #include "cars/sources.h"
 #include "fh1data/archive.h"
 #include "fh1data/carbin.h"
+#include "fh1data/fs_walk.h"
 #include "fh1data/inflate.h"
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
@@ -1094,6 +1095,48 @@ void test_vfont() {
   }
 }
 
+// A walk over a tree deeper than MAX_PATH neither throws nor misses the
+// file at the bottom (the content packages' folders pass 260 characters).
+void test_long_path_walk() {
+  namespace fs = std::filesystem;
+  const fs::path root = fs::temp_directory_path() / "shift-engine-long-walk";
+  std::error_code ec;
+  fs::remove_all(fh1::long_path(root), ec);
+  fs::path deep = root;
+  for (int i = 0; i < 8; ++i) deep /= "EE8ECC936E550AE8C52031F6968068D2273165584D_" + std::to_string(i);
+  CHECK(deep.native().size() > 300);
+  fs::create_directories(fh1::long_path(deep), ec);
+  CHECK(!ec);
+  { std::ofstream(fh1::long_path(deep / "CoDriverIconSet.xds"), std::ios::binary) << "x"; }
+  bool found = false, threw = false;
+  size_t entries = 0;
+  try {
+    fh1::walk_tree(root, [&](const fs::directory_entry& e) {
+      ++entries;
+      std::error_code fec;
+      if (e.is_regular_file(fec) && e.path().filename() == "CoDriverIconSet.xds") {
+        found = true;
+        CHECK(fs::is_regular_file(fh1::usable_path(e.path()), fec));
+        return false;
+      }
+      return true;
+    });
+  } catch (...) {
+    threw = true;
+  }
+  CHECK(!threw);
+  CHECK(found);
+  CHECK(entries == 9);
+  // A missing root is no entries, no throw.
+  size_t none = 0;
+  fh1::walk_tree(root / "missing", [&](const fs::directory_entry&) { return ++none, true; });
+  CHECK(none == 0);
+  // The short form comes back for a path that fits.
+  CHECK(fh1::usable_path(fh1::long_path(root)) == fh1::short_path(fh1::long_path(root)));
+  CHECK(fh1::usable_path(fh1::long_path(root)).native().size() < 260);
+  fs::remove_all(fh1::long_path(root), ec);
+}
+
 void test_dlc_folder() {
   namespace fs = std::filesystem;
   const fs::path root = fs::temp_directory_path() / "shift-engine-dlc-test";
@@ -1351,6 +1394,7 @@ int main() {
   test_reference();
   test_bake_format();
   test_dlc_folder();
+  test_long_path_walk();
   test_stringtables();
   test_vfont();
   test_xds_layout();

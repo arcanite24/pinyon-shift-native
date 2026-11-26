@@ -2,6 +2,7 @@
 
 #include "cars/mod_manager.h"
 #include "cars/mods.h"
+#include "fh1data/fs_walk.h"
 
 #include <algorithm>
 #include <cctype>
@@ -81,14 +82,18 @@ bool Folder::open(const FolderRef& ref, std::string* error) {
   names_.clear();
   if (ref.kind == FolderRef::Kind::kDirectory) {
     std::error_code ec;
-    for (const auto& e : fs::recursive_directory_iterator(ref.path, ec)) {
-      if (!e.is_regular_file()) continue;
-      files_.emplace(normal(fs::relative(e.path(), ref.path).generic_string()), e.path());
-    }
-    if (ec) {
-      if (error) *error = ref.path.string() + ": " + ec.message();
+    if (!fs::is_directory(ref.path, ec)) {
+      if (error) *error = ref.path.string() + ": " + (ec ? ec.message() : std::string("not a folder"));
       return false;
     }
+    // Content packages' paths pass MAX_PATH: a walk that never throws.
+    const fs::path base = fh1::long_path(ref.path);
+    fh1::walk_tree(ref.path, [&](const fs::directory_entry& e) {
+      std::error_code fec;
+      if (e.is_regular_file(fec))
+        files_.emplace(normal(e.path().lexically_relative(base).generic_string()), fh1::usable_path(e.path()));
+      return true;
+    });
     for (const auto& [n, _] : files_) names_.push_back(n);
     return true;
   }
@@ -229,11 +234,14 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
         p.priority = std::min(p.priority, priority_of(offer.filename().string()));
         p.archives.push_back(offer);
         std::vector<std::string> names, spelled;
-        for (const auto& e : fs::recursive_directory_iterator(offer, ec)) {
-          const std::string rel = fs::relative(e.path(), offer).generic_string();
-          spelled.push_back(rel + (e.is_directory() ? "/" : ""));
+        const fs::path offer_long = fh1::long_path(offer);
+        fh1::walk_tree(offer, [&](const fs::directory_entry& e) {
+          std::error_code dec;
+          const std::string rel = e.path().lexically_relative(offer_long).generic_string();
+          spelled.push_back(rel + (e.is_directory(dec) ? "/" : ""));
           names.push_back(normal(spelled.back()));
-        }
+          return true;
+        });
         // Stable order: sort the pairs by normalised name.
         std::vector<size_t> order(names.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
@@ -328,12 +336,14 @@ bool discover_install(const fs::path& game_root, const fs::path& state_root, con
         p.archives.push_back(offer);
         const size_t merges_before = p.merges.size();
         std::vector<std::string> names, spelled;
-        std::error_code rec;
-        for (const auto& e : fs::recursive_directory_iterator(offer, rec)) {
-          const std::string rel = fs::relative(e.path(), offer).generic_string();
-          spelled.push_back(rel + (e.is_directory() ? "/" : ""));
+        const fs::path offer_long = fh1::long_path(offer);
+        fh1::walk_tree(offer, [&](const fs::directory_entry& e) {
+          std::error_code dec;
+          const std::string rel = e.path().lexically_relative(offer_long).generic_string();
+          spelled.push_back(rel + (e.is_directory(dec) ? "/" : ""));
           names.push_back(normal(spelled.back()));
-        }
+          return true;
+        });
         std::vector<size_t> order(names.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return names[a] < names[b]; });

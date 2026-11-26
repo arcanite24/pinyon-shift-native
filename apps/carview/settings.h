@@ -18,6 +18,9 @@ namespace carview {
 std::filesystem::path settings_path();
 // The user data folder (SDL's pref path shift-engine/), or empty.
 std::filesystem::path default_user_dir();
+// The portable folder's data/ when portable.txt sits beside the executable
+// (platform_support.h), else empty.
+std::filesystem::path portable_user_dir();
 // The user folder's mods/ (the default mods root), or empty.
 std::filesystem::path default_mods_root();
 // The user folder's photos/, replays/, and achievements.txt paths, or empty.

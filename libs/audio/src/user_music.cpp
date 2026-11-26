@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "audio/stream.h"
+#include "fh1data/fs_walk.h"
 
 namespace audio {
 namespace {
@@ -37,10 +38,11 @@ int UserMusicPlayer::scan(const std::filesystem::path& folder) {
   tracks_.clear();
   std::error_code ec;
   if (!folder.empty() && std::filesystem::is_directory(folder, ec)) {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(
-             folder, std::filesystem::directory_options::skip_permission_denied, ec)) {
-      if (entry.is_regular_file(ec) && is_music_file(entry.path())) tracks_.push_back(entry.path());
-    }
+    fh1::walk_tree(folder, [&](const std::filesystem::directory_entry& entry) {
+      std::error_code fec;
+      if (entry.is_regular_file(fec) && is_music_file(entry.path())) tracks_.push_back(fh1::usable_path(entry.path()));
+      return true;
+    });
   }
   std::sort(tracks_.begin(), tracks_.end(), [&](const std::filesystem::path& a, const std::filesystem::path& b) {
     return lower_str(a.lexically_relative(folder_).generic_string()) <

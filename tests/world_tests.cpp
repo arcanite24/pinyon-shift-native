@@ -167,10 +167,11 @@ int main() {
       }
       far_inside += inside;
     }
-    std::printf("far ring: %zu models, %zu triangles (%zu marked far), near triangles %zu as before\n",
-                fs.far_models, fs.far_triangles, far_tris, far_mesh.triangles() - far_tris);
+    std::printf("far ring: %zu models, %zu triangles (%zu marked far, %zu within far_inner over near-ground holes), "
+                "near triangles %zu as before\n",
+                fs.far_models, fs.far_triangles, far_tris, fs.far_fill_triangles, far_mesh.triangles() - far_tris);
     CHECK(fs.far_models > 50 && far_tris == fs.far_triangles && far_tris > 10000);
-    CHECK(far_bad == 0 && far_inside == 0);
+    CHECK(far_bad == 0 && far_inside <= fs.far_fill_triangles);
     CHECK(far_mesh.triangles() - far_tris == mesh.triangles());
 
     // Tree sprites (WORLD-MATERIALS, Tree billboards): the file records

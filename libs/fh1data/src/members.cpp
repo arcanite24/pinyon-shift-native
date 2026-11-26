@@ -1,5 +1,7 @@
 #include "fh1data/members.h"
 
+#include "fh1data/fs_walk.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -25,12 +27,12 @@ bool MemberSource::open(const std::filesystem::path& path, std::string* error) {
   names_.clear();
   std::error_code ec;
   if (std::filesystem::is_directory(path, ec)) {
-    for (const auto& e : std::filesystem::recursive_directory_iterator(path, ec))
-      if (e.is_regular_file()) files_.emplace(base_lower(e.path().filename().string()), e.path());
-    if (ec) {
-      if (error) *error = path.string() + ": " + ec.message();
-      return false;
-    }
+    // A walk that never throws and reads past MAX_PATH (fs_walk.h).
+    walk_tree(path, [&](const std::filesystem::directory_entry& e) {
+      std::error_code fec;
+      if (e.is_regular_file(fec)) files_.emplace(base_lower(e.path().filename().string()), usable_path(e.path()));
+      return true;
+    });
     for (const auto& [name, _] : files_) names_.push_back(name);
     return true;
   }

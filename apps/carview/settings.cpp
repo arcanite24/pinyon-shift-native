@@ -9,16 +9,20 @@
 namespace carview {
 namespace {
 
-std::filesystem::path user_folder() {
+std::filesystem::path portable_folder() {
   if (const char* base = SDL_GetBasePath()) {
 #if defined(__APPLE__)
     constexpr bool kIsMac = true;
 #else
     constexpr bool kIsMac = false;
 #endif
-    const auto portable = resolve_portable_data_root(std::filesystem::path(base), kIsMac);
-    if (!portable.empty()) return portable;
+    return resolve_portable_data_root(std::filesystem::path(base), kIsMac);
   }
+  return {};
+}
+
+std::filesystem::path user_folder() {
+  if (auto portable = portable_folder(); !portable.empty()) return portable;
   std::filesystem::path out;
   if (char* pref = SDL_GetPrefPath("shift-engine", "drive")) {
     out = std::filesystem::path(pref).parent_path().parent_path();  // ".../shift-engine/drive/" -> ".../shift-engine"
@@ -36,6 +40,8 @@ std::filesystem::path settings_path() {
 }
 
 std::filesystem::path default_user_dir() { return user_folder(); }
+
+std::filesystem::path portable_user_dir() { return portable_folder(); }
 
 std::filesystem::path default_mods_root() {
   const auto u = user_folder();

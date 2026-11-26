@@ -612,8 +612,14 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
       for (size_t i = 0; i < s.data->barns.size(); ++i) {
         const auto& b = s.data->barns[i];
         const int status = i < s.progress->barns.size() ? s.progress->barns[i].status : freeroam::kBarnNotSpawned;
+        // The title's barn-find activity keeps two markers per barn: the
+        // tan "barnfind" one, shown while its rumour runs (the tan barns in
+        // the rumour circles of map_open_orig.png), and the dark
+        // "barnfind_collected" one that replaces it once the barn is found
+        // (Q193).
         if (freeroam::barn_discovered(status)) out.push_back({"barnfind_collected", b.at.x, b.at.z, false, true, true, -1});
-        else if (s.reveal) out.push_back({"barnfind", b.at.x, b.at.z, false, false, true, -1});
+        else if (status == freeroam::kBarnRumour || s.reveal)
+          out.push_back({"barnfind", b.at.x, b.at.z, false, false, true, -1});
       }
     }
   }
@@ -1660,7 +1666,7 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
       Rgba tint = ic.colour;
       if (!m.discovered) tint = {140, 145, 155, tint.a * 0.7f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
-      if (dim) tint.a *= 0.6f;
+      if (dim) tint.a *= 0.3f;  // the profile's "ghost" animation ends at alpha 0.3
       const double sz = ic.size * unit * (sel ? 1.25 : 1.0);
       cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
     }

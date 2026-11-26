@@ -1429,7 +1429,7 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
         {"ARCHWAY PHOTO SHOOT", "PHOTO OP", 12, 103, "SNAP AT RED ROCK ARCH", "+10,000 CR  •  +2,000 POP", "COMPLETED",
          true, true, {"Photograph your car beneath the Red Rock Arch."}},
         {"CHANGE CAR", "GARAGE", 1, 0, "INSTANT CAR SWAP", "MY GARAGE", "OUTPOST SERVICE", false, false,
-         {"Swap into any car in your Horizon Garage right here."}},
+         {"Swap into any car in your Horizon Garage right here."}, true},
     };
     carview::draw_outpost_hub_ui4(l_out, float(W), float(H), "RED ROCK OUTPOST", cards, 1);
     save_two_up("ui4_p3_events_outpost.png", l_ev, load_or_build_backdrop(world_bg_path), l_out,
@@ -2366,6 +2366,10 @@ void test_round2_phase6_ui4_parity() {
               carview::ui4::controller_button_from_texture("CONTROLLER/LBUMPER") == "LB" &&
               carview::ui4::controller_button_from_texture("CONTROLLER/RTRIGGER") == "RT",
           "controller_button_from_texture extracts logical button names");
+    check(carview::ui4::controller_button_from_texture("CONTROLLER/ACTIVATE") == "ACTIVATE" &&
+              carview::ui4::glyph_label_for("ACTIVATE", carview::ui4::GlyphSet::kKeyboard) == "E" &&
+              carview::ui4::glyph_label_for("ACTIVATE", carview::ui4::GlyphSet::kXbox) == "X",
+          "the Activate prompt glyph is E on a keyboard and X on an Xbox pad");
 
     const auto prev_gs = carview::ui4::glyph_set();
     carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kPlayStation);

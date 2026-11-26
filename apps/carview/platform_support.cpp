@@ -182,4 +182,11 @@ std::filesystem::path resolve_portable_data_root(const std::filesystem::path& ex
   return {};
 }
 
+std::filesystem::path resolve_default_save_path(const std::filesystem::path& portable_data_root,
+                                                const std::filesystem::path& pref_drive_dir) {
+  if (!portable_data_root.empty()) return portable_data_root / "drive" / "save.txt";
+  if (!pref_drive_dir.empty()) return pref_drive_dir / "save.txt";
+  return {};
+}
+
 }  // namespace carview

@@ -60,9 +60,10 @@ std::string lod_family(const std::string& name, int& lod) {
 }
 
 // Bumped whenever what the index records changes (3: the far flag leaves
-// out the CAGE, TERR_CUBE and occluder objects), so an older index is
-// rebuilt rather than reused.
-constexpr const char* kCacheMagic = "shift-world-index 3";
+// out the CAGE, TERR_CUBE and occluder objects; 4: it also marks objects
+// drawn only with the UberLOD effect), so an older index is rebuilt rather
+// than reused.
+constexpr const char* kCacheMagic = "shift-world-index 4";
 // WORLD-MATERIALS, Placeholder models: the art tools' missing-material texture.
 constexpr uint32_t kPlaceholderTextureId = 0x00002CA9u;
 
@@ -492,14 +493,97 @@ bool skipped_object(const std::string& object) {
 // The far ring's level of an object: 1 MIDDIST, 2 UberLOD, 0 neither.
 // TERR_CUBE objects are not scenery (ours: road and diffuse effects over
 // the terrain's footprint, by their name the cube maps' stand-ins).
-uint8_t far_level(const std::string& object) {
+uint8_t far_level(const std::string& object, const std::vector<std::string>& effects) {
   const std::string o = lower(object);
   if (has(o, "terr_cube") || has(o, "occluder") || has(o, "cage") || has(o, "underground") ||
       has(o, "shadowmountain") || has(o, "shadowproxy") || has(o, "shadowcaster"))
     return 0;
   if (has(o, "uberlod")) return 2;
-  return has(o, "middist") ? 1 : 0;
+  if (has(o, "middist")) return 1;
+  // By effect (ours): H_BLND1_SPEC is the UberLOD patches' effect
+  // (WORLD-MATERIALS, Terrain shading), drawn by nothing but the far
+  // terrain. An object drawn only with it is an UberLOD patch whatever its
+  // name: Mountains_Area04A_Terrain_05_LOD00..02, a 4 x 3.5 km sheet in the
+  // UberLOD block of the members (between Patch10 and its CAGE003), lies
+  // 1 to 2 m over the Finley Dam roads and hills it covers.
+  if (effects.empty()) return 0;
+  for (const auto& e : effects)
+    if (e != "H_BLND1_SPEC") return 0;
+  return 2;
 }
+
+GroundCover::GroundCover(double x, double z, double half_width, double cell)
+    : x0_(x - half_width), z0_(z - half_width), cell_(cell > 0 ? cell : 1),
+      side_(std::max(1, int(std::ceil(2 * half_width / (cell > 0 ? cell : 1))))) {
+  covered_.assign(size_t(side_) * size_t(side_), 0);
+}
+
+long GroundCover::cell_of(double x, double z) const {
+  const double i = std::floor((x - x0_) / cell_), j = std::floor((z - z0_) / cell_);
+  if (i < 0 || j < 0 || i >= side_ || j >= side_) return -1;
+  return long(j) * side_ + long(i);
+}
+
+bool GroundCover::covered(double x, double z) const {
+  const long c = cell_of(x, z);
+  return c < 0 || covered_[size_t(c)] != 0;
+}
+
+void GroundCover::add(const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c) {
+  const double d = (double(b[2]) - c[2]) * (double(a[0]) - c[0]) + (double(c[0]) - b[0]) * (double(a[2]) - c[2]);
+  if (std::fabs(d) < 1e-9) return;  // edge-on (armco, poles): no footprint
+  const double x_lo = std::min({a[0], b[0], c[0]}), x_hi = std::max({a[0], b[0], c[0]});
+  const double z_lo = std::min({a[2], b[2], c[2]}), z_hi = std::max({a[2], b[2], c[2]});
+  const int i0 = std::max(0, int(std::ceil((x_lo - x0_) / cell_ - 0.5)));
+  const int i1 = std::min(side_ - 1, int(std::floor((x_hi - x0_) / cell_ - 0.5)));
+  const int j0 = std::max(0, int(std::ceil((z_lo - z0_) / cell_ - 0.5)));
+  const int j1 = std::min(side_ - 1, int(std::floor((z_hi - z0_) / cell_ - 0.5)));
+  bool any = false;
+  for (int j = j0; j <= j1; ++j)
+    for (int i = i0; i <= i1; ++i) {
+      const double px = x0_ + (i + 0.5) * cell_, pz = z0_ + (j + 0.5) * cell_;
+      const double l1 = ((double(b[2]) - c[2]) * (px - c[0]) + (double(c[0]) - b[0]) * (pz - c[2])) / d;
+      const double l2 = ((double(c[2]) - a[2]) * (px - c[0]) + (double(a[0]) - c[0]) * (pz - c[2])) / d;
+      if (l1 < 0 || l2 < 0 || 1 - l1 - l2 < 0) continue;
+      covered_[size_t(j) * size_t(side_) + size_t(i)] = 1;
+      any = true;
+    }
+  if (!any) {
+    const long cc = cell_of((double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3);
+    if (cc >= 0) covered_[size_t(cc)] = 1;
+  }
+}
+
+std::array<std::array<double, 2>, 7> footprint_samples(const std::array<float, 3>& a, const std::array<float, 3>& b,
+                                                       const std::array<float, 3>& c) {
+  auto mid = [](const std::array<float, 3>& p, const std::array<float, 3>& q) {
+    return std::array<double, 2>{(double(p[0]) + q[0]) / 2, (double(p[2]) + q[2]) / 2};
+  };
+  return {{{a[0], a[2]},
+           {b[0], b[2]},
+           {c[0], c[2]},
+           mid(a, b),
+           mid(b, c),
+           mid(c, a),
+           {(double(a[0]) + b[0] + c[0]) / 3, (double(a[2]) + b[2] + c[2]) / 3}}};
+}
+
+namespace {
+
+// An object's effect per submesh (upper case); empty without the model's
+// materials (parse_render_materials) or with a submesh that has none.
+std::vector<std::string> object_effects(const fh1::RenderModel& model, const fh1::RmbObject& o) {
+  std::vector<std::string> effects;
+  for (const auto& s : o.submeshes) {
+    if (s.material_index >= model.materials.size()) return {};
+    const uint32_t e = model.materials[s.material_index].effect;
+    if (e >= model.effects.size()) return {};
+    effects.push_back(model.effects[e]);
+  }
+  return effects;
+}
+
+}  // namespace
 
 bool skipped_material(const std::string& material) {
   const std::string m = lower(material);
@@ -744,7 +828,9 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
         m.box_min = model.box_min;
         m.box_max = model.box_max;
         m.world_space = fh1::rmb_is_world_space(model);
-        for (const auto& o : model.objects) m.far = m.far || far_level(o.name) != 0;
+        std::string ignored;
+        fh1::parse_render_materials(bytes, model, &ignored);  // the effects, for far_level
+        for (const auto& o : model.objects) m.far = m.far || far_level(o.name, object_effects(model, o)) != 0;
       }
       models_.push_back(m);
     }
@@ -808,6 +894,30 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   out = {};
 
   std::map<decltype(MeshMaterial{}.key()), uint32_t> material_index;
+  // The far ring's hole filling (ours): within its inner cut a far triangle
+  // is drawn only over a hole in the near ground (a footprint cell no near
+  // triangle but water covers), by the finest far object there (the least
+  // mean triangle area), so the far terrain still floors what the near
+  // models leave open (the gorge below the Finley Dam road, which only
+  // the UberLOD-effect sheet covers) without lying over the near terrain
+  // it copies. Built before the far pass: cover, and per hole cell its
+  // filler (mean area, object key).
+  std::unique_ptr<GroundCover> cover;
+  std::unordered_map<long, std::pair<double, uint64_t>> hole_fill;
+  auto object_key = [](uint32_t model_index, const fh1::RenderModel& model, const fh1::RmbObject& o) {
+    return (uint64_t(model_index) << 20) | uint64_t(&o - model.objects.data());
+  };
+  auto fills_hole = [&](uint32_t model_index, const fh1::RmbObject& o, const fh1::RenderModel& model,
+                        const std::array<float, 3>& a, const std::array<float, 3>& b, const std::array<float, 3>& c) {
+    if (!cover) return false;
+    const uint64_t key = object_key(model_index, model, o);
+    for (const auto& s : footprint_samples(a, b, c)) {
+      if (cover->covered(s[0], s[1])) continue;
+      auto it = hole_fill.find(cover->cell_of(s[0], s[1]));
+      if (it != hole_fill.end() && it->second.second == key) return true;
+    }
+    return false;
+  };
   // far_pass: the far ring's objects only (the near pass skips them).
   auto add_triangles = [&](const fh1::RenderModel& model, uint32_t model_index, const fh1::Placement* placement,
                            const std::map<std::string, int>* lowest, bool far_pass = false, uint8_t fade = 0) {
@@ -859,8 +969,11 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     for (const auto& o : model.objects) {
       const size_t first_submesh = submesh_number;
       submesh_number += o.submeshes.size();
-      const uint8_t far = far_pass ? far_level(o.name) : 0;
-      if (far_pass ? far == 0 : !placement && skipped_object(o.name)) {
+      // World-space objects: the far ring's by name or by effect, which the
+      // near pass leaves out with the other skipped objects.
+      const uint8_t level = placement ? 0 : far_level(o.name, object_effects(model, o));
+      const uint8_t far = far_pass ? level : 0;
+      if (far_pass ? far == 0 : !placement && (skipped_object(o.name) || level != 0)) {
         if (!far_pass) ++st.skipped_far;
         continue;
       }
@@ -1022,7 +1135,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
               const auto p = position(tri[t + size_t(k)]);
               inside = std::hypot(p[0] - x, p[2] + z) < inner;  // z is the file frame's here
             }
-            if (inside) continue;
+            if (inside && !fills_hole(model_index, o, model, position(tri[t]), position(tri[t + 1]),
+                                      position(tri[t + 2])))
+              continue;
+            st.far_fill_triangles += inside;
             ++st.far_triangles;
           }
           corner(tri[t]);
@@ -1115,7 +1231,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     near_ids.push_back(i);
   }
   std::vector<std::pair<uint32_t, fh1::RenderModel>> selected;
-  if (!load_models_parallel(near_ids, options.render_data, selected)) return false;
+  // The materials always: the effects tell the far ring's objects apart.
+  if (!load_models_parallel(near_ids, true, selected)) return false;
   std::map<std::string, int> lowest;
   for (const auto& [i, model] : selected)
     for (const auto& o : model.objects) {
@@ -1148,11 +1265,72 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       for (const auto& o : model.objects) {
         int lod;
         const std::string family = lod_family(o.name, lod);
-        if (lod < 0 || far_level(o.name) == 0) continue;
+        if (lod < 0 || far_level(o.name, object_effects(model, o)) == 0) continue;
         auto [it, added] = far_lowest.emplace(family, lod);
         if (!added) it->second = std::min(it->second, lod);
       }
+    // The hole filling: the near ground's footprint within the widest
+    // inner cut (game frame; z is the file frame's here), then each hole
+    // cell's finest far object.
+    cover = std::make_unique<GroundCover>(x, -z, std::max(options.far_inner, options.far_inner_uberlod), 10);
+    for (size_t t = 0; t < out.triangles(); ++t)
+      if (out.surface[t] != Surface::kWater)
+        cover->add(out.positions[3 * t], out.positions[3 * t + 1], out.positions[3 * t + 2]);
+    // A submesh the far pass draws nothing of: the placeholder texture
+    // (WORLD-MATERIALS, Placeholder models) or the UNDERGROUND effect.
+    auto drawn = [&](uint32_t model_index, const fh1::RenderModel& model, const fh1::RmbSubmesh& s) {
+      if (skipped_material(s.material)) return false;
+      if (s.material_index >= model.materials.size()) return true;
+      const fh1::RmbMaterial& m = model.materials[s.material_index];
+      if (m.effect < model.effects.size() && model.effects[m.effect] == "UNDERGROUND") return false;
+      const std::string& name = models_[model_index].name;
+      const size_t dot = name.find('.');
+      const unsigned long member = dot != std::string::npos ? std::strtoul(name.c_str() + dot + 1, nullptr, 10) : 0;
+      if (m.slots.empty() || m.slots[0] < 0 || member < 1 || member - 1 >= impl_->table.model_textures.size())
+        return true;
+      const auto& list = impl_->table.model_textures[member - 1];
+      if (size_t(m.slots[0]) >= list.size() || list[size_t(m.slots[0])] >= impl_->table.textures.size()) return true;
+      return impl_->table.textures[list[size_t(m.slots[0])]].id != kPlaceholderTextureId;
+    };
+    for (const auto& [i, model] : far_models)
+      for (const auto& o : model.objects) {
+        const uint8_t level = far_level(o.name, object_effects(model, o));
+        if (level == 0) continue;
+        int lod;
+        const std::string family = lod_family(o.name, lod);
+        if (auto it = far_lowest.find(family); lod >= 0 && it != far_lowest.end() && it->second != lod) continue;
+        const double inner = level == 2 ? options.far_inner_uberlod : options.far_inner;
+        double area = 0;
+        size_t count = 0;
+        std::vector<long> cells;
+        for (const auto& s : o.submeshes) {
+          if (!drawn(i, model, s)) continue;
+          const auto tri = fh1::rmb_triangle_list(s);
+          for (size_t t = 0; t + 2 < tri.size(); t += 3) {
+            std::array<std::array<float, 3>, 3> p;
+            bool inside = true;
+            for (int k = 0; k < 3; ++k) {
+              const auto q = o.position(tri[t + size_t(k)]);
+              p[size_t(k)] = {q[0], q[1], -q[2]};
+              inside = inside && std::hypot(p[size_t(k)][0] - x, p[size_t(k)][2] + z) < inner;
+            }
+            area += std::fabs((double(p[1][0]) - p[0][0]) * (double(p[2][2]) - p[0][2]) -
+                              (double(p[2][0]) - p[0][0]) * (double(p[1][2]) - p[0][2])) / 2;
+            ++count;
+            if (!inside) continue;
+            for (const auto& sp : footprint_samples(p[0], p[1], p[2]))
+              if (!cover->covered(sp[0], sp[1])) cells.push_back(cover->cell_of(sp[0], sp[1]));
+          }
+        }
+        if (cells.empty()) continue;
+        const std::pair<double, uint64_t> filler{area / double(count), object_key(i, model, o)};
+        for (long c : cells) {
+          auto [it, added] = hole_fill.emplace(c, filler);
+          if (!added && filler < it->second) it->second = filler;
+        }
+      }
     for (const auto& [i, model] : far_models) add_triangles(model, i, nullptr, &far_lowest, true);
+    cover.reset();
     st.far_models = far_models.size();
   }
 

@@ -385,6 +385,7 @@ void DriveSession::garage_popup_view_map() {
   garage_popup = GaragePopup::kNone;
   garage_open = false;
   garage_barn_finds = false;
+  garage_from = GarageFrom::kNone;
   hub_menu.close();  // the map replaces the workshop's list
   app.audio_host.trigger_ui(audio::UiCue::kAccept);
   open_map();
