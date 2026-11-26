@@ -200,6 +200,26 @@ void test_rest_hold() {
   for (int i = 0; i < 120 * 4; ++i) v.step({0, 0, 0, false}, hill);
   CHECK(v.rest_hold());
   CHECK(std::fabs(v.speed()) < 0.02);
+  // On the flat: a full brake from the held rest selects reverse and backs
+  // off (the brake is the reverse gas, so the hold lets go); let go of it
+  // and the car rolls back unheld; then the gas drives forwards.
+  const auto flat = plane(0.0);
+  for (int i = 0; i < 120 * 4; ++i) v.step({0, 0, 0, false}, flat);
+  CHECK(v.rest_hold());
+  const drive::Vec3 before_reverse = v.position();
+  for (int i = 0; i < 120 * 2; ++i) v.step({0, 0, 1, false}, flat);
+  const drive::Vec3 backed = v.position();
+  const double backed_m = std::sqrt((backed.x - before_reverse.x) * (backed.x - before_reverse.x) +
+                                    (backed.z - before_reverse.z) * (backed.z - before_reverse.z));
+  std::printf("full brake from the hold: gear %d, %.3f m/s, %.2f m, hold %d\n", v.gear(), v.speed(), backed_m,
+              int(v.rest_hold()));
+  CHECK(v.gear() == -1 && !v.rest_hold() && backed_m > 1.0);
+  for (int i = 0; i < 120 * 15; ++i) v.step({0, 0, 0, false}, flat);
+  std::printf("reverse released: %.3f m/s, gear %d, hold %d\n", v.speed(), v.gear(), int(v.rest_hold()));
+  CHECK(!v.rest_hold());  // rolling back with no input: no hold
+  for (int i = 0; i < 120 * 3; ++i) v.step({0, 1, 0, false}, flat);
+  std::printf("then the gas: gear %d, %.2f m/s\n", v.gear(), v.speed());
+  CHECK(v.gear() >= 1 && v.speed() > 3);
 }
 
 void test_script() {
