@@ -220,7 +220,7 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   // A head-to-head's win (race_encounters.xml PlayWinCutScene): no restart,
   // results or replay in free roam.
   // interim (SPEC_QUESTIONS Q171): its help bar is not captured.
-  // A Rally stage's banner (CPostRaceFinishPosition, 82816 5C8): CONTINUE,
+  // A Rally stage's banner (CPostRaceFinishPosition): CONTINUE,
   // RESTART only once the first Rally is completed (inferred), RACE RESULTS
   // offline, VIEW REPLAY with a replay. The engine shows A CONTINUE and
   // X RACE RESULTS (interim, Q251).

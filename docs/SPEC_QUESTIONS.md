@@ -5133,8 +5133,8 @@ span starts at 0 XP. Between stages the banner now shows (Q147, V4-13).
 
 ## Q251 (V4-14, not blocking): the Rally banner's help bar
 
-`CPostRaceFinishPosition`'s help bar (`sub_828165C8`) is CONTINUE;
-RESTART only when flag 473 is set (`!sub_825FFAC8(0)`, read here as
+`CPostRaceFinishPosition`'s help bar setup is CONTINUE;
+RESTART only when flag 473 is set (a profile query's negation, read here as
 "has finished a first Rally"; inferred); RACE RESULTS when offline and the
 game type is not 19 or 20; VIEW REPLAY when a replay exists. The engine
 draws A CONTINUE and X RACE RESULTS (its standings page) after the last
@@ -5142,7 +5142,7 @@ stage. Interim: no RESTART (the engine has no restart of a whole
 championship from its last stage) and no VIEW REPLAY (no replay of a
 four-stage run is kept).
 
-Needed: what `sub_825FFAC8(0)` reads, and whether RESTART on the
+Needed: what that profile query reads, and whether RESTART on the
 banner restarts the stage or the championship.
 
 ## Q252 (V4-14, not blocking): the champion screen's position line
