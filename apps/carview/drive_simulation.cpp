@@ -1131,16 +1131,14 @@ bool DriveSession::step(const drive::Input& user_in) {
               }
             }
             app.rally_results_state = carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
-            // The champion sequence plays once (CSetHasSeenRallyEndSequence,
-            // saved now); its screen and Alice's line come after the points
-            // (rally_post_steps).
+            // The champion sequence plays once (CShouldShowRallyEndSequence;
+            // CSetHasSeenRallyEndSequence when it ends, rally_post_finish):
+            // its screen, Alice's line and Rally_Champion_Cutscene come after
+            // the points (rally_post_steps).
             app.rally_results_state.final_won = app.saved.rally_end_seen || rew.champion_unlocked;
-            if (rew.champion_unlocked && !app.saved.rally_end_seen) {
-              app.saved.rally_end_seen = true;
-            } else {
-              app.rally_results_state.champion_unlocked = false;
-            }
+            if (!rew.champion_unlocked || app.saved.rally_end_seen) app.rally_results_state.champion_unlocked = false;
             app.rally_results_open = true;
+            rally_post_enter_step();
             save_due = true;
           } else {
             app.rally_service_open = true;

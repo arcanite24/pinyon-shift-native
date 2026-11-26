@@ -467,6 +467,8 @@ struct DriveSession {
   // the rewards): their own runtime, the track's set (Tracks.DevName).
   CutsceneRuntime race_cuts;
   std::string race_cut_name;  // the cutscene the flow asked for last
+  // race_cuts plays Rally_Champion_Cutscene (the flow's own cutscene waits).
+  bool rally_champion_cut = false;
   // A free-roam head-to-head's screens (race_encounters.xml): the intro as
   // it starts (H_RACE_ENCOUNTER), the banner and the cash on a win.
   race_flow::Flow h2h_screens;
@@ -741,6 +743,18 @@ struct DriveSession {
   void update_race_screens(double dt);
   // Plays the race cutscene the flow's step asks for (update_race_screens).
   void sync_race_cutscene();
+  // The Rally's post sequence after the last stage (drive_rally_post.cpp):
+  // A's next step, a step's start (the champion's VO and cutscene), the
+  // step clock with the cutscene's events, and the load into the hub.
+  void rally_post_next();
+  void rally_post_enter_step();
+  void rally_post_tick(double dt, const std::vector<const cutscene::Event*>& events);
+  void rally_post_finish();
+  // CCoDriverPepTalk as a stage's countdown runs (once per stage).
+  void rally_pep_talk_tick();
+  bool rally_pep_talk_done = false;
+  double rally_pep_prev_clock = 0.0;
+  bool rally_pep_have_clock = false;
   // The head-to-head's screens, from the festival racers' state.
   void sync_h2h_screens(double dt);
   // The race cutscene's camera this frame (false: the game's own camera).

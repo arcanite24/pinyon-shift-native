@@ -1121,34 +1121,16 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
               if (results_x && rstep == carview::RallyPostStep::kBanner) {
                 rs.show_table = !rs.show_table;
                 app.audio_host.trigger_ui(rs.show_table ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
-              } else if (confirm && rs.show_table && rstep != carview::RallyPostStep::kTable) {
+              } else if (confirm && rs.show_table && rstep != carview::RallyPostStep::kTable &&
+                         rstep != carview::RallyPostStep::kChampion) {
                 rs.show_table = false;
                 app.audio_host.trigger_ui(audio::UiCue::kCancel);
-              } else if (confirm && rs.step + 1 < int(rsteps.size())) {
-                app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                ++rs.step;
-                // CPlayRallyChampionDialogue with the champion's screen (the
-                // line is inferred, Q147).
-                if (rsteps[size_t(rs.step)] == carview::RallyPostStep::kChampion)
-                  app.audio_host.trigger_vo("HorizonRallyChampion", false);
+              } else if (confirm && rstep == carview::RallyPostStep::kChampion) {
+                // No help buttons: the champion's screen closes with its
+                // cutscene (doneOnCutsceneFinish).
               } else if (confirm) {
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
-                app.rally_results_open = false;
-                // The intro race's end (game_rally_intro_flow): to the first
-                // Autoshow, then the hub's first visit.
-                const bool intro_heats = app.rally_session.is_heats() && app.saved.rally_flow == 1;
-                app.rally_session.retire();
-                if (intro_heats) {
-                  app.audio_host.trigger_vo("PostraceHeatsQualification", false);
-                  app.audio_host.trigger_vo("ToTheAutoshow", false);
-                  app.saved.rally_flow = 2;
-                  app.rally_first_autoshow_pending = true;
-                  app.rally_hub_open = false;
-                } else {
-                  app.rally_hub_open = true;
-                }
-                app.leave_race = true;
-                running = false;
+                rally_post_next();
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }

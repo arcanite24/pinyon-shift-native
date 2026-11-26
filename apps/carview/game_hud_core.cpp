@@ -990,8 +990,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.rally_results && st.rally_results->active) {
-    // game_rally_race_flow's final: the banner, the Rally points and the
-    // champion on their scenes; the heats and X keep the engine's page.
+    // game_rally_race_flow's final: the banner, the earnings, the Rally
+    // points, a prize car and the champion on their scenes; the heats and X
+    // keep the engine's page.
     const RallyChampResultsState& rs = *st.rally_results;
     const auto steps = rally_post_steps(rs);
     const RallyPostStep step = steps[size_t(std::clamp(rs.step, 0, int(steps.size()) - 1))];
@@ -999,6 +1000,19 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     if (!rs.show_table) {
       if (step == RallyPostStep::kBanner) {
         drawn = draw_rally_finished(l, rs.final_place, w, h);
+      } else if (step == RallyPostStep::kEarnings) {
+        RallyEarningsHud e;
+        e.place = rs.final_place;
+        e.base = rs.base_credits;
+        e.total = rs.total_credits;
+        e.balance = rs.new_balance;
+        e.difficulty_pct = rs.base_credits > 0 && rs.bonus_credits > 0
+                               ? int(std::lround(100.0 * double(rs.bonus_credits) / double(rs.base_credits)))
+                               : 0;
+        e.t = rs.step_t;
+        drawn = draw_rally_earnings(l, e, w, h);
+      } else if (step == RallyPostStep::kPrizeCar) {
+        drawn = draw_rally_prize_car(l, rs.prize_car_name, w, h);
       } else if (step == RallyPostStep::kPoints) {
         RallyPostHud p;
         p.xp_before = rs.old_rally_xp;
@@ -1010,9 +1024,9 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
         p.band_next = rs.band_next_thumb;
         drawn = draw_rally_points(l, p, w, h);
       } else if (step == RallyPostStep::kChampion) {
-        // Rally_Champion_Cutscene is not played: black behind it (Q212).
-        l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
-        drawn = draw_rally_champion(l, rs.final_place, w, h);
+        // Over Rally_Champion_Cutscene when it plays; black without it.
+        if (!rs.champion_cutscene) l.rect(0, 0, w, h, ui::rgba(0, 0, 0));
+        drawn = draw_rally_champion(l, w, h);
       }
     }
     if (!drawn) build_rally_championship_results_screen(l, rs, w, h);

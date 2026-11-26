@@ -33,6 +33,7 @@ struct RallyStageInfo {
   int64_t track_id = 0;
   int route_id = 0;
   std::string horizon_id;    // e.g. "RALLY_5A"
+  std::string dev_name;      // Tracks.DevName ("RALLY_013": its cutscenes_<DevName>.xml)
   std::string name;          // localized track/stage name
   StageTrack track;          // length, start/finish lines, 4 splits, 5 best split times
 };
