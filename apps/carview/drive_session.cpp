@@ -221,7 +221,11 @@ void DriveSession::init_session() {
         }
       }
       // R3-CAM-23: Reconcile intro_completed & campaign_stage vehicle selection on Continue Career reload.
-      if (app.have_saved && !app.race) {
+      // Not while the first-time career runs: it swaps the car itself, and
+      // the save its swap carries still has the stage before the swap (the
+      // diner's swap to the Corrado says the initial drive, so this queued
+      // the Viper, and the queued swap fired at the heats launch).
+      if (app.have_saved && !app.race && !app.campaign.ftc_active()) {
         std::string selected_garage_media;
         if (app.have_garage) {
           if (const garage::Car* gc = app.career_garage.selected_car()) {
