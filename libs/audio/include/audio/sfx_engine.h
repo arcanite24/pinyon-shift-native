@@ -48,8 +48,10 @@ struct WheelAudio {
   float load = 1.0f;
   float bottom_out_force = 0.0f;
   int16_t surface_index = -1;  // Tires.xml SurfaceIndex (>= 0 preserves distinct channels; -1 = derive from group)
-  float slip_ratio = 0.0f;     // longitudinal slip magnitude (burnouts / braking)
-  float slip_angle = 0.0f;     // lateral slip magnitude (cornering scrub)
+  // Normalised slips (1 = the tyre curve's peak), as Tires.fev takes them:
+  // slip_ratio signed (positive spinning, negative locking), slip_angle its magnitude.
+  float slip_ratio = 0.0f;
+  float slip_angle = 0.0f;
 };
 
 struct ShowcaseAudioState {
@@ -505,11 +507,13 @@ class SfxEngine {
     std::filesystem::path bank_path;
     uint32_t subsound = 0;
     int ui = -1;  // >= 0: the sample of UI catalog event `ui` instead of `id`
+    int ev = -1;  // >= 0: event sample slot `ev` (an event loop's sound definition)
   };
   struct LoadedSample {
     SfxSoundId id = SfxSoundId::kWind;
     PcmSample* pcm = nullptr;
     int ui = -1;
+    int ev = -1;
   };
   struct LoopVoice {
     double phase = 0.0;
@@ -517,6 +521,58 @@ class SfxEngine {
     float left = 1.0f, right = 1.0f;
     float pitch = 1.0f;
   };
+
+ public:
+  // The parameters the game sets on its tyre and wind events (sub_82BC35A0,
+  // sub_82BC4828; Wind.fev), by name; an event takes those it has.
+  enum class EvParam : uint8_t {
+    kSlipAngle = 0,
+    kSlipRatio,
+    kSurfaceIndex,
+    kTireRpm,
+    kLoad,
+    kCombinedSlip,
+    kSpeed,
+    kTopSpeedPercent,
+    kBoostCarWindAudio,
+    kMusicActive,
+    kCount
+  };
+  static constexpr int kMaxEventSamples = 256;
+  static constexpr int kMaxEventVoices = 16;
+  // Tests: install the sample for an event sample slot.
+  void set_event_sample(int slot, PcmSample sample);
+  // Tyre event voices loaded from Tires.fev (LOD1: 5 groups x 4 wheels x Roll/Skid).
+  int tyre_event_count() const;
+  // The last block's summed target level of the focus tyre events and of the wind event.
+  float last_tyre_event_level() const { return last_tyre_level_; }
+  float last_wind_event_level() const { return last_wind_level_; }
+
+ private:
+  // One FEV event played as loops: each layer instance is a voice whose level is
+  // the event's own curves (evaluate_fev_event) and whose pitch is the event's
+  // pitch and its layer's pitch envelope (SPEC-AUDIO-EVENTS, Q331).
+  struct EventLoop {
+    bool ok = false;
+    FevEvent ev{};
+    std::array<int8_t, int(EvParam::kCount)> param{};  // ev.params index, -1 if the event lacks it
+    std::array<int16_t, kMaxEventVoices> slot{};       // event sample slot per flattened instance
+    std::array<float, kMaxEventVoices> tpl_gain{};     // its sound definition template's volume
+    std::array<float, kMaxEventVoices> tpl_pitch{};    // and pitch, as a rate factor
+    std::array<LoopVoice, kMaxEventVoices> voices{};
+    int count = 0;  // flattened instances
+    // An "FMOD Highpass" cutoff envelope on the first layer (Wind.fev's on
+    // TopSpeedPercent), -1 if none; its 2-pole filter's state (L, R).
+    int hp_env = -1;
+    std::array<float, 8> hp_z{};
+  };
+  std::vector<float> event_scratch_;  // stereo, sized at construction
+  // Evaluates `el` at `in` and mixes its voices (`gain` and `pitch` on top).
+  // Returns the summed target level.
+  float mix_event(EventLoop& el, const std::array<float, int(EvParam::kCount)>& in, float gain, float pitch,
+                  float left, float right, float* bus, int frames);
+  void mix_loop_pcm(LoopVoice& v, const PcmSample* pcm, float target_gain, float target_pitch, float target_l,
+                    float target_r, float* bus, int frames);
   struct OneShot {
     bool active = false;
     SfxSoundId id = SfxSoundId::kWind;
@@ -641,6 +697,15 @@ class SfxEngine {
   int damage_param_damage_ = -1;
   int damage_param_rpm_ = -1;
   int damage_param_throttle_ = -1;
+  // Tires.fev LOD1 (by group OnRoad, OffRoad, Grass, Brick, Trackway; wheel LF,
+  // RF, LR, RR; Roll, Skid) and Wind.fev Wind: read-only events after load, voices
+  // on the audio thread. Each event's instances play samples from event_samples_.
+  static constexpr int kTyreGroups = 5;
+  std::array<std::array<std::array<EventLoop, 2>, 4>, kTyreGroups> tyre_events_{};
+  EventLoop wind_event_{};
+  std::array<PcmSample*, kMaxEventSamples> event_samples_{};
+  float last_tyre_level_ = 0.0f;
+  float last_wind_level_ = 0.0f;
   // Real-time synth stand-ins (damage knock, showcase aircraft) run only in the
   // explicit no-assets mode set by populate_procedural_fallbacks().
   bool procedural_mode_ = false;

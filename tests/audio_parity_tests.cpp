@@ -457,6 +457,69 @@ void corpus_damage_event(const std::filesystem::path& game) {
   CHECK(total(0.3f, 0.1f, 1.0f) < lo);   // so does damage
 }
 
+// Q331: Tires.fev's LOD1 skid event and Wind.fev, read from the disc, as the
+// engine plays them: wheelspin sounds the PeelOut layer (template pitch -0.05 x
+// 4 octaves, envelope 0.4896: 0.82 of the rate, as the recomp measures), a lock
+// the HeavyBrake one, a rolling tyre neither; wind is silent below 56.5 mph.
+void corpus_tyre_wind_events(const std::filesystem::path& game) {
+  audio::FevProject tires;
+  CHECK(audio::load_fev(game / "media" / "audio" / "cars" / "Tires" / "Tires.fev", tires, nullptr));
+  const audio::FevEvent* skid = tires.find_event("Tires/Tires/LOD1/OnRoad/Skid_RR");
+  CHECK(skid != nullptr);
+  if (!skid) return;
+  const int pa = skid->find_param("SlipAngle"), pr = skid->find_param("SlipRatio"), pl = skid->find_param("Load"),
+            prpm = skid->find_param("TireRPM");
+  CHECK(pa >= 0 && pr >= 0 && pl >= 0 && prpm >= 0);
+  if (pa < 0 || pr < 0 || pl < 0 || prpm < 0) return;
+  std::array<audio::FevInstanceLevel, 16> out{};
+  auto layer_gain = [&](float ratio, int layer, float* pitch_env = nullptr) {
+    std::array<float, 8> raw{};
+    raw.fill(std::numeric_limits<float>::quiet_NaN());
+    raw[size_t(pa)] = 0.0f;
+    raw[size_t(pr)] = ratio;
+    raw[size_t(pl)] = 1.0f;
+    raw[size_t(prpm)] = 550.0f;
+    const int n = audio::evaluate_fev_event(*skid, raw.data(), raw.size(), out.data(), int(out.size()));
+    float g = 0.0f;
+    for (int i = 0; i < n; ++i)
+      if (out[size_t(i)].layer == layer) {
+        g += out[size_t(i)].gain;
+        if (pitch_env) *pitch_env = out[size_t(i)].pitch_env;
+      }
+    return g;
+  };
+  float pe = 0.5f;
+  // (Skid_RR's PeelOut instance ends at 0.9998, just short of the clamped maximum.)
+  CHECK(layer_gain(4.9f, 4, &pe) > 0.5f);  // PeelOut (HDF) at full spin
+  const auto& po_inst = skid->layers[4].instances.front();
+  const auto* tpl = tires.template_of(tires.sound_defs[po_inst.sound_def_index]);
+  CHECK(tpl != nullptr);
+  if (tpl) {
+    const float rate = std::exp2(tpl->pitch * audio::kFevPitchOctaves + (pe - 0.5f) * audio::kFevPitchEnvOctaves);
+    std::printf("tyre event: PeelOut at full spin plays at %.3f of its rate\n", rate);
+    CHECK(rate > 0.80f && rate < 0.84f);
+  }
+  CHECK(layer_gain(-5.0f, 4) == 0.0f && layer_gain(-5.0f, 2) > 0.5f);  // a lock: HeavyBrake
+  CHECK(layer_gain(0.0f, 2) == 0.0f && layer_gain(0.0f, 4) == 0.0f);   // rolling: neither
+
+  audio::FevProject wind;
+  CHECK(audio::load_fev(game / "media" / "audio" / "cars" / "Wind" / "Wind.fev", wind, nullptr));
+  const audio::FevEvent* w = wind.find_event("Wind/Wind/Wind");
+  CHECK(w != nullptr);
+  if (!w) return;
+  const int ps = w->find_param("Speed");
+  CHECK(ps >= 0);
+  auto wind_gain = [&](float mph) {
+    std::array<float, 8> raw{};
+    raw.fill(std::numeric_limits<float>::quiet_NaN());
+    raw[size_t(ps)] = mph;
+    const int n = audio::evaluate_fev_event(*w, raw.data(), raw.size(), out.data(), int(out.size()));
+    return n > 0 ? out[0].gain : 0.0f;
+  };
+  CHECK(wind_gain(50.0f) == 0.0f);
+  CHECK(wind_gain(70.0f) > 0.0f && wind_gain(70.0f) < wind_gain(110.0f));
+}
+
 // AUDIO-02 / MENU-12: every ui4audio play name the engine can fire exists in
 // the disc's ui4audio.xml and plays a sample from UIInGame / General, and the
 // SFX engine decodes each of those samples.
@@ -1124,6 +1187,7 @@ int run_corpus() {
   const std::filesystem::path root(game);
   corpus_title_music(root);
   corpus_damage_event(root);
+  corpus_tyre_wind_events(root);
   corpus_ui_catalog(root);
   const char* state = std::getenv("SHIFT_STATE_ROOT");
   corpus_other_car_banks(root, state && *state ? std::filesystem::path(state) : std::filesystem::path{});

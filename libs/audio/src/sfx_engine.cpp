@@ -748,6 +748,7 @@ SfxEngine::SfxEngine(int out_rate) : rate_(std::max(8000, out_rate)) {
   smooth_ = float(1.0 - std::exp(-1.0 / (0.015 * double(rate_))));
   samples_.fill(nullptr);
   other_engine_scratch_.assign(2 * 1024, 0.0f);
+  event_scratch_.assign(2 * 1024, 0.0f);
 }
 
 SfxEngine::~SfxEngine() {
@@ -765,6 +766,10 @@ SfxEngine::~SfxEngine() {
     p = nullptr;
   }
   for (PcmSample*& p : ui_samples_) {
+    delete p;
+    p = nullptr;
+  }
+  for (PcmSample*& p : event_samples_) {
     delete p;
     p = nullptr;
   }
@@ -885,6 +890,12 @@ void SfxEngine::drain_queue(SpscQueue<LoadedSample>& q) {
       if (old && !retired_q_.push(old)) delete old;
       continue;
     }
+    if (ls.ev >= 0) {
+      PcmSample* old = ls.pcm;
+      if (ls.ev < kMaxEventSamples) std::swap(old, event_samples_[size_t(ls.ev)]);
+      if (old && !retired_q_.push(old)) delete old;
+      continue;
+    }
     const size_t idx = size_t(ls.id);
     if (idx < samples_.size()) {
       PcmSample* old = samples_[idx];
@@ -922,6 +933,23 @@ void SfxEngine::set_ui_sample(int sample_slot, PcmSample sample) {
   auto* p = new PcmSample(std::move(sample));
   std::lock_guard<std::mutex> lock(direct_q_mu_);
   if (!direct_loaded_q_.push({SfxSoundId::kUiAccept, p, sample_slot})) delete p;
+}
+
+void SfxEngine::set_event_sample(int slot, PcmSample sample) {
+  reclaim_retired();
+  if (slot < 0 || slot >= kMaxEventSamples) return;
+  auto* p = new PcmSample(std::move(sample));
+  std::lock_guard<std::mutex> lock(direct_q_mu_);
+  if (!direct_loaded_q_.push({SfxSoundId::kWind, p, -1, slot})) delete p;
+}
+
+int SfxEngine::tyre_event_count() const {
+  int n = 0;
+  for (const auto& g : tyre_events_)
+    for (const auto& w : g)
+      for (const auto& e : w)
+        if (e.ok) ++n;
+  return n;
 }
 
 int SfxEngine::loaded_ui_sample_count() const {
@@ -1207,6 +1235,89 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       }
       // Without the event there are no level curves: the damage loop stays
       // silent rather than playing a bare bank at invented gains.
+    }
+
+    // Tires.fev LOD1 and Wind.fev: the events themselves, every layer instance a
+    // loop voice playing its sound definition's first wavetable entry.
+    {
+      std::vector<std::pair<std::filesystem::path, uint32_t>> ev_slots;
+      auto slot_of = [&](const std::filesystem::path& bank, uint32_t sub) -> int {
+        for (size_t i = 0; i < ev_slots.size(); ++i)
+          if (ev_slots[i].first == bank && ev_slots[i].second == sub) return int(i);
+        if (ev_slots.size() >= size_t(kMaxEventSamples)) return -1;
+        ev_slots.emplace_back(bank, sub);
+        DecodeJob j;
+        j.bank_path = bank;
+        j.subsound = sub;
+        j.ev = int(ev_slots.size() - 1);
+        jobs.push_back(j);
+        return j.ev;
+      };
+      static constexpr const char* kParamNames[int(EvParam::kCount)] = {
+          "SlipAngle", "SlipRatio", "SurfaceIndex", "TireRPM", "Load",
+          "CombinedSlip", "Speed", "TopSpeedPercent", "BoostCarWindAudio", "MusicActive"};
+      auto bind = [&](EventLoop& el, const FevProject& proj, const FevEvent* ev) {
+        el = EventLoop{};
+        if (!ev || !ev->is_complex()) return;
+        el.ev = *ev;
+        for (int p = 0; p < int(EvParam::kCount); ++p) el.param[size_t(p)] = int8_t(ev->find_param(kParamNames[p]));
+        el.slot.fill(-1);
+        el.tpl_gain.fill(1.0f);
+        el.tpl_pitch.fill(1.0f);
+        int n = 0;
+        for (const auto& ly : ev->layers) {
+          for (const auto& si : ly.instances) {
+            if (n >= kMaxEventVoices) break;
+            if (si.sound_def_index < proj.sound_defs.size()) {
+              const auto& sd = proj.sound_defs[si.sound_def_index];
+              const auto* t = proj.template_of(sd);
+              if (t) {
+                el.tpl_gain[size_t(n)] = t->volume;
+                el.tpl_pitch[size_t(n)] = std::exp2(t->pitch * kFevPitchOctaves);
+              }
+              // Spawned or randomly picked one-shots (OffRoad's Stones_Grains /
+              // Stones_OneShots, play mode 6) are not loops: left out (Q331).
+              const bool one_shots = t && (t->spawned() || (t->play_mode == 6 && sd.entries.size() > 1));
+              for (const auto& en : sd.entries) {
+                if (one_shots) break;
+                if (en.entry_type != 0 || en.wavebank_name.empty()) continue;
+                el.slot[size_t(n)] =
+                    int16_t(slot_of(cars::mods::resolve(proj.dir / (en.wavebank_name + ".fsb")), en.subsound_index));
+                break;
+              }
+            }
+            ++n;
+          }
+        }
+        el.count = n;
+        el.ok = n > 0;
+        if (!ev->layers.empty()) {
+          const auto& envs = ev->layers.front().envelopes;
+          for (size_t e = 0; e < envs.size(); ++e)
+            if (envs[e].parent_index < 0 && envs[e].dsp_param_index == 0 && lower_str(envs[e].dsp_name) == "fmod highpass")
+              el.hp_env = int(e);
+        }
+      };
+      for (auto& g : tyre_events_)
+        for (auto& w : g)
+          for (auto& e : w) e = EventLoop{};
+      wind_event_ = EventLoop{};
+      FevProject tires;
+      if (load_fev(cars::mods::resolve(audio_dir / "cars/Tires/Tires.fev"), tires, nullptr)) {
+        static constexpr const char* kGroups[kTyreGroups] = {"OnRoad", "OffRoad", "Grass", "Brick", "Trackway"};
+        static constexpr const char* kWheels[4] = {"LF", "RF", "LR", "RR"};
+        static constexpr const char* kKinds[2] = {"Roll", "Skid"};
+        for (int g = 0; g < kTyreGroups; ++g)
+          for (int w = 0; w < 4; ++w)
+            for (int k = 0; k < 2; ++k) {
+              const std::string path =
+                  std::string("Tires/Tires/LOD1/") + kGroups[g] + "/" + kKinds[k] + "_" + kWheels[w];
+              bind(tyre_events_[size_t(g)][size_t(w)][size_t(k)], tires, tires.find_event(path));
+            }
+      }
+      FevProject wind;
+      if (load_fev(cars::mods::resolve(audio_dir / "cars/Wind/Wind.fev"), wind, nullptr))
+        bind(wind_event_, wind, wind.find_event("Wind/Wind/Wind"));
     }
 
     add_first_fev_or_fsb("cars/Reflections/Reflections.fev", SfxSoundId::kRoadsideReflection);
@@ -2121,10 +2232,10 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
         if (ok && !cache_file.empty()) write_cached_sfx(cache_file, *pcm);
       }
       // A UI catalog event plays its own sample or nothing.
-      if (!ok && job.ui < 0) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
+      if (!ok && job.ui < 0 && job.ev < 0) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
       if (ok && !pcm->data.empty()) {
         PcmSample* raw = pcm.release();
-        if (!loaded_q_.push({job.id, raw, job.ui})) delete raw;
+        if (!loaded_q_.push({job.id, raw, job.ui, job.ev})) delete raw;
       }
     }
     std::filesystem::remove_all(temp_dir, ec);
@@ -2473,7 +2584,95 @@ void SfxEngine::trigger_ui(UiCue cue) {
 void SfxEngine::mix_loop(LoopVoice& v, SfxSoundId id, float target_gain, float target_pitch, float target_l,
                          float target_r, float* bus, int frames) {
   const size_t idx = size_t(id);
-  const PcmSample* pcm = idx < samples_.size() ? samples_[idx] : nullptr;
+  mix_loop_pcm(v, idx < samples_.size() ? samples_[idx] : nullptr, target_gain, target_pitch, target_l, target_r, bus,
+               frames);
+}
+
+namespace {
+// The game scales its tyre events by tunables and per-car values it reads at
+// run time (sub_82BC4828's f31); this one level stands for their product (Q331).
+constexpr float kTyreEventLevel = 0.83f;  // -1.6 dB: wheelspin on tarmac -0.8, on dirt -2.4
+}  // namespace
+
+float SfxEngine::mix_event(EventLoop& el, const std::array<float, int(EvParam::kCount)>& in, float gain, float pitch,
+                           float left, float right, float* bus, int frames) {
+  if (!el.ok) return 0.0f;
+  std::array<float, 16> raw{};
+  const size_t np = std::min(el.ev.params.size(), raw.size());
+  for (size_t i = 0; i < np; ++i) raw[i] = el.ev.params[i].min_val;
+  for (int p = 0; p < int(EvParam::kCount); ++p) {
+    const int pi = el.param[size_t(p)];
+    if (pi >= 0 && size_t(pi) < np) raw[size_t(pi)] = in[size_t(p)];
+  }
+  std::array<FevInstanceLevel, kMaxEventVoices> lv{};
+  const int n = gain > 0.0f ? evaluate_fev_event(el.ev, raw.data(), np, lv.data(), kMaxEventVoices) : 0;
+  const float ev_pitch = std::exp2(el.ev.pitch * kFevPitchOctaves) * pitch;
+  std::array<float, kMaxEventVoices> tg{}, tp{};
+  float total = 0.0f;
+  bool audible = false;
+  for (int i = 0; i < el.count; ++i) {
+    const float g = i < n ? lv[size_t(i)].gain * el.tpl_gain[size_t(i)] * gain : 0.0f;
+    float p = ev_pitch * el.tpl_pitch[size_t(i)];
+    if (i < n && lv[size_t(i)].has_pitch_env) p *= std::exp2((lv[size_t(i)].pitch_env - 0.5f) * kFevPitchEnvOctaves);
+    if (i >= n) p = el.voices[size_t(i)].pitch;
+    tg[size_t(i)] = g;
+    tp[size_t(i)] = p;
+    total += g;
+    audible = audible || g > 1e-4f || el.voices[size_t(i)].gain > 1e-4f;
+  }
+  auto mix_voices = [&](float* out, int count) {
+    for (int i = 0; i < el.count; ++i) {
+      const int s = el.slot[size_t(i)];
+      mix_loop_pcm(el.voices[size_t(i)], s >= 0 ? event_samples_[size_t(s)] : nullptr, tg[size_t(i)], tp[size_t(i)],
+                   left, right, out, count);
+    }
+  };
+  if (el.hp_env < 0 || !bus) {
+    mix_voices(bus, frames);
+    return total;
+  }
+  if (!audible) {
+    el.hp_z.fill(0.0f);
+    return total;
+  }
+  // The event's "FMOD Highpass" cutoff: envelope y on a log axis from 10 Hz to
+  // 22 kHz (Q331), a 2-pole RBJ high-pass (FMOD's default resonance, Q 1).
+  const FevEnvelope& he = el.ev.layers.front().envelopes[size_t(el.hp_env)];
+  const size_t hpi = he.param_index;
+  const float hx = hpi < np ? fev_normalize(el.ev.params[hpi], raw[hpi]) : 0.0f;
+  const float fc = std::clamp(10.0f * std::pow(2200.0f, std::clamp(he.eval(hx), 0.0f, 1.0f)), 10.0f,
+                              0.45f * float(rate_));
+  const float w0 = 2.0f * 3.14159265f * fc / float(rate_);
+  const float alpha = std::sin(w0) / 2.0f;  // Q = 1
+  const float cw = std::cos(w0);
+  const float a0 = 1.0f + alpha;
+  const float b0 = (1.0f + cw) / 2.0f / a0, b1 = -(1.0f + cw) / a0, b2 = b0;
+  const float a1 = -2.0f * cw / a0, a2 = (1.0f - alpha) / a0;
+  const int chunk_max = int(event_scratch_.size() / 2);
+  for (int done = 0; done < frames;) {
+    const int c = std::min(chunk_max, frames - done);
+    float* tmp = event_scratch_.data();
+    std::fill(tmp, tmp + 2 * c, 0.0f);
+    mix_voices(tmp, c);
+    for (int ch = 0; ch < 2; ++ch) {
+      float* z = el.hp_z.data() + 4 * ch;  // x1 x2 y1 y2
+      for (int k = 0; k < c; ++k) {
+        const float x = tmp[2 * k + ch];
+        const float y = b0 * x + b1 * z[0] + b2 * z[1] - a1 * z[2] - a2 * z[3];
+        z[1] = z[0];
+        z[0] = x;
+        z[3] = z[2];
+        z[2] = std::isfinite(y) ? y : 0.0f;
+        bus[2 * (done + k) + ch] += z[2];
+      }
+    }
+    done += c;
+  }
+  return total;
+}
+
+void SfxEngine::mix_loop_pcm(LoopVoice& v, const PcmSample* pcm, float target_gain, float target_pitch,
+                             float target_l, float target_r, float* bus, int frames) {
   const float tg = safe_clamp_f(target_gain, 0.0f, 4.0f, 0.0f);
   const float tl = safe_clamp_f(target_l, 0.0f, 2.0f, 0.707f);
   const float tr = safe_clamp_f(target_r, 0.0f, 2.0f, 0.707f);
@@ -2628,8 +2827,17 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     }
   };
 
-  // 1. Wind (Bus::kWind)
-  if (float* wind_bus = buses[int(Bus::kWind)]) {
+  // 1. Wind (Bus::kWind): Wind.fev's own curves on Speed (mph) and TopSpeedPercent.
+  float* const wind_bus_ptr = buses[int(Bus::kWind)];
+  if (wind_event_.ok) {
+    std::array<float, int(EvParam::kCount)> in{};
+    in[int(EvParam::kSpeed)] = std::max(0.0f, st.speed_mph);
+    in[int(EvParam::kTopSpeedPercent)] =
+        st.top_speed_mph > 1.0f ? std::clamp(st.speed_mph / st.top_speed_mph, 0.0f, 1.0f) : 0.0f;
+    // BoostCarWindAudio and MusicActive stay at 0: their setters are not decoded (Q333).
+    last_wind_level_ = wind_bus_ptr ? mix_event(wind_event_, in, view_wind, 1.0f, 0.707f, 0.707f, wind_bus_ptr, frames)
+                                    : 0.0f;
+  } else if (float* wind_bus = wind_bus_ptr) {
     const float sp = std::clamp((st.speed_mph - 12.0f) / 180.0f, 0.0f, 1.0f);
     const float music_duck = st.music_active ? 0.75f : 1.0f;
     const float gain = 0.45f * std::pow(sp, 1.35f) * music_duck * view_wind;
@@ -2642,6 +2850,9 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
     float* tyre_bus = buses[int(Bus::kTyres)];
     static constexpr float kWheelPanL[4] = {0.84f, 0.54f, 0.80f, 0.58f};
     static constexpr float kWheelPanR[4] = {0.54f, 0.84f, 0.58f, 0.80f};
+    bool tyre_events_loaded = false;
+    for (const auto& g : tyre_events_) tyre_events_loaded = tyre_events_loaded || g[0][0].ok;
+    float tyre_level = 0.0f;
     for (int w = 0; w < 4; ++w) {
       const auto& wh = st.wheels[size_t(w)];
       const float pl = kWheelPanL[w];
@@ -2706,7 +2917,23 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                        sg, pl, pr);
       }
 
-      if (tyre_bus) {
+      if (tyre_bus && tyre_events_loaded && !st.rally_mode) {
+        // Tires.fev LOD1: the wheel's Roll and Skid events in its surface's group,
+        // fed what sub_82BC35A0 sets (Q331); the other groups' voices fade out.
+        static constexpr int16_t kGroupIndex[kTyreGroups] = {0, 11, 15, 2, 0};
+        const int grp = wh.surface_group < kTyreGroups ? int(wh.surface_group) : 1;  // Mud plays OffRoad
+        std::array<float, int(EvParam::kCount)> in{};
+        in[int(EvParam::kSlipAngle)] = std::fabs(wh.slip_angle);
+        in[int(EvParam::kSlipRatio)] = wh.slip_ratio;
+        in[int(EvParam::kSurfaceIndex)] = float(cur_sidx >= 0 ? cur_sidx : kGroupIndex[grp]);
+        in[int(EvParam::kTireRpm)] = std::fabs(wh.wheel_rpm);
+        in[int(EvParam::kLoad)] = std::max(0.0f, wh.load);
+        in[int(EvParam::kCombinedSlip)] = wh.slip_combined;
+        for (int g = 0; g < kTyreGroups; ++g)
+          for (int k = 0; k < 2; ++k)
+            tyre_level += mix_event(tyre_events_[size_t(g)][size_t(w)][size_t(k)], in,
+                                    g == grp ? view_tyre * kTyreEventLevel : 0.0f, 1.0f, pl, pr, tyre_bus, frames);
+      } else if (tyre_bus) {
         // Distinct SurfaceIndex character: preserve individual FH1 surface_index timbre even
         // when two surfaces share an LOD1 group (e.g. SmoothTarmac vs RoughAsphalt vs Leaves).
         float sidx_gain = 1.0f;
@@ -2756,6 +2983,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                  frames);
       }
     }
+    last_tyre_level_ = tyre_level;
   }
 
   // 3. Dedicated subsystem buses (Transmission, Turbo, Supercharger, EngineDamage, Backfire) + FocusCar EngineLFE / EV / ExhNoise

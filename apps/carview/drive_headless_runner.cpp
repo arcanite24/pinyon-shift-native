@@ -642,6 +642,14 @@ void DriveSession::run_headless_drive() {
           vst.cockpit_view = view == audio::View::kCockpit;
           vst.in_race = app.race != nullptr;
           app.audio_host.update_vehicle(vst, app.race != nullptr, false, false, 0);
+          // Every 0.1 s, what the tyre events are fed (binning renders by tyre state).
+          if (std::floor(vehicle.time() * 10.0) > std::floor((vehicle.time() - drive::Vehicle::kStep) * 10.0)) {
+            std::printf("tyres t %.2f:", vehicle.time());
+            for (const auto& w : vst.wheels)
+              std::printf(" %+.2f/%.2f/%u/%d/%.0f/%.2f", w.slip_ratio, w.slip_angle, unsigned(w.surface_group),
+                          int(w.surface_index), w.wheel_rpm, w.load);
+            std::printf("\n");
+          }
           const drive::Vec3 vpos = vehicle.position();
           const drive::Vec3 vfwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
           app.audio_host.update_world_acoustics(float(vpos.x), float(vpos.y), float(vpos.z),
