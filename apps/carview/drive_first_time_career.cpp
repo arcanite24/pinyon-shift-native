@@ -136,6 +136,16 @@ void DriveSession::feed_first_time_career() {
   auto& c = app.campaign;
   if (!c.ftc_active() && !c.tutor().active()) return;
   if (app.have_career_catalog) c.set_career_catalog(&app.career_catalog);
+  // The sign-up ticket's time up: the career launches the event.
+  if (ftc_ticket_at >= 0.0) {
+    const double shown = vehicle.time() - ftc_ticket_at;
+    if (!ftc_ticket_signed && shown >= kFtcTicketSeconds) {
+      c.ftc_sign_up();
+      ftc_ticket_signed = true;
+    } else if (ftc_ticket_signed && shown >= kFtcTicketSeconds + 10.0) {
+      ftc_ticket_at = -1.0;  // the launch did not happen: drop the ticket
+    }
+  }
   CampaignDirector::FtcFrameInput in;
   const drive::Vec3 vp = vehicle.position();
   in.player_pos = {vp.x, vp.y, vp.z};

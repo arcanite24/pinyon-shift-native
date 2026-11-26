@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 
+#include "frontend_screens.h"
 #include "game_hud.h"
 #include "pause_screen.h"
 #include "ui4_chrome.h"
@@ -983,12 +984,28 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   return true;
 }
 
+void draw_please_wait_corner(ui::List& l, float w, float h, double t) {
+  // The spinner at (80, 664) and PLEASE WAIT from x 117 at 720p (r7 n0).
+  const float s = h / 720.0f;
+  const SceneFrame pf{0.5f * w - 640.0f * s, 0.5f * h - 360.0f * s, s};
+  std::array<float, 4> uv{};
+  if (ui_texture("COMMON/LOADSPINNER", uv))
+    l.image_rotated(pf.x(80.0f), pf.y(664.0f), 14.0f * s, 14.0f * s,
+                    float(std::fmod(t * loading_layout::kSpinnerRate, 6.2831853)), uv, ui4::kWhite);
+  l.text(pf.x(117.0f), pf.y(664.0f) - 9.0f * s, text_of(race_text::kPleaseWait),
+         ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite, ui::Align::kLeft));
+}
+
 bool draw_event_summary(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h) {
   if (es.screen == Screen::kCarSelect)
     return (!es.car_list.tiles.empty() && draw_car_list(l, st, es.car_list, w, h)) || draw_car_select(l, es, w, h);
   if (!draw_event_ticket(l, st, es, w, h, true)) return false;
   if (es.screen == Screen::kEntryFade) {
     draw_fade(l, es.fade, w, h);
+    return true;
+  }
+  if (es.please_wait) {
+    draw_please_wait_corner(l, w, h, es.t);
     return true;
   }
   ui4::button_bar(l,

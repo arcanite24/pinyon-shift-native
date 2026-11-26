@@ -1163,9 +1163,18 @@ bool DriveSession::activate_world_trigger() {
           if (app.race) return false;
           // The first-time career's events (the heats final, the showcase):
           // X in their sign-up sphere signs up (SIGN ME UP!).
-          if (app.campaign.ftc_sign_up_event() > 0) {
-            app.campaign.ftc_sign_up();
-            app.audio_host.trigger_ui(audio::UiCue::kAccept);
+          // Its ticket shows with PLEASE WAIT, and the race launches under
+          // it (feed_first_time_career).
+          if (const int64_t fe = app.campaign.ftc_sign_up_event(); fe > 0) {
+            if (ftc_ticket_at < 0.0) {
+              ftc_ticket_hud = EventSummaryHud{};
+              for (const auto& ev : app.career_catalog.events)
+                if (ev.event_id == fe) ftc_ticket_hud = event_ticket(ev, nullptr);
+              ftc_ticket_hud.please_wait = true;
+              ftc_ticket_at = vehicle.time();
+              ftc_ticket_signed = false;
+              app.audio_host.trigger_ui(audio::UiCue::kAccept);
+            }
             return true;
           }
           // ColoradoDirt free roam: drive into Rally Championship world trigger markers

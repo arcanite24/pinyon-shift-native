@@ -153,7 +153,14 @@ struct EventSummaryHud {
   int car_selected = 0;
   CarListHud car_list;  // car select on 108_C_BUY_CARSELECT
   double fade = 0;  // the entry fade's black (0..1)
+  // The first-time career's sign-up: the ticket with PLEASE WAIT in place of
+  // the help bar while the race loads (first30e r9 h00078-h00090).
+  bool please_wait = false;
 };
+
+// The spinner and PLEASE WAIT at the bottom left (the career's map after A
+// on the heats, its sign-up ticket; first30e r7 n0, r9 h00081).
+void draw_please_wait_corner(ui::List& l, float w, float h, double t);
 
 // The ticket texture of an event (EventTickets/<style folder>/<ticket>).
 std::string event_ticket_texture(int style, std::string_view ticket);

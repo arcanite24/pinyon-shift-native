@@ -819,6 +819,13 @@ struct DriveSession {
   // title slow; interim 3 s (Q275). -1: not counting.
   static constexpr double kMapHeatsCloseSeconds = 3.0;
   double map_heats_close_left = -1.0;
+  // The career's sign-up: X shows the event's ticket with PLEASE WAIT, and
+  // the race launches under it (r9: the ticket about 12 s in hidden mode,
+  // then the loading tips; interim 3 s). -1: no ticket.
+  static constexpr double kFtcTicketSeconds = 3.0;
+  double ftc_ticket_at = -1.0;
+  bool ftc_ticket_signed = false;
+  EventSummaryHud ftc_ticket_hud;
   // The scene-driven pause map (drive_map_screen.cpp).
   void map_screen_open();
   void map_screen_step(double dt, float sx, float sy, float zoom_axis);

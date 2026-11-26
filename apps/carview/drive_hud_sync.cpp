@@ -380,6 +380,10 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         }
         if (world_marker.visible && !app.race) d.world_marker = &world_marker;
   if (event_summary_open() && !app.race) d.event_summary = &event_summary_hud;
+  if (ftc_ticket_at >= 0.0 && !app.race) {
+    ftc_ticket_hud.t = vehicle.time() - ftc_ticket_at;
+    d.event_summary = &ftc_ticket_hud;
+  }
         carview::GpsHud gps_hud;
         static double s_gps_uturn_since = -1.0;
         static struct {

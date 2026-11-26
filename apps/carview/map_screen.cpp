@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-#include "frontend_screens.h"
 #include "game_hud.h"
 #include "pause_screen.h"
 #include "race_screens.h"
@@ -495,14 +494,7 @@ bool draw_map_screen(ui::List& l, const DriveHud& st, const MapScreenHud& ms, fl
     else
       ui4::button_bar(l, {{"A", text_of(map_text::kOk)}}, w, h);
   } else if (!overlay && ms.please_wait) {
-    // The spinner at (80, 664) and PLEASE WAIT from x 117 at 720p (r7 n0).
-    const float s = h / 720.0f;
-    const SceneFrame pf{0.5f * w - 640.0f * s, 0.5f * h - 360.0f * s, s};
-    std::array<float, 4> uv{};
-    if (ui_texture("COMMON/LOADSPINNER", uv))
-      l.image_rotated(pf.x(80.0f), pf.y(664.0f), 14.0f * s, 14.0f * s,
-                      float(std::fmod(ms.age * loading_layout::kSpinnerRate, 6.2831853)), uv, ui4::kWhite);
-    l.text(pf.x(117.0f), pf.y(664.0f) - 9.0f * s, text_of(race_text::kPleaseWait), ui4::style(ui::Font::kE, 16.0f * s, ui4::kWhite, ui::Align::kLeft));
+    draw_please_wait_corner(l, w, h, ms.age);
     ui4::draw_info_tip(l, ms.tip, w, h);
   } else if (!overlay) {
     ui4::button_bar(l, prompts_of(ms.prompts, keep), w, h);
