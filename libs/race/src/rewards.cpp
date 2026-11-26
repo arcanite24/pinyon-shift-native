@@ -187,6 +187,26 @@ int64_t ProgressionTables::driver_level_gift_car(int level) const {
   return it->second.front();
 }
 
+int ProgressionTables::max_gift_cars(int level) const {
+  for (const auto& row : driver_levels)
+    if (row.level == level) return row.max_gift_cars;
+  return 0;
+}
+
+std::vector<int64_t> ProgressionTables::driver_level_gift_choices(int level,
+                                                                  const std::function<bool(int64_t)>& eligible) const {
+  std::vector<int64_t> out;
+  const auto it = driver_level_cars.find(level);
+  if (it == driver_level_cars.end()) return out;
+  const int cap = max_gift_cars(level);
+  for (const int64_t car : it->second) {
+    if (car <= 0 || (eligible && !eligible(car))) continue;
+    if (cap > 0 && int(out.size()) >= cap) break;
+    out.push_back(car);
+  }
+  return out;
+}
+
 int ProgressionTables::affinity_level_for_xp(int xp) const {
   int lvl = 0;
   for (const auto& row : affinity_levels)
@@ -247,7 +267,8 @@ bool load_progression_tables(const std::filesystem::path& root, const std::files
 }
 
 ProgressionUpdate apply_progression_xp(CareerRecord& record, int driver_xp_delta, int64_t make_id,
-                                       int affinity_xp_delta, const ProgressionTables& tables) {
+                                       int affinity_xp_delta, const ProgressionTables& tables,
+                                       const std::function<bool(int64_t)>& eligible) {
   ProgressionUpdate u;
   u.old_driver_level = std::max(1, tables.driver_levels.empty() ? record.driver_level
                                                                 : tables.driver_level_for_xp(record.driver_xp));
@@ -257,8 +278,9 @@ ProgressionUpdate apply_progression_xp(CareerRecord& record, int driver_xp_delta
                                                              : tables.driver_level_for_xp(record.driver_xp));
   record.driver_level = u.new_driver_level;
   for (int lv = u.old_driver_level + 1; lv <= u.new_driver_level; ++lv) {
-    const int64_t car = tables.driver_level_gift_car(lv);
-    if (car > 0) u.gift_cars.push_back(car);
+    auto choices = tables.driver_level_gift_choices(lv, eligible);
+    if (choices.size() == 1) u.gift_cars.push_back(choices.front());
+    else if (choices.size() > 1) u.gift_picks.push_back(std::move(choices));
   }
   if (make_id > 0) {
     int& cur_xp = record.make_affinity_xp[make_id];

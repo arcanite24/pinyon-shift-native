@@ -235,6 +235,7 @@ std::string save_to_text(const DriveSave& s) {
   if (s.club_tutorial > 0) out += "club_tutorial " + std::to_string(s.club_tutorial) + "\n";
   if (s.rally_flow > 0) out += "rally_flow " + std::to_string(s.rally_flow) + "\n";
   if (s.rally_end_seen) out += "rally_end_seen 1\n";
+  if (s.rally_first_win_vo) out += "rally_first_win_vo 1\n";
   if (!s.car_club_name.empty()) out += "car_club_name " + s.car_club_name + "\n";
   if (!s.car_club_tag.empty()) out += "car_club_tag " + s.car_club_tag + "\n";
   if (!s.car_club_shared.empty()) {
@@ -543,6 +544,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
     } else if (key == "rally_end_seen") {
       int v = 0;
       if (l >> v) out.rally_end_seen = v != 0;
+    } else if (key == "rally_first_win_vo") {
+      int v = 0;
+      if (l >> v) out.rally_first_win_vo = v != 0;
     } else if (key == "car_club_name") {
       std::string rest;
       std::getline(l, rest);

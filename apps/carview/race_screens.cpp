@@ -196,9 +196,8 @@ namespace {
 // the place 20 px lower and turned ~0.9 degrees less.
 constexpr float kPlaceDx = 990.0f, kPlaceDy = 20.0f, kPlaceTurn = -0.016f, kFinishedDy = 45.0f;
 
-bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacity,
-                   std::string_view scene = kFinishedScene) {
-  SceneScreen sc(scene);
+bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacity, bool rally = false) {
+  SceneScreen sc(kFinishedScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
   sc.bindings().fit_text = false;
@@ -221,8 +220,11 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   // A head-to-head's win (race_encounters.xml PlayWinCutScene): no restart,
   // results or replay in free roam.
   // interim (SPEC_QUESTIONS Q171): its help bar is not captured.
-  // A Rally final's banner: A CONTINUE, X RACE RESULTS (Q212).
-  if (opacity >= 1.0f && scene == kRallyFinishedScene) {
+  // A Rally stage's banner (CPostRaceFinishPosition): CONTINUE,
+  // RESTART only once the first Rally is completed (inferred), RACE RESULTS
+  // offline, VIEW REPLAY with a replay. The engine shows A CONTINUE and
+  // X RACE RESULTS (interim, Q251).
+  if (opacity >= 1.0f && rally) {
     ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}, {"X", text_of(race_text::kRaceResults)}}, w, h);
   } else if (opacity >= 1.0f && r.head_to_head) {
     ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
@@ -691,28 +693,28 @@ void draw_black_out(ui::List& l, const RaceHud& r, float w, float h) {
   l.rect(0, 0, w, h, ui::rgba(0, 0, 0, uint8_t(std::lround(255.0f * a))));
 }
 
-// --- H_HORIZON_RALLY_CHAMPION ------------------------------------------------
+// --- H_HORIZON_CHAMPION ------------------------------------------------------
 
 // The champion's screen over Rally_Champion_Cutscene (game_rally_race_flow's
-// RallyChampionSequence). The scene rests on screen (no Tape2, no intro
-// offset). interim (SPEC_QUESTIONS Q212): its texts are guesses, the title
-// CareerEventUI's HORIZON RALLY CHAMPION 2012 and the place on the position
-// tape; the cutscene is not played (black behind it).
-bool draw_rally_champion_scene(ui::List& l, int place, float w, float h) {
-  SceneScreen sc(kRallyChampionScene);
+// RallyChampionSequence, CShowUIScreen_PostRaceHorizonChampion with
+// doneOnCutsceneFinish). CHorizonChampion (82677D18) sets TEXT_TITLE to
+// CareerEventUI IDS_HorizonRallyChampion in Rally mode (IDS_HorizonChampion
+// otherwise) and TEXT_POSITION from the profile (inferred: the player's
+// name); it adds no help buttons. The engine keeps no gamertag, so the
+// position tape is hidden (interim, Q251). The scene rests on screen (no
+// Tape2, no intro offset); its 1ST_IN / 1ST_OUT slides are not run.
+bool draw_rally_champion_scene(ui::List& l, float w, float h) {
+  SceneScreen sc(kChampionScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
   sc.bindings().fit_text = false;
-  for (const char* n : {"ButtonBar", "Timer", "OnlineText", "OfflineText"}) sc.hide(sc.node(n));
-  const int title = sc.node("TEXT_TITLE"), pos = sc.node("TEXT_POSITION");
+  for (const char* n : {"ButtonBar", "Timer", "OnlineText", "OfflineText", "TEXT_POSITION", "Tape"})
+    sc.hide(sc.node(n));
+  const int title = sc.node("TEXT_TITLE");
   const std::string t = upper(text_of(race_text::kRallyChampion));
   sc.text(title, t);
   if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, t) + kTitleTapePad, kTapeBlack);
-  sc.text(pos, upper(format1(text_of(race_text::kPlace), ordinal(std::max(1, place)))));
-  if (pos >= 0) sc.at(pos).alpha = 1.0f;
-  fit_tapes(sc, sc.node("Tape"), 0.0f, kTapePink);
   sc.draw(l, SceneScreen::frame(w, h));
-  ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
   return true;
 }
 
@@ -729,7 +731,26 @@ std::string rally_points_to_final(const RallyPostHud& r) {
 bool draw_rally_finished(ui::List& l, int place, float w, float h) {
   RaceHud r;
   r.place = place;
-  return draw_finished(l, r, w, h, 1.0f, kRallyFinishedScene);
+  return draw_finished(l, r, w, h, 1.0f, true);
+}
+
+bool draw_rally_earnings(ui::List& l, const RallyEarningsHud& e, float w, float h) {
+  RaceHud r;
+  r.place = e.place;
+  r.base_credits = e.base;
+  r.difficulty_pct = e.difficulty_pct;
+  r.credits = e.total;
+  r.balance = e.balance;
+  r.screen_t = e.t;
+  if (!draw_cash(l, r, w, h)) return false;
+  if (e.t >= race_flow::timing::kBannerOut) ui4::button_bar(l, {{"A", text_of(race_text::kContinue)}}, w, h);
+  return true;
+}
+
+bool draw_rally_prize_car(ui::List& l, const std::string& car_name, float w, float h) {
+  RaceHud r;
+  r.won_car_name = car_name;
+  return draw_won_car(l, r, w, h);
 }
 
 bool draw_rally_points(ui::List& l, const RallyPostHud& p, float w, float h) {
@@ -744,9 +765,9 @@ bool draw_rally_points(ui::List& l, const RallyPostHud& p, float w, float h) {
   return draw_points(l, r, w, h, kRallyPointsScene, to_final.empty() ? nullptr : &to_final);
 }
 
-bool draw_rally_champion(ui::List& l, int place, float w, float h) {
-  return draw_rally_champion_scene(l, place, w, h);
-}
+bool draw_rally_champion(ui::List& l, float w, float h) { return draw_rally_champion_scene(l, w, h); }
+
+std::vector<StringRef> rally_champion_text_refs() { return {race_text::kRallyChampion}; }
 
 const std::vector<std::pair<std::string_view, std::vector<const char*>>>& race_screen_nodes() {
   static const std::vector<std::pair<std::string_view, std::vector<const char*>>> k = {
@@ -775,14 +796,11 @@ const std::vector<std::pair<std::string_view, std::vector<const char*>>>& race_s
         "LargeTape", "CarName", "LevelBar", "TEXT_POINTS_TO_NEXT", "FillBar", "FillBar2", "WristbandCurrent/Rectangle",
         "NextReward/Wristband", "HeadlineEvent", "GlowMover"}},
       {kWonCarScene, {"ButtonBar", "ScreenTitle/TEXT_TITLE", "TEXT_POSITION", "Tape2", "CarName", "ScreenTitle"}},
-      {kRallyFinishedScene,
-       {"ButtonBar", "Timer", "OnlineText", "OfflineText", "Tape", "Tape2", "ScreenTitle", "TEXT_TITLE",
-        "TEXT_POSITION"}},
       {kRallyPointsScene,
        {"ButtonBar", "RotationHelper", "RotationHelper/Title", "MainTape", "MainTape/TEXT_TITLE", "TEXT_MAIN",
         "LargeTape", "CarName", "LevelBar", "TEXT_POINTS_TO_NEXT", "FillBar", "FillBar2", "HeadlineEvent",
         "GlowMover"}},
-      {kRallyChampionScene,
+      {kChampionScene,
        {"ButtonBar", "Timer", "OnlineText", "OfflineText", "Tape", "ScreenTitle", "TEXT_TITLE", "TEXT_POSITION"}},
       {kPopupScene, {"SpinnerBox", "Background", "Title", "Message"}},
       {kEncounterScene,

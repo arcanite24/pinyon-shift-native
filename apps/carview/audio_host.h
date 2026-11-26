@@ -189,7 +189,7 @@ class AudioHost {
   // name (OpeningCutscene, FreeRoam, VOPlayingInstant...): it replaces the
   // active snapshot of its group. Without the matrix it does nothing.
   void activate_mix_snapshot(std::string_view name);
-  void trigger_vo(std::string_view trigger_id, bool interrupt = false);
+  void trigger_vo(std::string_view trigger_id, bool interrupt = false, int variant = -1);
   void skip_vo();
   void set_dialog_ducking(bool active);
   void trigger_codriver(std::string_view cue_path, bool supersede = false);

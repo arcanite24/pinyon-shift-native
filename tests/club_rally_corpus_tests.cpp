@@ -41,6 +41,7 @@
 #include "hud_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
+#include "race/rally_dialogue.h"
 #include "rally_hub.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -160,8 +161,15 @@ int main() {
     std::string note;
     check(vo.load_rally_vo(state_root, "EN", &note), "rally VO loads: " + note);
     for (const char* id : {"PostraceHeatsQualification", "ToTheAutoshow", "ChampionshipStructure", "CoDriverIntro",
-                           "HorizonRallyChampion"})
+                           "HorizonRallyChampion", "ChampionAgain", "PreRace", "PreRaceLastStage",
+                           "FinishedStageFirst", "FinishedStageLast", "PlayerWonFirstRally"})
       check(vo.trigger(id, false), std::string("rally VO plays ") + id);
+    // The lines a behaviour forces a row of (race/rally_dialogue.h).
+    for (const auto& line : {race::rally_pep_talk(3, true, false), race::rally_pep_talk(4, true, false),
+                             race::rally_stage_finish_line(1, 1, 5, true), race::rally_post_race_line(true, true, true)})
+      check(vo.script().find(line.trigger) && int(vo.script().find(line.trigger)->size()) > line.variant &&
+                vo.trigger(line.trigger, false, line.variant),
+            "rally VO plays " + line.trigger + " row " + std::to_string(line.variant));
   }
   fh1::StringTables tables;
   check(cars::load_string_tables(inst, tables, &why, "EN"), "EN string tables load");
@@ -205,12 +213,22 @@ int main() {
     carview::RallyChampResultsState rs;
     using PS = carview::RallyPostStep;
     check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kPoints}), "final steps: banner, points");
+    rs.total_credits = 30000;
+    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kEarnings, PS::kPoints}),
+          "final steps: banner, earnings, points");
     rs.champion_unlocked = true;
-    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kPoints, PS::kChampion}),
-          "final steps: banner, points, champion");
+    check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kBanner, PS::kEarnings, PS::kPoints, PS::kChampion}),
+          "final steps: banner, earnings, points, champion");
+    rs.prize_car_id = 1234;
+    check((carview::rally_post_steps(rs) ==
+           std::vector<PS>{PS::kBanner, PS::kEarnings, PS::kPoints, PS::kPrizeCar, PS::kChampion}),
+          "final steps with a pending prize car");
+    rs.prize_car_id = 0;
     rs.is_heats = true;
     check((carview::rally_post_steps(rs) == std::vector<PS>{PS::kTable}), "the heats keep the results page");
   }
+  // The champion's screen: CareerEventUI's HORIZON RALLY CHAMPION 2012.
+  for (const auto& r : carview::rally_champion_text_refs()) check_ref(r, "rally champion text " + std::string(r.fallback));
   for (const auto& r : {carview::rally_text::kQuitTitle, carview::rally_text::kQuitMsg}) {
     check_ref(r, "rally quit text");
     check(carview::text_of(r) == r.fallback, "rally quit text reads " + std::string(r.fallback));
@@ -516,7 +534,7 @@ int main() {
       first.help_hidden = true;
       hub_shot("rally_hub_first_visit_wp5", first, carview::RallyEntryPopup::kNone);
       // The Rally final's screens (game_rally_race_flow): the banner, the
-      // Rally points and the champion.
+      // earnings, the Rally points and the champion.
       auto post_shot = [&](const std::string& name, auto&& draw) {
         carview::ui::List l;
         check(draw(l), "draws " + name);
@@ -536,7 +554,15 @@ int main() {
       }
       post_shot("rally_finished_wp5", [&](carview::ui::List& l) { return carview::draw_rally_finished(l, 2, float(W), float(H)); });
       post_shot("rally_points_wp5", [&](carview::ui::List& l) { return carview::draw_rally_points(l, ph, float(W), float(H)); });
-      post_shot("rally_champion_wp5", [&](carview::ui::List& l) { return carview::draw_rally_champion(l, 1, float(W), float(H)); });
+      carview::RallyEarningsHud eh;
+      eh.place = 1;
+      eh.base = 50000;
+      eh.total = 57500;
+      eh.balance = 1257500;
+      eh.difficulty_pct = 15;
+      eh.t = 6.0;
+      post_shot("rally_earnings_wp5b", [&](carview::ui::List& l) { return carview::draw_rally_earnings(l, eh, float(W), float(H)); });
+      post_shot("rally_champion_wp5", [&](carview::ui::List& l) { return carview::draw_rally_champion(l, float(W), float(H)); });
     }
   }
 

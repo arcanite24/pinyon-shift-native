@@ -30,11 +30,13 @@ inline constexpr std::string_view kPointsScene = "H_POST_RACE_CAREER_POINTS";
 inline constexpr std::string_view kWonCarScene = "H_POST_RACE_WON_CAR";
 inline constexpr std::string_view kPopupScene = "H_MESSAGE_POPUP";
 inline constexpr std::string_view kEncounterScene = "H_RACE_ENCOUNTER";
-// game_rally_race_flow's final screens (the Rally's own copies of the
-// banner and the points, and the champion's).
-inline constexpr std::string_view kRallyFinishedScene = "H_POST_RACE_RALLY_FINISHED";
+// game_rally_race_flow's final screens. The title update's executable
+// registers H_POST_RACE_RALLY_POINTS and H_HORIZON_CHAMPION, and shows the
+// Rally's banner on the base H_POST_RACE_FINISHED; its
+// h_post_race_rally_finished and h_horizon_rally_champion files are named
+// by no code (Q212), so they are not used.
 inline constexpr std::string_view kRallyPointsScene = "H_POST_RACE_RALLY_POINTS";
-inline constexpr std::string_view kRallyChampionScene = "H_HORIZON_RALLY_CHAMPION";
+inline constexpr std::string_view kChampionScene = "H_HORIZON_CHAMPION";
 
 // The strings the race screens bind; every one is checked against the
 // tables by the corpus test (scene_screen_tests).
@@ -176,8 +178,9 @@ bool draw_message_popup(ui::List& l, const std::string& title, const std::string
 
 
 // The Rally final's screens (game_rally_race_flow, after the last stage):
-// the banner on H_POST_RACE_RALLY_FINISHED, the Rally XP on
-// H_POST_RACE_RALLY_POINTS and, the first time, H_HORIZON_RALLY_CHAMPION.
+// the banner on H_POST_RACE_FINISHED, the earnings on
+// H_POST_RACE_CREDITS_BREAKDOWN, the Rally XP on H_POST_RACE_RALLY_POINTS, a
+// prize car on H_POST_RACE_WON_CAR and, the first time, H_HORIZON_CHAMPION.
 struct RallyPostHud {
   int xp_before = 0, xp_after = 0;  // Rally XP
   int band_lo = 0, band_hi = 0;     // the Rally level's span
@@ -189,8 +192,24 @@ struct RallyPostHud {
 // once the final is open, empty once champion.
 std::string rally_points_to_final(const RallyPostHud& r);
 bool draw_rally_finished(ui::List& l, int place, float w, float h);
+// The earnings: FINISHED <place> with the championship's prize, the
+// difficulty and assists bonus and the balance, `t` seconds in (the banner
+// goes out first, as after a race).
+struct RallyEarningsHud {
+  int place = 1;
+  int64_t base = 0, total = 0, balance = -1;
+  int difficulty_pct = 0;
+  double t = 0.0;
+};
+bool draw_rally_earnings(ui::List& l, const RallyEarningsHud& e, float w, float h);
 bool draw_rally_points(ui::List& l, const RallyPostHud& r, float w, float h);
-bool draw_rally_champion(ui::List& l, int place, float w, float h);
+bool draw_rally_prize_car(ui::List& l, const std::string& car_name, float w, float h);
+// The champion's screen (CHorizonChampion in Rally mode): CareerEventUI's
+// HORIZON RALLY CHAMPION 2012 as the title, no help bar (it closes with the
+// cutscene).
+bool draw_rally_champion(ui::List& l, float w, float h);
+// The strings the champion's screen binds (checked by the corpus test).
+std::vector<StringRef> rally_champion_text_refs();
 
 // Measured placements (1280x720 canvas) of the original's captures.
 namespace race_layout {

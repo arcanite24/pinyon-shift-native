@@ -989,8 +989,8 @@ bool AudioHost::init_acoustics(const std::filesystem::path& game_root, const std
   return has_acoustics_.load(std::memory_order_acquire);
 }
 
-void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt) {
-  if (has_vo_) engine_.trigger_vo(trigger_id, interrupt);
+void AudioHost::trigger_vo(std::string_view trigger_id, bool interrupt, int variant) {
+  if (has_vo_) engine_.trigger_vo(trigger_id, interrupt, variant);
 }
 
 void AudioHost::skip_vo() {

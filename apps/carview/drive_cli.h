@@ -108,6 +108,10 @@ struct DriveConfig {
   // The first championship's end at start (every stage driven, champion):
   // the final's screens (Q212).
   bool demo_rally_final = false;
+  // The final (MS_RALLY_02) at its last stage: the Rally world, stages 1-3
+  // recorded in the lead, then stage 4 driven (with --race-auto, the real
+  // finish and the final's screens). 1: switch to the Rally world; 2: start.
+  int demo_rally_last_stage = 0;
   std::filesystem::path pause_map_png;
   double cli_map_zoom = 4.5;
   double seed_distance = 0;

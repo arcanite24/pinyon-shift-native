@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -68,6 +69,14 @@ struct ProgressionTables {
   int driver_level_for_xp(int xp) const;
   int next_driver_level_xp(int xp) const;
   int64_t driver_level_gift_car(int level) const;
+  // A level's gift (Rewards_DriverLevelv3 in SortOrder): the cars `eligible`
+  // passes (the original's IsCarInstalledAndPurchased; an owned car is not
+  // filtered out), at most the level's PlayerLevelDef.MaxGiftCars (no cap
+  // when the row has none). One car is given outright; two or more are a
+  // pick-one list. An empty `eligible` passes every car.
+  std::vector<int64_t> driver_level_gift_choices(int level,
+                                                 const std::function<bool(int64_t)>& eligible = {}) const;
+  int max_gift_cars(int level) const;  // PlayerLevelDef.MaxGiftCars (0: none)
   int affinity_level_for_xp(int xp) const;
   double affinity_discount_for_xp(int xp) const;
   int64_t affinity_bonus_for_level(int level) const;
@@ -87,7 +96,8 @@ bool load_progression_tables(const std::filesystem::path& game_root, const std::
 struct ProgressionUpdate {
   int old_driver_level = 1;
   int new_driver_level = 1;
-  std::vector<int64_t> gift_cars;
+  std::vector<int64_t> gift_cars;                  // a level's one car, given outright
+  std::vector<std::vector<int64_t>> gift_picks;    // a level's pick-one lists (two or more cars)
   int old_affinity_level = 0;
   int new_affinity_level = 0;
   int64_t affinity_bonus_credits = 0;
@@ -110,8 +120,10 @@ struct CareerRecord {
 
 // Applies driver XP and manufacturer affinity XP to `record` and returns any
 // level-up gift cars and affinity credit bonuses.
+// `eligible` filters each level's gift (ProgressionTables::driver_level_gift_choices).
 ProgressionUpdate apply_progression_xp(CareerRecord& record, int driver_xp_delta, int64_t make_id,
-                                       int affinity_xp_delta, const ProgressionTables& tables);
+                                       int affinity_xp_delta, const ProgressionTables& tables,
+                                       const std::function<bool(int64_t)>& eligible = {});
 
 struct RaceAward {
   int64_t base_credits = 0;

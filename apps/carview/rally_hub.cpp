@@ -914,6 +914,7 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
   st.total_credits = reward.total_credits;
   st.new_balance = new_balance;
   st.standings = session.overall_standings();
+  if (!session.stages().empty()) st.stage_dev_name = session.stages().back().dev_name;
   for (const auto& ch : catalog.championships) st.final_xp_req = std::max(st.final_xp_req, ch.unlock_points_req);
   for (const auto& wb : catalog.wristbands) {
     if (wb.level == reward.new_rally_level) st.band_thumb = wb.thumbnail;
@@ -932,7 +933,10 @@ RallyChampResultsState make_rally_results_state(const race::RallyCatalog& catalo
 
 std::vector<RallyPostStep> rally_post_steps(const RallyChampResultsState& st) {
   if (st.is_heats) return {RallyPostStep::kTable};
-  std::vector<RallyPostStep> s{RallyPostStep::kBanner, RallyPostStep::kPoints};
+  std::vector<RallyPostStep> s{RallyPostStep::kBanner};
+  if (st.total_credits > 0) s.push_back(RallyPostStep::kEarnings);
+  s.push_back(RallyPostStep::kPoints);
+  if (st.prize_car_id > 0) s.push_back(RallyPostStep::kPrizeCar);
   if (st.champion_unlocked) s.push_back(RallyPostStep::kChampion);
   return s;
 }

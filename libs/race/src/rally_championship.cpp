@@ -395,7 +395,7 @@ bool load_rally_catalog(const std::filesystem::path& state_root, const cars::Par
   // 7. MultiStageSeriesRaces (28 stages across the 7 championships).
   for (auto& ch : out.championships) {
     if (!query("select msr.StageIndex, msr.EventId, e.HorizonEventID, e.Name, r.TrackId, t.RouteId, t.DisplayName, "
-               "t.Length, t.StartLine, t.FinishLine "
+               "t.Length, t.StartLine, t.FinishLine, t.DevName "
                "from MultiStageSeriesRaces msr "
                "join Events e on e.Id = msr.EventId "
                "join Races r on r.EventId = msr.EventId "
@@ -415,6 +415,7 @@ bool load_rally_catalog(const std::filesystem::path& state_root, const cars::Par
                  s.track.length = sqlite3_column_double(st, 7);
                  s.track.start_line = sqlite3_column_double(st, 8);
                  s.track.finish_line = sqlite3_column_double(st, 9);
+                 s.dev_name = col_text(st, 10);
                  if (auto it = split_map.find(s.track_id); it != split_map.end()) s.track.splits = it->second;
                  if (auto it = timings.best_splits.find(s.track_id); it != timings.best_splits.end())
                    s.track.best = it->second;

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 
 namespace carview {
 namespace {
@@ -33,6 +35,21 @@ bool CutsceneRuntime::load_race(const std::filesystem::path& game_root, const st
   if (loaded_ && !dev_name.empty())
     (void)cutscene::load_gamemodes_cutscenes(game_root, cutscene::track_cutscenes_member(dev_name), lib_, &ignored);
   return loaded_;
+}
+
+bool CutsceneRuntime::add_file(const std::filesystem::path& xml) {
+  std::ifstream in(xml, std::ios::binary);
+  if (!in) return false;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  cutscene::Library more;
+  std::string why;
+  if (!cutscene::parse_cutscenes(text, more, &why)) {
+    std::fprintf(stderr, "carview: cutscenes %s: %s\n", xml.string().c_str(), why.c_str());
+    return false;
+  }
+  stop();  // the player points into the library
+  for (auto& c : more.cutscenes) lib_.cutscenes.push_back(std::move(c));
+  return true;
 }
 
 bool CutsceneRuntime::play_race(std::string_view name) {

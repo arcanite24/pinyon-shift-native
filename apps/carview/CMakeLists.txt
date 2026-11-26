@@ -165,6 +165,7 @@ set(carview_sources
   drive_map_screen.cpp
   drive_menus_dispatch.cpp
   drive_race_screens.cpp
+  drive_rally_post.cpp
   drive_benchmark_runner.cpp
   drive_headless_runner.cpp
   drive_input_world_screens.cpp

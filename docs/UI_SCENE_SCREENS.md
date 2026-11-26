@@ -623,12 +623,14 @@ The original's Rally "free roam" is a menu, not a drive:
 `rally_hub_*_offline_wp5.png`); the live captures are
 `rally_hub_*_live_wp5.png`. Interims and guesses are Q211.
 
-A championship's end (`rally_post_steps`) shows the Rally's own banner
-(`H_POST_RACE_RALLY_FINISHED`, drawn as the festival one; X shows the
-engine's standings page), points (`H_POST_RACE_RALLY_POINTS`, the Rally
-bands; the points-to-final line is set but hidden under the bar) and,
-once, `H_HORIZON_RALLY_CHAMPION`
-(`race_screens.cpp`; Q212).
+A championship's end (`rally_post_steps`) shows the festival banner
+(`H_POST_RACE_FINISHED`; X shows the engine's standings page), the
+earnings (`H_POST_RACE_CREDITS_BREAKDOWN`), the Rally points
+(`H_POST_RACE_RALLY_POINTS`, the Rally bands; the points-to-final line is
+set but hidden under the bar), a pending prize car (`H_POST_RACE_WON_CAR`)
+and, once, `H_HORIZON_CHAMPION` (over black: its cutscene is off, Q253), with no
+help bar, closing after the cutscene's 9.2 s (`race_screens.cpp`,
+`drive_rally_post.cpp`; Q212, Q251-Q253).
 
 ## The hub's menus and car lists
 

@@ -356,7 +356,7 @@ bool VoPlayer::has_trigger(std::string_view trigger_id) const {
   return mem_clips_.count(key) > 0 || script_.triggers.count(key) > 0;
 }
 
-bool VoPlayer::trigger(std::string_view trigger_id, bool interrupt) {
+bool VoPlayer::trigger(std::string_view trigger_id, bool interrupt, int variant) {
   const std::string key = lower_str(trigger_id);
   QueuedLine ql;
   ql.trigger_id = key;
@@ -364,7 +364,9 @@ bool VoPlayer::trigger(std::string_view trigger_id, bool interrupt) {
   if (mem_clips_.count(key) > 0) {
     ql.sample_index = -1;
   } else if (const auto* entries = script_.find(key); entries && !entries->empty() && pool_) {
-    const auto& pick = (*entries)[size_t(variant_rr_++ % entries->size())];
+    const auto& pick = variant >= 0 && size_t(variant) < entries->size()
+                            ? (*entries)[size_t(variant)]
+                            : (*entries)[size_t(variant_rr_++ % entries->size())];
     const auto& bank_samples = (pick.bank_id == 1) ? rally_fsb_samples_ : fsb_samples_;
     if (pick.soundbank_index >= bank_samples.size()) return false;
     ql.sample_index = int64_t(pick.soundbank_index);

@@ -731,6 +731,15 @@ std::vector<std::string> wrap_fmv_subtitle(std::string_view text, float max_widt
   return lines;
 }
 
+float fmv_veil_alpha(double clock_s, double duration_s, bool loop) {
+  // Full-length cutscenes only (never blacks out t=0 thumbnails or tests).
+  if (duration_s < 3.0 || loop) return 0.0f;
+  float fade = 0.0f;
+  if (clock_s > 0.001 && clock_s < 0.55) fade = std::max(fade, float(1.0 - clock_s / 0.55));
+  if (clock_s > duration_s - 0.55) fade = std::max(fade, float((clock_s - (duration_s - 0.55)) / 0.55));
+  return std::clamp(fade, 0.0f, 1.0f);
+}
+
 double fmv_pll_step_clock(double video_clock_s, double dt_s, double audio_clock_s) {
   const double step_dt = std::clamp(dt_s, 0.0, 0.1);
   double next = video_clock_s + step_dt;
@@ -1820,6 +1829,9 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
     if (ok) uploaded_serial_ = frame_serial_;
   } else {
     ok = ui::atlas_find("fmv.frame", uv);
+    // The entry is gone (a new renderer reset the atlas, or the LRU took it)
+    // while no new frame popped: put the current frame again.
+    if (!ok) ok = ui::atlas_update("fmv.frame", uint32_t(width_), uint32_t(height_), current_frame_, uv);
   }
   if (ok) {
     const float video_aspect = float(width_) / float(height_);
@@ -1883,17 +1895,7 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
     }
   }
 
-  // Smooth fade-in and fade-out veil on full-length cutscenes (never blacks out t=0 thumbnails/tests).
-  // Not on a looping backdrop: its clock runs on past the duration, and the
-  // fade-out stayed on, leaving the title black after its first loop.
-  float fade = 0.0f;
-  if (duration_s_ >= 3.0 && !loop_) {
-    if (clock_s_ > 0.001 && clock_s_ < 0.55) fade = std::max(fade, float(1.0 - clock_s_ / 0.55));
-    if (clock_s_ > duration_s_ - 0.55) {
-      fade = std::max(fade, float((clock_s_ - (duration_s_ - 0.55)) / 0.55));
-    }
-  }
-  fade = std::clamp(fade, 0.0f, 1.0f);
+  const float fade = fmv_veil_alpha(clock_s_, duration_s_, loop_);
   if (fade > 0.01f) {
     l.fullscreen_backdrop(0, 0, screen_w, screen_h, ui::rgba(0, 0, 0, uint8_t(std::lround(fade * 255.0f))));
   }

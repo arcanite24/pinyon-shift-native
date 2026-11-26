@@ -35,6 +35,11 @@ class CutsceneRuntime {
   bool load_race(const std::filesystem::path& game_root, const std::string& dev_name);
   // Plays a race_specific cutscene: the track's <name>_<DevName>, else the default.
   bool play_race(std::string_view name);
+  // Adds a loose cutscene document's cutscenes (the Rally DLC's
+  // gamemodes\ColoradoDirt\Cutscenes\Tracks\cutscenes_<DevName>.xml); a
+  // later load_race keeps them while its track is the same. Stops what is
+  // playing first.
+  bool add_file(const std::filesystem::path& xml);
   // The route's named frames the cams can target (start_location_00, ...).
   void set_scene_nodes(std::vector<std::pair<std::string, cutscene::Frame>> nodes) {
     player_.set_scene_nodes(std::move(nodes));

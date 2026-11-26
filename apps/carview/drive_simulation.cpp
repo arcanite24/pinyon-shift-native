@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "hud_screen.h"
+#include "race/rally_dialogue.h"
 #include "world/road_follow.h"
 
 namespace carview {
@@ -1115,11 +1116,26 @@ bool DriveSession::step(const drive::Input& user_in) {
             ++app.saved.ach.rally_hard_manual_stage_wins;
           // Achievement 214: a stage win without crashing or rewinding.
           if (app.rally_stage_signals.finish(fin.stage_place)) ++app.saved.ach.rally_flawless_stage_wins;
-          app.audio_host.trigger_codriver(fin.stage_place <= 10 ? "CoDriver/FinishGood/Good1" : "CoDriver/FinishBad/Bad1");
+          // The co-driver's finish call (stages before the last; the heats'
+          // own line), then Alice after the last stage (CPostRaceResults).
+          {
+            const auto line = race::rally_stage_finish_line(app.rally_session.current_stage_index() + 1,
+                                                            app.rally_session.total_stages(), fin.stage_place,
+                                                            app.rally_session.is_heats());
+            if (!line.trigger.empty()) app.audio_host.trigger_vo(line.trigger, false, line.variant);
+          }
           if (fin.championship_complete) {
             const int dpct = race::difficulty_bonus_percent(int(app.race_options.difficulty));
             const int apct = race::assist_difficulty_bonus_percent(app.race_options.assists);
             const auto rew = app.rally_session.finalize(app.rally_catalog, app.saved, dpct, apct);
+            if (!rew.is_heats) {
+              const auto* ch = app.rally_catalog.find_championship(rew.event_id);
+              const auto line = race::rally_post_race_line(rew.final_place == 1,
+                                                           ch && ch->series_id == race::kRallyFinalSeries,
+                                                           app.saved.rally_first_win_vo);
+              if (line.trigger == "PlayerWonFirstRally") app.saved.rally_first_win_vo = true;
+              app.audio_host.trigger_vo(line.trigger, false, line.variant);
+            }
             app.career.credits = app.saved.credits;
             app.career.total_winnings = app.saved.total_winnings;
             // R3-CAM-01: Merge finalized Rally Championship & Stage results into app.career.event_places
@@ -1132,16 +1148,14 @@ bool DriveSession::step(const drive::Input& user_in) {
               }
             }
             app.rally_results_state = carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
-            // The champion sequence plays once (CSetHasSeenRallyEndSequence,
-            // saved now); its screen and Alice's line come after the points
-            // (rally_post_steps).
+            // The champion sequence plays once (CShouldShowRallyEndSequence;
+            // CSetHasSeenRallyEndSequence when it ends, rally_post_finish):
+            // its screen, Alice's line and Rally_Champion_Cutscene come after
+            // the points (rally_post_steps).
             app.rally_results_state.final_won = app.saved.rally_end_seen || rew.champion_unlocked;
-            if (rew.champion_unlocked && !app.saved.rally_end_seen) {
-              app.saved.rally_end_seen = true;
-            } else {
-              app.rally_results_state.champion_unlocked = false;
-            }
+            if (!rew.champion_unlocked || app.saved.rally_end_seen) app.rally_results_state.champion_unlocked = false;
             app.rally_results_open = true;
+            rally_post_enter_step();
             save_due = true;
           } else {
             app.rally_service_open = true;
@@ -1719,8 +1733,16 @@ bool DriveSession::commit_race_award() {
   if (app.legacy_fm4_progression && app.have_prog_tables) {
     const int drv_xp = slice12.trainer.pacing.scale_points(a->driver_xp);
     const int aff_xp = slice12.trainer.pacing.scale_points(a->affinity_xp);
-    const auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp,
-                                               app.prog_tables);
+    // IsCarInstalledAndPurchased: a car the disc and its packages carry.
+    const auto installed = [&](int64_t cid) {
+      return (app.have_career_catalog && app.career_catalog.find_car(cid)) || app.baked_ids.count(cid) > 0;
+    };
+    auto pu = race::apply_progression_xp(app.career, drv_xp, current_make_id(), aff_xp, app.prog_tables,
+                                         installed);
+    // A pick-one list (two or more cars): the engine has no pick screen yet
+    // and gives the list's first (interim, SPEC_QUESTIONS Q254).
+    for (const auto& pick : pu.gift_picks)
+      if (!pick.empty()) pu.gift_cars.push_back(pick.front());
     for (int64_t gcid : pu.gift_cars) {
       const std::string gnm = app.award_garage_car(gcid, 0, false, /*is_prize=*/true);
       if (!gnm.empty()) {

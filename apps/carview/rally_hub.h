@@ -121,6 +121,9 @@ struct RallyServiceAreaState {
   int car_pi = 0;
   std::vector<race::RallyStandingRow> standings;
   std::string notice;
+  // Between stages the flow shows the stage's FINISHED banner
+  // (CPostRaceFinishPosition); X RACE RESULTS is this engine page.
+  bool show_table = false;
 };
 
 // Final Championship / Heats Results screen model.
@@ -152,13 +155,31 @@ struct RallyChampResultsState {
   bool final_won = false;  // champion already (no points-to-final line)
   int step = 0;
   bool show_table = false;
+  double step_t = 0.0;  // seconds on the current step (the earnings' animation)
+  // CIsPendingCarReward's car (none of the Rally's events has a
+  // Rewards_EventPrizes row, so it stays 0 with the disc's data).
+  int64_t prize_car_id = 0;
+  std::string prize_car_name;
+  // The champion's sequence (RallyChampionSequence): ends with
+  // Rally_Champion_Cutscene (doneOnCutsceneFinish), or after its 9.2 s when
+  // the cutscene cannot play.
+  bool champion_cutscene = false;
+  std::string stage_dev_name;  // the last stage's Tracks.DevName (its cutscenes_<DevName>.xml)
 };
 
-// game_rally_race_flow after the last stage: the banner, the Rally points
-// (CIsRallyXPEvent) and, once, the champion. The intro heats keep the
-// engine's results page (game_rally_intro_flow's own end).
-enum class RallyPostStep : uint8_t { kBanner, kPoints, kChampion, kTable };
+// game_rally_race_flow after the last stage (postrace_results, then
+// CareerRewardsFlow): the banner (H_POST_RACE_FINISHED), the earnings
+// (H_POST_RACE_CREDITS_BREAKDOWN, did_player_get_credit_rewards), the Rally
+// points (H_POST_RACE_RALLY_POINTS, CIsRallyXPEvent), a pending prize car
+// (H_POST_RACE_WON_CAR, CIsPendingCarReward) and, once
+// (CShouldShowRallyEndSequence), the champion (H_HORIZON_CHAMPION over
+// Rally_Champion_Cutscene). The intro heats keep the engine's results page
+// (game_rally_intro_flow's own end).
+enum class RallyPostStep : uint8_t { kBanner, kEarnings, kPoints, kPrizeCar, kChampion, kTable };
 std::vector<RallyPostStep> rally_post_steps(const RallyChampResultsState& st);
+// Rally_Champion_Cutscene's length (its Duration): the champion screen's
+// hold when the cutscene cannot play.
+inline constexpr double kRallyChampionSeconds = 9.2;
 
 // Draws live Co-Driver pace-note icons + split timer strip during a Rally stage.
 void build_rally_pace_notes_hud(ui::List& out, const RallyStageHud& st, float w, float h);

@@ -245,6 +245,13 @@ void test_save_fields() {
   seen.rally_end_seen = true;
   check(drive::save_from_text(drive::save_to_text(seen), seen_back, &err) && seen_back.rally_end_seen,
         "rally_end_seen round trips");
+  // PlayerWonFirstRally's once-only flag likewise.
+  check(t0.find("rally_first_win_vo") == std::string::npos && !back.rally_first_win_vo,
+        "rally_first_win_vo unset is not written");
+  drive::DriveSave won = s, won_back;
+  won.rally_first_win_vo = true;
+  check(drive::save_from_text(drive::save_to_text(won), won_back, &err) && won_back.rally_first_win_vo,
+        "rally_first_win_vo round trips");
 }
 
 void test_pause_rows() {

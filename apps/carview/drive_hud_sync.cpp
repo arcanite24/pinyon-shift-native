@@ -729,7 +729,11 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
             race::load_rally_catalog(app.state_root, db_ptr.get(), app.car_names->strings(), app.rally_catalog, &rerr);
           }
           if (app.rally_catalog.loaded && !app.rally_catalog.championships.empty()) {
-            const auto& ch = app.rally_catalog.championships.front();
+            // The final (MS_RALLY_02, the champion's sequence), else the first.
+            const race::RallyChampionshipDef* chp = &app.rally_catalog.championships.front();
+            for (const auto& c : app.rally_catalog.championships)
+              if (c.horizon_id == "MS_RALLY_02") chp = &c;
+            const auto& ch = *chp;
             if (app.rally_session.start_championship(app.rally_catalog, ch.event_id, int(app.race_options.difficulty))) {
               for (size_t i = 0; i < ch.stages.size(); ++i) {
                 app.rally_session.record_stage_finish(app.rally_catalog, 120.0 + 4.0 * double(i));
@@ -738,8 +742,50 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
               const auto rew = app.rally_session.finalize(app.rally_catalog, app.saved, 0, 0);
               app.rally_results_state =
                   carview::make_rally_results_state(app.rally_catalog, app.rally_session, rew, app.saved.credits);
+              app.career.credits = app.saved.credits;
+              app.career.total_winnings = app.saved.total_winnings;
               app.rally_results_state.champion_unlocked = true;
               app.rally_results_open = true;
+              rally_post_enter_step();
+            }
+          }
+        }
+        if (app.demo_rally_last_stage != 0 && !app.rally_session.active()) {
+          if (!app.rally_catalog.loaded) {
+            const auto db_ptr = app.parts_db.valid() ? app.parts_db.get() : std::shared_ptr<cars::PartsDb>{};
+            if (!*app.car_names_loaded) carview::car_name("");
+            std::string rerr;
+            race::load_rally_catalog(app.state_root, db_ptr.get(), app.car_names->strings(), app.rally_catalog, &rerr);
+          }
+          if (!app.rally_catalog.loaded) {
+            app.demo_rally_last_stage = 0;
+          } else if (app.colorado_world()) {
+            // First the Rally world (rally_enter's switch).
+            if (app.demo_rally_last_stage == 1) {
+              app.demo_rally_last_stage = 2;
+              app.saved.has_rally = true;
+              if (app.saved.rally_flow < 4) app.saved.rally_flow = 4;
+              rally_enter();
+            }
+          } else {
+            app.demo_rally_last_stage = 0;
+            const race::RallyChampionshipDef* fin = nullptr;
+            for (const auto& c : app.rally_catalog.championships)
+              if (c.horizon_id == "MS_RALLY_02") fin = &c;
+            if (fin && app.rally_session.start_championship(app.rally_catalog, fin->event_id,
+                                                            int(app.race_options.difficulty), app.race_options.seed)) {
+              // A lead the last stage cannot lose (a demo's times, not a drive's).
+              for (int i = 0; i + 1 < app.rally_session.total_stages(); ++i) {
+                app.rally_session.record_stage_finish(app.rally_catalog, 30.0);
+                app.rally_session.advance_from_service_area();
+              }
+              if (const auto* stg = app.rally_session.current_stage()) {
+                app.rally_hub_open = false;
+                app.rally_hub_extras = false;
+                app.race_options.stage_title = stg->name;
+                app.next_event = "stage:" + std::to_string(stg->route_id);
+                running = false;
+              }
             }
           }
         }
@@ -859,6 +905,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           rally_service_state = carview::make_rally_service_state(app.rally_session, d.car_name, d.car_class, d.car_pi,
                                                                   dmg_pct, app.rally_service_repaired,
                                                                   app.rally_service_selected, app.rally_notice);
+          rally_service_state.show_table = app.rally_service_table;
           d.rally_service = &rally_service_state;
         }
         if (app.rally_results_open) d.rally_results = &app.rally_results_state;

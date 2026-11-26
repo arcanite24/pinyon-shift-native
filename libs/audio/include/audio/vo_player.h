@@ -65,7 +65,9 @@ class VoPlayer {
   bool has_trigger(std::string_view trigger_id) const;
 
   // Queues (or immediately replaces if `interrupt`) a VO trigger.
-  bool trigger(std::string_view trigger_id, bool interrupt = false);
+  // `variant` >= 0 plays that Filename row of the trigger (a behaviour that
+  // forces one); else the rows take turns.
+  bool trigger(std::string_view trigger_id, bool interrupt = false, int variant = -1);
   // Pinyon Shift "Skip Voice-Overs with A": skips the active line immediately.
   void skip_current();
   void clear();

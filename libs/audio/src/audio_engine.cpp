@@ -607,9 +607,10 @@ void AudioEngine::set_listener_pose(std::array<float, 3> pos, float heading_rad)
   enqueue(c);
 }
 
-void AudioEngine::trigger_vo(std::string_view trigger_id, bool interrupt) {
+void AudioEngine::trigger_vo(std::string_view trigger_id, bool interrupt, int variant) {
   Command c;
   c.kind = Command::kTriggerVo;
+  c.i0 = variant;
   c.b0 = interrupt;
   const size_t n = std::min(trigger_id.size(), c.text.size() - 1);
   std::memcpy(c.text.data(), trigger_id.data(), n);
@@ -1299,7 +1300,7 @@ void AudioEngine::drain_commands() {
         if (codriver_) codriver_->clear();
         break;
       case Command::kTriggerVo:
-        if (vo_) vo_->trigger(c.text.data(), c.b0);
+        if (vo_) vo_->trigger(c.text.data(), c.b0, c.i0);
         break;
       case Command::kSkipVo:
         if (vo_) vo_->skip_current();

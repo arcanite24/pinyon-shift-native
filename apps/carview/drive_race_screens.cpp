@@ -213,6 +213,7 @@ void DriveSession::update_race_screens(double dt) {
     // (finale, boss, showcase) follows the finish at once.
     if (app.race && app.headless && app.race->player_finished())
       apply_campaign_action(app.campaign.flow().on_post_race_done());
+    rally_post_tick(dt, {});
     return;
   }
   race_screens.update(dt);
@@ -235,7 +236,9 @@ void DriveSession::update_race_screens(double dt) {
     if (race_screens.screen() == S::kDone && !app.leave_race) finish_race_screens();
   }
   sync_race_cutscene();
-  (void)race_cuts.update(dt, false);
+  const auto cut_events = race_cuts.update(dt, false);
+  rally_post_tick(dt, cut_events);
+  rally_pep_talk_tick();
 }
 
 void DriveSession::sync_h2h_screens(double dt) {
@@ -285,6 +288,7 @@ void DriveSession::sync_h2h_screens(double dt) {
 void DriveSession::sync_race_cutscene() {
   // The cutscene each step of the flow plays (game_festival_race_flow.xml,
   // game_race_flow_states.xml); steps without one keep the last.
+  if (rally_champion_cut) return;  // the Rally's champion sequence owns the view
   const char* want = nullptr;
   switch (race_screens.screen()) {
     case S::kTitleCard: want = "prerace_intro"; break;

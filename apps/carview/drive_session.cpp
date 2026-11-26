@@ -1497,6 +1497,7 @@ void DriveSession::save_now(const char* why) {
         s.club_tutorial = app.saved.club_tutorial;
         s.rally_flow = app.saved.rally_flow;
         s.rally_end_seen = app.saved.rally_end_seen;
+        s.rally_first_win_vo = app.saved.rally_first_win_vo;
         s.car_club_name = app.saved.car_club_name;
         s.car_club_tag = app.saved.car_club_tag;
         s.car_club_shared = app.saved.car_club_shared;

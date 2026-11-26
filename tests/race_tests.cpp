@@ -1382,6 +1382,22 @@ int main() {
       pt.affinity_levels = {{0, 0, 0.0, 0}, {1, 2500, 0.25, 1000}, {2, 9000, 0.50, 2000}};
       const auto pu = race::apply_progression_xp(rec, 6000, 42, 3000, pt);
       CHECK(pu.new_driver_level == 2 && pu.gift_cars.size() == 1 && pu.gift_cars[0] == 1219);
+      CHECK(pu.gift_picks.empty());
+      // V4-23: two or more eligible cars are a pick-one list, capped at the
+      // level's MaxGiftCars; IsCarInstalledAndPurchased filters (owned cars
+      // stay in).
+      race::ProgressionTables gp;
+      gp.driver_levels = {{0, 0, 7}, {1, 5000, 7}, {2, 10000, 5}, {3, 15000, 5}};
+      gp.driver_level_cars[2] = {11, 12, 13, 14, 15, 16, 17};
+      gp.driver_level_cars[3] = {21, 22};
+      CHECK((gp.driver_level_gift_choices(2) == std::vector<int64_t>{11, 12, 13, 14, 15}));
+      const auto not_installed = [](int64_t c) { return c != 12 && c != 22; };
+      CHECK((gp.driver_level_gift_choices(2, not_installed) == std::vector<int64_t>{11, 13, 14, 15, 16}));
+      CHECK((gp.driver_level_gift_choices(3, not_installed) == std::vector<int64_t>{21}));
+      race::CareerRecord grec;
+      const auto gu = race::apply_progression_xp(grec, 15000, 0, 0, gp, not_installed);
+      CHECK(gu.new_driver_level == 4 && gu.gift_picks.size() == 1 && gu.gift_picks[0].size() == 5);
+      CHECK((gu.gift_cars == std::vector<int64_t>{21}));
       CHECK(pu.new_affinity_level == 1 && near(pu.affinity_discount, 0.25) && pu.affinity_bonus_credits == 1000);
     }
 
