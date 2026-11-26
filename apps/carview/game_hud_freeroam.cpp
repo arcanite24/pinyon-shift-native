@@ -384,6 +384,31 @@ void render_world_labels_and_nameplates(ui::List& l, const std::vector<NameTagHu
   }
 }
 
+int SkillTotalCountUp::update(bool active, int points, double time) {
+  if (!active) {
+    counting = false;
+    last_time = time;
+    return points;
+  }
+  const double t = double(points);
+  if (!counting) {
+    // The chain's first total (827F08B8 with +164 clear): from 0.
+    counting = true;
+    shown = 0.0;
+    target = t;
+    rate = t / kCountUpSeconds;
+    last_time = time;
+  } else if (t != target) {
+    target = t;
+    rate = (target - shown) / kCountUpSeconds;
+  }
+  const double dt = std::max(0.0, time - last_time);
+  last_time = time;
+  if (shown < target) shown = std::min(target, shown + dt * rate);
+  if (target - shown < 1e-6) shown = target;  // there (or a rewind, shown at once)
+  return int(std::floor(shown));
+}
+
 void PopularityBadgeAnimator::reset() {
   initialized = false;
   last_rank = 250;

@@ -352,6 +352,22 @@ struct SkillChainHud {
   int prev_popularity_rank = -1;     // rank prior to most recent rank-up (<0: infer rank + 1)
   double pop_anim_progress = -1.0;   // smoothly interpolated radial arc [0..1] (<0: derive)
   double pop_rank_anim_t = -1.0;     // normalized rank-up celebration phase [0..1] (<0: derive)
+  int shown_points = -1;             // the live chain's TEXT_TOTAL as it counts up (<0: chain_points)
+};
+
+// The live chain's total as the original's HUD shows it (Q282, decoded from
+// CHudDrivingFeatsControl, 827F08B8 / 827F1600): a new total does not show at
+// once; the shown value climbs toward it at a rate set so that it gets there
+// Count_Up_Duration after the award ((target - shown) / 1.6 s, reset on each
+// award), floored to a whole number. A chain's first total counts up from 0.
+// A lost chain shows its total at once (827EE410), and a bank shows the
+// banked total at once (827F1718).
+struct SkillTotalCountUp {
+  static constexpr double kCountUpSeconds = 1.6;  // UI/RaceFeats/Animation/Count_Up_Duration
+  bool counting = false;
+  double shown = 0.0, target = 0.0, rate = 0.0, last_time = 0.0;
+  // The total to show at `time` for a chain of `points` (active: a chain is live).
+  int update(bool active, int points, double time);
 };
 
 // Stateful animator for the Popularity Rank HUD disc (smooth ring fill, rank-up flip/pop, skill pulse).

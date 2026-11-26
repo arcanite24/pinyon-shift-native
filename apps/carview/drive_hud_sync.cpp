@@ -361,6 +361,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           const auto sh = app.skill_tracker->hud();
           sk_hud.active = sh.active;
           sk_hud.chain_points = sh.chain_points;
+          static carview::SkillTotalCountUp s_total_count;
+          sk_hud.shown_points = s_total_count.update(sh.active, sh.chain_points, d.time);
           sk_hud.multiplier = sh.multiplier;
           sk_hud.multiplier_f = sh.multiplier_f > 0.0f ? sh.multiplier_f : float(std::max(1, sh.multiplier));
           sk_hud.chain_remaining_s = app.skill_tracker->chain_remaining_s(d.time);

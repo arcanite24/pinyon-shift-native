@@ -709,6 +709,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     if (sk.active) live_points = sk.chain_points;
     const int shown = banked && !sk.active                       ? sk.banked_total
                       : lost && !sk.active && sk.chain_points == 0 ? live_points
+                      : sk.active && sk.shown_points >= 0          ? sk.shown_points  // Q282 count-up
                                                                    : sk.chain_points;
     const std::string total = thousands(shown);
     if (sk.active) {
