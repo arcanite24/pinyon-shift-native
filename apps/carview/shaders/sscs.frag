@@ -83,9 +83,10 @@ void main() {
   int steps = clamp(int(pc.sscs_params.x + 0.5), 6, 16);
   float jitter = fract(ign(gl_FragCoord.xy) + pc.sscs_params.w * 0.61803399);
 
-  // Adaptive self-shadow bias & thin-object thickness threshold to avoid grazing false shadows.
-  float bias = clamp(0.025 + center_d * 0.0032, 0.025, 0.22);
-  float thickness = clamp(0.095 + center_d * 0.010, 0.095, 0.45);
+  // Adaptive self-shadow bias & thin-object thickness threshold to avoid grazing false shadows
+  // on curved car bodywork while preserving crisp tire-to-asphalt and curb contact shadows.
+  float bias = clamp(0.048 + center_d * 0.0042, 0.048, 0.25);
+  float thickness = clamp(0.115 + center_d * 0.011, 0.115, 0.48);
 
   float occ = 0.0;
   for (int i = 0; i < steps; ++i) {

@@ -34,7 +34,7 @@
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 1335,
+      "lines": 1336,
       "uses_bda": false,
       "notes": []
     },
@@ -2752,7 +2752,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 183824,
+      "spirv_bytes": 176812,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3341,7 +3341,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 10816,
+      "spirv_bytes": 10848,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3856,7 +3856,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 135156,
+      "spirv_bytes": 135140,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4154,7 +4154,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 142828,
+      "spirv_bytes": 142812,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4346,7 +4346,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 137568,
+      "spirv_bytes": 137552,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4454,7 +4454,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 130040,
+      "spirv_bytes": 130024,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

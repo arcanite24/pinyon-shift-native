@@ -303,15 +303,16 @@ vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : 
 
 // 3-cascade stabilized D32 CSM + Contact-Hardening PCSS (Near ~20m, Mid ~90m, Far ~320m)
 // with fast 2-cascade PCF fallback on low/low-power presets.
+// Balanced Vogel-spiral 16-tap disk for even world shadow PCSS coverage.
 const vec2 kPcssDisk[16] = vec2[16](
-    vec2(-0.613392,  0.617481), vec2( 0.170019, -0.040254),
-    vec2(-0.299417,  0.791925), vec2( 0.645680,  0.493210),
-    vec2(-0.651784,  0.717887), vec2( 0.421003,  0.027070),
-    vec2(-0.817194, -0.271096), vec2(-0.705374, -0.668203),
-    vec2( 0.977050, -0.108615), vec2( 0.063326,  0.142369),
-    vec2( 0.203528,  0.214331), vec2(-0.667531,  0.326090),
-    vec2(-0.098422, -0.295755), vec2(-0.885922,  0.215369),
-    vec2( 0.566637,  0.605213), vec2( 0.039766, -0.396100));
+    vec2( 0.1768,  0.0000), vec2(-0.2256,  0.2072),
+    vec2( 0.0329, -0.3944), vec2( 0.3037,  0.3554),
+    vec2(-0.5250, -0.0771), vec2( 0.4820, -0.3358),
+    vec2(-0.1449,  0.6213), vec2(-0.3401, -0.5920),
+    vec2( 0.7037,  0.2030), vec2(-0.7429,  0.2498),
+    vec2( 0.4150, -0.7069), vec2( 0.1558,  0.8339),
+    vec2(-0.7052, -0.5315), vec2( 0.9035, -0.1655),
+    vec2(-0.6203,  0.7130), vec2( 0.0238, -0.9680));
 
 float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
