@@ -183,6 +183,7 @@ set(carview_sources
   upgrade_shop.cpp
   autoshow.cpp
   hub_scene.cpp
+  hub_room.cpp
   livery_editor.cpp
   career_page.cpp
   club_view.cpp

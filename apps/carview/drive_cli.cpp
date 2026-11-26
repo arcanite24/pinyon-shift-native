@@ -137,6 +137,10 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     if (a == "--save-settings") { save_settings = true; continue; }
     if (a == "--no-title") { no_title = true; continue; }
+    if (a == "--hub-studio") { cli_hub_studio = true; continue; }
+    if (a == "--hub-shot") { cli_hub_shot_room = next(); cli_hub_shot_png = next(); continue; }
+    if (a == "--hub-shot-delay") { cli_hub_shot_delay = std::atof(next()); continue; }
+    if (a == "--hub-shot-round-trip") { cli_hub_shot_round_trip = true; continue; }
     if (a == "--skip-intro-movies") { skip_intro_movies = true; continue; }
     if (a == "--no-skip-intro-movies") { skip_intro_movies = false; continue; }
     if (a == "--start-in-single-player") { start_in_single_player = true; continue; }

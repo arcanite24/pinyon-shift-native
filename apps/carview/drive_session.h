@@ -173,7 +173,7 @@ struct DriveSession {
     }
   };
 
-  enum class PendingShot { kNone, kF8, kF12, kPhotoMode };
+  enum class PendingShot { kNone, kF8, kF12, kPhotoMode, kHubShot };
 
   struct WorldRewindSnapshot {
     bool has_race = false;
@@ -377,6 +377,10 @@ struct DriveSession {
   std::vector<carview::CarCameraPreset> hub_cam_presets;
   bool hub_cam_presets_read = false;
   const carview::CarCameraPreset* hub_preset(std::string_view name);
+  // media/camera.zip's animated sequences by member (HomeSpaceCams.xml,
+  // WorkshopCams.xml), read on first use (MENU-03); null when missing.
+  std::map<std::string, std::unique_ptr<cutscene::Library>> hub_cam_sequences;
+  const cutscene::Cutscene* hub_sequence(std::string_view member, std::string_view name);
   HubRoom last_hub_room = HubRoom::kNone;
   drive::CockpitAnimState cockpit_anim;
   float cockpit_steer_kick_rad = 0.0f;
