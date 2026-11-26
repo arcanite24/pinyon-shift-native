@@ -163,4 +163,34 @@ bool radio_has_event(const RadioData& data, RadioChannel channel, std::string_vi
   return false;
 }
 
+RadioDjState parse_radio_dj_state(std::string_view name) {
+  std::string key = lower(name);
+  constexpr std::string_view kPrefix = "radiodj.";
+  if (key.size() > kPrefix.size() && key.compare(0, kPrefix.size(), kPrefix) == 0) {
+    key.erase(0, kPrefix.size());
+  }
+  if (key == "festival_wristband") return RadioDjState::kFestivalWristband;
+  if (key == "special_wristband") return RadioDjState::kSpecialWristband;
+  if (key == "post_race") return RadioDjState::kPostRace;
+  if (key == "cycleradiologos") return RadioDjState::kCycleRadioLogos;
+  return RadioDjState::kNone;
+}
+
+bool resolve_radio_event_channel(const RadioData& data, RadioChannel preferred, std::string_view event,
+                                 RadioChannel& out_channel) {
+  if (event.empty()) return false;
+  if (radio_has_event(data, preferred, event)) {
+    out_channel = preferred;
+    return true;
+  }
+  for (RadioChannel ch : {RadioChannel::kImmediate, RadioChannel::kFestivalUpdate, RadioChannel::kSpecial}) {
+    if (ch == preferred) continue;
+    if (radio_has_event(data, ch, event)) {
+      out_channel = ch;
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace audio

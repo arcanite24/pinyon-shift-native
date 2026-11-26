@@ -309,6 +309,13 @@ class RadioPlayer {
   double volume = 1;  // SPEC-RADIO: RADIO VOLUME option (0..1)
   void set_dj_modifier(double g) { dj_modifier_ = std::clamp(g, 0.0, 2.0); }
   double dj_modifier() const { return dj_modifier_; }
+  // Q335: D-pad station change holds ~0.25 s of silence after the outgoing
+  // station reaches zero before fading the incoming station in over 50 ms.
+  static constexpr double kStationSwitchGapS = 0.25;
+  double station_gain(int station) const {
+    return (station >= 0 && size_t(station) < station_gain_.size()) ? station_gain_[size_t(station)] : 0.0;
+  }
+  double switch_gap_remaining_s() const { return switch_gap_rem_s_; }
   int decoders() const;
   bool dj_speaking() const { return dj_speaking_; }
   bool festival_update_playing() const { return festival_update_playing_; }
@@ -358,6 +365,8 @@ class RadioPlayer {
   double prefetch_s_ = 6.0;
   std::array<Voice, kMaxVoices> voices_{};
   std::vector<double> station_gain_;
+  int last_selected_ = -1;
+  double switch_gap_rem_s_ = 0.0;
   double duck_ = 1;
   double dj_modifier_ = 1.0;
   bool dj_speaking_ = false;

@@ -176,6 +176,32 @@ int main() {
     CHECK(sold.ok && !cg_rt.is_club_shared(gid1));
   }
 
+  // HeroCar LiveryPaintSection_Rims (0x404040) persistence and CarPaintSpec application.
+  {
+    Garage rg;
+    int64_t cr = 50000, gid = 0;
+    CHECK(award_prize_car(rg, 309, 0.597, 3, 2, {{"WheelStyle", 640}}, &gid));
+    Car* hc = rg.find(gid);
+    CHECK(hc != nullptr && hc->rim_paint_rgb == -1);
+    hc->rim_paint_rgb = kHeroCarRimPaintRgb;
+    CHECK(hc->rim_paint_rgb == 0x404040);
+
+    Garage rg_rt;
+    std::string rerr;
+    CHECK(from_text(to_text(rg), rg_rt, &rerr));
+    CHECK(rg_rt.find(gid) != nullptr && rg_rt.find(gid)->rim_paint_rgb == 0x404040);
+
+    cars::CarPaintSpec paint;
+    CHECK(!apply_car_rim_paint(*rg_rt.find(gid), paint, false));  // non-paintable wheel skipped
+    CHECK(!paint.rims.active);
+    CHECK(apply_car_rim_paint(*rg_rt.find(gid), paint, true));
+    CHECK(paint.rims.active && paint.rims.rgb == 0x404040u);
+    // Existing custom livery rim paint is preserved.
+    paint.rims.rgb = 0xAABBCCu;
+    CHECK(!apply_car_rim_paint(*rg_rt.find(gid), paint, true));
+    CHECK(paint.rims.rgb == 0xAABBCCu);
+  }
+
   if (failures == 0) std::printf("garage_tests: all passed\n");
   return failures ? 1 : 0;
 }

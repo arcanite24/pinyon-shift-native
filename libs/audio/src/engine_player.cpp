@@ -92,6 +92,13 @@ EnginePlayer::EnginePlayer(const EngineSound& sound, std::vector<std::vector<con
   // The game multiplies a voice that left its range by 0.2 per audio update
   // (about 30 a second): per output frame, 0.2^(30 / rate).
   fade_ = std::pow(0.2, 30.0 / rate_);
+  // Q372: 1-pole prewarped bilinear lowpass at 12 kHz on the focus DSP output.
+  const double top_k = std::tan(kPi * std::min(kFocusTopRolloffHz, 0.45 * rate_) / rate_);
+  const double top_a1 = (top_k - 1.0) / (top_k + 1.0);
+  for (auto& lp : focus_top_lp_) {
+    lp.b0 = lp.b1 = top_k / (1.0 + top_k);
+    lp.a1 = top_a1;
+  }
 }
 
 int EnginePlayer::voices() const {
@@ -502,6 +509,8 @@ void EnginePlayer::render(float* out, int frames) {
                     (trash_c2_on_ ? shape_band(hi, 2) : 0.0);
           }
         }
+        ch[0] = focus_top_lp_[0].tick(ch[0]);
+        ch[1] = focus_top_lp_[1].tick(ch[1]);
         ch[0] *= post_gain;
         ch[1] *= post_gain;
         if (std::isfinite(ch[0])) out_chunk[2 * f] += float(ch[0]);

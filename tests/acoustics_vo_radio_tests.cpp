@@ -586,6 +586,68 @@ void test_r3_aud_10_vo_telemetry_skip_fade_and_mono_pan() {
   check(vp.elapsed_s() == 0.0f && vp.duration_s() == 0.0f, "telemetry resets to 0 after VO finishes");
 }
 
+void test_radio_switch_silence_gap_contract() {
+  // Q335: D-pad station switching fades out the outgoing station, holds ~0.25 s
+  // of silence, then fades the incoming station in over 50 ms. Programmatic
+  // station switches keep the crossfade with no silence gap.
+  check(std::fabs(audio::RadioPlayer::kStationSwitchGapS - 0.25) < 1e-6,
+        "RadioPlayer::kStationSwitchGapS matches Q335 0.25 s silence hold");
+
+  const char* kXml = R"(<?xml version="1.0"?>
+<RadioSystem>
+  <System musicLevel="1.0" stationChangeFadeTimeUser="0.25" stationChangeFadeTimeNormal="0.5"/>
+  <RadioStation name="Radio1"><Playlist><MusicTrack name="A" artist="X" fmodname="T_A"/></Playlist></RadioStation>
+  <RadioStation name="Radio2"><Playlist><MusicTrack name="B" artist="Y" fmodname="T_B"/></Playlist></RadioStation>
+  <RadioStation name="Radio4_Silent" isOffStation="true"/>
+</RadioSystem>)";
+  const char* kMusic = R"(<SoundBanks>
+  <Bank Name="T_A"><SoundBankInfo SoundBankIndex="0" OffsetEventStart="0" OffsetIdentStart="0" FileLength="60000"/></Bank>
+  <Bank Name="T_B"><SoundBankInfo SoundBankIndex="1" OffsetEventStart="0" OffsetIdentStart="0" FileLength="60000"/></Bank>
+</SoundBanks>)";
+  audio::RadioData d;
+  std::string err;
+  check(audio::parse_radio(kXml, kMusic, "<SoundBanks/>", d, &err), "parse two-station radio for switch gap test");
+  audio::Radio r(d, 7, false);
+  r.select(0, false);
+  audio::RadioPlayer player(r, 48000, true);
+  std::vector<float> buf(480 * 2, 0.0f);  // 10 ms blocks
+
+  // User D-pad press from Radio1 (0) -> Radio2 (1).
+  r.press(+1);
+  check(r.selected() == 1 && r.last_change_was_user(), "D-pad press selects Radio2 with user_change=true");
+
+  // 1. Outgoing station fades out over 0.25 s (25 blocks) while incoming stays at 0.
+  for (int b = 0; b < 24; ++b) {
+    player.render(buf.data(), 480);
+    check(player.station_gain(0) > 0.0 && player.station_gain(1) == 0.0,
+          "incoming station stays silent while outgoing fades out");
+  }
+  player.render(buf.data(), 480);  // 25th block finishes outgoing fade-out
+  check(player.station_gain(0) == 0.0 && player.station_gain(1) == 0.0,
+        "both stations at zero once outgoing fade completes");
+
+  // 2. Silence gap holds both stations at 0.0 for ~0.25 s (25 blocks).
+  int silent_blocks = 0;
+  for (int b = 0; b < 25; ++b) {
+    player.render(buf.data(), 480);
+    if (player.station_gain(0) == 0.0 && player.station_gain(1) == 0.0) ++silent_blocks;
+  }
+  check(silent_blocks >= 24, "D-pad switch holds ~0.25 s of silence between stations");
+
+  // 3. Incoming station fades in over 50 ms (5 blocks) to 1.0.
+  for (int b = 0; b < 3; ++b) player.render(buf.data(), 480);
+  check(player.station_gain(1) > 0.4 && player.station_gain(1) < 0.9,
+        "incoming station fades in smoothly over 50 ms after silence hold");
+  for (int b = 0; b < 5; ++b) player.render(buf.data(), 480);
+  check(std::fabs(player.station_gain(1) - 1.0) < 1e-6, "incoming station reaches full gain after 50 ms fade-in");
+
+  // 4. Programmatic switch keeps crossfade without a silence gap.
+  r.select(0, false);
+  player.render(buf.data(), 480);
+  check(player.station_gain(0) > 0.0 && player.station_gain(1) > 0.0 && player.switch_gap_remaining_s() == 0.0,
+        "programmatic station change crossfades without a silence gap");
+}
+
 }  // namespace
 
 int main() {
@@ -594,6 +656,7 @@ int main() {
   test_world_acoustics_and_reverb();
   test_phase_r2_5_acoustics_vo_radio_parity();
   test_r3_aud_10_vo_telemetry_skip_fade_and_mono_pan();
+  test_radio_switch_silence_gap_contract();
   if (g_failures > 0) {
     std::fprintf(stderr, "acoustics_vo_radio_tests: %d failure(s)\n", g_failures);
     return 1;

@@ -1042,6 +1042,32 @@ void AudioHost::radio_trigger_special(std::string_view gameplay_event) {
 }
 
 void AudioHost::radio_trigger_immediate(std::string_view gameplay_event) {
+  switch (audio::parse_radio_dj_state(gameplay_event)) {
+    case audio::RadioDjState::kFestivalWristband:
+      radio_wristband_awarded(0);
+      return;
+    case audio::RadioDjState::kSpecialWristband:
+      radio_wristband_ready(0);
+      return;
+    case audio::RadioDjState::kPostRace:
+    case audio::RadioDjState::kCycleRadioLogos:
+      // Recognized flow/HUD states (empty radiodj.post_race and HUD-only CHudRadioCycleLogos).
+      return;
+    case audio::RadioDjState::kNone:
+      break;
+  }
+  if (radio_) {
+    audio::RadioChannel ch = audio::RadioChannel::kImmediate;
+    if (audio::resolve_radio_event_channel(stock_radio_data_, audio::RadioChannel::kImmediate, gameplay_event, ch) &&
+        ch != audio::RadioChannel::kImmediate) {
+      if (ch == audio::RadioChannel::kFestivalUpdate) {
+        radio_trigger_festival_update(gameplay_event);
+      } else {
+        radio_trigger_special(gameplay_event);
+      }
+      return;
+    }
+  }
   note_radio_miss(audio::RadioChannel::kImmediate, gameplay_event);
   if (radio_) engine_.radio_trigger_immediate(gameplay_event);
 }

@@ -225,6 +225,27 @@ static void test_synthetic_pi_and_tuning() {
     fast_phys.values["Data_Car.CurbWeight"] = 1150.0;
     const auto r_fast = compute_pi(fast_phys, pset, synth_cfg, bands, &stk_phys);
     CHECK(r_mid.raw_pi > r_stock.raw_pi && r_fast.raw_pi > r_mid.raw_pi && r_fast.raw_pi <= 1.0);
+
+    // Lowering Sport/Race SpringDamper ride height and fitting a Sport/Race LSD both improve lap time.
+    cars::CarPhysics fwd_stk = stk_phys;
+    fwd_stk.values["Data_Drivetrain.DrivetypeID"] = 1.0;  // FWD
+    fwd_stk.values["Data_CarBody.ModelFrontStockRideHeight"] = 0.22;
+    fwd_stk.values["Data_CarBody.ModelRearStockRideHeight"] = 0.22;
+    fwd_stk.values["FrontSpringDamper.DefRideHeight"] = 0.22;
+    fwd_stk.values["RearSpringDamper.DefRideHeight"] = 0.22;
+    fwd_stk.values["List_UpgradeDrivetrainDifferential.FrontLimitedSlipTorqueAccel"] = 0.0;
+    const auto r_fwd_stk = compute_pi(fwd_stk, pset, synth_cfg, bands, &fwd_stk);
+
+    cars::CarPhysics fwd_low = fwd_stk;
+    fwd_low.values["FrontSpringDamper.DefRideHeight"] = 0.19;
+    fwd_low.values["RearSpringDamper.DefRideHeight"] = 0.19;
+    const auto r_fwd_low = compute_pi(fwd_low, pset, synth_cfg, bands, &fwd_stk);
+    CHECK(r_fwd_low.lap_time_s < r_fwd_stk.lap_time_s && r_fwd_low.raw_pi > r_fwd_stk.raw_pi);
+
+    cars::CarPhysics fwd_lsd = fwd_low;
+    fwd_lsd.values["List_UpgradeDrivetrainDifferential.FrontLimitedSlipTorqueAccel"] = 550.0;
+    const auto r_fwd_lsd = compute_pi(fwd_lsd, pset, synth_cfg, bands, &fwd_stk);
+    CHECK(r_fwd_lsd.lap_time_s < r_fwd_low.lap_time_s && r_fwd_lsd.raw_pi > r_fwd_low.raw_pi);
   }
 
   // garage.txt v2 round-trip with tune and livery.

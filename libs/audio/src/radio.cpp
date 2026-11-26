@@ -787,7 +787,10 @@ RadioPlayer::RadioPlayer(Radio& radio, int out_rate, bool non_blocking)
                                 s.rate > 0 ? s.rate : 48000);
   });
   station_gain_.assign(radio.data().stations.size(), 0.0);
-  if (radio.on()) station_gain_[size_t(radio.selected())] = 1;
+  if (radio.on()) {
+    station_gain_[size_t(radio.selected())] = 1;
+    last_selected_ = radio.selected();
+  }
   // Pre-allocate audio-thread scratch buffers so steady-state rendering never allocates.
   scratch_.reserve(32);
   mix_.resize(6 * 4096, 0.0f);
@@ -858,8 +861,22 @@ void RadioPlayer::render(float* out, int frames) {
   const RadioLevels& lv = data.levels;
   const double dt = double(frames) / rate_;
   const int sel = radio_.on() ? radio_.selected() : -1;
+  const bool user_change = radio_.last_change_was_user();
+  if (sel != last_selected_) {
+    if (user_change && last_selected_ >= 0 && sel >= 0) {
+      switch_gap_rem_s_ = kStationSwitchGapS;
+    } else if (!user_change) {
+      switch_gap_rem_s_ = 0.0;
+    }
+    last_selected_ = sel;
+  }
   bool fading = false;
   for (size_t s = 0; s < station_gain_.size(); ++s) fading |= station_gain_[s] > 0 && int(s) != sel;
+  int gap_frames = 0;
+  if (user_change && !fading && switch_gap_rem_s_ > 0.0) {
+    gap_frames = std::min(frames, int(std::llround(switch_gap_rem_s_ * rate_)));
+    switch_gap_rem_s_ = std::max(0.0, switch_gap_rem_s_ - dt);
+  }
   const double t0 = radio_.clock();
   // The clock runs while on, and while the last station fades to off.
   const double t1 = t0 + (sel >= 0 || fading ? dt : 0);
@@ -871,21 +888,35 @@ void RadioPlayer::render(float* out, int frames) {
   float* music = mix_.data();
   float* voice = mix_.data() + 2 * size_t(frames);
   float* ident = mix_.data() + 4 * size_t(frames);
-  const double fade_s = radio_.last_change_was_user() ? lv.change_fade : lv.change_fade_normal;
+  const double fade_s = user_change ? lv.change_fade : lv.change_fade_normal;
   const double fade_step = 1.0 / (std::max(0.01, fade_s) * rate_);
-  // A D-pad change fades the old station out, and the new one comes in only
-  // once it is silent, over 50 ms (Q335: the original dips to silence
-  // between stations; it does not crossfade). A change by the game (not
-  // measured) keeps the crossfade.
+  // A D-pad change fades the old station out, holds ~0.25 s of silence, and
+  // brings the new one in over 50 ms (Q335: the original dips to silence
+  // between stations; it does not crossfade). A change by the game keeps the
+  // crossfade over stationChangeFadeTimeNormal.
   constexpr double kStationFadeInS = 0.05;
-  const bool user_change = radio_.last_change_was_user();
   const double fade_in_step = user_change ? 1.0 / (kStationFadeInS * rate_) : fade_step;
   const double vol = std::clamp(volume, 0.0, 2.0);
   bool any_sel_dj = false;
   bool any_sel_festival = false;
   for (size_t s = 0; s < station_gain_.size(); ++s) {
-    const double target = int(s) == sel && !(fading && user_change) ? 1.0 : 0.0;
-    if (station_gain_[s] <= 0 && target <= 0) continue;
+    const bool hold_for_switch = user_change && (fading || gap_frames >= frames);
+    const double target = int(s) == sel && !hold_for_switch ? 1.0 : 0.0;
+    if (station_gain_[s] <= 0 && target <= 0) {
+      // Warm up the incoming station's decoder during the fade-out and silence hold
+      // so audio is ready immediately when the 50 ms fade-in begins.
+      if (int(s) == sel && hold_for_switch && t1 > t0) {
+        if (StationSchedule* sched = radio_.schedule(int(s))) {
+          sched->audible(t0, t1 + prefetch_s_, scratch_);
+          for (const auto& e : scratch_) {
+            const bool now_audible = e.start < t1 && e.end > t0;
+            const double approx_start = now_audible ? std::max(0.0, (t0 - e.start) * 48000.0) : 0.0;
+            if (Voice* v = voice_for(e, int64_t(approx_start))) v->used = true;
+          }
+        }
+      }
+      continue;
+    }
     StationSchedule* sched = radio_.schedule(int(s));
     if (!sched || t1 <= t0) {
       station_gain_[s] = target;
@@ -999,7 +1030,9 @@ void RadioPlayer::render(float* out, int frames) {
     const double st_vol = s < data.stations.size() ? std::clamp(data.stations[s].volume, 0.0, 2.0) : 1.0;
     double g = station_gain_[s];
     for (int i = 0; i < frames; ++i) {
-      g = target > g ? std::min(target, g + fade_in_step) : std::max(target, g - fade_step);
+      const double eff_target = (int(s) == sel && i < gap_frames) ? 0.0 : target;
+      g = eff_target > g ? std::min(eff_target, g + fade_in_step) : std::max(eff_target, g - fade_step);
+      if (eff_target == 0.0 && g < 1e-9) g = 0.0;
       if (int(s) == sel) duck_ = duck_target < duck_ ? std::max(duck_target, duck_ - duck_step)
                                                      : std::min(duck_target, duck_ + duck_step);
       const double duck = int(s) == sel ? duck_ : 1.0;

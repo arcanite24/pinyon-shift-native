@@ -105,4 +105,22 @@ std::vector<RadioDjCue> all_wristband_cues(const RadioDjRules& rules, int levels
 // station's).
 bool radio_has_event(const RadioData& data, RadioChannel channel, std::string_view event);
 
+// Flow/state names that callers (such as first_time_career) may pass instead of
+// a literal RadioSystem.xml gameplayEvent name.
+enum class RadioDjState {
+  kNone,
+  kFestivalWristband,  // radiodj.festival_wristband (award wristband updates)
+  kSpecialWristband,   // radiodj.special_wristband (wristband ready to collect)
+  kPostRace,           // radiodj.post_race (empty state on disc)
+  kCycleRadioLogos,    // first_time_career CycleRadioLogos (HUD-only CHudRadioCycleLogos)
+};
+
+// Recognises a flow/state name (case-insensitive, with optional "radiodj." prefix).
+RadioDjState parse_radio_dj_state(std::string_view name);
+
+// Resolves which RadioSystem.xml channel carries `event`, preferring `preferred`
+// before checking the remaining channels (immediate, festival update, special).
+bool resolve_radio_event_channel(const RadioData& data, RadioChannel preferred, std::string_view event,
+                                 RadioChannel& out_channel);
+
 }  // namespace audio

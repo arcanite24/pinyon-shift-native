@@ -80,6 +80,8 @@ struct VisualSetup {
   bool wheel_is_stock = true;
   bool wheel_is_exception = false;  // WheelExceptions (non-paintable)
   bool wheel_is_paintable = false;  // !wheel_is_stock && !wheel_is_chrome && !wheel_is_exception
+  bool has_rim_paint = false;       // LiveryPaintSection_Rims override (e.g. HeroCar 0x404040)
+  uint32_t rim_paint_rgb = 0;       // packed 0xRRGGBB when has_rim_paint is true
   int tire_compound_level = 0;  // 0=stock, 1=street (TireA), 2=sport (TireB), 3=race/5=rally (TireC/Rally)
   int tire_compound_id = 0;     // List_UpgradeTireCompound.TireCompoundID (9 = Rally)
   std::array<int64_t, 2> tyre_width_mm{0, 0};
