@@ -1358,7 +1358,14 @@ void DriveSession::reload_mod_textures() {
 
 void DriveSession::save_now(const char* why) {
         if (app.save_path.empty() || app.status != 0 || save_page.reload_pending()) return;
-        saving_shown_at = double(SDL_GetTicksNS()) * 1e-9;
+        {
+          // The SAVING notice for a save the game makes as it goes (the career's
+          // checkpoints, an award, a purchase), not the engine's own timed or
+          // background autosaves, its settings or the session's end.
+          const std::string_view w = why ? why : "";
+          if (w != "timer" && w != "background" && w != "end" && w != "settings" && w != "title")
+            saving_shown_at = double(SDL_GetTicksNS()) * 1e-9;
+        }
         drive::DriveSave s;
         s.car = !app.pre_loaner_car.empty() ? app.pre_loaner_car : app.car;
         const drive::Vec3 at = vehicle.position();
