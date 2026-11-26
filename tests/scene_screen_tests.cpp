@@ -1191,7 +1191,7 @@ int main() {
         hud_shot("hud_score_" + std::to_string(i++) + "_lost.png", "05_roam_hud_day_drive_orig.png", sk_d);
       }
       sk.lost_at = -1e9, sk.banked_at = 30.0, sk.banked_total = 1200;
-      for (double t : {30.3, 30.55, 31.0, 32.2}) {
+      for (double t : {30.3, 30.55, 31.0, 32.2, 33.8}) {
         sk_d.time = t;
         hud_shot("hud_score_" + std::to_string(i++) + "_banked.png", "05_roam_hud_day_drive_orig.png", sk_d);
       }

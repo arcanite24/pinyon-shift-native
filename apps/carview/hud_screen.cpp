@@ -582,7 +582,7 @@ constexpr double kBankSeconds = 2.62, kLostSeconds = 2.2, kRankSeconds = 4.0;
 // The disc after a bank: PopularityBar's SHOW (1.4 s), then HIDE, which
 // holds to 2.27 s and is out by 2.67 s (the original's disc is gone about
 // 4.1 s after the bank, first30b).
-constexpr double kDiscSeconds = 4.07, kDiscFadeFrom = 3.67;
+constexpr double kDiscSeconds = 4.07, kDiscFadeFrom = 3.67, kDiscShowSeconds = 1.401;
 // Without the slides, the banked total's measured fade (3.0..3.5 s).
 constexpr double kBankHoldSeconds = 3.0;
 // With ScoreGroup's slides: a lost chain's ABORT runs its 0.6 s timer, then
@@ -591,7 +591,7 @@ constexpr double kScoreAbortSeconds = 0.6, kScoreShowMs = 300.0;
 // Skill1's slides: SHOWSKILL as a skill lands (its curves end by 0.6 s),
 // WARNINGSKILL over the chain's last 1.2 s (its pulse at 30..50 % alpha,
 // the original's greyed line before a bank).
-constexpr double kSkillShowSeconds = 0.6, kSkillWarnSeconds = 1.2;
+constexpr double kSkillShowSeconds = 0.6, kSkillWarnSeconds = 1.2, kSkillWarnHoldSeconds = 1.0;
 // Multiplier's ANIMATE as the multiplier changes (its curves end by 0.2 s).
 constexpr double kMultAnimateSeconds = 0.3;
 
@@ -704,7 +704,12 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     for (int c : {child(sd, mult_h, "Background"), child(sd, mult_h, "Smudge_Tape"), child(sd, mult, "Flash"),
                   child_path(sd, score, "Total/Flash")})
       sc.hide(c);
-    const int shown = banked && !sk.active ? sk.banked_total : sk.chain_points;
+    // A lost chain shows the total it had (the tracker has cleared it by then).
+    static int live_points = 0;
+    if (sk.active) live_points = sk.chain_points;
+    const int shown = banked && !sk.active                       ? sk.banked_total
+                      : lost && !sk.active && sk.chain_points == 0 ? live_points
+                                                                   : sk.chain_points;
     const std::string total = thousands(shown);
     if (sk.active) {
       pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, skill_multiplier_text(sk)}}, cx, {kScoreGap, 0.0f});
@@ -736,8 +741,10 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     const double left = sk.chain_remaining_s;
     std::string_view slide = "SHOWNSKILL";
     double ms = 0.0;
-    if (left > 0.0 && left < kSkillWarnSeconds && since_skill >= kSkillShowSeconds) {
-      slide = "WARNINGSKILL", ms = (kSkillWarnSeconds - left) * 1000.0;
+    if (left < kSkillWarnSeconds && since_skill >= kSkillShowSeconds) {
+      // Past the timer while a drift or burnout still holds the bank, the
+      // pulse's last dim step holds (its end, alpha 0, is the bank).
+      slide = "WARNINGSKILL", ms = std::min(kSkillWarnSeconds - left, kSkillWarnHoldSeconds) * 1000.0;
     } else if (since_skill >= 0.0 && since_skill < kSkillShowSeconds) {
       slide = "SHOWSKILL", ms = since_skill * 1000.0;
     }
@@ -777,14 +784,31 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
                            ? 1.0f - float(std::clamp((since_bank - kDiscFadeFrom) / (kDiscSeconds - kDiscFadeFrom),
                                                      0.0, 1.0))
                            : 1.0f;
-    sc.bindings().opacity = fade;
+    // PopularityBar's SHOW (1.4 s) then HIDE after a bank; SHOWN for a rank
+    // change on its own.
+    static SceneTimeline pop_tl;
+    const bool showing = disc_banked && since_bank < kDiscShowSeconds;
+    const std::string_view pop_slide = !disc_banked ? "SHOWN" : showing ? "SHOW" : "HIDE";
+    const double pop_ms = !disc_banked ? 0.0 : showing ? since_bank * 1000.0 : (since_bank - kDiscShowSeconds) * 1000.0;
+    float arc_alpha = fade;
+    if (play_slide(sc, pop_tl, pop, pop_slide, pop_ms, true)) {
+      // The fill rides with the disc's backgrounds (in from 0.59 s, out by
+      // HIDE's 2.67 s).
+      if (auto it = sc.bindings().anim.find(child(sd, pop, "Backgrounds"));
+          it != sc.bindings().anim.end() && it->second.opacity)
+        arc_alpha = *it->second.opacity;
+      raise_all(sc, pop);
+    } else {
+      sc.bindings().opacity = fade;
+    }
     sc.draw(l, f, pop);
+    sc.bindings().opacity = 1.0f;
     // The ring's fill (the scene's quarter pieces are turned by the game; an
     // arc along the same groove here).
     const auto c = sd.at(pop);
     const float r = kDiscFillRadius * f.s, a0 = kDiscFillStart;
     l.arc(f.x(c[0]), f.y(c[1]), r, kDiscFillWidth * f.s, a0, a0 + anim.radial_progress * kDiscFillSweep,
-          ui::fade(kSkillYellow, fade), true);
+          ui::fade(kSkillYellow, arc_alpha), true);
   }
   return true;
 }
