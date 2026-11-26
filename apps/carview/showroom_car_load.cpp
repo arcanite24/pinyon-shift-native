@@ -1823,10 +1823,11 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   return true;
 }
 
-uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack, bool lod0) {
+uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack, bool lod0, bool optional) {
   if (slot.empty()) return UINT32_MAX;
   const bake::Bake* source = nullptr;
   std::string member, key;
+  bool allow_shared_fallback = false;
   if (slot == "@atlas") {
     const auto& colours = car_.car.colours;
     if (colours.empty()) return UINT32_MAX;
@@ -1839,6 +1840,7 @@ uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack
     member = slot.substr(4);
     source = &car_;
     key = slot;
+    allow_shared_fallback = !optional;
   } else if (slot.rfind("wheel:", 0) == 0) {
     member = slot.substr(6);
     source = &pack;
@@ -1857,13 +1859,39 @@ uint32_t Showroom::texture_index(const std::string& slot, const bake::Bake& pack
     key = "car:livery_mask";
   }
   if (!source) return UINT32_MAX;
-  if (auto it = texture_by_key_.find(key); it != texture_by_key_.end()) return it->second;
-  const bake::Texture* found = nullptr;
-  for (const auto& t : source->textures)
-    if (t.name == member) found = &t;
+  if (auto it = texture_by_key_.find(key); it != texture_by_key_.end()) {
+    if (it->second != UINT32_MAX || optional) return it->second;
+  }
+  auto find_in = [](const bake::Bake& b, const std::string& name) -> const bake::Texture* {
+    const std::string low = lower(name);
+    for (const auto& t : b.textures) {
+      if (t.name == name || lower(t.name) == low) return &t;
+    }
+    return nullptr;
+  };
+  const bake::Texture* found = find_in(*source, member);
+  if (!found && allow_shared_fallback && source != &shared_) {
+    const std::string shared_key = "shared:" + lower(member);
+    if (auto it = texture_by_key_.find(shared_key); it != texture_by_key_.end() && it->second != UINT32_MAX) {
+      texture_by_key_[key] = it->second;
+      return it->second;
+    }
+    found = find_in(shared_, member);
+    if (found) {
+      const uint32_t index = uint32_t(textures_.size());
+      textures_.push_back({found, shared_key});
+      texture_by_key_[shared_key] = index;
+      texture_by_key_[key] = index;
+      return index;
+    }
+  }
   if (!found) {
-    notes_.push_back("missing texture " + key);
-    texture_by_key_[key] = UINT32_MAX;
+    if (!optional) {
+      if (texture_by_key_.find(key) == texture_by_key_.end()) {
+        notes_.push_back("missing texture " + key);
+      }
+      texture_by_key_[key] = UINT32_MAX;
+    }
     return UINT32_MAX;
   }
   const uint32_t index = uint32_t(textures_.size());

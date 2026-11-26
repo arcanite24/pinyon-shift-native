@@ -165,7 +165,7 @@ float eval_auto_exposure() {
   }
   // Exact SKY_AND_TOD §5.2 EV formula with daylight-to-night HDR calibration offset
   // matching FH1's Colorado sky & asphalt luminance without crushing night headlights.
-  float calib_ev = mix(-0.42, -0.92, smoothstep(1.5, 14.0, L));
+  float calib_ev = mix(-0.42, -0.74, smoothstep(1.5, 14.0, L));
   float ev_total = clamp(ev_curve + p.def.w + calib_ev, -2.0, 6.0);
   return exp2(ev_total);
 }
@@ -538,8 +538,8 @@ void main() {
         vec2 asp = vec2(aspect, 1.0);
         vec2 d_sun = (v_uv - sun_uv) * asp;
         float r_sun = length(d_sun);
-        float halo = exp(-r_sun * 7.5) * 0.24;
-        float streak = exp(-abs(d_sun.y) * 76.0) * exp(-abs(d_sun.x) * 3.0) * 0.24;
+        float halo = exp(-r_sun * 4.2) * 0.34 + exp(-r_sun * 11.0) * 0.24;
+        float streak = exp(-abs(d_sun.y) * 72.0) * exp(-abs(d_sun.x) * 2.8) * 0.26;
         vec3 flare = opt.sun_color.rgb * (halo + streak);
 
         // Delicate hollow chromatic iris rings attenuated over the foreground player car hull.

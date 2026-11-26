@@ -268,8 +268,12 @@ vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
   float d = length(to);
   vec3 view_dir = to / max(d, 1e-3);
   if (frame.sun_color.w >= 0.0) {
-    // Dynamic TOD atmospheric fog (SPEC-SKY-AND-TOD §4): exponential distance +
-    // altitude smoothstep fade + Mie-like sun in-scattering.
+    // Dynamic TOD atmospheric fog (SPEC-SKY-AND-TOD §4): exponential valley distance fog +
+    // high-altitude Rayleigh/Mie aerial perspective + golden-hour sun in-scattering so distant
+    // Colorado peaks wash warmly into the horizon instead of sitting as dark silhouettes.
+    float sun_elev = dot(sun, up);
+    float day_vis = smoothstep(-0.06, 0.14, sun_elev) * (1.0 - clamp(frame.sky_color.w, 0.0, 1.0));
+    float golden = (1.0 - smoothstep(0.06, 0.52, max(sun_elev, 0.0))) * day_vis;
     float fog_start = frame.fog_color.w;
     float fog_dens = max(frame.fog_params.x, 0.0);
     float t_dist = exp2(-max(d - fog_start, 0.0) * fog_dens);
@@ -281,12 +285,17 @@ vec3 apply_haze(vec3 colour, vec3 position, vec3 up, vec3 sun) {
     // Raise the maximum fog cap smoothly from 0.92 toward 1.0 across the far-ring boundary so
     // distant UberLOD/MIDDIST mountain silhouettes merge cleanly into the sky horizon fog skirt.
     float max_fog = mix(0.92, 1.0, smoothstep(3200.0, 7500.0, d));
-    float fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, max_fog);
+    float valley_fog = fog_dist * (1.0 - h_smooth * frame.fog_params.w * 0.65);
+    float aerial_dist = (1.0 - exp(-max(d - 160.0, 0.0) * (0.00028 + 0.00024 * golden))) * day_vis * 0.72;
+    float fog_amt = clamp(max(valley_fog, aerial_dist), 0.0, max_fog);
     float far_edge = smoothstep(6500.0, 11500.0, d);
     fog_amt = max(fog_amt, far_edge);
-    float sc_dist = clamp(d / 8000.0, 0.0, 1.0);
-    float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
+    float sc_dist = smoothstep(100.0, 2200.0, d);
+    float cos_sun = clamp(dot(view_dir, sun), 0.0, 1.0);
+    float sc_ang = pow(cos_sun, max(frame.fog_scatter.w, 1.0));
     vec3 fog_col = mix(frame.fog_color.rgb, frame.fog_scatter.rgb, sc_dist * sc_ang);
+    // Warm golden-hour forward Mie aerial veil on sunward ridges and peaks.
+    fog_col += frame.sun_color.rgb * (pow(cos_sun, 4.0) * sc_dist * golden * 0.42);
     return colour * (1.0 - fog_amt) + fog_amt * fog_col;
   }
   // Legacy fallback when TOD is not set.
@@ -303,15 +312,16 @@ vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : 
 
 // 3-cascade stabilized D32 CSM + Contact-Hardening PCSS (Near ~20m, Mid ~90m, Far ~320m)
 // with fast 2-cascade PCF fallback on low/low-power presets.
+// Balanced Vogel-spiral 16-tap disk for even world shadow PCSS coverage.
 const vec2 kPcssDisk[16] = vec2[16](
-    vec2(-0.613392,  0.617481), vec2( 0.170019, -0.040254),
-    vec2(-0.299417,  0.791925), vec2( 0.645680,  0.493210),
-    vec2(-0.651784,  0.717887), vec2( 0.421003,  0.027070),
-    vec2(-0.817194, -0.271096), vec2(-0.705374, -0.668203),
-    vec2( 0.977050, -0.108615), vec2( 0.063326,  0.142369),
-    vec2( 0.203528,  0.214331), vec2(-0.667531,  0.326090),
-    vec2(-0.098422, -0.295755), vec2(-0.885922,  0.215369),
-    vec2( 0.566637,  0.605213), vec2( 0.039766, -0.396100));
+    vec2( 0.1768,  0.0000), vec2(-0.2256,  0.2072),
+    vec2( 0.0329, -0.3944), vec2( 0.3037,  0.3554),
+    vec2(-0.5250, -0.0771), vec2( 0.4820, -0.3358),
+    vec2(-0.1449,  0.6213), vec2(-0.3401, -0.5920),
+    vec2( 0.7037,  0.2030), vec2(-0.7429,  0.2498),
+    vec2( 0.4150, -0.7069), vec2( 0.1558,  0.8339),
+    vec2(-0.7052, -0.5315), vec2( 0.9035, -0.1655),
+    vec2(-0.6203,  0.7130), vec2( 0.0238, -0.9680));
 
 float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
@@ -1067,12 +1077,18 @@ void main() {
     }
   }
 
-  // TrackSettings.xml TrackLightMapParams (scale & AO floor) on _LM draws without LayerC/Road/Decal params.
+  // TrackSettings.xml TrackLightMapParams (scale & AO floor) on _LM draws, and
+  // negative decal_noise_c4.y sentinel carrying authored c2.x reflection strength on
+  // H_DIFF_SPEC_REFL_* props (such as Horizon Festival hub arches).
   float lm_scale = 1.4;
   float ao_floor = 0.05;
-  if ((flags & kFlagLightMap) != 0u && (flags & (kFlagLayerC | kFlagRoad | kFlagVertexFade)) == 0u) {
+  float refl_strength = 0.0;
+  if ((flags & (kFlagLayerC | kFlagRoad | kFlagVertexFade | kFlagWater | kFlagBillboard)) == 0u) {
     vec2 lmp = unpackHalf2x16(floatBitsToUint(draw.params.w));
-    if (lmp.x > 0.01 && lmp.x <= 6.0) {
+    if (lmp.y < -0.01 && lmp.y >= -4.5) {
+      refl_strength = -lmp.y;
+      if ((flags & kFlagLightMap) != 0u && lmp.x > 0.01 && lmp.x <= 6.0) lm_scale = lmp.x;
+    } else if ((flags & kFlagLightMap) != 0u && lmp.x > 0.01 && lmp.x <= 6.0) {
       lm_scale = lmp.x;
       if (lmp.y >= 0.0 && lmp.y <= 0.5) ao_floor = lmp.y;
     }
@@ -1104,7 +1120,7 @@ void main() {
     } else if ((flags & (kFlagRoad | kFlagSky)) == 0u) {
       // Subtle ambient lift on distant Colorado forested hillsides so calibrated daylight
       // exposure preserves warm hillside detail matching FH1 without washing out roads.
-      hemi_amb += frame.ambient_color.rgb * 0.18 * ibl_amb;
+      hemi_amb += frame.ambient_color.rgb * 0.26 * ibl_amb;
     }
   }
   hemi_amb *= shadow_ambient_tint((1.0 - shade) * shadow_scale);
@@ -1151,17 +1167,56 @@ void main() {
   float road_layer_gloss = mix(1.0, 0.34, layer_b_w) * mix(1.0, 0.22, layer_c_w);
   float terrain_layer_spec = mix(1.0, 0.50, layer_b_w) * mix(1.0, 0.36, layer_c_w);
   float terrain_layer_gloss = mix(32.0, 12.0, clamp(layer_b_w * 0.72 + layer_c_w * 0.88, 0.0, 1.0));
+  float refl_mask = mix(0.75, 1.0, sqrt(clamp(spec_mask, 0.0, 1.0)));
   if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
     surf_gloss = clamp((0.20 + 0.28 * spec_mask) * road_spec_mod * road_layer_spec, 0.04, 0.52);
+  } else if (refl_strength > 0.01) {
+    surf_gloss = clamp(0.32 + 0.36 * refl_mask, 0.30, 0.68);
   } else if (has_real_spec) {
     surf_gloss = clamp((0.10 + 0.22 * spec_mask) * terrain_layer_spec, 0.0, 0.34);
+  }
+  if (refl_strength > 0.01 && (flags & kFlagBillboard) == 0u) {
+    // H_DIFF_SPEC_REFL_* glossy fiberglass/metal reflection (e.g. Horizon Festival hub arch bases):
+    // honor authored c2.x cubemap reflection intensity with Schlick Fresnel + hemisphere bounce so
+    // dark charcoal painted structures show clear sky/sun sheen and 3D bevel form instead of black voids.
+    float nv_r = clamp(dot(n, view), 0.0, 1.0);
+    vec3 r_dir = reflect(-view, n);
+    float r_up = dot(r_dir, up);
+    if (r_up < 0.04) r_dir = normalize(r_dir + up * (0.04 - r_up));
+    float refl_mip = mix(2.5, 1.2, clamp(refl_strength * 0.45, 0.0, 1.0));
+    vec3 env_refl = (frame.shadow_far_bias.z > 0.5)
+                        ? textureLod(environment, render_to_game_dir(r_dir), refl_mip).rgb
+                        : sky_colour(r_dir, up, sun);
+    float up_fac = clamp(dot(n, up) * 0.5 + 0.5, 0.0, 1.0);
+    vec3 bounce_floor = mix(gnd_col, sky_col, 0.25 + 0.55 * up_fac) * ibl_amb * 0.72;
+    env_refl = max(env_refl, bounce_floor);
+    float fres_refl = (0.15 + 0.65 * pow(1.0 - nv_r, 3.0)) * refl_mask *
+                      clamp(refl_strength * 0.42, 0.18, 0.88);
+    vec3 satin_sheen = hemi_amb * (0.07 + 0.08 * up_fac) * refl_mask;
+    colour += (env_refl * fres_refl * mix(0.62, 1.0, shade) + satin_sheen) * ao * draw.up.w;
+  }
+  if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
+    // Grazing sky & sun-horizon Fresnel sheen on sunlit asphalt (matte gravel shoulders stay muted;
+    // gated by solar elevation so night roads stay crisp under headlights and streetlamps).
+    float road_day = smoothstep(-0.04, 0.16, dot(up, sun)) * (1.0 - clamp(frame.sky_color.w, 0.0, 1.0));
+    if (road_day > 0.001) {
+      float nv_road = clamp(dot(n, view), 0.0, 1.0);
+      vec3 road_refl_dir = reflect(-view, n);
+      float road_sun_align = pow(max(dot(road_refl_dir, sun), 0.0), 4.5);
+      vec3 road_env_col = mix(sky_col * ibl_amb * 1.15 + frame.fog_color.rgb * 0.35,
+                              max(frame.fog_scatter.rgb * 1.45, sun_col * 0.85),
+                              road_sun_align);
+      float road_env_fres = (0.04 + 0.28 * pow(1.0 - nv_road, 3.8)) * road_layer_spec * road_spec_mod *
+                            mix(0.45, 1.0, shade) * ao * road_day;
+      colour += road_env_col * road_env_fres * draw.up.w;
+    }
   }
   if (ndl > 0.0 && (flags & kFlagBillboard) == 0u) {
     vec3 h_v = normalize(view + sun);
     float nv_s = clamp(dot(n, view), 0.0, 1.0);
     if ((flags & kFlagRoad) != 0u) {
       // FH1 H_ROAD asphalt specular (TrackSettings.xml RoadSpecular / RoadGlossiness)
-      // with crisp Layer A asphalt vs matte Layer B/C gravel/shoulder contrast.
+      // with strong golden-hour grazing highway sheen and crisp Layer B/C gravel contrast.
       float road_spec_scale = 0.72;
       float road_gloss = 42.0;
       if ((flags & kFlagLayerC) == 0u) {
@@ -1170,11 +1225,19 @@ void main() {
         if (rp.y >= 4.0 && rp.y <= 256.0) road_gloss = rp.y;
       }
       float eff_gloss = max(road_gloss * road_layer_gloss, 6.0);
-      float fres_r = 0.04 + 0.30 * pow(1.0 - nv_s, 4.0);
+      float fres_r = 0.05 + 0.58 * pow(1.0 - nv_s, 3.5);
       float nh_r = max(dot(n, h_v), 0.0);
-      float spec_r = (pow(nh_r, eff_gloss) * 0.62 + pow(nh_r, max(eff_gloss * 0.24, 4.0)) * 0.14) *
-                     (road_spec_scale / 0.72) * road_layer_spec * fres_r * spec_mask * road_spec_mod * ndl * shade * ao;
+      float road_sun_vis = smoothstep(0.0, 0.14, ndl) * mix(0.55, 1.0, ndl);
+      float spec_r = (pow(nh_r, eff_gloss) * 0.78 + pow(nh_r, max(eff_gloss * 0.18, 3.5)) * 0.34) *
+                     (road_spec_scale / 0.72) * road_layer_spec * fres_r * spec_mask * road_spec_mod *
+                     road_sun_vis * shade * ao;
       colour += sun_col * spec_r * draw.up.w;
+    } else if (refl_strength > 0.01) {
+      float nh_g = max(dot(n, h_v), 0.0);
+      float fres_g = 0.14 + 0.48 * pow(1.0 - nv_s, 3.2);
+      float spec_g = (pow(nh_g, 6.5) * 0.42 + pow(nh_g, 36.0) * 0.48) *
+                     fres_g * refl_mask * ndl * shade * ao;
+      colour += sun_col * spec_g * draw.up.w;
     } else if (((flags & kFlagNormalMap) != 0u) || has_real_spec) {
       float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
       float spec = pow(max(dot(n, h_v), 0.0), terrain_layer_gloss) * fres * spec_mask * terrain_layer_spec *

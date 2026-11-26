@@ -178,14 +178,14 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         }
       } else if (klass == MaterialClass::kGauge && technique == "gauge_emissive") {
         // Prefer real backlit dial texture when available on gauge_emissive cluster faces.
-        if (texture_index("car:interior_emissive_lod0.xds", pack, true) != UINT32_MAX) {
+        if (texture_index("car:interior_emissive_lod0.xds", pack, true, /*optional=*/true) != UINT32_MAX) {
           slot1 = "car:interior_emissive_lod0.xds";
         }
       }
       // Pre-register wheel0..3.xds speed-tier blur textures when present in the wheel pack.
       if (d.is_blur_rim) {
         for (const char* wtex : {"wheel:wheel0.xds", "wheel:wheel1.xds", "wheel:wheel2.xds", "wheel:wheel3.xds"}) {
-          (void)texture_index(wtex, pack, s.lod == 0);
+          (void)texture_index(wtex, pack, s.lod == 0, /*optional=*/true);
         }
       }
       // Glass techniques never sample the body atlas (FORMAT-CARS, Paint):
@@ -197,7 +197,8 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       d.uses_atlas = (!flat_glass && s.slots[0] == "@atlas");
       d.atlas_lod0 = (s.lod == 0);
       const uint32_t t0 = flat_glass ? UINT32_MAX : texture_index(s.slots[0], pack, s.lod == 0);
-      uint32_t t1 = texture_index(slot1, pack, s.lod == 0);
+      const bool t1_has_fallback = (slot1 == "car:interior_emissive_lod0.xds" || slot1 == "car:lights.xds");
+      uint32_t t1 = texture_index(slot1, pack, s.lod == 0, /*optional=*/t1_has_fallback);
       if (t1 == UINT32_MAX && slot1 == "car:interior_emissive_lod0.xds") {
         t1 = texture_index("car:interior_lod0.xds", pack, s.lod == 0);
       } else if (t1 == UINT32_MAX && slot1 == "car:lights.xds") {
@@ -287,17 +288,23 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         std::memcpy(d.push.tint, c, sizeof c);
       }
       // Resolve per-draw normal map (slot 3, linear srgb=false) and damage atlas (slot 4).
-      auto try_tex = [&](std::initializer_list<const char*> candidates) -> uint32_t {
+      // Probe optional per-car overrides silently before falling back to Shared.zip so
+      // shared interior normal maps (plastic/plastic2/leather/stitches) emit zero false
+      // missing-texture notes when resolved via media/cars/Shared.zip.
+      auto try_tex = [&](std::initializer_list<const char*> candidates, bool warn_if_missing = false) -> uint32_t {
         for (const char* c : candidates) {
-          const uint32_t idx = texture_index(c, pack, s.lod == 0);
+          const uint32_t idx = texture_index(c, pack, s.lod == 0, /*optional=*/true);
           if (idx != UINT32_MAX) return idx;
+        }
+        if (warn_if_missing && candidates.size() > 0) {
+          (void)texture_index(*candidates.begin(), pack, s.lod == 0, /*optional=*/false);
         }
         return UINT32_MAX;
       };
       uint32_t t_nrm = UINT32_MAX;
       bool nrm_uv1 = false;
       if (klass == MaterialClass::kCarbon) {
-        t_nrm = try_tex({"shared:carbonfibernormal.xds"});
+        t_nrm = try_tex({"shared:carbonfibernormal.xds"}, true);
         nrm_uv1 = true;
       } else if (klass == MaterialClass::kTyre) {
         if (technique == "sidewall") t_nrm = try_tex({"tyre:sidewall_nrm"});
@@ -305,25 +312,25 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
       } else if (klass == MaterialClass::kInterior) {
         nrm_uv1 = true;
         if (technique == "bump_leather2" || technique == "leather2") {
-          t_nrm = try_tex({"car:leather2_nrm.xds", "shared:leather2_nrm.xds", "shared:leather_nrm.xds"});
+          t_nrm = try_tex({"car:leather2_nrm.xds", "shared:leather2_nrm.xds", "shared:leather_nrm.xds"}, true);
         } else if (technique == "bump_leather3" || technique == "leather3") {
-          t_nrm = try_tex({"car:leather3_nrm.xds", "shared:leather3_nrm.xds", "shared:leather_nrm.xds"});
+          t_nrm = try_tex({"car:leather3_nrm.xds", "shared:leather3_nrm.xds", "shared:leather_nrm.xds"}, true);
         } else if (technique == "bump_leather" || technique == "leather") {
-          t_nrm = try_tex({"car:leather_nrm.xds", "shared:leather_nrm.xds"});
+          t_nrm = try_tex({"car:leather_nrm.xds", "shared:leather_nrm.xds"}, true);
         } else if (technique == "bump_plastic2" || technique == "plastic2") {
-          t_nrm = try_tex({"car:plastic2_nrm.xds", "shared:plastic2_nrm.xds", "shared:plastic_nrm.xds"});
+          t_nrm = try_tex({"car:plastic2_nrm.xds", "shared:plastic2_nrm.xds", "shared:plastic_nrm.xds"}, true);
         } else if (technique == "bump_plastic3" || technique == "plastic3") {
-          t_nrm = try_tex({"car:plastic3_nrm.xds", "shared:plastic3_nrm.xds", "shared:plastic_nrm.xds"});
+          t_nrm = try_tex({"car:plastic3_nrm.xds", "shared:plastic3_nrm.xds", "shared:plastic_nrm.xds"}, true);
         } else if (technique == "bump_plastic" || technique == "plastic") {
-          t_nrm = try_tex({"car:plastic_nrm.xds", "shared:plastic_nrm.xds"});
+          t_nrm = try_tex({"car:plastic_nrm.xds", "shared:plastic_nrm.xds"}, true);
         } else if (technique == "stitching" || technique == "bump_stitching") {
-          t_nrm = try_tex({"car:stitches_nrm.xds", "shared:stitches_nrm.xds"});
+          t_nrm = try_tex({"car:stitches_nrm.xds", "shared:stitches_nrm.xds"}, true);
         } else if (technique == "cloth" || technique == "cloth2") {
-          t_nrm = try_tex({"shared:cloth_nrm_s_lod0.xds"});
+          t_nrm = try_tex({"shared:cloth_nrm_s_lod0.xds"}, true);
         } else if (technique == "headliner" || technique == "headliner2") {
-          t_nrm = try_tex({"shared:headliner_nrm_s_lod0.xds"});
+          t_nrm = try_tex({"shared:headliner_nrm_s_lod0.xds"}, true);
         } else if (technique == "mottled" || technique == "mottled2") {
-          t_nrm = try_tex({"shared:mottled_nrm_s_lod0.xds"});
+          t_nrm = try_tex({"shared:mottled_nrm_s_lod0.xds"}, true);
         }
       }
       if (t_nrm != UINT32_MAX) {

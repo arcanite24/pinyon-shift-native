@@ -191,7 +191,7 @@ void main() {
     // 1. Shadowed volumetric sun shafts + warm aerial perspective scattering.
     if (sun_vis > 0.01) {
       float lit = sample_csm_vol(P);
-      float shaft_gain = vol.sun_col_str.w * (0.45 + 1.45 * golden_hour);
+      float shaft_gain = vol.sun_col_str.w * (0.55 + 1.85 * golden_hour);
       // Aerial perspective ambient mist + directional Mie sun shafts.
       step_in += vol.sun_col_str.rgb * (lit * sun_phase * shaft_gain);
       step_in += vol.fog_col_dens.rgb * (0.14 + 0.12 * lit) * sun_vis;

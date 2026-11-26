@@ -1249,7 +1249,7 @@ class Showroom {
   const cars::bake::StockRow* stock_ = nullptr;
   void add_model(const cars::bake::Model& model, const std::vector<std::string>& parts,
                  const float transform[16], const cars::bake::Bake& pack, int axle);
-  uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0);
+  uint32_t texture_index(const std::string& slot, const cars::bake::Bake& pack, bool lod0, bool optional = false);
   bool upload_texture(const cars::bake::Texture* texture, bool srgb, GpuTexture& out, std::string& error);
   struct TextureUploadItem {
     const cars::bake::Texture* texture = nullptr;

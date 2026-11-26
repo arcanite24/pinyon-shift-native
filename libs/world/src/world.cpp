@@ -299,6 +299,7 @@ ResolvedMaterialSlots resolve_effect_material(
   const bool has_noise = has_tok("_NOISE");
   const bool has_modulate = has_tok("_MODULATE");
   const bool has_mask = has_tok("_MASK");
+  const bool has_refl = has_tok("_REFL");
 
   if (vblend) out.weight_gain = constant(4)[0];
   if ((vblend && !decal) || splat || starts("H_BLND1")) mm.tiling = constant(0);
@@ -431,6 +432,16 @@ ResolvedMaterialSlots resolve_effect_material(
     if (!road && !decal && mm.layer_c == kNoTexture) {
       mm.decal_noise_c4 = {track_settings.lightmap_scale, track_settings.lightmap_ao_floor};
     }
+  }
+  // Reflective world/prop effects (H_DIFF_SPEC_REFL_*, e.g. Horizon Festival hub arches):
+  // carry authored cubemap reflection strength c2.x via negative decal_noise_c4[1] sentinel
+  // while preserving lightmap_scale in decal_noise_c4[0].
+  if (has_refl && !mm.is_water && !road && !decal && !starts("H_INT_") && mm.layer_c == kNoTexture) {
+    const float raw_refl = (pixel_constants.size() > 2 && std::isfinite(pixel_constants[2][0]) &&
+                            pixel_constants[2][0] > 0.01f)
+                               ? pixel_constants[2][0]
+                               : 1.0f;
+    mm.decal_noise_c4 = {track_settings.lightmap_scale, -std::clamp(raw_refl, 0.15f, 4.0f)};
   }
   // The hub rooms' interior effects (H_INT_*, uiautoshow / uiworkshop /
   // uipaintshop; Q222, decoded from their pixel shaders): c0.xy tiles the
@@ -1574,6 +1585,14 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       }
       const bool fading = options.render_data && options.prop_near_radius > 0;
       const bool resolvable = impl_->prop_models->model(m) != nullptr;
+      if (!resolvable) {
+        const bool no_tex_list =
+            (m < 1 || m - 1 >= impl_->table.model_textures.size() || impl_->table.model_textures[m - 1].empty());
+        if (no_tex_list && impl_->source.contains(std::to_string(m) + ".fiz")) {
+          ++st.props_physics_only;
+          continue;
+        }
+      }
       // The levels drawn here, with their fade classes.
       struct Level {
         int64_t member = -1;

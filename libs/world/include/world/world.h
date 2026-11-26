@@ -311,6 +311,7 @@ struct GatherStats {
   size_t props_hidden = 0;   // named props left out (GatherOptions::hidden)
   size_t props_markers = 0;  // placements of the Temp_Arrow_Pointer marker, left out
   size_t props_beacons = 0;  // placements of the gameplay beacon (coloradoout.06509), left out
+  size_t props_physics_only = 0;  // physics-only <member>.fiz PVS entries with no render model
   size_t props_near_lod = 0;  // with prop_near_radius: the LOD00 copies added beside LOD02
   std::map<std::string, size_t> materials;  // triangles per material name
   std::map<std::string, size_t> object_names;  // world-space triangles per mesh object name

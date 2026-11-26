@@ -377,7 +377,8 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     if (flags & 16384u) {
       d.push.params[3] = pack_half2x16_float(mat.tiling_c[0], mat.tiling_c[1]);
     } else if (((flags & 16u) && (flags & 2097152u)) || (flags & 1048576u) || (flags & 2048u) ||
-               ((flags & 8388608u) && mat.interior)) {
+               ((flags & 8388608u) && mat.interior) ||
+               (mat.decal_noise_c4[1] < -0.001f && !mat.is_road && !mat.is_water && mat.layers != 3 && mat.layers != 4)) {
       d.push.params[3] = pack_half2x16_float(mat.decal_noise_c4[0], mat.decal_noise_c4[1]);
     } else {
       d.push.params[3] = 1.0f;

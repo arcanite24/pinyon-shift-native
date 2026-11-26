@@ -51,14 +51,14 @@ float eval_auto_exposure() {
   }
   // Exact SKY_AND_TOD §5.2 EV formula with daylight-to-night HDR calibration offset
   // matching FH1's Colorado sky & asphalt luminance without crushing night headlights.
-  float calib_ev = mix(-0.42, -0.92, smoothstep(1.5, 14.0, L));
+  float calib_ev = mix(-0.42, -0.74, smoothstep(1.5, 14.0, L));
   float ev_total = clamp(ev_curve + p.def.w + calib_ev, -2.0, 6.0);
   return exp2(ev_total);
 }
 
 float karis_weight(vec3 c) {
   float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-  return 1.0 / (1.0 + max(luma, 0.0));
+  return 1.0 / (1.0 + max(luma, 0.0) * 0.45);
 }
 
 vec3 soft_threshold(vec3 c, float exp_scale) {
