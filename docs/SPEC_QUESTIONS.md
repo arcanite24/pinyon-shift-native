@@ -5285,7 +5285,17 @@ the last skill until the score is gone.
   not traced, and some may cut.
 - **The load hand-off.** The flow blacks out after a load and runs
   `fade_in`; the engine starts that fade on the frame the load screen
-  closes, and also after the boot load when there is no title.
+  closes, and also after the boot load when there is no title. Its clock
+  is the game's frame time. Each step is clamped to 0.05 s, and a frame
+  that does not advance the game clock counts 1/60 s. A logged boot
+  hand-off ran 59 frames and was clear by 0.88 s of game time. The first
+  frames after a load are slow, so on the wall clock the
+  capture (`load_handoff_fade_sheet_anim2.png`, 0.25 s apart) stretches to
+  about 1.25 s. Whether the original's fade counts game or wall time is
+  not known. Only the boot hand-off is captured. The title's load, the
+  world loads and the stage changes rest on the tests, and whether an
+  event load's fade stacks on a following movie or transition is not
+  checked.
 
 Needed: a capture series at 30 fps from a load screen closing into free
 roam and from a festival stage change, to fit the curve and the order.
@@ -5300,7 +5310,10 @@ Settled: the title's music is `ui4audio.xml`'s `SplashScreen` play,
 that same sub-sound, and `audio_parity_corpus` checks the chain. The audio
 track of `PressStart.wmv` (wmapro, 48 kHz stereo, 53.93 s) is digital
 silence: FFmpeg's volumedetect reads -91 dB mean and peak, and astats reads
--inf. Routing the movie's audio at `menuMovieMusic` (0.4) would add
+-inf. The same decoder reads `FMV_01.wmv`'s first minute at -21.1 dB mean
+and 0 dB peak, so the reading is not a decode fault. `PressStart.def` names
+only the video stream (`<Video id="2" />`), while `FMV_01.def` lists its
+four language tracks. Routing the movie's audio at `menuMovieMusic` (0.4) would add
 nothing, so the engine keeps it muted and plays no second music source.
 The audit's FE-01 fix (play the movie's track and drop the sample) would
 have silenced the title.
