@@ -32,7 +32,11 @@ void* open_library(const fs::path& p, std::string& error) {
   return reinterpret_cast<void*>(h);
 #else
   void* h = dlopen(p.string().c_str(), RTLD_NOW | RTLD_LOCAL);
-  if (!h) error = dlerror() ? dlerror() : "dlopen failed";
+  if (!h) {
+    // dlerror() clears its message, so a second call returns null.
+    const char* why = dlerror();
+    error = why ? why : "dlopen failed";
+  }
   return h;
 #endif
 }

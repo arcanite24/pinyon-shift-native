@@ -1115,7 +1115,7 @@ int main() {
       std::vector<uint8_t> fb = backdrop;
       if (!hud_dir.empty()) {
         int w = 0, h = 0, n = 0;
-        const std::filesystem::path src = std::filesystem::path(orig).is_absolute() ? orig : hud_dir / orig;
+        const std::filesystem::path src = std::filesystem::path(orig).is_absolute() ? std::filesystem::path(orig) : hud_dir / orig;
         if (uint8_t* px = stbi_load(src.string().c_str(), &w, &h, &n, 4)) {
           if (w == int(W) && h == int(H)) fb.assign(px, px + size_t(W) * H * 4);
           stbi_image_free(px);
