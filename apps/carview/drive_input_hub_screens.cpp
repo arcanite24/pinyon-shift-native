@@ -703,7 +703,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
             if (autoshow.is_open()) {
               if (app.have_garage) autoshow.set_owned_cars(app.career_garage);
               auto sync_autoshow_camera = [&](bool snap_step_focus) {
-                hub_cam.set_framing(autoshow.show_specs() ? 0.11f : 0.0f, 0.16f);
+                hub_cam.set_framing(autoshow.show_specs() ? 0.11f : 0.0f, 0.12f);
                 if (!snap_step_focus) return;
                 if (autoshow.step() == carview::AutoshowStep::kColorSelect) {
                   // The disc's colour-select camera (CarColorSel), else the engine's.

@@ -232,11 +232,14 @@ const CarCameraPreset* find_car_camera_preset(const std::vector<CarCameraPreset>
 }
 
 std::string_view hub_camera_preset_name(HubRoom room, int part_enum, bool editor_open, bool colour_select) {
+  (void)colour_select;
   switch (room) {
     case HubRoom::kAutoshow:
-      // The standard view is the Autoshow's own camera (6.58 m off the car
-      // in the references, not HorizonAutoshow's 4.8 m; Q129).
-      return colour_select ? "CarColorSel" : "";
+      // Autoshow browse plays HomeSpaceCams.xml and colour select uses the
+      // front-left 3/4 hero orbit camera so tall cars (e.g. WRX STi) frame
+      // cleanly with the vertical stage lights instead of CarColorSel's low
+      // side profile (which sits below the floor and clips the roof).
+      return "";
     case HubRoom::kPaintShop: return editor_open ? "LiveryPaintMenu_Body" : "LiveryMainMenu";
     case HubRoom::kWorkshop:
       // UpgradeAreas' slots (cars/database.cpp upgrade_slots) on the
@@ -286,8 +289,7 @@ HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int
   HubCameraShot s;
   switch (room) {
     case HubRoom::kAutoshow:
-      if (colour_select) s.preset = "CarColorSel";
-      else s.sequence_member = kHomeSpace;
+      if (!colour_select) s.sequence_member = kHomeSpace;
       break;
     case HubRoom::kPaintShop:
       if (editor_open) {
@@ -339,8 +341,12 @@ float nearest_turn(float to, float from) {
 void HubCamera::set_preset(const CarCameraPreset& p, bool snap) {
   const float fl = std::sqrt(p.face[0] * p.face[0] + p.face[1] * p.face[1] + p.face[2] * p.face[2]);
   if (fl < 1e-4f) return;
-  // The game's +Z front is the engine's -Z.
-  const float eye[3] = {p.pos[0], p.pos[1], -p.pos[2]};
+  // The game's +Z front is the engine's -Z. Presets with negative posy
+  // (e.g. CarColorSel, LiveryPaintMenu_Brakes, Upgrades_Engine_Front) are
+  // authored relative to the car's vertical body centre (~0.72 m above ground)
+  // rather than the floor, so lift them above ground_y to avoid underground eyes.
+  const float eye_y = p.pos[1] < 0.0f ? (ground_y + 0.72f + p.pos[1]) : (ground_y + p.pos[1]);
+  const float eye[3] = {p.pos[0], eye_y, -p.pos[2]};
   const float fwd[3] = {p.face[0] / fl, p.face[1] / fl, -p.face[2] / fl};
   // From the view on screen now: a sequence's, else the orbit's.
   if (sequence) {
@@ -508,12 +514,12 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       manual_idle_s = 0.0f;
       break;
     case HubCameraFocus::kPaint:
-      target_yaw = 0.80f;
-      target_pitch = 0.21f;
-      target_dist = 4.15f;
+      target_yaw = -0.68f;
+      target_pitch = 0.14f;
+      target_dist = 5.75f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.58f;
-      target_pos[2] = -0.14f;
+      target_pos[1] = ground_y + 0.65f;
+      target_pos[2] = -0.06f;
       auto_orbit = true;
       orbit_speed = 0.10f;
       user_orbited = false;
@@ -525,7 +531,7 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       target_pitch = 0.17f;
       target_dist = 5.05f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.55f;
+      target_pos[1] = ground_y + 0.55f;
       target_pos[2] = 0.0f;
       auto_orbit = false;
       user_orbited = false;
@@ -533,11 +539,11 @@ void HubCamera::set_focus(HubCameraFocus focus) {
       break;
     case HubCameraFocus::kTurntable:
     default:
-      target_yaw = 0.62f;
-      target_pitch = 0.16f;
-      target_dist = 5.15f;
+      target_yaw = -0.62f;
+      target_pitch = 0.14f;
+      target_dist = 6.35f;
       target_pos[0] = 0.0f;
-      target_pos[1] = 0.54f;
+      target_pos[1] = ground_y + 0.65f;
       target_pos[2] = 0.0f;
       auto_orbit = true;
       orbit_speed = 0.16f;
@@ -862,7 +868,7 @@ void build_hub_frame(HubRoom room, const HubCamera& cam, uint32_t width, uint32_
   if (cam.sequence) {
   } else if (room == HubRoom::kAutoshow) {
     const float sx = cam.has_explicit_framing ? cam.lens_shift_x : 0.11f;
-    const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.16f;
+    const float sy = cam.has_explicit_framing ? cam.lens_shift_y : 0.12f;
     proj[8] += sx;
     proj[9] += sy;
   } else if (cam.has_explicit_framing) {

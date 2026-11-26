@@ -169,9 +169,11 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
   }
 
   // The textures: decoded from the room's own archive, records moved past
-  // Colorado's.
+  // Colorado's. Empty PVS stub records (type 1/3 with no bundle entry, such as
+  // uiautoshow record 21 and uipaintshop's door-glass stub) are resolved cleanly
+  // without counting as decode failures.
   const uint32_t base = hub_room_record_base(room);
-  std::set<uint32_t> records, failed;
+  std::set<uint32_t> records, failed, stubs;
   for (auto& m : out.triangles.materials)
     for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c,
                            &m.spec_map})
@@ -179,7 +181,11 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
   for (uint32_t rec : records) {
     fh1::WorldTexture t;
     if (!w.read_texture(rec, t, &e)) {
-      failed.insert(rec);
+      const bool is_stub = rec < w.textures().size() &&
+                           (w.textures()[rec].type == fh1::kPvsTextureNone ||
+                            w.textures()[rec].type == fh1::kPvsTexturePlaceholder);
+      if (is_stub) stubs.insert(rec);
+      else failed.insert(rec);
       continue;
     }
     auto d = std::make_shared<WorldTextureData>();
@@ -193,11 +199,17 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
     for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
     out.triangles.textures.push_back(std::move(d));
   }
-  for (auto& m : out.triangles.materials)
+  for (auto& m : out.triangles.materials) {
+    if (m.light_map != kNoWorldTexture && (stubs.count(m.light_map) || failed.count(m.light_map)) &&
+        m.ao_map != kNoWorldTexture && !stubs.count(m.ao_map) && !failed.count(m.ao_map)) {
+      m.light_map = m.ao_map;
+    }
     for (uint32_t* slot : {&m.texture, &m.layer_b, &m.splat, &m.light_map, &m.normal_map, &m.ao_map, &m.layer_c,
                            &m.spec_map})
-      if (*slot != kNoWorldTexture) *slot = failed.count(*slot) ? kNoWorldTexture : base + *slot;
-  out.textures = records.size() - failed.size();
+      if (*slot != kNoWorldTexture)
+        *slot = (failed.count(*slot) || stubs.count(*slot)) ? kNoWorldTexture : base + *slot;
+  }
+  out.textures = records.size() - failed.size() - stubs.size();
   out.failed = failed.size();
   return true;
 }

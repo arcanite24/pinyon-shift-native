@@ -191,7 +191,7 @@ void test_hub_stage_and_camera() {
       shot = carview::hub_camera_shot(HubRoom::kWorkshop, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, true);
-      CHECK(shot.preset == "CarColorSel");
+      CHECK(shot.sequence_member.empty() && shot.preset.empty());
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kGarage, -1, false, 0, false);
@@ -202,9 +202,59 @@ void test_hub_stage_and_camera() {
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 14, false, false) == "Upgrades_Engine_Front");
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, -1, false, false) == "Upgrades_Main");
     CHECK(carview::hub_camera_preset_name(HubRoom::kPaintShop, -1, true, false) == "LiveryPaintMenu_Body");
-    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true) == "CarColorSel");
+    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true).empty());
     CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, false).empty());
     CHECK(carview::hub_camera_preset_name(HubRoom::kGarage, -1, false, false).empty());
+    // Negative-posy presets (like CarColorSel) lift above ground_y instead of going underground.
+    {
+      carview::CarCameraPreset low{};
+      low.name = "CarColorSel";
+      low.pos[0] = 3.897f, low.pos[1] = -0.150f, low.pos[2] = -0.046f;
+      low.face[0] = -1.0f, low.face[1] = 0.0f, low.face[2] = 0.015f;
+      low.fov = 45.0f;
+      carview::HubCamera c;
+      c.ground_y = 0.0f;
+      c.set_preset(low, true);
+      const auto v = c.view();
+      CHECK(v.eye[1] > c.ground_y + 0.35f);
+    }
+    // Autoshow 3/4 hero framing keeps a full 1.50 m tall car (e.g. WRX STi) cleanly inside the viewport
+    // with zero roof clipping and full tyre clearance above the bottom carousel rail.
+    {
+      auto check_hero_box = [](carview::HubCameraFocus focus) {
+        carview::HubCamera c;
+        c.ground_y = 0.0f;
+        c.set_focus(focus);
+        c.yaw = c.target_yaw;
+        c.pitch = c.target_pitch;
+        c.distance = c.target_dist;
+        for (int i = 0; i < 3; ++i) c.target[i] = c.target_pos[i];
+        c.set_framing(0.11f, 0.12f);
+        c.auto_orbit = false;
+        for (int i = 0; i < 30; ++i) c.step(0.05f);
+        carview::ShowroomFrame f{};
+        carview::build_hub_frame(HubRoom::kAutoshow, c, 1280, 720, f, false);
+        float min_ndc_y = 10.0f, max_ndc_y = -10.0f;
+        for (float bx : {-0.92f, 0.92f}) {
+          for (float by : {0.0f, 1.50f}) {
+            for (float bz : {-2.20f, 2.20f}) {
+              const float* m = f.view_projection;
+              const float cy = m[1] * bx + m[5] * by + m[9] * bz + m[13];
+              const float cw = m[3] * bx + m[7] * by + m[11] * bz + m[15];
+              CHECK(cw > 0.1f);
+              const float ny = cy / cw;
+              min_ndc_y = std::min(min_ndc_y, ny);
+              max_ndc_y = std::max(max_ndc_y, ny);
+            }
+          }
+        }
+        // Vulkan Y-down NDC: -1 is top edge, +1 is bottom edge.
+        CHECK(min_ndc_y > -0.78f);  // roof cleanly below top bar (zero roof clipping)
+        CHECK(max_ndc_y < 0.78f);   // whole car cleanly above bottom button/rail area
+      };
+      check_hero_box(carview::HubCameraFocus::kTurntable);
+      check_hero_box(carview::HubCameraFocus::kPaint);
+    }
   }
 
   // Barn Find Restoration Card UI rasterization.
