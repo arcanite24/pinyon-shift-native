@@ -2834,9 +2834,20 @@ The solid barriers go the same way with the Car/GuardRail row.
 
 Still interim:
 
-- **Solid barriers by name.** Which static models are solid is still
+- ~~**Solid barriers by name.** Which static models are solid is still
   chosen from their names and proportions; the original's rule for
-  static objects' collision is not decoded.
+  static objects' collision is not decoded.~~ Settled (6bb5820b): the
+  original's static collision has two sources, the `.fiz` tiles and the
+  CWorldCollObj objects that `Ribbon_00/CollObjs.xml` places (a static
+  pool of 384, "StaticObjectPool<CWorldCollObj>"), each typed by
+  PhysicsDefinitions.bin and `physics.zip/CollObjects.xml`. The
+  render-only `.pvsz` models have no collision object, and none of the
+  name-picked barrier models (OBJ_FEST_CrowdBarrier, ChainLink_Fence and
+  the like) appears in CollObjs.xml, whose 175,000 entries are CO_ and
+  OBJ_ sign, fence and furniture types. The name pass is now an engine
+  extra, off by default (`SmashableWorld::set_render_model_barriers`).
+  Not measured: how many of those models stand on a `.fiz` wall, so
+  whether the car now meets any of them less firmly than before.
 - **Convex hulls** meet the car as their box in the prop's frame.
 - **Fixed bodies.** An unbroken prop does not move; its Mass is unused
   until it breaks.
@@ -2855,8 +2866,8 @@ Still interim:
   PhysicsDefinitions have no such prop: the five that are unbreakable or
   break above 27 mph all reach 1.06 m or more.
 
-Needed: the static-object collision rule, and whether an unbroken prop
-is fixed or a heavy dynamic body.
+Needed: ~~the static-object collision rule~~ (settled above), and
+whether an unbroken prop is fixed or a heavy dynamic body.
 
 ## Q93 (UI, not blocking): the event ticket's surface line
 
