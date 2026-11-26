@@ -43,9 +43,17 @@ struct ScriptedCar {
   double target_lateral = 2.0;
 };
 
+struct ScriptedStepOptions {
+  bool has_player = false;
+  P3 player_pos{};
+  double player_heading = 0.0;
+  double player_speed = 0.0;
+};
+
 class ScriptedCars {
  public:
   using GroundFn = std::function<bool(double x, double y_hint, double z, double& out_y)>;
+  using StepOptions = ScriptedStepOptions;
 
   struct SpawnParams {
     std::string name;
@@ -66,13 +74,6 @@ class ScriptedCars {
     bool snap_to_ground = false;
     double initial_speed_mps = 0.0;
     double despawn_time_s = 0.0;
-  };
-
-  struct StepOptions {
-    bool has_player = false;
-    P3 player_pos{};
-    double player_heading = 0.0;
-    double player_speed = 0.0;
   };
 
   // Normalises a trigger name by stripping a trailing "_Release" suffix
