@@ -1067,12 +1067,18 @@ void main() {
     }
   }
 
-  // TrackSettings.xml TrackLightMapParams (scale & AO floor) on _LM draws without LayerC/Road/Decal params.
+  // TrackSettings.xml TrackLightMapParams (scale & AO floor) on _LM draws, and
+  // negative decal_noise_c4.y sentinel carrying authored c2.x reflection strength on
+  // H_DIFF_SPEC_REFL_* props (such as Horizon Festival hub arches).
   float lm_scale = 1.4;
   float ao_floor = 0.05;
-  if ((flags & kFlagLightMap) != 0u && (flags & (kFlagLayerC | kFlagRoad | kFlagVertexFade)) == 0u) {
+  float refl_strength = 0.0;
+  if ((flags & (kFlagLayerC | kFlagRoad | kFlagVertexFade | kFlagWater | kFlagBillboard)) == 0u) {
     vec2 lmp = unpackHalf2x16(floatBitsToUint(draw.params.w));
-    if (lmp.x > 0.01 && lmp.x <= 6.0) {
+    if (lmp.y < -0.01 && lmp.y >= -4.5) {
+      refl_strength = -lmp.y;
+      if ((flags & kFlagLightMap) != 0u && lmp.x > 0.01 && lmp.x <= 6.0) lm_scale = lmp.x;
+    } else if ((flags & kFlagLightMap) != 0u && lmp.x > 0.01 && lmp.x <= 6.0) {
       lm_scale = lmp.x;
       if (lmp.y >= 0.0 && lmp.y <= 0.5) ao_floor = lmp.y;
     }
@@ -1151,10 +1157,29 @@ void main() {
   float road_layer_gloss = mix(1.0, 0.34, layer_b_w) * mix(1.0, 0.22, layer_c_w);
   float terrain_layer_spec = mix(1.0, 0.50, layer_b_w) * mix(1.0, 0.36, layer_c_w);
   float terrain_layer_gloss = mix(32.0, 12.0, clamp(layer_b_w * 0.72 + layer_c_w * 0.88, 0.0, 1.0));
+  float refl_mask = mix(0.45, 1.0, sqrt(clamp(spec_mask, 0.0, 1.0)));
   if ((flags & kFlagRoad) != 0u && (flags & kFlagBillboard) == 0u) {
     surf_gloss = clamp((0.20 + 0.28 * spec_mask) * road_spec_mod * road_layer_spec, 0.04, 0.52);
+  } else if (refl_strength > 0.01) {
+    surf_gloss = clamp(0.28 + 0.34 * refl_mask, 0.25, 0.62);
   } else if (has_real_spec) {
     surf_gloss = clamp((0.10 + 0.22 * spec_mask) * terrain_layer_spec, 0.0, 0.34);
+  }
+  if (refl_strength > 0.01 && (flags & kFlagBillboard) == 0u) {
+    // H_DIFF_SPEC_REFL_* glossy fiberglass/metal reflection (e.g. Horizon Festival hub arch bases):
+    // sample live environment cubemap (or TOD sky fallback) with Schlick Fresnel so dark glossy
+    // painted structures show sky/sun sheen and clear bevel form instead of pitch-black voids.
+    float nv_r = clamp(dot(n, view), 0.0, 1.0);
+    vec3 r_dir = reflect(-view, n);
+    float r_up = dot(r_dir, up);
+    if (r_up < 0.04) r_dir = normalize(r_dir + up * (0.04 - r_up));
+    float refl_mip = mix(2.2, 0.9, clamp(refl_strength * 0.45, 0.0, 1.0));
+    vec3 env_refl = (frame.shadow_far_bias.z > 0.5)
+                        ? textureLod(environment, render_to_game_dir(r_dir), refl_mip).rgb
+                        : sky_colour(r_dir, up, sun);
+    float fres_refl = (0.07 + 0.55 * pow(1.0 - nv_r, 3.6)) * refl_mask *
+                      clamp(refl_strength * 0.28, 0.10, 0.62);
+    colour += (env_refl * fres_refl * mix(0.50, 1.0, shade) + hemi_amb * (0.045 * refl_mask)) * ao * draw.up.w;
   }
   if (ndl > 0.0 && (flags & kFlagBillboard) == 0u) {
     vec3 h_v = normalize(view + sun);
@@ -1175,6 +1200,12 @@ void main() {
       float spec_r = (pow(nh_r, eff_gloss) * 0.62 + pow(nh_r, max(eff_gloss * 0.24, 4.0)) * 0.14) *
                      (road_spec_scale / 0.72) * road_layer_spec * fres_r * spec_mask * road_spec_mod * ndl * shade * ao;
       colour += sun_col * spec_r * draw.up.w;
+    } else if (refl_strength > 0.01) {
+      float nh_g = max(dot(n, h_v), 0.0);
+      float fres_g = 0.06 + 0.42 * pow(1.0 - nv_s, 3.8);
+      float spec_g = (pow(nh_g, 10.0) * 0.24 + pow(nh_g, 42.0) * 0.52) *
+                     fres_g * refl_mask * ndl * shade * ao;
+      colour += sun_col * spec_g * draw.up.w;
     } else if (((flags & kFlagNormalMap) != 0u) || has_real_spec) {
       float fres = 0.04 + 0.25 * pow(1.0 - nv_s, 4.0);
       float spec = pow(max(dot(n, h_v), 0.0), terrain_layer_gloss) * fres * spec_mask * terrain_layer_spec *

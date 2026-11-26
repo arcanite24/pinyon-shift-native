@@ -468,6 +468,18 @@ int main() {
           world::resolve_effect_material("H_ROAD_DIFF3_NORM2_MODULATE_AO_LM", norm2_slots, norm2_slots, {}, tms);
       CHECK(r_mod_n2.material.ao_map == 604u);
       CHECK(r_mod_n2.material.spec_map == 606u);
+
+      // (f) H_DIFF_SPEC_REFL_AO_4_LM (Horizon Festival hub arches): encodes authored c2.x
+      // reflection strength as negative decal_noise_c4[1] while preserving lightmap_scale.
+      const std::array<uint32_t, 8> refl_slots{700u, N, 702u, N, 704u, 705u, N, 707u};
+      const std::vector<std::array<float, 4>> refl_pc{{1, 1, 1, 0.4f}, {6.5f, 0, 0, 0}, {1.9f, 0, 0, 0}};
+      const auto r_refl =
+          world::resolve_effect_material("H_DIFF_SPEC_REFL_AO_4_LM", refl_slots, refl_slots, refl_pc, tms);
+      CHECK(r_refl.material.spec_map == 704u);
+      CHECK(r_refl.material.ao_map == 705u);
+      CHECK(r_refl.material.light_map == 707u);
+      CHECK(std::fabs(r_refl.material.decal_noise_c4[0] - tms.lightmap_scale) < 1e-4f);
+      CHECK(std::fabs(r_refl.material.decal_noise_c4[1] - (-1.9f)) < 1e-4f);
     }
   }
 

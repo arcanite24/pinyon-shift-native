@@ -382,6 +382,31 @@ int main() {
     CHECK(changed && std::fabs(led.centre_x() - (fx + 150)) < 1e-6 && std::fabs(led.centre_z() - fz) < 1e-6);
   }
 
+  // Horizon Festival gather: physics-only .fiz PVS entries are classified separately
+  // rather than reported as unresolved render props, and reflective festival arches
+  // carry their authored environment reflection strength.
+  {
+    world::GatherOptions fest_opt;
+    fest_opt.render_data = true;
+    fest_opt.radius = 600.0;
+    fest_opt.prop_radius = 600.0;
+    fest_opt.prop_near_radius = 120.0;
+    fest_opt.route = 0;
+    world::Mesh fest_mesh;
+    world::GatherStats fest_st;
+    CHECK(w.gather(-1027.3, -145.6, fest_opt, fest_mesh, &fest_st, &error));
+    size_t refl_arch_mats = 0;
+    for (const auto& mm : fest_mesh.materials) {
+      if (mm.effect == "H_DIFF_SPEC_REFL_AO_4_LM" && mm.decal_noise_c4[1] < -0.1f) ++refl_arch_mats;
+    }
+    std::printf("festival gather: %zu props placed, %zu physics-only (.fiz), %zu unresolved, %zu reflective arch materials\n",
+                fest_st.props, fest_st.props_physics_only, fest_st.prop_unresolved, refl_arch_mats);
+    CHECK(fest_st.props > 3500);
+    CHECK(fest_st.props_physics_only == 327);
+    CHECK(fest_st.prop_unresolved == 0);
+    CHECK(refl_arch_mats > 0);
+  }
+
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;
