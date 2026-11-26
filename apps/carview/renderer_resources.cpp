@@ -442,9 +442,10 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - post_t0).count();
     const auto up_choice = modern::resolve_upscaler(graphics_.upscaler, upscaler_runtime_.support, {rw, rh},
                                                     {width, height});
+    const bool need_brightness = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
     const modern::ModernTargetPlan plan = modern::plan_modern_targets(
         graphics_, {rw, rh}, {width, height}, options_.post.bloom, hdr_mode_, hdr_pattern_, inspector_active_,
-        inspector_view_ == InspectorView::kMotion, up_choice, options_.post.motion_blur);
+        inspector_view_ == InspectorView::kMotion, up_choice, options_.post.motion_blur, need_brightness);
     allocated_targets_ = plan;
 
     if (plan.bloom) {

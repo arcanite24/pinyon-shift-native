@@ -734,6 +734,19 @@ class Renderer {
     hdr_pattern_ = pattern;
     hdr_pattern_nits_ = pattern_nits;
   }
+  // Display brightness offset applied to final sRGB output: (2*g - 1) * 0.2
+  // (Main/Gamma, default g = 0.6 -> +0.04; 0 -> -0.20; 100 -> +0.20).
+  static constexpr float brightness_offset_for(int brightness) {
+    const int b = brightness < 0 ? 0 : (brightness > 100 ? 100 : brightness);
+    return (2.0f * (float(b) / 100.0f) - 1.0f) * 0.2f;
+  }
+  void set_display_brightness_offset(float offset) {
+    const bool was_on = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
+    const bool now_on = (offset > 1e-5f || offset < -1e-5f);
+    if (was_on != now_on) targets_dirty_ = true;
+    display_brightness_offset_ = offset;
+  }
+  float display_brightness_offset() const { return display_brightness_offset_; }
   modern::ModernTargetPlan allocated_modern_targets() const { return allocated_targets_; }
   void set_inspector_preview(bool active, InspectorView view);
   void set_hiz_preview_view(VkImageView view);
@@ -983,6 +996,7 @@ class Renderer {
   bool prev_motion_scene_valid_ = false;
   uint32_t hdr_pattern_ = 0;
   float hdr_pattern_nits_ = 1000.0f;
+  float display_brightness_offset_ = 0.0f;
   bool vrs_supported_ = false;
   rt::RtDeviceCaps rt_caps_{};
   bool photo_pt_accum_ = false;

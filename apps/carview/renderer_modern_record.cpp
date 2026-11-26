@@ -774,9 +774,11 @@ void Renderer::record_hdr_output(VkCommandBuffer cmd, VkDescriptorSet src_set, V
   struct {
     float p0[4], p1[4];
     uint32_t p2[4];
+    float p3[4];
   } pc = {{paper_scale, hl_factor, 0.5f, 2.0f},
           {0.0f, 0.5f, graphics_.hdr_compare ? float(w) * 0.5f : -1.0f, modern::scrgb_scale(hdr_pattern_nits_)},
-          {out_mode, hdr_pattern_, w, h}};
+          {out_mode, hdr_pattern_, w, h},
+          {display_brightness_offset_, 0.0f, 0.0f, 0.0f}};
   vkCmdPushConstants(cmd, hdr_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
   vkCmdDraw(cmd, 3, 1, 0, 0);
   vkCmdEndRendering(cmd);

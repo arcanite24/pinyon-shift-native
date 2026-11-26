@@ -15,17 +15,23 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
 
   // Fast path when a 100% opaque fullscreen overlay (World Map or FMV) covers the
   // viewport: skip 3D scene, shadows, GTAO, Hi-Z, and post passes completely.
+  const bool need_brightness = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
   const bool need_hdr_stage_fast =
-      (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
-  if (skip_scene_ && !need_hdr_stage_fast && !inspector_active_ && capture_dst == VK_NULL_HANDLE) {
-    image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+      (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0) || need_brightness;
+  if (skip_scene_ && !inspector_active_ && capture_dst == VK_NULL_HANDLE &&
+      (!need_hdr_stage_fast || (uses_modern_chain() && stand_in_.view != VK_NULL_HANDLE && hdr_pipe_sdr_ != VK_NULL_HANDLE))) {
+    const bool route_standin = need_hdr_stage_fast;
+    VkImage dst_img = route_standin ? stand_in_.image : final_image;
+    VkImageView dst_view = route_standin ? stand_in_.view : final_view;
+    VkPipeline dst_ui_pipe = route_standin ? ui_pipeline_sdr_ : ui_pipeline_;
+    image_barrier(cmd, dst_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
                   color_stage, color_write);
     VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkPipelineStageFlags2 last_stage = color_stage;
     VkAccessFlags2 last_access = color_write;
     if (overlay_staged_) {
-      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      image_barrier(cmd, dst_img, VK_IMAGE_ASPECT_COLOR_BIT, layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     last_stage, last_access, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
       VkBufferImageCopy regions[kOverlayLayers]{};
       uint32_t count = 0;
@@ -38,14 +44,14 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
         region.imageOffset = {l.at.x, l.at.y, 0};
         region.imageExtent = {l.width, l.height, 1};
       }
-      vkCmdCopyBufferToImage(cmd, slot().overlay.buffer, final_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
+      vkCmdCopyBufferToImage(cmd, slot().overlay.buffer, dst_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, count,
                              regions);
       layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
       last_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
       last_access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     } else {
       VkRenderingAttachmentInfo clr{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-      clr.imageView = final_view;
+      clr.imageView = dst_view;
       clr.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
       clr.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
       clr.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -58,8 +64,20 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
       vkCmdBeginRendering(cmd, &ri);
       vkCmdEndRendering(cmd);
     }
-    record_ui(cmd, final_image, final_view, layout, last_stage, last_access, ui_pipeline_, target_width_,
+    record_ui(cmd, dst_img, dst_view, layout, last_stage, last_access, dst_ui_pipe, target_width_,
               target_height_);
+    if (route_standin) {
+      image_barrier(cmd, stand_in_.image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, last_stage, last_access,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+      image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, color_stage, VK_ACCESS_2_NONE,
+                    color_stage, color_write);
+      record_hdr_output(cmd, hdr_set_standin_, final_image, final_view, final_format, target_width_, target_height_);
+      layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+      last_stage = color_stage;
+      last_access = color_write;
+    }
     if (final_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
       if (layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
         image_barrier(cmd, final_image, VK_IMAGE_ASPECT_COLOR_BIT, layout, final_layout, last_stage, last_access,
@@ -325,7 +343,8 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
   }
 
-  const bool need_hdr_stage = (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
+  const bool need_hdr_stage =
+      (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0) || need_brightness;
   const bool need_fxaa_world = (graphics_.aa == modern::AaMode::kFxaaWorld) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool need_fxaa_all = (graphics_.aa == modern::AaMode::kFxaaAll) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool use_modern_chain = uses_modern_chain();
@@ -504,7 +523,9 @@ bool Renderer::uses_modern_chain() const {
   const uint32_t rh = render_height();
   const bool need_scale = (rw != target_width_ || rh != target_height_);
   const bool need_upscaler = need_scale || graphics_.upscaler != modern::Upscaler::kBilinear;
-  const bool need_hdr_stage = (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
+  const bool need_brightness = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
+  const bool need_hdr_stage =
+      (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0) || need_brightness;
   const bool need_fxaa_world = (graphics_.aa == modern::AaMode::kFxaaWorld) && fxaa_pipe_ != VK_NULL_HANDLE;
   const bool need_fxaa_all = (graphics_.aa == modern::AaMode::kFxaaAll) && fxaa_pipe_ != VK_NULL_HANDLE;
   return need_upscaler || need_hdr_stage || need_fxaa_world || need_fxaa_all || inspector_active_;
