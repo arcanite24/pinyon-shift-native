@@ -434,8 +434,8 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
               // B, X and Y do nothing; A elsewhere sets and clears a route
               // with the map left open (the original's workshop map,
               // f01281/f01290_first30a_orig.png); A on the Horizon Heats
-              // routes there and lets go of the lock (sub_828DC8A0 on a
-              // route to a career event, Q275). The help bar then gives way
+              // routes there and lets go of the lock (on a route to a career event,
+              // Q275). The help bar then gives way
               // to PLEASE WAIT and the map closes by itself (first30e r7
               // n0-h00045; interim delay kMapHeatsCloseSeconds).
               if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {

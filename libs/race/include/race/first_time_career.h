@@ -327,7 +327,7 @@ class FirstTimeCareer {
   double opening_credits_time() const { return credits_ ? credits_t_ : 0.0; }
   bool map_locked() const { return map_locked_; }
   // CLockMapScreenForFirstTimeCareer lets go once a route is set to a
-  // career event or Race Central (sub_828DC8A0): B then leaves the map.
+  // career event or Race Central: B then leaves the map.
   void release_map_lock() { map_locked_ = false; }
   // Driving skills score: not in the career's opening, from the end of
   // PopularitySkillsFlow (after the showcase) on, and outside the career.

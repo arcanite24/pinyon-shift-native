@@ -3446,7 +3446,7 @@ engine shows none (Q280).
 
 Update (first30e): statically, it is the HUD scene's `SHOW_SAVING` /
 `HIDE_SAVING` labels, held at least 3 s while a profile save is busy
-(driven by `sub_825D65B8`, not by `global.save_profile`). The engine now
+(driven by the title's own save code, not by `global.save_profile`). The engine now
 draws "SAVING" (`Main/IDS_Saving_Short`, upper-cased) and the load
 spinner left of the speedometer for 3 s from each save, placed to
 `f00417` (spinner centre 1020, 647 at 720p). Interim: the HUD scene's own
@@ -5985,7 +5985,7 @@ Engine run `eng6` shows these (`lockmap_route_first30a_engine_final.png`, `lockm
 Needed: a capture with the cursor moved onto the heats marker, then A, then B.
 
 Update (first30e): what releases the lock is settled, from the title's code and recomp probes (`E:\first30e\r5`, `r6`, hidden, fresh profile, FMV_01 skipped).
-- Statically: `CLockMapScreenForFirstTimeCareer` lets go once a route is set to an `ActivityCareerEventActivation` or `ActivityRaceCentral` target (`sub_828DC8A0`, through the route toggle `sub_827FAE38`). B then leaves the map. Setting the route does not close it. While locked, the help bar has no BACK slot.
+- Statically: `CLockMapScreenForFirstTimeCareer` lets go once a route is set to an `ActivityCareerEventActivation` or `ActivityRaceCentral` target (the lock's check, reached through the map's route toggle). B then leaves the map. Setting the route does not close it. While locked, the help bar has no BACK slot.
 - r5 and r6: A on a plain point routes there and leaves the map open, and B then does nothing (`o*` frames).
 - r6 `m0`-`m5`: the map opens zoomed out, then zooms in onto the festival (`g00135`-`g00145`). The cursor moved 12 frames right (LX 20000) snaps onto the heats marker. There it shows the "HORIZON Heats" tooltip with 1,000 Cr, the event's route in red, and A SET ROUTE plus a DETAILS button (`m1`).
 
