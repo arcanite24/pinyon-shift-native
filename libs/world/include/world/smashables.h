@@ -195,6 +195,10 @@ class SmashableWorld {
 
   // Active track route filter for .pvsz smashables (0 = free roam, -1 = all routes).
   void set_active_route(int route) { active_route_ = route; }
+  // Engine extra (Q106), set before load(): also make the render-only .pvsz
+  // models that look like solid barriers (is_solid_barrier_model) collide.
+  // The original collides only with the .fiz tiles and CollObjs.xml objects.
+  void set_render_model_barriers(bool on) { render_model_barriers_ = on; }
 
   // Decodes a world texture record referenced by a real smashable debris mesh from bin.zip.
   bool read_texture(uint32_t record, fh1::WorldTexture& out, std::string* error = nullptr) const;
@@ -322,6 +326,7 @@ class SmashableWorld {
   std::vector<PlacedProp> props_;
   size_t raw_xml_prop_count_ = 0;
   int active_route_ = 0;
+  bool render_model_barriers_ = false;
   std::unordered_map<int64_t, std::vector<uint32_t>> grid_;  // 25 m XZ spatial grid
   std::vector<SolidBarrier> solid_barriers_;
   std::unordered_map<int64_t, std::vector<uint32_t>> barrier_grid_;  // 25 m XZ spatial grid

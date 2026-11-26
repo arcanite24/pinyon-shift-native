@@ -1603,9 +1603,11 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         grid_[cell_key(ps.pos[0], ps.pos[2])].push_back(idx);
       }
 
-      // Pass 4: register static .pvsz solid festival crowd barriers / barricades / chain-link fences
-      // whose render models are solid barriers not already covered by a breakable smashable prop.
-      {
+      // Pass 4 (engine extra, off by default, Q106): register static .pvsz solid festival crowd
+      // barriers / barricades / chain-link fences whose render models are solid barriers not already
+      // covered by a breakable smashable prop. The original's static collision is the .fiz tiles
+      // plus the CWorldCollObj objects placed by CollObjs.xml; render-only models have none.
+      if (render_model_barriers_) {
         std::unordered_map<uint32_t, PvszStatic> unique_static;
         for (auto& zv : per_zone_static) {
           for (auto& s : zv) unique_static.try_emplace(s.object_id, std::move(s));
