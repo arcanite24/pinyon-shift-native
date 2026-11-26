@@ -804,10 +804,14 @@ void Vehicle::shape_input(const Input& raw, double dt) {
   // the car otherwise rolls); the gas lets go of it at once, and a car put
   // down at rest starts held. The rest speed and the delay are interims
   // (Q291). The reverse entry reads raw_, so the hold selects no reverse.
+  // The gas is the ramped control, as traced: brake and gas let go
+  // together leave the hold off while the gas ramps down, and the car
+  // launches.
+  shaped_.throttle = approach(shaped_.throttle, gas_in, p_.throttle_rate, dt);
   {
     const double v_abs = std::sqrt(vel_.x * vel_.x + vel_.y * vel_.y + vel_.z * vel_.z);
     rest_time_ = v_abs < p_.rest_hold_speed ? rest_time_ + dt : 0.0;
-    if (gas_in > 0.0) {
+    if (shaped_.throttle > 0.0) {
       // Let go at once (the trace's brake reads 0 on the first sample with
       // gas), not through the brake ramp.
       if (rest_hold_) shaped_.brake = std::min(shaped_.brake, brake_in);
@@ -817,7 +821,6 @@ void Vehicle::shape_input(const Input& raw, double dt) {
     }
     if (rest_hold_) brake_in = 1.0;
   }
-  shaped_.throttle = approach(shaped_.throttle, gas_in, p_.throttle_rate, dt);
   shaped_.brake = approach(shaped_.brake, brake_in, p_.brake_rate, dt);
   shaped_.steer = std::clamp(raw.steer, -1.0, 1.0);  // the traced steer control steps to the stick
   shaped_.handbrake = raw.handbrake;
