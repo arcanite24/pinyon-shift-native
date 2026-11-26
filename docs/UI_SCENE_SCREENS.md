@@ -682,8 +682,9 @@ interims).
   car keeps the engine's lighting. The Autoshow's crowd and DJ are not
   drawn.
 - **Room cameras.** The room lists play `HomeSpaceCams.xml` (12 looping
-  shots); the workshop's parts play `WorkshopCams.xml`'s
-  `Upgrade_Part_*` sequences (which part plays which is Q221); the paint
+  shots); the workshop's body parts and wheels play `WorkshopCams.xml`'s
+  `Upgrade_Part_*` sequences and its engine and drivetrain parts the
+  `Upgrades_*` presets (which part uses which is Q221); the paint
   editor's regions and the Autoshow's colour select use
   `UICarTargetCameraPresets.xml`, with a 0.75 s smoothstep between
   presets. The presets' angle limits and zoom are not applied (Q129).

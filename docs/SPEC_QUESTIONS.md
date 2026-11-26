@@ -3317,9 +3317,10 @@ The cameras are three files, not only the presets:
   workshop's rows) play `camera.zip`'s `HomeSpaceCams.xml`: 12 cams over
   79.58 s, looping. Its first shot is the front-left three-quarter view of
   captures 19 and 20.
-- The workshop's parts play `WorkshopCams.xml`'s seven looping
-  `Upgrade_Part_*` sequences, placed on the car's parts (`PartSpace`).
-  Which part enum plays which sequence is Q221.
+- The workshop's body parts and wheels play `WorkshopCams.xml`'s looping
+  `Upgrade_Part_*` sequences, placed on the car's parts (`PartSpace`);
+  its engine and drivetrain parts use the `Upgrades_*` presets. Which part
+  uses which camera is Q221.
 - The paint editor's regions use `LiveryPaintMenu_*` and the Autoshow's
   colour select `CarColorSel` from `UICarTargetCameraPresets.xml`. A
   change of preset blends over 0.75 s (smoothstep, the yaw the short way
@@ -3334,6 +3335,10 @@ Still open:
   is the engine's);
 - the `HorizonAutoshow` preset, which no screen uses now (the Autoshow
   plays HomeSpaceCams);
+- the presets' origin: the engine takes `posy` from the ground, but
+  `CarColorSel`'s posy of -0.15 puts the eye below the floor that way, so
+  the origin may be the car's centre or its body's base;
+- which workshop part uses a sequence and which a preset (Q221);
 - the rooms' light (Q222) and the Autoshow's crowd and DJ (Q223).
 
 ## Q130 (UI, not blocking): MY GARAGE on 108, the manufacturer select on 115, and their help bars
@@ -4675,30 +4680,51 @@ slides. What the title starts each component on is not confirmed.
 Needed: the scene loader's first-slide choice, and a rename of
 `initial_state` once that is known.
 
-## Q221 (MENU-03, not blocking): which workshop part plays which camera sequence
+## Q221 (MENU-03, not blocking): which workshop part plays which camera
 
-`WorkshopCams.xml` has seven looping 10 s sequences: `Upgrade_Part_FRONT`,
-`HOOD`, `REAR`, `WING`, `SIDE`, `FRONTWHEEL` and `REARWHEEL`. Each is placed
-on one of the car's parts (`headlightR`, `headlightL`, `taillightL`,
-`taillightR`, `wheelLF`, `wheelRF`, `wheelRR`). The file does not say which
-upgrade uses which. The engine's mapping (`workshop_part_sequence`) is a
-guess from the names:
+The disc has two sources for the upgrade shop's camera, and neither says
+which part uses it:
 
-- front bumper → FRONT; rear bumper and exhaust → REAR; wing → WING;
-  hood and every engine part → HOOD; side skirts → SIDE;
-- tyres, rims, brakes, suspension and the other chassis parts →
-  FRONTWHEEL; drivetrain → REARWHEEL.
+- `WorkshopCams.xml` has seven looping 10 s sequences:
+  `Upgrade_Part_FRONT`, `HOOD`, `REAR`, `WING`, `SIDE`, `FRONTWHEEL` and
+  `REARWHEEL`. Each is placed on one of the car's parts (`headlightR`,
+  `headlightL`, `taillightL`, `taillightR`, `wheelLF`, `wheelRF`,
+  `wheelRR`).
+- `UICarTargetCameraPresets.xml` has fixed presets: `Upgrades_Main`,
+  `FrontBumper`, `RearBumper`, `RearWing`, `Hood`, `WheelStyle`,
+  `Flywheel`, `Engine_Front`, `Engine_Rear` and `Drivetrain`.
+
+The engine plays the sequences for the parts they name, and the presets
+for the parts that have no sequence:
+
+- **Sequences (`workshop_part_sequence`):**
+  - front bumper → FRONT;
+  - rear bumper and exhaust → REAR;
+  - wing → WING;
+  - hood → HOOD;
+  - side skirts → SIDE;
+  - tyres, rims, brakes and suspension → FRONTWHEEL.
+- **Presets (`workshop_part_preset`):**
+  - the engine's parts → `Upgrades_Engine_Front` (every engine taken as
+    front-mounted);
+  - the flywheel → `Upgrades_Flywheel`;
+  - the drivetrain → `Upgrades_Drivetrain`.
+
+REARWHEEL is not used. The recomp's source does not name either file's
+entries; the names are in the game's data.
 
 The engine's part positions are estimates (`car_parts`: headlights at the
 front overhang, 0.7 m up). With them, HOOD's shot looks down at the floor
-ahead of the car, with the car at the top left of the frame
-(`33_upgrade_shop_wp3.png`). That may be the original's framing, or a wrong
-part position or `PartSpace` reading. No capture shows the upgrade shop.
+ahead of the car, with the car at the top left of the frame. That may be
+the original's framing, or a wrong part position or `PartSpace` reading.
+No capture shows the upgrade shop.
 
-Needed: the title's part-to-sequence table (a mid- or rear-engined car's
-engine parts may use REAR, as `Upgrades_Engine_Rear` suggests), the parts'
-real positions (the car model's light and wheel bones), and a capture of
-the upgrade shop.
+Needed:
+- the title's part-to-camera table, and whether the sequences play only
+  after a part is fitted;
+- the engine's placement for `Upgrades_Engine_Rear`;
+- the parts' real positions (the car model's light and wheel bones);
+- a capture of the upgrade shop.
 
 ## Q222 (MENU-02, not blocking): the hub rooms' interior shaders
 
@@ -4723,8 +4749,9 @@ cannot be rebuilt here. The interim:
 Against `20_paint_shop_orig.png` the back wall reads 150 of 232 and the
 floor 135 of 144; the original is also greyer (the desaturation is not
 applied). The car keeps the engine's lighting and reflections, not the
-room's `staticcarcubemap.xpr`, so a pale car looks overexposed
-(`19b_manufacturer_select_wp3.png`).
+room's `staticcarcubemap.xpr`, and the hemisphere's gain reaches it too
+(the 300SL's door reads 64 at gain 1.6 and 82 at 5). A pale car looks
+overexposed and banded (`19b_manufacturer_select_wp3.png`).
 
 Needed: the `H_INT_*` shaders' lightmap term (its scale and whether it
 replaces the AO), how the rooms' post-process (desaturation and exposure)
