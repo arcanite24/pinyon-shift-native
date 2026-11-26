@@ -252,9 +252,33 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                     options_page = carview::OptionsPage::kNone;  // the engine's page, not an option page
                     break;
                   case A::kQuit: running = false; break;
-                  // VIDEO's values stay on the model: the engine has no
-                  // brightness or movie-subtitle setting behind them (Q363).
-                  case A::kSaveVideo: break;
+                  case A::kSaveVideo: {
+                    app.display_brightness = app.title.brightness;
+                    app.subtitles_enabled = app.title.subtitles;
+                    app.fmv_player.set_subtitles_enabled(app.subtitles_enabled);
+                    host.renderer.set_display_brightness_offset(
+                        carview::Renderer::brightness_offset_for(app.display_brightness));
+                    app.saved.video_seen = true;
+                    app.saved.brightness = app.display_brightness;
+                    app.saved.has_subtitles = true;
+                    app.saved.subtitles = app.subtitles_enabled;
+                    if (!app.no_save && !app.save_path.empty()) {
+                      drive::DriveSave s = app.saved;
+                      if (s.car.empty()) s.car = app.car.empty() ? std::string("VW_CorradoVR6_95") : app.car;
+                      s.video_seen = true;
+                      s.brightness = app.display_brightness;
+                      s.has_subtitles = true;
+                      s.subtitles = app.subtitles_enabled;
+                      std::string err;
+                      if (!drive::write_save(app.save_path, s, &err)) {
+                        std::fprintf(stderr, "carview: %s\n", err.c_str());
+                      } else {
+                        app.saved = s;
+                        app.have_saved = true;
+                      }
+                    }
+                    break;
+                  }
                 }
               };
               carview::TitleMenu& tm = app.title;
@@ -266,9 +290,14 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 else if (k == SDLK_X) run_title(tm.open_extras());
                 else if (k == SDLK_UP || k == SDLK_W) run_title(tm.move(-1));
                 else if (k == SDLK_DOWN || k == SDLK_S) run_title(tm.move(1));
-                else if (k == SDLK_LEFT) run_title(tm.adjust(-1));
-                else if (k == SDLK_RIGHT) run_title(tm.adjust(1));
+                else if (k == SDLK_LEFT) { run_title(tm.adjust(-1)); tm.set_video_hold(-1); }
+                else if (k == SDLK_RIGHT) { run_title(tm.adjust(1)); tm.set_video_hold(1); }
                 else if (k == SDLK_Y) run_title(tm.reset_video());
+              }
+              if (e.type == SDL_EVENT_KEY_UP) {
+                const SDL_Keycode k = e.key.key;
+                if ((k == SDLK_LEFT && tm.video_hold_dir < 0) || (k == SDLK_RIGHT && tm.video_hold_dir > 0))
+                  tm.set_video_hold(0);
               }
               if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
                 const auto b = e.gbutton.button;
@@ -277,9 +306,15 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                 else if (b == SDL_GAMEPAD_BUTTON_WEST) run_title(tm.open_extras());
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_UP) run_title(tm.move(-1));
                 else if (b == SDL_GAMEPAD_BUTTON_DPAD_DOWN) run_title(tm.move(1));
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) run_title(tm.adjust(-1));
-                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) run_title(tm.adjust(1));
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_LEFT) { run_title(tm.adjust(-1)); tm.set_video_hold(-1); }
+                else if (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT) { run_title(tm.adjust(1)); tm.set_video_hold(1); }
                 else if (b == SDL_GAMEPAD_BUTTON_NORTH) run_title(tm.reset_video());
+              }
+              if (e.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+                const auto b = e.gbutton.button;
+                if ((b == SDL_GAMEPAD_BUTTON_DPAD_LEFT && tm.video_hold_dir < 0) ||
+                    (b == SDL_GAMEPAD_BUTTON_DPAD_RIGHT && tm.video_hold_dir > 0))
+                  tm.set_video_hold(0);
               }
               // Raw SDL_Joystick fallback navigation on title screen (for unmapped USB/BT pads).
               if (e.type == SDL_EVENT_JOYSTICK_BUTTON_DOWN && !SDL_IsGamepad(e.jbutton.which)) {

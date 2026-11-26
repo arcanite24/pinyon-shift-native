@@ -86,6 +86,9 @@ std::string save_to_text(const DriveSave& s) {
     out += "radio " + (s.radio_station.empty() ? std::string("-") : s.radio_station) + " " +
            (s.radio_dj ? "1" : "0") + " " + num(s.radio_volume) + "\n";
   if (!s.satnav_enabled) out += "satnav 0\n";
+  if (s.video_seen) out += "video_seen 1\n";
+  if (s.brightness != 60 || s.video_seen) out += "brightness " + std::to_string(std::clamp(s.brightness, 0, 100)) + "\n";
+  if (s.has_subtitles || s.video_seen) out += std::string("subtitles ") + (s.subtitles ? "1\n" : "0\n");
   if (s.treasure_map) out += "treasure_map 1\n";
   if (s.fast_travel_anywhere) out += "fast_travel_anywhere 1\n";
   if (!s.codriver_enabled) out += "codriver 0\n";
@@ -588,6 +591,18 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         out.controls.keys.deserialize(kb);
         out.has_controls = true;
       }
+    } else if (key == "video_seen") {
+      int v = 0;
+      if (l >> v) out.video_seen = v != 0;
+    } else if (key == "brightness") {
+      int v = 60;
+      if (l >> v) out.brightness = std::clamp(v, 0, 100);
+    } else if (key == "subtitles") {
+      int v = 0;
+      if (l >> v) {
+        out.subtitles = v != 0;
+        out.has_subtitles = true;
+      }
     } else if (key == "controls_assists") {
       auto& a = out.controls.assists;
       int tcs = 0, stm = 1, rew = 1;
@@ -598,6 +613,9 @@ bool save_from_text(const std::string& text, DriveSave& out, std::string* error)
         out.has_controls = true;
       }
     }
+  }
+  if (!out.video_seen && (out.career_started || out.owned_garage || out.num_races > 0 || out.credits > 0)) {
+    out.video_seen = true;
   }
   if (out.car.empty()) return fail(error, "save without a car");
   if (!have_pos || !have_heading) return fail(error, "save without a position and heading");

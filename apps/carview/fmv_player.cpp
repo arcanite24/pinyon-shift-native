@@ -1869,7 +1869,8 @@ void FmvPlayer::draw(ui::List& l, float screen_w, float screen_h, std::string_vi
     ui4::title_banner(l, s, 68.0f * s, 62.0f * s, title_, "HORIZON FESTIVAL CUTSCENE", true, 640.0f * s);
   }
 
-  const std::string resolved_sub = subtitle_text.empty() ? current_subtitle_text() : std::string(subtitle_text);
+  const std::string resolved_sub =
+      subtitle_text.empty() ? (subtitles_enabled_ ? current_subtitle_text() : std::string{}) : std::string(subtitle_text);
   if (!resolved_sub.empty()) {
     ui::TextStyle ts = ui4::style(ui::Font::kA, 17.5f * s, ui4::kWhite, ui::Align::kCenter, true);
     const float max_box_w = std::max(260.0f * s, screen_w * 0.80f);

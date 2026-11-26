@@ -748,6 +748,8 @@ void DriveSession::open_settings(int tab) {
           snap.skip_intro_movies = app.skip_intro_movies;
           snap.start_in_single_player = app.start_in_single_player;
           snap.skip_vo_with_a = app.skip_vo_with_a;
+          snap.brightness = app.display_brightness;
+          snap.subtitles = app.subtitles_enabled;
           snap.metric_units = app.metric_units;
           snap.hud_speedo_mode = live_hud_speedo_mode;
           snap.minimap_mode = live_minimap_mode;

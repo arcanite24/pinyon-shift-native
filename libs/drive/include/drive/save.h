@@ -229,6 +229,11 @@ struct DriveSave {
   std::vector<int> car_club_shared;
   bool has_controls = false;
   ControlSettings controls;
+  // VIDEO options (830_GAMMA_ADJUST: Main/Gamma, Main/Subtitles, Main/Flags bit 0x40000).
+  bool video_seen = false;
+  int brightness = 60;  // 0..100 (Main/Gamma * 100, step 5)
+  bool has_subtitles = false;
+  bool subtitles = false;
   // Copies the carried fields (the ones the drive does not change) from `s`.
   void carry_from(const DriveSave& s) {
     level = s.level, event_unlocks = s.event_unlocks, hub_unlocks = s.hub_unlocks;
@@ -241,6 +246,8 @@ struct DriveSave {
     if (car_club_name.empty()) car_club_name = s.car_club_name;
     if (car_club_tag.empty()) car_club_tag = s.car_club_tag;
     if (car_club_shared.empty()) car_club_shared = s.car_club_shared;
+    if (!video_seen && s.video_seen) video_seen = true;
+    if (!has_subtitles && s.has_subtitles) has_subtitles = true, subtitles = s.subtitles;
   }
 };
 

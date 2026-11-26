@@ -163,6 +163,10 @@ struct DriveConfig {
   TouchControls touch_controls;
   std::string android_gpu_driver = "auto";
   std::string graphics_backend = "auto";
+  int display_brightness = 60;  // 0..100 (Main/Gamma * 100, default 60)
+  bool display_brightness_explicit = false;
+  bool subtitles_enabled = false;  // Main/Subtitles (default DISABLE when UI/audio languages match)
+  bool subtitles_explicit = false;
   bool list_backends = false;
   bool save_settings = false;
   bool no_title = false;

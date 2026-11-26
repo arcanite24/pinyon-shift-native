@@ -54,10 +54,18 @@ struct TitleMenu {
   // Q137).
   static constexpr double kProfileSeconds = 0.493;
   // VIDEO (Q276, Q363): a new profile only (a profile's boot goes from Press
-  // Start to the menu, first30j boot-profile2). BRIGHTNESS opens at 60 and
-  // SUBTITLES at DISABLE (orig1 f00030); Y resets both.
+  // Start to the menu, first30j boot-profile2, first30l vid2). BRIGHTNESS opens
+  // at 60 (Main/Gamma = 0.6, step 0.05 = 5 points) and SUBTITLES at DISABLE
+  // when UI and audio languages match; Y resets both. Held left/right repeats
+  // on BRIGHTNESS after ~0.40 s at ~0.10 s/step (first30l vid1 h0542..h0548).
   static constexpr int kDefaultBrightness = 60;
-  static constexpr int kBrightnessStep = 1;  // interim: the original's step is not captured
+  static constexpr int kBrightnessStep = 5;
+  static constexpr double kSliderRepeatDelay = 0.40;
+  static constexpr double kSliderRepeatInterval = 0.10;
+  static constexpr int snap_brightness(int b) {
+    const int c = b < 0 ? 0 : (b > 100 ? 100 : b);
+    return ((c + 2) / 5) * 5;
+  }
   enum class VideoRow : uint8_t { kBrightness, kSubtitles };
 
   Phase phase = Phase::kPressStart;
@@ -71,6 +79,9 @@ struct TitleMenu {
   int video_row = 0;           // VideoRow
   int brightness = kDefaultBrightness;  // 0..100
   bool subtitles = false;
+  bool default_subtitles = false;
+  int video_hold_dir = 0;
+  double video_hold_t = 0.0;
 
   std::vector<Row> rows() const {
     if (phase == Phase::kMenu) return {Row::kSinglePlayer, Row::kMultiplayer};
@@ -110,7 +121,7 @@ struct TitleMenu {
       if (profile_error) popup = Popup::kProfileCorrupt;
     }
   }
-  // VIDEO's left and right: BRIGHTNESS by a step, SUBTITLES between ENABLE
+  // VIDEO's left and right: BRIGHTNESS by a step (5), SUBTITLES between ENABLE
   // and DISABLE.
   Step adjust(int dir) {
     if (phase != Phase::kVideo || dir == 0) return {};
@@ -123,15 +134,42 @@ struct TitleMenu {
     }
     return {Action::kNone, Cue::kMove};
   }
+  // Held left/right repeat on BRIGHTNESS (dir = -1, 0, +1).
+  void set_video_hold(int dir) {
+    const int d = dir < 0 ? -1 : (dir > 0 ? 1 : 0);
+    if (d != video_hold_dir) {
+      video_hold_dir = d;
+      video_hold_t = 0.0;
+    }
+  }
+  Step step_video_hold(double dt) {
+    if (phase != Phase::kVideo || video_row != int(VideoRow::kBrightness) || video_hold_dir == 0 || dt <= 0.0) {
+      if (phase != Phase::kVideo) video_hold_dir = 0, video_hold_t = 0.0;
+      return {};
+    }
+    video_hold_t += dt;
+    Step last{};
+    while (video_hold_t >= kSliderRepeatDelay) {
+      const Step s = adjust(video_hold_dir);
+      video_hold_t -= kSliderRepeatInterval;
+      if (s.cue != Cue::kNone) last = s;
+      else break;
+    }
+    return last;
+  }
   // VIDEO's Y RESET TO DEFAULT.
   Step reset_video() {
     if (phase != Phase::kVideo) return {};
+    video_hold_dir = 0;
+    video_hold_t = 0.0;
     brightness = kDefaultBrightness;
-    subtitles = false;
+    subtitles = default_subtitles;
     return {Action::kNone, Cue::kAccept};
   }
   Step move(int by) {
     if (phase == Phase::kVideo) {
+      video_hold_dir = 0;
+      video_hold_t = 0.0;
       video_row = ((video_row + by) % 2 + 2) % 2;
       return {Action::kNone, Cue::kMove};
     }
@@ -173,6 +211,8 @@ struct TitleMenu {
       case Phase::kProfile: return {};
       case Phase::kVideo:  // A SAVE: on to the menu, VIDEO not again
         first_profile = false;
+        video_hold_dir = 0;
+        video_hold_t = 0.0;
         show_menu();
         return {Action::kSaveVideo, Cue::kAccept};
       case Phase::kMenu:

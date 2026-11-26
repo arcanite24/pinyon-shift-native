@@ -491,6 +491,8 @@ void DriveSession::run_window_loop() {
           if (app.show_title) {
             app.title.has_save = app.played_career();
             app.title.update(frame_dt);
+            const auto rep = app.title.step_video_hold(frame_dt);
+            if (rep.cue == carview::TitleMenu::Cue::kMove) app.audio_host.trigger_ui(audio::UiCue::kMove);
           }
           if (app.show_title && !app.fmv_player.active() && !app.headless) {
             if (!app.title_video_tried) {

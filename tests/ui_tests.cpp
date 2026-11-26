@@ -15,6 +15,7 @@
 #include "fh1data/ui_scene.h"
 #include "fh1data/vfont.h"
 #include "game_hud.h"
+#include "title_menu.h"
 #include "hud.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
@@ -1600,6 +1601,51 @@ int main() {
 
       carview::set_ui_scenes({});
     }
+  }
+
+  // 5. TitleMenu VIDEO screen (830_GAMMA_ADJUST, Q363): step=5, snap, held repeat cadence, reset, save.
+  {
+    carview::TitleMenu tm;
+    tm.first_profile = true;
+    tm.default_subtitles = false;
+    CHECK(carview::TitleMenu::snap_brightness(60) == 60);
+    CHECK(carview::TitleMenu::snap_brightness(62) == 60);
+    CHECK(carview::TitleMenu::snap_brightness(63) == 65);
+    CHECK(carview::TitleMenu::snap_brightness(0) == 0);
+    CHECK(carview::TitleMenu::snap_brightness(100) == 100);
+
+    tm.confirm();
+    tm.update(carview::TitleMenu::kProfileSeconds + 0.01);
+    CHECK(tm.phase == carview::TitleMenu::Phase::kVideo);
+    CHECK(tm.brightness == 60);
+    CHECK(tm.subtitles == false);
+    // Single press steps by 5.
+    tm.adjust(1);
+    CHECK(tm.brightness == 65);
+    // Held right repeats after 0.40 s initial delay, then every 0.10 s.
+    tm.set_video_hold(1);
+    CHECK(tm.step_video_hold(0.35).cue == carview::TitleMenu::Cue::kNone);
+    CHECK(tm.brightness == 65);
+    CHECK(tm.step_video_hold(0.10).cue == carview::TitleMenu::Cue::kMove);  // 0.45 s -> 1 repeat step -> 70
+    CHECK(tm.brightness == 70);
+    CHECK(tm.step_video_hold(0.30).cue == carview::TitleMenu::Cue::kMove);  // +3 repeat steps -> 85
+    CHECK(tm.brightness == 85);
+    CHECK(tm.step_video_hold(0.50).cue == carview::TitleMenu::Cue::kMove);  // capped at 100
+    CHECK(tm.brightness == 100);
+    tm.set_video_hold(0);
+    // Row 1 toggles subtitles, Y resets both to defaults.
+    tm.move(1);
+    CHECK(tm.video_row == 1);
+    tm.adjust(1);
+    CHECK(tm.subtitles == true);
+    tm.reset_video();
+    CHECK(tm.brightness == 60);
+    CHECK(tm.subtitles == false);
+    // A SAVE moves to menu and clears first_profile.
+    const auto saved = tm.confirm();
+    CHECK(saved.action == carview::TitleMenu::Action::kSaveVideo);
+    CHECK(!tm.first_profile);
+    CHECK(tm.phase == carview::TitleMenu::Phase::kMenu);
   }
 
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {
