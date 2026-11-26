@@ -859,6 +859,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           rally_service_state = carview::make_rally_service_state(app.rally_session, d.car_name, d.car_class, d.car_pi,
                                                                   dmg_pct, app.rally_service_repaired,
                                                                   app.rally_service_selected, app.rally_notice);
+          rally_service_state.show_table = app.rally_service_table;
           d.rally_service = &rally_service_state;
         }
         if (app.rally_results_open) d.rally_results = &app.rally_results_state;

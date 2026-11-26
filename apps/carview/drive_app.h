@@ -287,6 +287,7 @@ struct DriveApp : DriveConfig {
   bool rally_service_resume_after_reload = false;
   int rally_service_selected = 0;
   bool rally_service_repaired = false;
+  bool rally_service_table = false;  // X on the stage banner: the engine's standings page
   bool rally_results_open = false;
   RallyChampResultsState rally_results_state{};
   int rally_world_switch = 0;

@@ -121,6 +121,9 @@ struct RallyServiceAreaState {
   int car_pi = 0;
   std::vector<race::RallyStandingRow> standings;
   std::string notice;
+  // Between stages the flow shows the stage's FINISHED banner
+  // (CPostRaceFinishPosition); X RACE RESULTS is this engine page.
+  bool show_table = false;
 };
 
 // Final Championship / Heats Results screen model.

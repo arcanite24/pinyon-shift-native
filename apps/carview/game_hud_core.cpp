@@ -986,7 +986,11 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
     return;
   }
   if (st.rally_service && st.rally_service->active) {
-    build_rally_service_area_screen(l, *st.rally_service, w, h);
+    // game_rally_race_flow between stages: the stage's finish position on
+    // H_POST_RACE_FINISHED, then the next stage (V4-13); X keeps the
+    // engine's standings page.
+    if (st.rally_service->show_table || !draw_rally_finished(l, st.rally_service->stage_place, w, h))
+      build_rally_service_area_screen(l, *st.rally_service, w, h);
     return;
   }
   if (st.rally_results && st.rally_results->active) {

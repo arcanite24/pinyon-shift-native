@@ -1143,6 +1143,7 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kAccept);
                 car_damage.reset();
                 app.rally_service_repaired = true;
+                app.rally_service_table = false;
                 app.rally_session.advance_from_service_area();
                 app.rally_service_open = false;
                 app.rally_service_return = false;
@@ -1154,14 +1155,34 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 }
               };
               app.rally_service_selected = 0;
-              if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) act_service();
+              // The stage's banner: A CONTINUE, X RACE RESULTS (the engine's
+              // page, which A or B closes).
+              const bool svc_x = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_X) ||
+                                 (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST);
+              const bool svc_back = (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat && e.key.key == SDLK_ESCAPE) ||
+                                    (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST);
+              auto act = [&]() {
+                if (app.rally_service_table) {
+                  app.rally_service_table = false;
+                  app.audio_host.trigger_ui(audio::UiCue::kCancel);
+                  return;
+                }
+                act_service();
+              };
+              if (svc_x) {
+                app.rally_service_table = !app.rally_service_table;
+                app.audio_host.trigger_ui(app.rally_service_table ? audio::UiCue::kMenuOpen : audio::UiCue::kCancel);
+              } else if (svc_back && app.rally_service_table) {
+                app.rally_service_table = false;
+                app.audio_host.trigger_ui(audio::UiCue::kCancel);
+              } else if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
+                if (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE) act();
               } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) act_service();
+                if (e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH) act();
               } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT) {
                 carview::ui::HitZone hz{};
                 if (ui_mouse_hit(e.button.x, e.button.y, hz) && hz.group == carview::ui4::kHitButton && hz.index == 0)
-                  act_service();
+                  act();
               }
               return (e.type != SDL_EVENT_GAMEPAD_ADDED && e.type != SDL_EVENT_GAMEPAD_REMOVED && e.type != SDL_EVENT_JOYSTICK_ADDED && e.type != SDL_EVENT_JOYSTICK_REMOVED);
             }
