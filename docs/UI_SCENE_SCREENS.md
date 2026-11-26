@@ -203,8 +203,10 @@ filter in `map_filter.h`.
   at 470 px/s; it stops at x 96..1184, y 88..635. Within 30 px of an icon
   (or the player's arrow, a found sign or a revealed barn) it locks on
   (`CURSOR_SNAP`, tinted faint white and scaled to about 54 px as in
-  `map_popup_outpost_orig.png`); the icon grows 1.25 times and the others
-  dim to 0.6.
+  `map_popup_outpost_orig.png`); the icon plays its profile's `hover`
+  (`bulge`: 1.7 times at 0.15 s, settling at 1.5) and the others `ghost`
+  (alpha 1 to 0.3 over 0.3 s), then `unghost` when the cursor leaves
+  ("Map profile animations" in `UI_SCENE_ANIMATION.md`).
 - **Zoom.** The right stick's y (or the wheel) zooms about the cursor at 1.9
   per second, from the opening scale (the most zoomed out) to 2.6 times it.
 - **Popup.** `MAP_OVERLAY/DETAIL` shows the icon's group: `CareerRace`

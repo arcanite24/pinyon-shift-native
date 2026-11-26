@@ -37,6 +37,7 @@ MapView::Profile read_profile(const audio::XmlNode& root) {
   MapView::Profile out;
   const audio::XmlNode* profile = root.child("Profile");
   if (!profile) return out;
+  if (const audio::XmlNode* anims = profile->child("animations")) mapanim::parse_animations(*anims, out.anims);
   for (const auto& g : profile->children) {
     if (!audio::iequals(g.name, "Group")) continue;
     const audio::XmlNode* filter = g.child("Filter");
@@ -71,10 +72,16 @@ MapView::Profile read_profile(const audio::XmlNode& root) {
       for (const auto& sym : g.children) {
         if (!audio::iequals(sym.name, "Symbolizer")) continue;
         const std::string stype = sym.attr("type");
-        if (stype.find("_new") != std::string::npos) continue;  // dynamic "NEW" badge is drawn separately via m.is_new
+        if (stype.find("_new") != std::string::npos) {
+          // The "NEW" badge is drawn separately (m.is_new), with these
+          // symbolizers' animations (they are the same in every group).
+          if (out.new_badge.empty()) out.new_badge = mapanim::parse_bindings(sym);
+          continue;
+        }
         const audio::XmlNode* atlas = sym.child("Atlas");
         if (!atlas) continue;
         MapView::IconStyle s;
+        s.anims = mapanim::parse_bindings(sym);
         s.cell_x = int(atlas->number("x"));
         s.cell_y = int(atlas->number("y"));
         const audio::XmlNode* size = sym.child("DynamicSize");
@@ -631,7 +638,50 @@ std::vector<Mark> marks(const MapScene& s, bool apply_filter) {
   return out;
 }
 
+// True when `m` sits at the cursor's icon (x, z).
+bool near(bool on, double x, double z, const Mark& m) { return on && std::fabs(m.x - x) < 0.5 && std::fabs(m.z - z) < 0.5; }
+
+// The event an icon plays and when it began (MapScene's animation fields).
+struct IconEvent {
+  std::string_view name;
+  double since = 0;
+};
+IconEvent icon_event(const MapScene& s, bool any_hover, bool hovered, bool was_hovered) {
+  if (any_hover) {
+    if (hovered) return {"hover", s.hover_since};
+    return {"ghost", was_hovered || s.ghost_since < 0 ? s.hover_since : s.ghost_since};
+  }
+  if (s.ghost_since >= 0) return {was_hovered ? "default" : "unghost", s.hover_since};
+  return {"intro", 0};
+}
+
+// A symbolizer's look for its event at map time `now` (< 0: the event's
+// last frame). A symbolizer without an animation for the event plays its
+// "default" one from the map's opening, if any.
+mapanim::IconLook icon_look(const mapanim::Library& lib, const mapanim::Bindings& b, const IconEvent& ev, double now) {
+  mapanim::IconLook look;
+  const mapanim::Animation* a = nullptr;
+  double since = ev.since;
+  if (const auto it = b.find(ev.name); it != b.end()) a = lib.find(it->second);
+  if (!a) {
+    if (const auto it = b.find("default"); it != b.end()) a = lib.find(it->second);
+    since = 0;
+  }
+  if (!a) return look;
+  const float elapsed = now < 0 ? (a->loop == mapanim::kStop ? a->duration : 0.0f) : float(std::max(0.0, now - since));
+  mapanim::apply(*a, elapsed, look);
+  return look;
+}
+
 }  // namespace
+
+const mapanim::Animation* MapView::icon_animation(std::string_view key, std::string_view event) const {
+  const auto it = full_.icons.find(std::string(key));
+  if (it == full_.icons.end()) return nullptr;
+  for (const auto& ic : it->second)
+    if (const auto b = ic.anims.find(event); b != ic.anims.end()) return full_.anims.find(b->second);
+  return nullptr;
+}
 
 // A separable box blur of `passes` passes (about a Gaussian), radius r px.
 static void box_blur_rgba(std::vector<uint8_t>& px, int w, int h, int r, int passes) {
@@ -1652,31 +1702,40 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
   // the zoom (frustum-culled to viewport).
   const double unit = std::min(2.0, 0.8 + zoom * 0.2) * std::max(0.85, rh / 900.0);
   const double icon_pad = 96.0 * unit;
+  // Without the live hover (still pictures), the selected marker is it.
+  const bool sel_hover = !scene.has_hover && scene.selected_marker >= 0;
   for (const auto& m : marks(scene, true)) {
     const auto p = to_screen(m.x, m.z);
     if (p[0] < -icon_pad || p[0] > rw + icon_pad || p[1] < -icon_pad || p[1] > rh + icon_pad) continue;
     auto it = full_.icons.find(m.key);
     if (it == full_.icons.end()) it = full_.icons.find("gas_station");
     if (it == full_.icons.end()) continue;
-    // The icon under the cursor grows and the others dim
-    // (map_popup_outpost_orig.png); its ring is H_MAP's lock-on.
-    const bool sel = m.marker_index >= 0 && m.marker_index == scene.selected_marker;
-    const bool dim = scene.selected_marker >= 0 && !sel;
+    // The icon under the cursor plays its "hover" (bulge, to 1.5x) and the
+    // others "ghost" (to alpha 0.3) (map_popup_outpost_orig.png); its ring
+    // is H_MAP's lock-on.
+    const IconEvent ev =
+        icon_event(scene, scene.has_hover || sel_hover,
+                   near(scene.has_hover, scene.hover_x, scene.hover_z, m) ||
+                       (sel_hover && m.marker_index == scene.selected_marker),
+                   near(scene.has_prev_hover, scene.prev_hover_x, scene.prev_hover_z, m));
     for (const auto& ic : it->second) {
+      const mapanim::IconLook look = icon_look(full_.anims, ic.anims, ev, scene.anim_time);
       Rgba tint = ic.colour;
       if (!m.discovered) tint = {140, 145, 155, tint.a * 0.7f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.65f;
-      if (dim) tint.a *= 0.3f;  // the profile's "ghost" animation ends at alpha 0.3
-      const double sz = ic.size * unit * (sel ? 1.25 : 1.0);
-      cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, 0, tint);
+      tint.a *= std::clamp(look.alpha, 0.0f, 1.0f);
+      const double sz = ic.size * unit * 0.5 * double(look.scale_x + look.scale_y);
+      if (tint.a <= 0.5f || sz <= 0.5) continue;
+      cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, look.angle_deg * kPi / 180, tint);
     }
-    if (m.is_new) {
+    const mapanim::IconLook badge = icon_look(full_.anims, full_.new_badge, ev, scene.anim_time);
+    if (m.is_new && badge.alpha > 0.002f) {
       const double oy = 20.0 * unit;
       if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
-        const double bh = 14.0 * unit;
+        const double bh = 14.0 * unit * 0.5 * double(badge.scale_x + badge.scale_y);
         const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
-        cv.blit(new_badge_, p[0], p[1] - oy, bh * aspect, bh, Rgba{255, 255, 255, 255});
-      } else {
+        cv.blit(new_badge_, p[0], p[1] - oy, bh * aspect, bh, Rgba{255, 255, 255, 255 * std::min(1.0f, badge.alpha)});
+      } else if (badge.alpha >= 0.5f) {
         const double sc = std::max(0.95, unit * 1.10);
         const double bw = 20.0 * sc, bh = 8.5 * sc;
         const double by = p[1] - oy;
@@ -1728,12 +1787,22 @@ HudImage MapView::pause_map(const MapScene& scene, int width, int height, double
     cv.line(p[0], p[1], p[0], p[1], 12, Rgba{20, 20, 20, 220});
     cv.line(p[0], p[1], p[0], p[1], 9, Rgba{230, 60, 50, 255});
   }
-  // The player's arrow, turned with the heading (clockwise from north).
+  // The player's arrow, turned with the heading (clockwise from north), and
+  // its radar ping (cell 4,4: the profile's looping "radar", a ring growing
+  // to 8x as it fades, every 3 s).
   if (const auto it = full_.icons.find("player_local"); it != full_.icons.end()) {
     const auto p = to_screen(scene.x, scene.z);
+    const IconEvent ev{"default", 0};
     for (const auto& ic : it->second) {
-      if ((ic.cell_x == 2 || ic.cell_x == 3) && ic.cell_y == 3)
-        cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], std::max(28.0, ic.size * unit), scene.heading, ic.colour);
+      const bool arrow = (ic.cell_x == 2 || ic.cell_x == 3) && ic.cell_y == 3;
+      const bool ping = ic.cell_x == 4 && ic.cell_y == 4;
+      if (!arrow && !ping) continue;
+      const mapanim::IconLook look = icon_look(full_.anims, ic.anims, ev, scene.anim_time);
+      Rgba tint = ic.colour;
+      tint.a *= std::clamp(look.alpha, 0.0f, 1.0f);
+      const double sz = std::max(28.0, ic.size * unit) * 0.5 * double(look.scale_x + look.scale_y);
+      if (tint.a <= 0.5f || sz <= 0.5) continue;
+      cv.icon(large_icons_, ic.cell_x, ic.cell_y, p[0], p[1], sz, arrow ? scene.heading : 0, tint);
     }
   }
 

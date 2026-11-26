@@ -1500,6 +1500,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
             }
             if (w != map_w || h != map_h) map_dirty = true;
+            if (map_anim_due()) map_dirty = true;  // the icons' animations (30 Hz)
             if (map_dirty && w > 64 && h > 64) {
               map_dirty = false;
               map_w = w, map_h = h;
@@ -1540,6 +1541,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               ms.filter = map_filter;
               update_map_selection();
               ms.selected_marker = map_selected_marker;
+              map_anim_fill(ms);
               // The filter popup and the dialogs blur the map behind them.
               ms.blur = map_filter_open || map_dialog != MapDialog::kNone;
               // 100% edge-to-edge fullscreen viewport (0, 0, w, h) — zero outer borders!

@@ -477,6 +477,7 @@ bool DriveSession::map_marker_visible(const MapMarker& m) {
 
 void DriveSession::update_map_selection() {
           map_selected_marker = -1;
+          map_hover_on = false;
           map_overlay = carview::MapOverlayHud{};
           if (!map_open) return;
           if (map_w > 64 && map_h > 64) {
@@ -559,7 +560,11 @@ void DriveSession::update_map_selection() {
               map_overlay.subtitle = "PAN TO ANY ROAD, EVENT OR FESTIVAL SITE";
               map_overlay.distance_m = std::hypot(map_px - at.x, map_pz - at.z);
             }
+            map_hover_on = matched_collectible;
           }
+          // The icon under the cursor plays its hover animation (map_anim_fill).
+          if (map_selected_marker >= 0) map_hover_on = true;
+          map_hover_x = target_x, map_hover_z = target_z;
 
           // Retail FH1 1:1 button bar prompts with ZERO duplication between A and X:
           // A / Enter / Left-Click: Set / Toggle GPS route (keeps map open!).

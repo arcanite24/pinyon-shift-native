@@ -72,6 +72,8 @@ void DriveSession::map_screen_open() {
                       float((0.5 * map_h - (p.z - map_cz) / mpp - fr.oy) / fr.s) - MapCursor::kCy);
   }
   map_opened_at = now_s();
+  map_anim_hover = map_anim_prev = false;
+  map_anim_hover_since = 0.0, map_anim_ghost_since = -1.0, map_anim_drawn = -1.0;
   map_base_zoom = map_zoom;
   map_filter_open = false;
   map_filter_row = map_filter_first = 0;
@@ -121,6 +123,40 @@ void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axi
     // The selected icon grows and the rest dim: a new raster.
     if (map_selected_marker != was) map_dirty = true;
   }
+}
+
+void DriveSession::map_anim_fill(MapScene& ms) {
+  const double t = std::max(0.0, now_s() - map_opened_at);
+  const bool same = map_hover_on == map_anim_hover &&
+                    (!map_hover_on || (std::fabs(map_hover_x - map_anim_hx) < 0.5 && std::fabs(map_hover_z - map_anim_hz) < 0.5));
+  if (!same) {
+    // The icon that was under the cursor ghosts (another hovered) or goes
+    // back to its default (none); the others ghost when a hover starts
+    // from none and unghost when it ends.
+    if (map_anim_hover) map_anim_prev = true, map_anim_px = map_anim_hx, map_anim_pz = map_anim_hz;
+    if (map_hover_on && !map_anim_hover) map_anim_ghost_since = t;
+    map_anim_hover = map_hover_on;
+    map_anim_hx = map_hover_x, map_anim_hz = map_hover_z;
+    map_anim_hover_since = t;
+  }
+  ms.anim_time = t;
+  ms.has_hover = map_anim_hover;
+  ms.hover_x = map_anim_hx, ms.hover_z = map_anim_hz;
+  ms.hover_since = map_anim_hover_since;
+  ms.ghost_since = map_anim_ghost_since;
+  ms.has_prev_hover = map_anim_prev;
+  ms.prev_hover_x = map_anim_px, ms.prev_hover_z = map_anim_pz;
+  // The player's ping fires its "audio" trigger (Map_Radar) at each pass.
+  // (Not the passes missed behind the FILTER popup or a dialog.)
+  const mapanim::Animation* ping = app.map_view.icon_animation("player_local", "default");
+  if (ping && t - std::max(0.0, map_anim_drawn) < 0.5)
+    for (const mapanim::Trigger* tr : ping->crossed(float(std::max(0.0, map_anim_drawn)), float(t)))
+      if (tr->type == "audio" && !tr->value.empty()) app.audio_host.play_ui(tr->value);
+  map_anim_drawn = t;}
+
+bool DriveSession::map_anim_due() const {
+  if (!map_open || map_filter_open || map_dialog != MapDialog::kNone || map_details) return false;
+  return now_s() - map_opened_at - map_anim_drawn >= double(mapanim::kMaxStep);
 }
 
 void DriveSession::map_screen_fill() {

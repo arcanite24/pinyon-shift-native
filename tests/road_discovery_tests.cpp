@@ -423,6 +423,34 @@ void test_colorado_corpus_optional() {
       }
     }
     check(blue_corrupt_px == 0, "PT-33: undiscovered Horizon 'H' icon renders cleanly with zero overflow artifacts");
+
+    // The profile's animations: the player's looping radar ping, the
+    // facilities' intro grow, the barn rumour camera moves.
+    const auto* radar = mv.icon_animation("player_local", "default");
+    check(radar && radar->name == "radar" && radar->loop == carview::mapanim::kLoop &&
+              std::fabs(radar->duration - 3.0f) < 1e-4f,
+          "MapProfileFullscreen: player_local pings with the looping 3 s radar");
+    const auto* grow = mv.icon_animation("racecentral", "intro");
+    check(grow && grow->name == "grow", "MapProfileFullscreen: racecentral's intro is grow");
+    const auto* barn1 = mv.animation("barn_find_region1_unlock");
+    check(barn1 && std::fabs(carview::mapanim::camera_at(*barn1, 10).x - 1310) < 1e-3 &&
+              std::fabs(carview::mapanim::camera_at(*barn1, 10).z + 4921) < 1e-3,
+          "MapProfileFullscreen: barn_find_region1_unlock moves the camera to (1310, -4921)");
+    // Mid-ping (1.5 s: a ring at about 4x, alpha 0.25) differs from before
+    // it (0.5 s: scale 0) away from the arrow.
+    carview::MapScene ping_sc = sc;
+    ping_sc.anim_time = 0.5;
+    const auto before_ping = mv.pause_map(ping_sc, 640, 360, 6.0, sc.x, sc.z);
+    ping_sc.anim_time = 1.5;
+    const auto mid_ping = mv.pause_map(ping_sc, 640, 360, 6.0, sc.x, sc.z);
+    int ring_px = 0;
+    for (int y = 0; y < 360; ++y)
+      for (int x = 0; x < 640; ++x) {
+        if (std::hypot(x - 320.0, y - 180.0) < 30) continue;
+        const size_t o = (size_t(y) * 640 + size_t(x)) * 4;
+        if (std::abs(int(mid_ping.rgba[o]) - int(before_ping.rgba[o])) > 8) ++ring_px;
+      }
+    check(ring_px > 200, "the radar ping's ring shows mid-pass");
   }
 
   // PT-35: Minimap at bug_001 (2303.92, 548.02) and bug_023 (-3025.10, -1727.87) with active
