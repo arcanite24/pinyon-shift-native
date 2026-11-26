@@ -899,34 +899,51 @@ bool MapView::sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const {
   return true;
 }
 
+namespace {
+// The minimap's ground-to-panel map in 180 px panel pixels (MapView::minimap).
+constexpr double kMiniR = 857.0;          // m: the view's depth offset
+constexpr double kMiniHorizonY = -61.7;   // px: the horizon's row
+constexpr double kMiniT = 138880.0;       // px m
+constexpr double kMiniS = 461.0;          // px m
+// Roads 14 px wide at the car for a 12.6 m road (the frames' width, not the
+// camera's scale: the original draws its lines thicker than the ground).
+constexpr double kMiniLineGain = 14.0 / 12.6 / (kMiniS / kMiniR);
+constexpr double kMiniNearA = -340.0;     // m behind: past the panel's bottom
+constexpr double kMiniAheadMid = 560.0, kMiniGather = 960.0;  // the roads' gather disc
+constexpr double kMiniReach = 1500.0;     // m: the panel's top corners
+}  // namespace
+
 HudImage MapView::minimap(const MapScene& scene, int size) const {
   // SPEC-UI-LAYOUTS a (out/oracle/ui/hud-freeroam.png): authentic frameless
   // transparent circular FH1 radar with crisp road ribbons, dark road outlines,
   // player arrow, and smooth outer edge fade (zero dark backdrop disc!).
   Canvas cv(size, size, {0, 0, 0, 0});
   cv.edge_fade = 0.34f;
-  // A fixed camera behind and above the car (whether the original's moves
-  // with speed is open, Q89): the player's arrow about 100 px down a 180 px panel
-  // (y 520 at 720 lines in 04_roam_hud_day_idle_orig.png), about 160 m
-  // ahead to the top and 45 m behind to the bottom.
+  // The original's camera, fitted on its icons (Q89, first30j roam-map):
+  // a pitched pinhole over flat ground, turned with the car and fixed with
+  // speed, maps a point a m ahead and c m right to the 180 px panel as
+  //   x = 90 + S c / (a + R),  y = Yh + T / (a + R)
+  // (kMini*), within about 3 px of seven icon positions at rest and moving.
+  // The arrow sits 100 px down the panel; the panel's top shows about
+  // 1.4 km ahead, its bottom 280 m behind, its sides 170 m either way at
+  // the car. Lines and icons shrink with depth as R / (a + R).
   const double map_heading = scene.north_up ? 0.0 : scene.heading;
   const double fx = std::sin(map_heading), fz = std::cos(map_heading);
   const double rx = fz, rz = -fx;  // right of the heading (+X when facing +Z)
-  constexpr double kHeight = 108.0;
-  constexpr double kBack = 54.0;
-  constexpr double kS = 0.70710678118654752;
-  const double focal = size * (150.0 / 180.0), cxp = size / 2.0, cyp = size * (50.0 / 180.0);
+  const double u = size / 180.0;   // panel pixels per 720-line pixel
+  const double cxp = size / 2.0, cyp = u * (kMiniHorizonY + kMiniT / kMiniR);  // the car
   struct P {
-    double x, y, depth;
+    double x, y, depth;  // depth: a + R, metres
   };
   auto project = [&](double x, double z) {
     const double dx = x - scene.x, dz = z - scene.z;
-    const double a = dx * fx + dz * fz + kBack, c = dx * rx + dz * rz;
-    const double depth = kS * (kHeight + a);
+    const double depth = dx * fx + dz * fz + kMiniR, c = dx * rx + dz * rz;
     if (depth < 1) return P{0, 0, -1};
-    return P{cxp + focal * c / depth, cyp - focal * kS * (a - kHeight) / depth, depth};
+    return P{cxp + u * kMiniS * c / depth, u * (kMiniHorizonY + kMiniT / depth), depth};
   };
-  const double reach = 420.0;  // m around the car that can show
+  // The perspective scale of a line or icon at `depth` (1 at the car).
+  auto persp = [](double depth) { return kMiniR / std::max(depth, 1.0); };
+  const double reach = kMiniReach;  // m around the car that can show
 
   // Rumour circles (sort order 21, under the roads).
   if (scene.data && scene.progress)
@@ -941,8 +958,8 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
         // Clipped to the near side of the camera.
         double x = b.hint_x + b.hint_rx * std::cos(t), z = b.hint_z + b.hint_rz * std::sin(t);
         const double a = (x - scene.x) * fx + (z - scene.z) * fz;
-        if (a < -kBack - kHeight + 20) {
-          const double shift = (-kBack - kHeight + 20) - a;
+        if (a < kMiniNearA) {
+          const double shift = kMiniNearA - a;
           x += shift * fx, z += shift * fz;
         }
         const P p = project(x, z);
@@ -961,8 +978,10 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   // under-lines first, then the lines with their core.
   std::vector<std::pair<uint32_t, uint32_t>> segs;
   {
-    const int cx0 = std::max(0, int((scene.x - reach - min_x_) / cell_)), cx1 = std::min(nx_ - 1, int((scene.x + reach - min_x_) / cell_));
-    const int cz0 = std::max(0, int((scene.z - reach - min_z_) / cell_)), cz1 = std::min(nz_ - 1, int((scene.z + reach - min_z_) / cell_));
+    // The panel shows 280 m behind to 1.4 km ahead: a disc centred ahead.
+    const double gx = scene.x + fx * kMiniAheadMid, gz = scene.z + fz * kMiniAheadMid;
+    const int cx0 = std::max(0, int((gx - kMiniGather - min_x_) / cell_)), cx1 = std::min(nx_ - 1, int((gx + kMiniGather - min_x_) / cell_));
+    const int cz0 = std::max(0, int((gz - kMiniGather - min_z_) / cell_)), cz1 = std::min(nz_ - 1, int((gz + kMiniGather - min_z_) / cell_));
     for (int cz = cz0; cz <= cz1; ++cz)
       for (int cx = cx0; cx <= cx1; ++cx)
         for (const auto& rs : grid_[size_t(cz) * nx_ + cx]) segs.push_back(rs);
@@ -977,14 +996,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     const double seg_len = std::hypot(bx - ax, bz - az);
     const int steps = std::clamp(int(std::ceil(seg_len / 28.0)), 1, 24);
     const double inv_steps = 1.0 / double(steps);
-    constexpr double kNearDepth = 10.0;
+    constexpr double kNearDepth = kMiniR + kMiniNearA;
     for (int k = 0; k < steps; ++k) {
       const double t0 = double(k) * inv_steps;
       const double t1 = double(k + 1) * inv_steps;
       double x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0;
       double x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1;
-      const double d0 = kS * (kHeight + (x0 - scene.x) * fx + (z0 - scene.z) * fz + kBack);
-      const double d1 = kS * (kHeight + (x1 - scene.x) * fx + (z1 - scene.z) * fz + kBack);
+      const double d0 = kMiniR + (x0 - scene.x) * fx + (z0 - scene.z) * fz;
+      const double d1 = kMiniR + (x1 - scene.x) * fx + (z1 - scene.z) * fz;
       if (d0 < kNearDepth && d1 < kNearDepth) continue;
       if (d0 < kNearDepth) {
         const double ct = (kNearDepth - d0) / std::max(1e-6, d1 - d0);
@@ -1002,7 +1021,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
           (pa.y < -32 && pb.y < -32) || (pa.y > size + 32 && pb.y > size + 32)) {
         continue;
       }
-      const double wpx = focal / (0.5 * (pa.depth + pb.depth)) * world_width;
+      const double wpx = kMiniLineGain * u * kMiniS / (0.5 * (pa.depth + pb.depth)) * world_width;
       cv.line(pa.x, pa.y, pb.x, pb.y, std::max(min_px, wpx + pad_px), col);
     }
   };
@@ -1064,12 +1083,13 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       }
   }
 
-  // Icons, standing up (a constant size on screen).
+  // Icons, standing up, shrinking with depth as the roads do (R / (a + R)).
   const double unit = size / 300.0;
   if (scene.has_gps_dest && std::hypot(scene.gps_dest_x - scene.x, scene.gps_dest_z - scene.z) <= reach) {
     const P dp = project(scene.gps_dest_x, scene.gps_dest_z);
     if (dp.depth >= 1) {
-      cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit, 52 * unit, 0, Rgba{74, 238, 97, 255});
+      const double k = persp(dp.depth);
+      cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit * k, 52 * unit * k, 0, Rgba{74, 238, 97, 255});
     }
   }
   // The activity icons by their profile's VisibleRange (2,400 m, faded out
@@ -1107,13 +1127,14 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       tint.a *= visible_range_alpha(ic, mm.dist);
       if (!m.discovered) tint = {145, 145, 155, tint.a * 0.72f};
       else if (m.completed && m.marker_index >= 0) tint.a *= 0.6f;
-      const double iy = p.y - ic.size * unit * 0.4;
-      top_y = std::min(top_y, iy - ic.size * unit * 0.45);
-      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, ic.size * unit, 0, tint);
+      const double isz = ic.size * u * persp(p.depth);  // DynamicSize: px at the car
+      const double iy = p.y - isz * 0.27;  // lifted about 12 px at the car (the fit)
+      top_y = std::min(top_y, iy - isz * 0.45);
+      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, iy, isz, 0, tint);
     }
     // Retail New.xds badge (or crisp FH1 pink "NEW" lettered badge fallback — never a blank line!).
     if (m.is_new) {
-      const double sc = std::max(0.85, unit * 1.15);
+      const double sc = 1.25 * u * persp(p.depth);
       if (!new_badge_.rgba.empty() && new_badge_.height > 0) {
         const double bh = 12.0 * sc;
         const double aspect = std::clamp(double(new_badge_.width) / double(new_badge_.height), 0.75, 4.0);
@@ -1153,7 +1174,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (std::hypot(x - scene.x, z - scene.z) > reach) return;
     const P p = project(x, z);
     if (p.depth < 1) return;
-    cv.icon(small_icons_, 5, 3, p.x, p.y, 45.0 * unit, 0, Rgba{255, 255, 255, 255});
+    cv.icon(small_icons_, 5, 3, p.x, p.y, 45.0 * u * persp(p.depth), 0, Rgba{255, 255, 255, 255});
   };
   for (const auto& t : scene.traffic) vehicle(t[0], t[1]);
   for (const auto& f : scene.festival_ai) vehicle(f[0], f[1]);
@@ -1162,8 +1183,9 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     if (std::hypot(o[0] - scene.x, o[1] - scene.z) > reach) continue;
     const P p = project(o[0], o[1]);
     if (p.depth < 1) continue;
-    cv.line(p.x, p.y, p.x, p.y, 15 * unit + 2, Rgba{120, 120, 125, 230});
-    cv.line(p.x, p.y, p.x, p.y, 15 * unit - 1, Rgba{236, 236, 238, 255});
+    const double k = persp(p.depth);
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit * k + 2, Rgba{120, 120, 125, 230});
+    cv.line(p.x, p.y, p.x, p.y, 15 * unit * k - 1, Rgba{236, 236, 238, 255});
   }
   // R3-UI-12: Race leader highlight dot (distinct gold disc with Horizon-pink outer rim).
   if (scene.has_race_leader && std::hypot(scene.race_leader[0] - scene.x, scene.race_leader[1] - scene.z) <= reach) {
@@ -1231,9 +1253,9 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   if (const auto it = mini_.icons.find("player_local"); it != mini_.icons.end()) {
     const P p = project(scene.x, scene.z);
     const double player_angle = scene.north_up ? scene.heading : 0.0;
-    // About 35 px at 720 lines, as the frames show.
+    // DynamicSize 45 at the car: the glyph about 30 px at 720 lines, as the frames show.
     for (const auto& ic : it->second)
-      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * unit * 1.8, player_angle, ic.colour);
+      cv.icon(small_icons_, ic.cell_x, ic.cell_y, p.x, p.y, ic.size * u, player_angle, ic.colour);
   }
   // No frame (SPEC-UI-LAYOUTS a).
   HudImage img = cv.image();
