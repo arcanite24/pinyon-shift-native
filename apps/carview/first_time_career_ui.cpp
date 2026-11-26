@@ -90,6 +90,12 @@ bool scene_card_keys(std::array<std::array<double, 4>, race::kOpeningTitleCards>
   return true;
 }
 
+// The cards as the scene's curves read literally: opacity 0 throughout
+// (Q186). The original's diner shows no card in 20 frames 3 s apart over
+// New_Diner_Cutscene_2 (f00354-f00414_first30a_orig.png), so the engine's
+// inferred 0-1-1-0 ramp stays off (Q279).
+constexpr bool kOpeningCardsShown = false;
+
 void draw_opening_titles(ui::List& l, double t, float w, float h) {
   static constexpr const char* kCards[] = {"OPENINGTITLES/TITLEMICROSOFT", "OPENINGTITLES/TITLETURN10",
                                            "OPENINGTITLES/TITLEPLAYGROUND", "OPENINGTITLES/HORIZONLOGO"};
@@ -125,7 +131,7 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
     ui4::draw_controller_layout_diagram(l, 0.12f * w, 0.14f * h, 0.88f * w, 0.86f * h, s, controller_layout, swap);
     return;
   }
-  if (ftc.show_opening_credits()) draw_opening_titles(l, ftc.opening_credits_time(), w, h);
+  if (kOpeningCardsShown && ftc.show_opening_credits()) draw_opening_titles(l, ftc.opening_credits_time(), w, h);
   if (!ftc.hud_visible()) return;
   if (!ftc.large_instruction_1().empty()) {
     // The large two-line instruction as a stage starts.
