@@ -232,6 +232,12 @@ class FirstTimeCareer {
   static constexpr double kHeatsFinalTimeOfDay = 56880.0;  // 15:48
   static constexpr std::array<double, 3> kPlaneRacePlace = {-5423.0, 74.1, -3181.0};
   static constexpr double kPlaneRaceHeading = -6.77;
+  // PopularitySkillsFlow (game_free_roam_flow.xml), back in free roam after
+  // the showcase: 18:40 (SetTimeOfDayPostPlaneRace), Skills_Unlock over the
+  // RedRockSkillsIntro voice-over. Skills score from then on.
+  static constexpr double kPostPlaneRaceTimeOfDay = 67200.0;
+  static constexpr const char* kSkillsCutscene = "Skills_Unlock";
+  static constexpr const char* kSkillsVo = "RedRockSkillsIntro";
   // intro_flow / first_time_career.xml placements.
   static constexpr std::array<double, 3> kViperStart = {-1361.97, 47.32, 1881.99};
   static constexpr double kViperHeading = 94.07;
@@ -305,6 +311,9 @@ class FirstTimeCareer {
   bool show_opening_credits() const { return credits_; }
   double opening_credits_time() const { return credits_ ? credits_t_ : 0.0; }
   bool map_locked() const { return map_locked_; }
+  // Driving skills score: not in the career's opening, from the end of
+  // PopularitySkillsFlow (after the showcase) on, and outside the career.
+  bool skills_unlocked() const { return !active() || (stage_ > FtcStage::kShowcase && !skills_cutscene_); }
   // String ids (InGame): the stage's persistent HUD instruction, and the
   // large two-line instruction shown for LargeHudInstructionDisplayTime as a
   // stage starts; empty when none.
@@ -340,6 +349,7 @@ class FirstTimeCareer {
   bool festival_approach_ = false;  // the player passed the last stretch's zone
   bool reminders_due_ = false;
   bool diner_preloaded_ = false;
+  bool skills_cutscene_ = false;  // Skills_Unlock playing (PopularitySkillsFlow)
   int waypoint_ = 0;            // the race's sat-nav route: HalfWay, TollBooth, Beyond
   int drive_leg_ = 0;           // the initial drive's sat-nav point (kInitialDrivePoints)
   bool in_trigger_ = false;     // inside the event's sign-up sphere (edge)

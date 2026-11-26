@@ -1387,8 +1387,12 @@ bool DriveSession::step(const drive::Input& user_in) {
           host.particle_sys.step(float(drive::Vehicle::kStep), {0.707f, 0.0f, 0.707f}, 1.45f);
         }
         // SPEC-SKILLS-POPULARITY: step driving skill detectors in free roam and active races.
-        // No skills while the career's AI drives the car under a cutscene.
+        // No skills while the career's AI drives the car under a cutscene,
+        // nor in the career's opening before PopularitySkillsFlow (none
+        // score on the initial drive or the race to the festival in the
+        // original; first30a captures).
         if (app.skill_tracker && !app.campaign.cutscene_drives_player() &&
+            (!app.campaign.ftc_active() || app.campaign.ftc().skills_unlocked()) &&
             (!app.race || (app.race->session().started() && !app.race->player_finished()))) {
           freeroam::SkillInput si;
           si.dt = drive::Vehicle::kStep;
