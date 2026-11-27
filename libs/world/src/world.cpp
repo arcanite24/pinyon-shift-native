@@ -22,6 +22,7 @@
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
 #include "fh1data/rmb.h"
+#include "fh1data/worker_pool.h"
 
 namespace fs = std::filesystem;
 
@@ -759,10 +760,10 @@ std::shared_ptr<const SharedBundleMap> shared_bundle_textures(fh1::MemberSource&
   const auto names = source.with_suffix(".bundle");
   auto out = std::make_shared<SharedBundleMap>();
   std::mutex map_mu;
-  const size_t threads = std::min<size_t>(names.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-  auto process_one = [&](const std::string& name, std::vector<uint8_t>& data,
-                         std::vector<fh1::BundleEntry>& entries) {
-    if (!source.read(name, data, nullptr) || !fh1::parse_bundle(data, entries, nullptr)) return;
+  auto process_one = [&](size_t i) {
+    thread_local std::vector<uint8_t> data;
+    thread_local std::vector<fh1::BundleEntry> entries;
+    if (!source.read(names[i], data, nullptr) || !fh1::parse_bundle(data, entries, nullptr)) return;
     std::lock_guard<std::mutex> lk(map_mu);
     for (const auto& e : entries) {
       if (!out->count(e.record)) {
@@ -770,27 +771,7 @@ std::shared_ptr<const SharedBundleMap> shared_bundle_textures(fh1::MemberSource&
       }
     }
   };
-  if (threads > 1 && names.size() >= 4) {
-    std::atomic<size_t> next{0};
-    std::vector<std::thread> workers;
-    workers.reserve(threads);
-    for (size_t t = 0; t < threads; ++t) {
-      workers.emplace_back([&]() {
-        std::vector<uint8_t> data;
-        std::vector<fh1::BundleEntry> entries;
-        for (;;) {
-          const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-          if (i >= names.size()) break;
-          process_one(names[i], data, entries);
-        }
-      });
-    }
-    for (auto& w : workers) w.join();
-  } else {
-    std::vector<uint8_t> data;
-    std::vector<fh1::BundleEntry> entries;
-    for (const auto& name : names) process_one(name, data, entries);
-  }
+  fh1::parallel_for(names.size(), process_one);
   if (std::getenv("SHIFT_WORLD_DEBUG")) {
     std::fprintf(stderr, "world: %zu bundle textures in %.0f ms\n", out->size(),
                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
@@ -803,6 +784,34 @@ std::shared_ptr<const SharedBundleMap> shared_bundle_textures(fh1::MemberSource&
   cache[key] = out;
   return out;
 }
+
+struct SpatialGrid2D {
+  static constexpr double kCell = 128.0;
+  std::unordered_map<int64_t, std::vector<uint32_t>> cells;
+
+  static int64_t key(int32_t cx, int32_t cz) {
+    return (int64_t(cx) << 32) ^ uint32_t(cz);
+  }
+  static int32_t coord(double v) { return int32_t(std::floor(v / kCell)); }
+
+  void clear() { cells.clear(); }
+  void insert(double x, double z, uint32_t idx) { cells[key(coord(x), coord(z))].push_back(idx); }
+
+  template <typename Fn>
+  void for_each_in_radius(double x, double z, double r, Fn&& fn) const {
+    const int32_t x0 = coord(x - r);
+    const int32_t x1 = coord(x + r);
+    const int32_t z0 = coord(z - r);
+    const int32_t z1 = coord(z + r);
+    for (int32_t cz = z0; cz <= z1; ++cz) {
+      for (int32_t cx = x0; cx <= x1; ++cx) {
+        const auto it = cells.find(key(cx, cz));
+        if (it == cells.end()) continue;
+        for (uint32_t idx : it->second) fn(idx);
+      }
+    }
+  }
+};
 
 struct World::Impl {
   fh1::MemberSource source;
@@ -819,6 +828,13 @@ struct World::Impl {
   std::unique_ptr<fh1::PropModels> prop_models;
   TrackMaterialSettings track_settings;
   bool have_props = false;
+  // Prebuilt lookup from model member number (e.g. coloradoout.01234.rmb.bin -> 1234)
+  // to index in World::models_, eliminating per-gather std::map<string, uint32_t> rebuilds.
+  std::unordered_map<uint32_t, uint32_t> model_index_by_member;
+  // 2D spatial grids (128 m cells) over props.placements (file XZ) and props.trees (game XZ)
+  // so World::gather() visits only nearby cells instead of scanning 300k+ records twice.
+  SpatialGrid2D prop_grid;
+  SpatialGrid2D tree_grid;
 };
 
 World::World() : impl_(std::make_unique<Impl>()) {}
@@ -942,10 +958,90 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
   if (!impl_->source.open(zip, error)) return false;
   const auto zip_size = fs::file_size(zip, ec);
 
-  // The model index: the cache, or a parse of every model.
+  // The model index: binary cache (single bulk read), else text cache, else parallel scan.
   models_.clear();
   bool cached = false;
-  if (!cache.empty()) {
+  const fs::path bin_cache = cache.empty() ? fs::path{} : fs::path(cache.string() + ".bin");
+  auto load_bin_index = [&](const fs::path& p) -> bool {
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    const std::streamoff fsz = in.tellg();
+    if (fsz < 20) return false;
+    std::vector<uint8_t> buf(static_cast<size_t>(fsz));
+    in.seekg(0, std::ios::beg);
+    if (!in.read(reinterpret_cast<char*>(buf.data()), fsz)) return false;
+    size_t pos = 0;
+    auto rd = [&](void* dst, size_t n) -> bool {
+      if (n > buf.size() - pos) return false;
+      std::memcpy(dst, buf.data() + pos, n);
+      pos += n;
+      return true;
+    };
+    char magic[8]{};
+    uint64_t csz = 0;
+    uint32_t count = 0;
+    if (!rd(magic, 8) || std::memcmp(magic, "SHWI0004", 8) != 0) return false;
+    if (!rd(&csz, 8) || csz != zip_size) return false;
+    if (!rd(&count, 4) || count == 0 || count > 2000000u) return false;
+    std::vector<ModelInfo> tmp;
+    tmp.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      uint16_t nlen = 0;
+      uint8_t flags = 0;
+      auto& m = tmp[i];
+      if (!rd(&nlen, 2) || !rd(&flags, 1) || !rd(m.box_min.data(), 12) || !rd(m.box_max.data(), 12))
+        return false;
+      if (nlen > 1024u) return false;
+      m.name.resize(nlen);
+      if (nlen > 0 && !rd(m.name.data(), nlen)) return false;
+      m.world_space = (flags & 1u) != 0;
+      m.ok = (flags & 2u) != 0;
+      m.far = (flags & 4u) != 0;
+    }
+    models_ = std::move(tmp);
+    return !models_.empty();
+  };
+  auto save_bin_index = [&](const fs::path& p) {
+    if (p.empty() || models_.empty()) return;
+    fs::create_directories(p.parent_path(), ec);
+    const fs::path tmp_p = p.string() + ".tmp";
+    std::ofstream out(tmp_p, std::ios::binary | std::ios::trunc);
+    if (!out) return;
+    std::vector<uint8_t> buf;
+    buf.reserve(20 + models_.size() * 64);
+    auto wr = [&](const void* src, size_t n) {
+      const auto* b = static_cast<const uint8_t*>(src);
+      buf.insert(buf.end(), b, b + n);
+    };
+    const uint64_t zsz = uint64_t(zip_size);
+    const uint32_t count = uint32_t(models_.size());
+    wr("SHWI0004", 8);
+    wr(&zsz, 8);
+    wr(&count, 4);
+    for (const auto& m : models_) {
+      const uint16_t nlen = uint16_t(m.name.size());
+      const uint8_t flags = uint8_t((m.world_space ? 1u : 0u) | (m.ok ? 2u : 0u) | (m.far ? 4u : 0u));
+      wr(&nlen, 2);
+      wr(&flags, 1);
+      wr(m.box_min.data(), 12);
+      wr(m.box_max.data(), 12);
+      if (nlen > 0) wr(m.name.data(), nlen);
+    }
+    out.write(reinterpret_cast<const char*>(buf.data()), std::streamsize(buf.size()));
+    out.flush();
+    if (!out) return;
+    out.close();
+    fs::rename(tmp_p, p, ec);
+    if (ec) {
+      fs::remove(p, ec);
+      ec.clear();
+      fs::rename(tmp_p, p, ec);
+    }
+  };
+  if (!bin_cache.empty()) {
+    cached = load_bin_index(bin_cache);
+  }
+  if (!cached && !cache.empty()) {
     std::ifstream in(cache);
     std::string magic;
     unsigned long long size = 0;
@@ -960,17 +1056,19 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
         models_.push_back(m);
       }
       cached = !models_.empty();
+      if (cached) save_bin_index(bin_cache);
     }
   }
   if (!cached) {
-    models_.clear();
-    std::vector<uint8_t> bytes;
-    for (const auto& name : impl_->source.with_suffix(".rmb.bin")) {
-      ModelInfo m;
-      m.name = name;
+    const auto rmb_names = impl_->source.with_suffix(".rmb.bin");
+    models_.resize(rmb_names.size());
+    fh1::parallel_for(rmb_names.size(), [&](size_t i) {
+      thread_local std::vector<uint8_t> bytes;
+      ModelInfo& m = models_[i];
+      m.name = rmb_names[i];
       fh1::RenderModel model;
       std::string e;
-      if (impl_->source.read(name, bytes, &e) && fh1::parse_render_model(bytes, model, &e)) {
+      if (impl_->source.read(m.name, bytes, &e) && fh1::parse_render_model(bytes, model, &e)) {
         m.ok = true;
         m.box_min = model.box_min;
         m.box_max = model.box_max;
@@ -979,9 +1077,9 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
         fh1::parse_render_materials(bytes, model, &ignored);  // the effects, for far_level
         for (const auto& o : model.objects) m.far = m.far || far_level(o.name, object_effects(model, o)) != 0;
       }
-      models_.push_back(m);
-    }
+    });
     if (!cache.empty()) {
+      save_bin_index(bin_cache);
       fs::create_directories(cache.parent_path(), ec);
       std::ofstream out(cache, std::ios::binary);
       out << kCacheMagic << "\n" << zip_size << "\n";
@@ -994,19 +1092,38 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
       }
     }
   }
+  // Prebuild numeric member -> models_ index map once on open (eliminates rebuilding a 40k-node
+  // std::map<std::string, uint32_t> on every gather()).
+  impl_->model_index_by_member.clear();
+  impl_->model_index_by_member.reserve(models_.size());
+  for (uint32_t i = 0; i < models_.size(); ++i) {
+    const std::string& name = models_[i].name;
+    const size_t dot = name.find('.');
+    if (dot != std::string::npos) {
+      const unsigned long mem = std::strtoul(name.c_str() + dot + 1, nullptr, 10);
+      if (mem > 0) impl_->model_index_by_member.emplace(uint32_t(mem), i);
+    }
+  }
 
   // Props: the object table and every placement.
   const fs::path pvs = ribbon_file(colorado, "_00.pvs");
   std::vector<uint8_t> pvs_bytes;
-  if (std::ifstream f(pvs, std::ios::binary); f) {
-    pvs_bytes.assign((std::istreambuf_iterator<char>(f)), {});
+  if (std::ifstream f(pvs, std::ios::binary | std::ios::ate); f) {
+    const std::streamoff sz = f.tellg();
+    if (sz > 0) {
+      pvs_bytes.resize(size_t(sz));
+      f.seekg(0, std::ios::beg);
+      if (!f.read(reinterpret_cast<char*>(pvs_bytes.data()), sz)) pvs_bytes.clear();
+    }
   } else if (!dlc_zips.empty()) {
     std::string zwhy;
-    if (auto pkg_zip = fh1::Archive::open(dlc_zips / "1600_pri_65.zip", &zwhy)) {
+    if (auto pkg_zip = fh1::Archive::open_shared(dlc_zips / "1600_pri_65.zip", &zwhy)) {
       auto r = pkg_zip->read("media/Tracks/ColoradoDirt/Ribbon_00/ColoradoDirt_00.pvs");
       if (r.ok()) pvs_bytes = std::move(r.data);
     }
   }
+  impl_->prop_grid.clear();
+  impl_->tree_grid.clear();
   if (!pvs_bytes.empty()) {
     fh1::PropLoadOptions options;
     options.census_first_rule = false;
@@ -1023,6 +1140,15 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
       if (props_ok) {
         impl_->prop_models = std::make_unique<fh1::PropModels>(impl_->source, model_prefix(colorado));
         impl_->have_props = true;
+        for (uint32_t pi = 0; pi < impl_->props.placements.size(); ++pi) {
+          const auto& t = impl_->props.placements[pi].placement.offset;
+          if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
+          impl_->prop_grid.insert(t[0], t[2], pi);
+        }
+        for (uint32_t ti = 0; ti < impl_->props.trees.size(); ++ti) {
+          const auto& tr = impl_->props.trees[ti];
+          impl_->tree_grid.insert(tr.base[0], -double(tr.base[2]), ti);
+        }
       } else if (error) {
         *error = "props: " + e;  // not fatal: the caller may go on without props
       }
@@ -1061,7 +1187,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   // it copies. Built before the far pass: cover, and per hole cell its
   // filler (mean area, object key).
   std::unique_ptr<GroundCover> cover;
-  std::unordered_map<long, std::tuple<uint8_t, double, uint64_t>> hole_fill;
+  struct HoleFillEntry {
+    uint8_t valid = 0;
+    uint8_t level = 255;
+    double area = 0.0;
+    uint64_t key = 0;
+  };
+  std::vector<HoleFillEntry> hole_fill;
   auto object_key = [](uint32_t model_index, const fh1::RenderModel& model, const fh1::RmbObject& o) {
     return (uint64_t(model_index) << 20) | uint64_t(&o - model.objects.data());
   };
@@ -1071,8 +1203,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     const uint64_t key = object_key(model_index, model, o);
     for (const auto& s : footprint_samples_3d(a, b, c)) {
       if (cover->covered_at(s[0], s[1], s[2], 1.5)) continue;
-      auto it = hole_fill.find(cover->cell_of(s[0], s[2]));
-      if (it != hole_fill.end() && std::get<2>(it->second) == key) return true;
+      const long cell = cover->cell_of(s[0], s[2]);
+      if (cell >= 0 && size_t(cell) < hole_fill.size() &&
+          hole_fill[size_t(cell)].valid && hole_fill[size_t(cell)].key == key)
+        return true;
     }
     return false;
   };
@@ -1332,8 +1466,9 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     if (ids.empty()) return true;
     std::vector<std::string> errs(ids.size());
     std::atomic<bool> failed{false};
-    const size_t threads = std::min<size_t>(ids.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-    auto run_one = [&](size_t slot, std::vector<uint8_t>& buf) {
+    fh1::parallel_for(ids.size(), [&](size_t slot) {
+      if (failed.load(std::memory_order_relaxed)) return;
+      thread_local std::vector<uint8_t> buf;
       const uint32_t idx = ids[slot];
       const ModelInfo& m = models_[idx];
       fh1::RenderModel model;
@@ -1348,30 +1483,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         fh1::parse_render_materials(buf, model, &ignored);  // without them the model draws flat
       }
       dst[slot] = {idx, std::move(model)};
-    };
-    if (threads > 1 && ids.size() >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          std::vector<uint8_t> buf;
-          for (;;) {
-            if (failed.load(std::memory_order_relaxed)) break;
-            const size_t slot = next.fetch_add(1, std::memory_order_relaxed);
-            if (slot >= ids.size()) break;
-            run_one(slot, buf);
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      std::vector<uint8_t> buf;
-      for (size_t slot = 0; slot < ids.size(); ++slot) {
-        run_one(slot, buf);
-        if (failed.load(std::memory_order_relaxed)) break;
-      }
-    }
+    });
     if (failed.load(std::memory_order_relaxed)) {
       if (error) {
         for (const auto& e : errs) {
@@ -1445,6 +1557,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     // height-aware cells so steep MIDDIST hillsides rising above a lower
     // roadside patch are not cut out).
     cover = std::make_unique<GroundCover>(x, -z, std::max(options.far_inner, options.far_inner_uberlod), 4.0);
+    hole_fill.assign(cover->cell_count(), HoleFillEntry{});
     for (size_t t = 0; t < out.triangles(); ++t)
       if (out.surface[t] != Surface::kWater)
         cover->add(out.positions[3 * t], out.positions[3 * t + 1], out.positions[3 * t + 2]);
@@ -1499,14 +1612,20 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           }
         }
         if (cells.empty()) continue;
-        const std::tuple<uint8_t, double, uint64_t> filler{level, area / double(count), object_key(i, model, o)};
+        const double mean_area = area / double(count);
+        const uint64_t okey = object_key(i, model, o);
         for (long c : cells) {
-          auto [it, added] = hole_fill.emplace(c, filler);
-          if (!added && filler < it->second) it->second = filler;
+          if (c < 0 || size_t(c) >= hole_fill.size()) continue;
+          auto& hf = hole_fill[size_t(c)];
+          if (!hf.valid || level < hf.level ||
+              (level == hf.level && (mean_area < hf.area || (mean_area == hf.area && okey < hf.key)))) {
+            hf = {1u, level, mean_area, okey};
+          }
         }
       }
     for (const auto& [i, model] : far_models) add_triangles(model, i, nullptr, &far_lowest, true);
     cover.reset();
+    hole_fill.clear();
     st.far_models = far_models.size();
   }
 
@@ -1515,12 +1634,13 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   // made (ours, for now). Two triangles per sprite, corners 0 1 2 and 0 2 3.
   if (options.render_data && options.tree_radius > 0 && impl_->have_props) {
     std::map<uint32_t, uint32_t> material_of;  // atlas record -> material
-    for (const auto& t : impl_->props.trees) {
+    impl_->tree_grid.for_each_in_radius(x, z, options.tree_radius, [&](uint32_t ti) {
+      const auto& t = impl_->props.trees[ti];
       const double dx = t.base[0] - x, dz = t.base[2] + z, d = std::sqrt(dx * dx + dz * dz);  // z: file frame here
-      if (d > options.tree_radius || d > t.far) continue;
+      if (d > options.tree_radius || d > t.far) return;
       if (options.route >= 0 && !impl_->props.shown_on_route(t.route_list, options.route)) {
         ++st.trees_off_route;
-        continue;
+        return;
       }
       auto mit = material_of.find(t.atlas);
       if (mit == material_of.end()) {
@@ -1535,7 +1655,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       }
       if (out.materials[mit->second].albedo == kNoTexture) {
         ++st.trees_untextured;
-        continue;
+        return;
       }
       double len = std::sqrt(double(t.axis[0]) * t.axis[0] + double(t.axis[1]) * t.axis[1] + double(t.axis[2]) * t.axis[2]);
       const std::array<float, 3> up = len > 0.5 ? std::array<float, 3>{float(t.axis[0] / len), float(t.axis[1] / len),
@@ -1560,7 +1680,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         out.instance.push_back(t.base);
       }
       ++st.trees;
-    }
+    });
   }
 
   // Props near the point, one per model and spot (a zone lists one object
@@ -1568,22 +1688,31 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
   // within tree_radius receive runtime camera-facing distant billboards.
   if (options.props && impl_->have_props) {
     std::set<std::tuple<int64_t, long long, long long, long long>> once;
-    std::map<std::string, uint32_t> index_of;
-    for (uint32_t i = 0; i < models_.size(); ++i) index_of[models_[i].name] = i;
     const double prop_r2 = options.prop_radius * options.prop_radius;
-    const double tree_r2 = (options.render_data && options.tree_radius > options.prop_radius)
-                               ? (options.tree_radius * options.tree_radius)
-                               : prop_r2;
+    const double max_prop_r = (options.render_data && options.tree_radius > options.prop_radius)
+                                  ? options.tree_radius
+                                  : options.prop_radius;
+    const double tree_r2 = max_prop_r * max_prop_r;
+    // Collect candidate placement indices once from the 2D spatial grid instead of
+    // linearly scanning all 300k+ placements twice per gather.
+    std::vector<uint32_t> cand_placements;
+    cand_placements.reserve(2048);
+    impl_->prop_grid.for_each_in_radius(x, z, max_prop_r, [&](uint32_t pi) {
+      const auto& t = impl_->props.placements[pi].placement.offset;
+      const double dx = t[0] - x, dz = t[2] - z;
+      if (dx * dx + dz * dz <= tree_r2) cand_placements.push_back(pi);
+    });
+    // Sort by original placement index so deduplication order matches a linear scan exactly.
+    std::sort(cand_placements.begin(), cand_placements.end());
     // Pre-decode all unique prop models (and their immediate LOD neighbors) in parallel
     // before the sequential triangle assembly loop so PropModels::model() hits cache.
     {
       std::vector<uint32_t> preload_members;
-      for (const auto& p : impl_->props.placements) {
+      preload_members.reserve(cand_placements.size() * 4);
+      for (uint32_t pi : cand_placements) {
+        const auto& p = impl_->props.placements[pi];
         if (!p.has_object || p.object_id >= impl_->table.objects.size()) continue;
         const auto& t = p.placement.offset;
-        // Skip unplaced origin-sentinel records in Colorado_00.pvs (offset == {0,0,0})
-        // that otherwise dump ~9,700 props / 11M triangles whenever within prop_radius of (0,0,0).
-        if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
         const double dx = t[0] - x, dz = t[2] - z;
         if (dx * dx + dz * dz > prop_r2) continue;
         if (options.route >= 0 && !impl_->props.shown_on_route(p.route_list, options.route)) continue;
@@ -1596,11 +1725,10 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       impl_->prop_models->preload(preload_members);
     }
     std::map<uint32_t, uint32_t> distant_tree_mat;
-    for (const auto& p : impl_->props.placements) {
+    for (uint32_t pi : cand_placements) {
+      const auto& p = impl_->props.placements[pi];
       const auto& t = p.placement.offset;
-      if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
       const double dx = t[0] - x, dz = t[2] - z, d2 = dx * dx + dz * dz;
-      if (d2 > tree_r2) continue;
       const bool distant_tree_band = d2 > prop_r2;
       if (options.route >= 0 && !impl_->props.shown_on_route(p.route_list, options.route)) {
         ++st.props_off_route;
@@ -1807,8 +1935,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           beacon = true;
           continue;
         }
-        const auto it = index_of.find(impl_->prop_models->name_of(uint32_t(member)));
-        add_triangles(*model, it != index_of.end() ? it->second : 0, &p.placement, nullptr, false, fade);
+        const auto it = impl_->model_index_by_member.find(uint32_t(member));
+        add_triangles(*model, it != impl_->model_index_by_member.end() ? it->second : 0, &p.placement, nullptr, false, fade);
         // Emit night streetlamp / floodlight fixture glow sprites once per prop instance.
         // Match only actual light fixture props (never water towers, brick walls, signs,
         // tents, gantries, or booths).
@@ -1852,6 +1980,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     // Bound CPU-side parsed prop RenderModel cache on mobile so long drives
     // across Colorado do not accumulate hundreds of MiB of old RMB meshes.
     impl_->prop_models->trim(512);
+#else
+    impl_->prop_models->trim(2048);
 #endif
   }
   return true;

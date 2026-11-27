@@ -162,11 +162,21 @@ bool decode_bundle_entry(const BundleEntry& e, WorldTexture& out, std::string* e
   // WORLD-MATERIALS: the payload stops at the last byte the levels touch,
   // rounded up, so the tail region past it reads as zero (the 24 entries
   // whose levels read past the payload are open; they get zeros there).
-  std::vector<uint8_t> padded(e.payload.begin(), e.payload.end());
-  padded.resize(std::max(padded.size(), std::accumulate(sizes.begin(), sizes.end(), size_t(0))));
+  const size_t total_need = std::accumulate(sizes.begin(), sizes.end(), size_t(0));
+  std::vector<uint8_t> padded;
+  std::span<const uint8_t> src = e.payload;
+  if (e.payload.size() < total_need) {
+    padded.resize(total_need, 0);
+    if (!e.payload.empty()) std::memcpy(padded.data(), e.payload.data(), e.payload.size());
+    src = padded;
+  }
   std::vector<std::span<const uint8_t>> regions;
+  regions.reserve(sizes.size());
   size_t at = 0;
-  for (size_t s : sizes) regions.push_back(std::span<const uint8_t>(padded).subspan(at, s)), at += s;
+  for (size_t s : sizes) {
+    regions.push_back(src.subspan(at, s));
+    at += s;
+  }
   return extract_region_blocks(h, regions, out.blocks, error);
 }
 

@@ -39,8 +39,68 @@ int memory_write(mspack_file* file, void* buffer, int bytes) {
   return int(n);
 }
 
-void* memory_alloc(mspack_system*, size_t bytes) { return std::calloc(bytes, 1); }
-void memory_free(void* pointer) { std::free(pointer); }
+struct LocalSlab {
+  static constexpr size_t kMaxSlots = 4;
+  struct Slot {
+    void* ptr = nullptr;
+    size_t cap = 0;
+    bool in_use = false;
+  };
+  Slot slots[kMaxSlots]{};
+
+  ~LocalSlab() {
+    for (auto& s : slots) {
+      if (s.ptr) std::free(s.ptr);
+    }
+  }
+
+  void* alloc(size_t bytes) {
+    const size_t need = bytes ? bytes : 1;
+    // Reuse the smallest free slot that fits, or grow an empty/small slot.
+    int best_fit = -1;
+    int free_slot = -1;
+    for (int i = 0; i < int(kMaxSlots); ++i) {
+      if (slots[i].in_use) continue;
+      if (slots[i].ptr && slots[i].cap >= need) {
+        if (best_fit < 0 || slots[i].cap < slots[best_fit].cap) best_fit = i;
+      } else if (free_slot < 0) {
+        free_slot = i;
+      }
+    }
+    if (best_fit >= 0) {
+      slots[best_fit].in_use = true;
+      std::memset(slots[best_fit].ptr, 0, need);
+      return slots[best_fit].ptr;
+    }
+    if (free_slot >= 0) {
+      const size_t new_cap = std::max(need, size_t(4096));
+      void* p = std::realloc(slots[free_slot].ptr, new_cap);
+      if (!p) return nullptr;
+      slots[free_slot].ptr = p;
+      slots[free_slot].cap = new_cap;
+      slots[free_slot].in_use = true;
+      std::memset(p, 0, need);
+      return p;
+    }
+    return std::calloc(need, 1);
+  }
+
+  void free(void* ptr) {
+    if (!ptr) return;
+    for (auto& s : slots) {
+      if (s.ptr == ptr) {
+        s.in_use = false;
+        return;
+      }
+    }
+    std::free(ptr);
+  }
+};
+
+thread_local LocalSlab g_xmem_slab;
+
+void* memory_alloc(mspack_system*, size_t bytes) { return g_xmem_slab.alloc(bytes); }
+void memory_free(void* pointer) { g_xmem_slab.free(pointer); }
 void memory_copy(void* source, void* destination, size_t bytes) {
   std::memmove(destination, source, bytes);
 }

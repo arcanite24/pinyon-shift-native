@@ -138,20 +138,95 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
   near_cell = std::max(near_cell, 1.0f), far_cell = std::max(far_cell, 1.0f);
   // Within a draw, corners with the same attributes share one vertex, so
   // the post-transform cache can reuse it (SHIFT_WORLD_SHARE=0: one per
-  // corner, for comparison).
+  // corner, for comparison). Flat generation-tagged open-addressed hash table
+  // eliminates >1M heap node allocations per gather.
   struct VertexKey {
     WorldVertex v;
     bool operator==(const VertexKey& o) const { return std::memcmp(&v, &o.v, sizeof v) == 0; }
   };
-  struct VertexHash {
-    size_t operator()(const VertexKey& k) const {
-      const auto* p = reinterpret_cast<const unsigned char*>(&k.v);
-      uint64_t h = 1469598103934665603ull;
-      for (size_t i = 0; i < sizeof k.v; ++i) h = (h ^ p[i]) * 1099511628211ull;
-      return size_t(h);
+  static auto hash_vertex = [](const WorldVertex& v) -> uint64_t {
+    const auto* p = reinterpret_cast<const uint8_t*>(&v);
+    uint64_t h = 0x9e3779b97f4a7c15ull;
+    size_t i = 0;
+    for (; i + 8 <= sizeof(WorldVertex); i += 8) {
+      uint64_t x = 0;
+      std::memcpy(&x, p + i, 8);
+      x ^= x >> 30;
+      x *= 0xbf58476d1ce4e5b9ull;
+      x ^= x >> 27;
+      x *= 0x94d049bb133111ebull;
+      h ^= x + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    }
+    if (i < sizeof(WorldVertex)) {
+      uint64_t tail = 0;
+      std::memcpy(&tail, p + i, sizeof(WorldVertex) - i);
+      tail ^= tail >> 30;
+      tail *= 0xbf58476d1ce4e5b9ull;
+      h ^= tail + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    }
+    return h;
+  };
+  struct FlatVertexMap {
+    struct Entry {
+      WorldVertex key{};
+      uint32_t value = 0;
+      uint32_t gen = 0;
+    };
+    std::vector<Entry> table;
+    uint32_t cur_gen = 1;
+    size_t count = 0;
+
+    void reset(size_t expected_verts) {
+      size_t cap = 64;
+      const size_t need = std::max<size_t>(32, expected_verts * 2);
+      while (cap < need) cap <<= 1;
+      if (table.size() < cap) {
+        table.assign(cap, Entry{});
+        cur_gen = 1;
+      } else {
+        if (++cur_gen == 0u) {
+          for (auto& e : table) e.gen = 0;
+          cur_gen = 1;
+        }
+      }
+      count = 0;
+    }
+
+    void grow() {
+      std::vector<Entry> old = std::move(table);
+      const uint32_t old_gen = cur_gen;
+      table.assign(std::max<size_t>(64, old.size() * 2), Entry{});
+      cur_gen = 1;
+      const size_t mask = table.size() - 1;
+      for (const auto& e : old) {
+        if (e.gen != old_gen) continue;
+        size_t slot = size_t(hash_vertex(e.key)) & mask;
+        while (table[slot].gen == cur_gen) slot = (slot + 1) & mask;
+        table[slot] = {e.key, e.value, cur_gen};
+      }
+    }
+
+    std::pair<uint32_t, bool> insert_or_get(const WorldVertex& v, uint32_t next_idx) {
+      if ((count + 1) * 10 >= table.size() * 7) grow();
+      const size_t mask = table.size() - 1;
+      size_t slot = size_t(hash_vertex(v)) & mask;
+      for (;;) {
+        Entry& e = table[slot];
+        if (e.gen != cur_gen) {
+          e.key = v;
+          e.value = next_idx;
+          e.gen = cur_gen;
+          ++count;
+          return {next_idx, true};
+        }
+        if (std::memcmp(&e.key, &v, sizeof(WorldVertex)) == 0) {
+          return {e.value, false};
+        }
+        slot = (slot + 1) & mask;
+      }
     }
   };
-  std::unordered_map<VertexKey, uint32_t, VertexHash> shared;
+  FlatVertexMap shared;
   const char* share_env = std::getenv("SHIFT_WORLD_SHARE");
   const bool share = !(share_env && *share_env == '0');
   // Cache cutout-alpha status per texture record across streaming regathers so
@@ -207,7 +282,7 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     for (int i = 0; i < 3; ++i) d.box_min[i] = 1e30f, d.box_max[i] = -1e30f;
     float reach = 0;
     float draw_prop_reach = 0;
-    shared.clear();
+    shared.reset((last - first) * 3);
     // LED displays (anim_flag 2 countdown, 3 flipbook) are unlit and their
     // normals point into the gantry, so turning their faces toward the normals
     // (or keeping the file's order) left the FR16 panels back-facing and
@@ -279,9 +354,9 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
           out.textured_vertices.push_back(v);
           continue;
         }
-        const auto [it, added] = shared.try_emplace(key, uint32_t(out.textured_vertices.size()));
+        const auto [v_idx, added] = shared.insert_or_get(v, uint32_t(out.textured_vertices.size()));
         if (added) out.textured_vertices.push_back(v);
-        out.indices.push_back(it->second);
+        out.indices.push_back(v_idx);
       }
       ++out.triangles;
     }
@@ -759,17 +834,31 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     texel_bytes += (kept_bytes + 15) / 16 * 16;
   }
   if (texel_bytes) {
-    std::vector<uint8_t> packed(size_t(texel_bytes), 0);
-    for (size_t i = 0; i < out.textures.size(); ++i) {
-      if (!out.texel_ranges[i].second) continue;
-      size_t at = size_t(out.texel_ranges[i].first);
-      for (uint32_t l = out.texel_skips[i]; l < out.texel_ranges[i].second; ++l) {
-        const auto& data = out.textures[i]->texture.levels[l].data;
-        std::memcpy(packed.data() + at, data.data(), data.size());
-        at += data.size();
+    // Pack texture levels directly into the mapped Vulkan staging buffer (eliminates
+    // allocating a duplicate host vector and copying all texel data twice).
+    out.texels = std::shared_ptr<Renderer::Buffer>(new Renderer::Buffer{}, [&r](Renderer::Buffer* b) {
+      r.destroy_buffer(*b);
+      delete b;
+    });
+    void* mapped = nullptr;
+    const bool ok_buf =
+        r.create_buffer(texel_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *out.texels) &&
+        vmaMapMemory(r.allocator_, out.texels->allocation, &mapped) == VK_SUCCESS;
+    if (ok_buf && mapped) {
+      auto* dst = static_cast<uint8_t*>(mapped);
+      for (size_t i = 0; i < out.textures.size(); ++i) {
+        if (!out.texel_ranges[i].second) continue;
+        size_t at = size_t(out.texel_ranges[i].first);
+        for (uint32_t l = out.texel_skips[i]; l < out.texel_ranges[i].second; ++l) {
+          const auto& data = out.textures[i]->texture.levels[l].data;
+          if (!data.empty()) std::memcpy(dst + at, data.data(), data.size());
+          at += data.size();
+        }
       }
-    }
-    if (!stage(packed.data(), texel_bytes, out.texels)) {
+      vmaUnmapMemory(r.allocator_, out.texels->allocation);
+      world_staging_bytes_.fetch_add(uint64_t(texel_bytes), std::memory_order_relaxed);
+    } else {
       out.texels.reset();  // every texture uploads apart instead
       out.texel_ranges.assign(out.textures.size(), {0, 0});
       out.texel_skips.assign(out.textures.size(), 0);

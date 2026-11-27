@@ -245,17 +245,87 @@ bool decode_level(std::span<const uint8_t> payload, const XdsHeader& h, const Fo
 bool copy_level_blocks(std::span<const uint8_t> payload, const XdsHeader& h, const Format& f,
                        const Level& lv, std::vector<uint8_t>& out) {
   const uint32_t mask = kEndianMasks[h.endian & 3];
-  const uint32_t log2 = uint32_t(std::bit_width(f.block_bytes) - 1);
-  out.assign(size_t(lv.width_blocks) * lv.height_blocks * f.block_bytes, 0);
-  for (uint32_t by = 0; by < lv.height_blocks; ++by) {
-    for (uint32_t bx = 0; bx < lv.width_blocks; ++bx) {
-      const size_t offset =
-          lv.start + (h.tiled ? size_t(xenos_tiled_offset_2d(int32_t(bx + lv.x), int32_t(by + lv.y),
-                                                             lv.pitch, log2))
-                              : (size_t(by + lv.y) * lv.pitch + bx + lv.x) * f.block_bytes);
-      if (offset + f.block_bytes > payload.size()) return false;
-      uint8_t* dst = &out[(size_t(by) * lv.width_blocks + bx) * f.block_bytes];
-      for (uint32_t i = 0; i < f.block_bytes; ++i) dst[i] = payload[offset + (i ^ mask)];
+  const uint32_t bb = f.block_bytes;
+  const uint32_t log2 = uint32_t(std::bit_width(bb) - 1);
+  const size_t payload_sz = payload.size();
+  const uint8_t* src_base = payload.data();
+  out.resize(size_t(lv.width_blocks) * lv.height_blocks * bb);
+
+  auto swap_copy = [&](uint8_t* dst, const uint8_t* src) {
+    if (mask == 0u) {
+      std::memcpy(dst, src, bb);
+    } else if (mask == 1u) {
+      // 8-in-16 byte swap: swap adjacent byte pairs using 64-bit/32-bit SWAR.
+      if (bb == 16u) {
+        uint64_t a, b;
+        std::memcpy(&a, src, 8);
+        std::memcpy(&b, src + 8, 8);
+        a = ((a & 0x00FF00FF00FF00FFull) << 8) | ((a >> 8) & 0x00FF00FF00FF00FFull);
+        b = ((b & 0x00FF00FF00FF00FFull) << 8) | ((b >> 8) & 0x00FF00FF00FF00FFull);
+        std::memcpy(dst, &a, 8);
+        std::memcpy(dst + 8, &b, 8);
+      } else if (bb == 8u) {
+        uint64_t a;
+        std::memcpy(&a, src, 8);
+        a = ((a & 0x00FF00FF00FF00FFull) << 8) | ((a >> 8) & 0x00FF00FF00FF00FFull);
+        std::memcpy(dst, &a, 8);
+      } else {
+        for (uint32_t i = 0; i < bb; i += 2) {
+          dst[i] = src[i + 1];
+          dst[i + 1] = src[i];
+        }
+      }
+    } else if (mask == 3u) {
+      // 8-in-32 byte swap (full 32-bit endian swap).
+      for (uint32_t i = 0; i < bb; i += 4) {
+        const uint32_t v = load_be32(src + i);
+        std::memcpy(dst + i, &v, 4);
+      }
+    } else {
+      // 16-in-32 word swap (mask == 2).
+      for (uint32_t i = 0; i < bb; i += 4) {
+        uint32_t v = load_le32(src + i);
+        v = (v << 16) | (v >> 16);
+        std::memcpy(dst + i, &v, 4);
+      }
+    }
+  };
+
+  if (h.tiled) {
+    const uint32_t pitch_aligned = (lv.pitch + 31u) & ~31u;
+    const uint32_t pitch_macro = pitch_aligned >> 5;
+    for (uint32_t by = 0; by < lv.height_blocks; ++by) {
+      const uint32_t ty = by + lv.y;
+      const uint32_t y_macro_base = (ty >> 5) * pitch_macro;
+      const uint32_t y_micro_base = (ty & 0xEu) << 2;
+      const uint32_t y_bit0 = (ty & 1u) << 4;
+      const uint32_t y_bit4 = (ty & 16u) << 7;
+      const uint32_t y_bit3 = (ty & 8u) >> 2;
+      uint8_t* dst_row = out.data() + size_t(by) * lv.width_blocks * bb;
+      for (uint32_t bx = 0; bx < lv.width_blocks; ++bx) {
+        const uint32_t tx = bx + lv.x;
+        const uint32_t macro = ((tx >> 5) + y_macro_base) << (log2 + 7u);
+        const uint32_t micro = ((tx & 7u) + y_micro_base) << log2;
+        const uint32_t offset = macro + ((micro & ~0xFu) << 1) + (micro & 0xFu) + y_bit0;
+        const size_t tiled_off =
+            lv.start + size_t(((offset & ~0x1FFu) << 3) + y_bit4 + ((offset & 0x1C0u) << 2) +
+                              (((y_bit3 + (tx >> 3)) & 3u) << 6) + (offset & 0x3Fu));
+        if (tiled_off + bb > payload_sz) return false;
+        swap_copy(dst_row + size_t(bx) * bb, src_base + tiled_off);
+      }
+    }
+  } else {
+    for (uint32_t by = 0; by < lv.height_blocks; ++by) {
+      const size_t row_off = lv.start + (size_t(by + lv.y) * lv.pitch + lv.x) * bb;
+      if (row_off + size_t(lv.width_blocks) * bb > payload_sz) return false;
+      uint8_t* dst_row = out.data() + size_t(by) * lv.width_blocks * bb;
+      if (mask == 0u) {
+        std::memcpy(dst_row, src_base + row_off, size_t(lv.width_blocks) * bb);
+      } else {
+        for (uint32_t bx = 0; bx < lv.width_blocks; ++bx) {
+          swap_copy(dst_row + size_t(bx) * bb, src_base + row_off + size_t(bx) * bb);
+        }
+      }
     }
   }
   return true;

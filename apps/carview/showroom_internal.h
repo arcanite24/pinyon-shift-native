@@ -29,6 +29,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__F16C__) || (defined(_MSC_VER) && defined(__AVX2__))
+#include <immintrin.h>
+#endif
+
 namespace carview {
 
 namespace bake = cars::bake;
@@ -62,6 +66,9 @@ inline bool ends_with(const std::string& s, const std::string& tail) {
 }
 
 inline uint16_t float_to_half(float f) {
+#if defined(__F16C__) || (defined(_MSC_VER) && defined(__AVX2__))
+  return uint16_t(_mm_cvtsi128_si32(_mm_cvtps_ph(_mm_set_ss(f), _MM_FROUND_TO_NEAREST_INT)));
+#else
   uint32_t u = 0;
   std::memcpy(&u, &f, 4);
   const uint32_t sign = (u >> 16) & 0x8000u;
@@ -74,6 +81,7 @@ inline uint16_t float_to_half(float f) {
   }
   if (exp >= 31) return uint16_t(sign | 0x7BFFu);
   return uint16_t(sign | (uint32_t(exp) << 10) | ((mant + 0x1000u) >> 13));
+#endif
 }
 
 inline float pack_half2x16_float(float a, float b) {

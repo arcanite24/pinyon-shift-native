@@ -23,10 +23,14 @@ namespace fs = std::filesystem;
 namespace {
 
 bool read_file(const fs::path& path, std::vector<uint8_t>& out) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) return false;
-  out.assign(std::istreambuf_iterator<char>(f), {});
-  return true;
+  const std::streamoff sz = f.tellg();
+  if (sz < 0) return false;
+  out.resize(size_t(sz));
+  if (sz == 0) return true;
+  f.seekg(0, std::ios::beg);
+  return bool(f.read(reinterpret_cast<char*>(out.data()), sz));
 }
 
 bool read_member(const fs::path& archive_path, const std::string& member, std::vector<uint8_t>& out,
@@ -38,7 +42,7 @@ bool read_member(const fs::path& archive_path, const std::string& member, std::v
     }
     return true;
   }
-  auto archive = fh1::Archive::open(archive_path, error);
+  auto archive = fh1::Archive::open_shared(archive_path, error);
   if (!archive) return false;
   auto r = archive->read(member);
   if (!r.ok()) {
@@ -152,6 +156,7 @@ bool apply_merge_bytes(sqlite3* db, const std::vector<std::string>& main_tables,
                        std::map<int64_t, std::string>* added_by, std::string* error) {
   if (!exec(db, "ATTACH DATABASE ':memory:' AS m", error) || !deserialize(db, "m", bytes, error))
     return false;
+  if (!exec(db, "BEGIN", error)) return false;
   for (const std::string& table : tables(db, "m")) {
     if (!std::binary_search(main_tables.begin(), main_tables.end(), table)) continue;
     const auto ours = columns(db, "main", table);
@@ -163,11 +168,14 @@ bool apply_merge_bytes(sqlite3* db, const std::vector<std::string>& main_tables,
     if (list.empty()) continue;
     if (!exec(db, "INSERT OR REPLACE INTO main." + quote(table) + " (" + list + ") SELECT " + list +
                       " FROM m." + quote(table),
-              error))
+              error)) {
+      (void)exec(db, "ROLLBACK", nullptr);
       return false;
+    }
     if (added_by && table == "Data_Car")
       for (int64_t id : car_ids(db, "m")) (*added_by)[id] = origin;
   }
+  if (!exec(db, "COMMIT", error)) return false;
   return exec(db, "DETACH DATABASE m", error);
 }
 
@@ -184,7 +192,8 @@ bool open_merged(const Install& install, Merged& m, std::string* error) {
   } else {
     v4_bytes = base_bytes;
   }
-  if (sqlite3_open_v2(":memory:", &m.db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_MEMORY, nullptr) != SQLITE_OK) {
+  if (sqlite3_open_v2(":memory:", &m.db,
+                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_MEMORY | SQLITE_OPEN_NOMUTEX, nullptr) != SQLITE_OK) {
     if (error) *error = "sqlite3_open_v2 failed";
     return false;
   }

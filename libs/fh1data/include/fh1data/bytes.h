@@ -3,23 +3,75 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <stdexcept>
 #include <string>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 namespace fh1 {
 
-inline uint16_t load_le16(const uint8_t* p) { return uint16_t(p[0] | p[1] << 8); }
+inline uint16_t load_le16(const uint8_t* p) {
+#if defined(_M_X64) || defined(_M_IX86) || defined(_M_ARM64) || \
+    (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  uint16_t v;
+  std::memcpy(&v, p, sizeof v);
+  return v;
+#else
+  return uint16_t(p[0] | p[1] << 8);
+#endif
+}
 inline uint32_t load_le32(const uint8_t* p) {
+#if defined(_M_X64) || defined(_M_IX86) || defined(_M_ARM64) || \
+    (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  uint32_t v;
+  std::memcpy(&v, p, sizeof v);
+  return v;
+#else
   return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
+#endif
 }
 inline uint64_t load_le64(const uint8_t* p) {
+#if defined(_M_X64) || defined(_M_IX86) || defined(_M_ARM64) || \
+    (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  uint64_t v;
+  std::memcpy(&v, p, sizeof v);
+  return v;
+#else
   return uint64_t(load_le32(p)) | uint64_t(load_le32(p + 4)) << 32;
+#endif
 }
-inline uint16_t load_be16(const uint8_t* p) { return uint16_t(p[0] << 8 | p[1]); }
+inline uint16_t load_be16(const uint8_t* p) {
+#if defined(_MSC_VER)
+  uint16_t v;
+  std::memcpy(&v, p, sizeof v);
+  return _byteswap_ushort(v);
+#elif (defined(__GNUC__) || defined(__clang__)) && \
+    defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint16_t v;
+  std::memcpy(&v, p, sizeof v);
+  return __builtin_bswap16(v);
+#else
+  return uint16_t(p[0] << 8 | p[1]);
+#endif
+}
 inline uint32_t load_be32(const uint8_t* p) {
+#if defined(_MSC_VER)
+  uint32_t v;
+  std::memcpy(&v, p, sizeof v);
+  return _byteswap_ulong(v);
+#elif (defined(__GNUC__) || defined(__clang__)) && \
+    defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+  uint32_t v;
+  std::memcpy(&v, p, sizeof v);
+  return __builtin_bswap32(v);
+#else
   return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | uint32_t(p[3]);
+#endif
 }
 inline float load_bef32(const uint8_t* p) {
   const uint32_t bits = load_be32(p);

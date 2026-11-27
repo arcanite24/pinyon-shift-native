@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "fh1data/members.h"
+#include "fh1data/worker_pool.h"
 #include "world/world.h"
 
 namespace fs = std::filesystem;
@@ -513,30 +514,10 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
     std::vector<Core> built(missing.size());
     std::vector<std::string> errs(missing.size());
     std::atomic<bool> failed{false};
-    const size_t threads = std::min<size_t>(missing.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-    if (threads > 1 && missing.size() >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          for (;;) {
-            if (failed.load(std::memory_order_relaxed)) break;
-            const size_t idx = next.fetch_add(1, std::memory_order_relaxed);
-            if (idx >= missing.size()) break;
-            if (!build_core(missing[idx], built[idx], &errs[idx])) failed.store(true, std::memory_order_relaxed);
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      for (size_t idx = 0; idx < missing.size(); ++idx) {
-        if (!build_core(missing[idx], built[idx], &errs[idx])) {
-          failed.store(true, std::memory_order_relaxed);
-          break;
-        }
-      }
-    }
+    fh1::parallel_for(missing.size(), [&](size_t idx) {
+      if (failed.load(std::memory_order_relaxed)) return;
+      if (!build_core(missing[idx], built[idx], &errs[idx])) failed.store(true, std::memory_order_relaxed);
+    });
     if (failed.load(std::memory_order_relaxed)) {
       if (error) {
         for (const auto& e : errs) {

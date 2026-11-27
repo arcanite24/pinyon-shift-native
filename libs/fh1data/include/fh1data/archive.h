@@ -72,8 +72,8 @@ class Archive {
   const ArchiveMember* find(std::string_view name) const;
 
   // Reads, decompresses and CRC-checks one member. Thread-safe: disk range reads
-  // use lock-free pread on POSIX (serialized on Windows) while decompression and
-  // CRC checks run concurrently.
+  // use lock-free pread on POSIX and lock-free overlapped ReadFile on Windows
+  // while decompression and CRC checks run concurrently.
   ReadResult read(const ArchiveMember& member);
   ReadResult read(std::string_view name);
 
@@ -94,6 +94,7 @@ class Archive {
   mutable std::mutex io_mutex_;
   std::ifstream stream_;
   int fd_ = -1;
+  void* win_handle_ = nullptr;
   uint64_t file_size_ = 0;
   std::vector<ArchiveMember> members_;
   std::unordered_map<std::string, size_t> index_;

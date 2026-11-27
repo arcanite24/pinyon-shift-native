@@ -97,6 +97,7 @@ class GroundCover {
   bool covered_at(double x, double y, double z, double margin = 1.5) const;
   // The cell of a point, -1 outside the grid.
   long cell_of(double x, double z) const;
+  size_t cell_count() const { return covered_.size(); }
 
  private:
   double x0_ = 0, z0_ = 0, cell_ = 1;

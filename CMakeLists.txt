@@ -20,9 +20,31 @@ option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path trac
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
 set(SHIFT_ANDROID_ARM64_ARCH "armv8.2-a+lse+crc+fp16+dotprod" CACHE STRING
     "Android arm64-v8a -march target (use armv8-a for maximum legacy compatibility)")
+set(SHIFT_WIN_ARCH "/arch:AVX2" CACHE STRING
+    "MSVC x64 SIMD target flag for Release builds (leave empty for baseline SSE2)")
 
 if(MSVC)
-  add_compile_options(/utf-8 /permissive- /Zc:__cplusplus $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+  add_compile_options(/utf-8 /permissive- /Zc:__cplusplus /MP $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+  add_compile_options(
+    $<$<CONFIG:Release>:/Gw>
+    $<$<CONFIG:Release>:/Gy>
+    $<$<CONFIG:Release>:/Oi>
+    $<$<CONFIG:Release>:/Ot>
+    $<$<CONFIG:Release>:/Zc:inline>
+    $<$<CONFIG:Release>:/fp:contract>)
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND SHIFT_WIN_ARCH
+     AND NOT CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64"
+     AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+    add_compile_options($<$<CONFIG:Release>:${SHIFT_WIN_ARCH}>)
+  endif()
+  add_link_options(
+    $<$<CONFIG:Release>:/LTCG>
+    $<$<CONFIG:Release>:/OPT:REF>
+    $<$<CONFIG:Release>:/OPT:ICF>
+    $<$<CONFIG:Release>:/INCREMENTAL:NO>)
+  if(NOT CMAKE_STATIC_LINKER_FLAGS_RELEASE MATCHES "/LTCG")
+    string(APPEND CMAKE_STATIC_LINKER_FLAGS_RELEASE " /LTCG")
+  endif()
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SHIFT_STATIC_RUNTIME)
@@ -53,6 +75,10 @@ if(ANDROID)
   # unused C++ RTTI tables across project libraries/carview (SDL3/adrenotools untouched).
   add_compile_options(-fvisibility=hidden $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
                       $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+elseif(MSVC)
+  # Whole-program optimization (/GL -> /LTCG) and RTTI removal across project
+  # libraries/apps (SDL3/third-party untouched).
+  add_compile_options($<$<CONFIG:Release>:/GL> $<$<COMPILE_LANGUAGE:CXX>:/GR->)
 endif()
 
 # Refresh SHIFT_GIT_COMMIT automatically whenever HEAD or its active branch ref moves.
@@ -115,6 +141,12 @@ if(ANDROID)
   foreach(_fp_target shift_audio shift_world shift_drive carview_render carview)
     if(TARGET ${_fp_target})
       target_compile_options(${_fp_target} PRIVATE $<$<CONFIG:Release>:-ffp-contract=fast>)
+    endif()
+  endforeach()
+elseif(MSVC)
+  foreach(_fp_target shift_audio shift_world shift_drive carview_render carview shift_ffmpeg_avutil shift_ffmpeg_avcodec)
+    if(TARGET ${_fp_target})
+      target_compile_options(${_fp_target} PRIVATE $<$<CONFIG:Release>:/fp:fast>)
     endif()
   endforeach()
 endif()

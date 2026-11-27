@@ -12,6 +12,14 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 #if defined(__ARM_FEATURE_CRC32)
@@ -91,17 +99,43 @@ uint32_t crc32(std::span<const uint8_t> data) {
   if (n) crc = __crc32b(crc, *p);
   return crc ^ 0xFFFFFFFFu;
 #else
-  static const std::array<uint32_t, 256> table = [] {
-    std::array<uint32_t, 256> values{};
+  // Slice-by-8 IEEE 802.3 CRC32 (~6-8x faster than byte-at-a-time on x86_64).
+  static const std::array<std::array<uint32_t, 256>, 8> tables = [] {
+    std::array<std::array<uint32_t, 256>, 8> t{};
     for (uint32_t i = 0; i < 256; ++i) {
-      uint32_t value = i;
-      for (int bit = 0; bit < 8; ++bit) value = (value & 1) ? 0xEDB88320u ^ (value >> 1) : value >> 1;
-      values[i] = value;
+      uint32_t c = i;
+      for (int bit = 0; bit < 8; ++bit) c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+      t[0][i] = c;
     }
-    return values;
+    for (uint32_t i = 0; i < 256; ++i) {
+      uint32_t c = t[0][i];
+      for (size_t k = 1; k < 8; ++k) {
+        c = t[0][c & 0xFFu] ^ (c >> 8);
+        t[k][i] = c;
+      }
+    }
+    return t;
   }();
   uint32_t crc = 0xFFFFFFFFu;
-  for (uint8_t byte : data) crc = table[(crc ^ byte) & 0xFF] ^ (crc >> 8);
+  const uint8_t* p = data.data();
+  size_t n = data.size();
+  while (n >= 8) {
+    uint32_t lo = 0, hi = 0;
+    std::memcpy(&lo, p, 4);
+    std::memcpy(&hi, p + 4, 4);
+    lo ^= crc;
+    crc = tables[7][lo & 0xFFu] ^
+          tables[6][(lo >> 8) & 0xFFu] ^
+          tables[5][(lo >> 16) & 0xFFu] ^
+          tables[4][lo >> 24] ^
+          tables[3][hi & 0xFFu] ^
+          tables[2][(hi >> 8) & 0xFFu] ^
+          tables[1][(hi >> 16) & 0xFFu] ^
+          tables[0][hi >> 24];
+    p += 8;
+    n -= 8;
+  }
+  while (n--) crc = tables[0][(crc ^ *p++) & 0xFFu] ^ (crc >> 8);
   return crc ^ 0xFFFFFFFFu;
 #endif
 }
@@ -111,6 +145,11 @@ Archive::~Archive() {
   if (fd_ >= 0) {
     ::close(fd_);
     fd_ = -1;
+  }
+#else
+  if (win_handle_) {
+    CloseHandle(static_cast<HANDLE>(win_handle_));
+    win_handle_ = nullptr;
   }
 #endif
 }
@@ -133,6 +172,38 @@ bool Archive::read_range(uint64_t offset, size_t size, std::vector<uint8_t>& out
     }
     return true;
   }
+#else
+  if (win_handle_) {
+    // Lock-free parallel positioned read via FILE_FLAG_OVERLAPPED + thread-local auto-reset event.
+    struct ThreadEvent {
+      HANDLE h = nullptr;
+      ThreadEvent() : h(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
+      ~ThreadEvent() {
+        if (h) CloseHandle(h);
+      }
+    };
+    thread_local ThreadEvent tl_ev;
+    if (tl_ev.h) {
+      size_t done = 0;
+      HANDLE fh = static_cast<HANDLE>(win_handle_);
+      while (done < size) {
+        const uint64_t pos = offset + done;
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - done, 0x40000000u));
+        OVERLAPPED ov{};
+        ov.Offset = static_cast<DWORD>(pos & 0xFFFFFFFFull);
+        ov.OffsetHigh = static_cast<DWORD>(pos >> 32);
+        ov.hEvent = tl_ev.h;
+        DWORD got = 0;
+        if (!ReadFile(fh, out.data() + done, chunk, &got, &ov)) {
+          if (GetLastError() != ERROR_IO_PENDING) return false;
+          if (!GetOverlappedResult(fh, &ov, &got, TRUE)) return false;
+        }
+        if (got == 0) return false;
+        done += size_t(got);
+      }
+      return true;
+    }
+  }
 #endif
   std::lock_guard<std::mutex> lock(io_mutex_);
   stream_.clear();
@@ -154,10 +225,23 @@ std::unique_ptr<Archive> Archive::open(const std::filesystem::path& path, std::s
   if (::fstat(archive->fd_, &st) != 0 || st.st_size < 0) return fail("cannot open file");
   archive->file_size_ = uint64_t(st.st_size);
 #else
-  archive->stream_.open(path, std::ios::binary);
-  if (!archive->stream_) return fail("cannot open file");
-  archive->stream_.seekg(0, std::ios::end);
-  archive->file_size_ = uint64_t(archive->stream_.tellg());
+  HANDLE fh = CreateFileW(path.c_str(), GENERIC_READ,
+                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                          FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS | FILE_FLAG_OVERLAPPED, nullptr);
+  if (fh != INVALID_HANDLE_VALUE) {
+    LARGE_INTEGER fsz{};
+    if (!GetFileSizeEx(fh, &fsz) || fsz.QuadPart < 0) {
+      CloseHandle(fh);
+      return fail("cannot open file");
+    }
+    archive->win_handle_ = fh;
+    archive->file_size_ = uint64_t(fsz.QuadPart);
+  } else {
+    archive->stream_.open(path, std::ios::binary);
+    if (!archive->stream_) return fail("cannot open file");
+    archive->stream_.seekg(0, std::ios::end);
+    archive->file_size_ = uint64_t(archive->stream_.tellg());
+  }
 #endif
   if (archive->file_size_ < kEndOfDirectorySize) return fail("file too small for a ZIP");
 
@@ -330,6 +414,7 @@ ReadResult Archive::read(const ArchiveMember& member) {
     result.error = "payload outside the file";
     return result;
   }
+  bool crc_checked = false;
   switch (ZipMethod(member.method)) {
     case ZipMethod::kStored:
       result.data = std::move(compressed);
@@ -342,6 +427,7 @@ ReadResult Archive::read(const ArchiveMember& member) {
         return result;
       }
       result.data = std::move(*data);
+      crc_checked = true;  // xmem_decompress already verified member.crc32
       break;
     }
     case ZipMethod::kDeflate: {
@@ -357,7 +443,7 @@ ReadResult Archive::read(const ArchiveMember& member) {
       result.error = "unknown method " + std::to_string(member.method);
       return result;
   }
-  if (result.data.size() != member.size || crc32(result.data) != member.crc32) {
+  if (result.data.size() != member.size || (!crc_checked && crc32(result.data) != member.crc32)) {
     result.error = "CRC mismatch";
     result.data.clear();
     return result;
@@ -376,5 +462,13 @@ ReadResult Archive::read(std::string_view name) {
   }
   return read(*member);
 }
+
+#if defined(_WIN32)
+namespace detail {
+void lower_worker_thread_priority_win32() {
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+}
+}  // namespace detail
+#endif
 
 }  // namespace fh1

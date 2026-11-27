@@ -18,6 +18,7 @@
 #include "audio/xml.h"
 #include "cars/mods.h"
 #include "fh1data/fs_walk.h"
+#include "fh1data/worker_pool.h"
 #include "fh1data/xds.h"
 #include "hud_scene.h"
 #include "hud_screen.h"
@@ -398,8 +399,6 @@ void WorldTextureLoader::load(world::World& colorado, WorldTriangles& w, Showroo
       std::shared_ptr<WorldTextureData> data;
     };
     std::vector<DecodedTex> results(to_decode.size());
-    const size_t threads =
-        std::min<size_t>(to_decode.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
     auto decode_one = [&](size_t i) {
       const uint32_t record = to_decode[i];
       fh1::WorldTexture t;
@@ -421,23 +420,7 @@ void WorldTextureLoader::load(world::World& colorado, WorldTriangles& w, Showroo
       for (auto& l : t.blocks.levels) d->texture.levels.push_back({l.width, l.height, std::move(l.blocks)});
       results[i].data = std::move(d);
     };
-    if (threads > 1 && to_decode.size() >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= to_decode.size()) break;
-            decode_one(i);
-          }
-        });
-      }
-      for (auto& wk : workers) wk.join();
-    } else {
-      for (size_t i = 0; i < to_decode.size(); ++i) decode_one(i);
-    }
+    fh1::parallel_for(to_decode.size(), decode_one);
 
     bool any_failed = false;
     for (size_t i = 0; i < to_decode.size(); ++i) {

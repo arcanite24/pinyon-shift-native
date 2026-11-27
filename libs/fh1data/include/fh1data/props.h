@@ -141,6 +141,7 @@ class PropModels {
   std::map<uint32_t, std::unique_ptr<RenderModel>> models_;
   std::map<uint32_t, std::string> errors_;
   std::unordered_map<uint32_t, std::pair<std::string, int>> first_name_cache_;
+  std::unordered_map<uint32_t, std::vector<uint32_t>> lod_set_cache_;
 };
 
 }  // namespace fh1

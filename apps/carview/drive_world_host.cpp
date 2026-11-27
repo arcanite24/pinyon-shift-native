@@ -850,12 +850,10 @@ bool DriveWorldHost::open_world_and_car() {
                                                        app.render_ground ? nullptr : &collision);
           streamer->set_async(streamer_async);
           streamer->set_lead(true);  // keeps a fast car central in the collision
-#ifdef __ANDROID__
           if (app.world_reference_path.empty() && app.contacts_log_path.empty() && !app.texture_census &&
               !std::getenv("SHIFT_WORLD_DEBUG") && !std::getenv("SHIFT_WORLD_PICK")) {
             streamer->set_compact_mesh_after_prepare(true);
           }
-#endif
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
             const bool async_mid_drive = !prepare_on_main && streamer_async && streamer && streamer->gathers() >= 1;
             if (async_mid_drive) lower_stream_worker_priority();

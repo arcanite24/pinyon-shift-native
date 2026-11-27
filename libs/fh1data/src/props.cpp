@@ -13,6 +13,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "fh1data/worker_pool.h"
+
 namespace fh1 {
 namespace {
 
@@ -69,10 +71,22 @@ uint16_t PropWorld::intern_routes(const std::vector<uint8_t>& routes) {
 }
 
 bool load_props_cache(const std::filesystem::path& path, uint64_t zip_size, PropWorld& out) {
-  std::ifstream in(path, std::ios::binary);
+  // Single bulk read into memory eliminates millions of tiny ifstream::read() calls.
+  std::ifstream in(path, std::ios::binary | std::ios::ate);
   if (!in) return false;
+  const std::streamoff file_sz = in.tellg();
+  if (file_sz < 16) return false;
+  std::vector<uint8_t> buf(static_cast<size_t>(file_sz));
+  in.seekg(0, std::ios::beg);
+  if (!in.read(reinterpret_cast<char*>(buf.data()), file_sz)) return false;
+
+  size_t cursor = 0;
   auto rd = [&](void* dst, size_t n) -> bool {
-    return n == 0 || bool(in.read(reinterpret_cast<char*>(dst), std::streamsize(n)));
+    if (n == 0) return true;
+    if (n > buf.size() - cursor) return false;
+    std::memcpy(dst, buf.data() + cursor, n);
+    cursor += n;
+    return true;
   };
   char magic[8]{};
   uint64_t cached_zip_size = 0;
@@ -215,41 +229,15 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
     PgeoTile tile;
   };
   std::vector<PgeoResult> pgeo_res(pgeo_names.size());
-  {
-    const size_t n = pgeo_names.size();
-    const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
-    if (threads > 1 && n >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          std::vector<uint8_t> bytes;
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= n) break;
-            auto& r = pgeo_res[i];
-            if (!source.read(pgeo_names[i], bytes, &r.why)) continue;
-            r.read_ok = true;
-            r.kind = pgeo_kind(bytes, &r.why);
-            if (r.kind != 7) continue;
-            r.parsed_ok = parse_pgeo(bytes, r.tile, &r.why);
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      std::vector<uint8_t> bytes;
-      for (size_t i = 0; i < n; ++i) {
-        auto& r = pgeo_res[i];
-        if (!source.read(pgeo_names[i], bytes, &r.why)) continue;
-        r.read_ok = true;
-        r.kind = pgeo_kind(bytes, &r.why);
-        if (r.kind != 7) continue;
-        r.parsed_ok = parse_pgeo(bytes, r.tile, &r.why);
-      }
-    }
-  }
+  fh1::parallel_for(pgeo_names.size(), [&](size_t i) {
+    thread_local std::vector<uint8_t> bytes;
+    auto& r = pgeo_res[i];
+    if (!source.read(pgeo_names[i], bytes, &r.why)) return;
+    r.read_ok = true;
+    r.kind = pgeo_kind(bytes, &r.why);
+    if (r.kind != 7) return;
+    r.parsed_ok = parse_pgeo(bytes, r.tile, &r.why);
+  });
   for (size_t i = 0; i < pgeo_names.size(); ++i) {
     const auto& name = pgeo_names[i];
     auto& r = pgeo_res[i];
@@ -327,43 +315,16 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
     bool has_first = false;
   };
   std::vector<PvszResult> pvsz_res(pvsz_names.size());
-  {
-    const size_t n = pvsz_names.size();
-    const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
-    if (threads > 1 && n >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          std::vector<uint8_t> bytes;
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= n) break;
-            auto& r = pvsz_res[i];
-            if (!source.read(pvsz_names[i], bytes, &r.why) || !parse_pvsz(bytes, r.zone, &r.why)) continue;
-            r.ok = true;
-            if (options.census_first_rule && !r.zone.starts.empty() && r.zone.start != r.zone.starts.front()) {
-              r.has_first = true;
-              parse_pvsz(bytes, r.first_zone, nullptr, PvszStartRule::kFirst);
-            }
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      std::vector<uint8_t> bytes;
-      for (size_t i = 0; i < n; ++i) {
-        auto& r = pvsz_res[i];
-        if (!source.read(pvsz_names[i], bytes, &r.why) || !parse_pvsz(bytes, r.zone, &r.why)) continue;
-        r.ok = true;
-        if (options.census_first_rule && !r.zone.starts.empty() && r.zone.start != r.zone.starts.front()) {
-          r.has_first = true;
-          parse_pvsz(bytes, r.first_zone, nullptr, PvszStartRule::kFirst);
-        }
-      }
+  fh1::parallel_for(pvsz_names.size(), [&](size_t i) {
+    thread_local std::vector<uint8_t> bytes;
+    auto& r = pvsz_res[i];
+    if (!source.read(pvsz_names[i], bytes, &r.why) || !parse_pvsz(bytes, r.zone, &r.why)) return;
+    r.ok = true;
+    if (options.census_first_rule && !r.zone.starts.empty() && r.zone.start != r.zone.starts.front()) {
+      r.has_first = true;
+      parse_pvsz(bytes, r.first_zone, nullptr, PvszStartRule::kFirst);
     }
-  }
+  });
   std::unordered_map<uint32_t, PvszRecord> seen, seen_first;
   for (size_t i = 0; i < pvsz_names.size(); ++i) {
     const auto& name = pvsz_names[i];
@@ -457,42 +418,30 @@ void PropModels::preload(const std::vector<uint32_t>& members) {
     todo.push_back(m);
   }
   if (todo.size() < 4) return;
-  const size_t threads = std::min<size_t>(todo.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-  if (threads <= 1) return;
   struct LoadedModel {
     std::unique_ptr<RenderModel> model;
     std::string why;
   };
   std::vector<LoadedModel> results(todo.size());
-  std::atomic<size_t> next{0};
-  std::vector<std::thread> workers;
-  workers.reserve(threads);
-  for (size_t t = 0; t < threads; ++t) {
-    workers.emplace_back([&]() {
-      std::vector<uint8_t> bytes;
-      for (;;) {
-        const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-        if (i >= todo.size()) break;
-        const std::string name = name_of(todo[i]);
-        auto& r = results[i];
-        if (!source_.contains(name)) {
-          r.why = name + ": no such member";
-          continue;
-        }
-        if (source_.read(name, bytes, &r.why)) {
-          auto m = std::make_unique<RenderModel>();
-          if (parse_render_model(bytes, *m, &r.why)) {
-            std::string ignored;
-            parse_render_materials(bytes, *m, &ignored);
-            r.model = std::move(m);
-          } else {
-            r.why = name + ": " + r.why;
-          }
-        }
+  fh1::parallel_for(todo.size(), [&](size_t i) {
+    thread_local std::vector<uint8_t> bytes;
+    const std::string name = name_of(todo[i]);
+    auto& r = results[i];
+    if (!source_.contains(name)) {
+      r.why = name + ": no such member";
+      return;
+    }
+    if (source_.read(name, bytes, &r.why)) {
+      auto m = std::make_unique<RenderModel>();
+      if (parse_render_model(bytes, *m, &r.why)) {
+        std::string ignored;
+        parse_render_materials(bytes, *m, &ignored);
+        r.model = std::move(m);
+      } else {
+        r.why = name + ": " + r.why;
       }
-    });
-  }
-  for (auto& w : workers) w.join();
+    }
+  });
   for (size_t i = 0; i < todo.size(); ++i) {
     const uint32_t m = todo[i];
     if (results[i].model) {
@@ -542,10 +491,18 @@ void PropModels::trim(size_t max_entries) {
 }
 
 std::vector<uint32_t> PropModels::lod_set(uint32_t member) {
+  if (const auto it = lod_set_cache_.find(member); it != lod_set_cache_.end()) return it->second;
   std::string family;
   int level;
-  if (!first_name(member, family, level)) return {};
-  if (level < 0) return {member};
+  if (!first_name(member, family, level)) {
+    lod_set_cache_.emplace(member, std::vector<uint32_t>{});
+    return {};
+  }
+  if (level < 0) {
+    std::vector<uint32_t> single{member};
+    lod_set_cache_.emplace(member, single);
+    return single;
+  }
   auto matches_neighbor = [&](uint32_t cur, const std::string& cur_family, uint32_t cand,
                               int expected_level, std::string& cand_family) -> bool {
     int k = -1;
@@ -579,12 +536,18 @@ std::vector<uint32_t> PropModels::lod_set(uint32_t member) {
     set.push_back(next);
     cur_family = std::move(f);
   }
+  for (uint32_t m_id : set) lod_set_cache_[m_id] = set;
   return set;
 }
 
 int64_t PropModels::lod_member(uint32_t member, int level) {
-  const auto set = lod_set(member);
-  if (set.empty()) return -1;
+  auto it = lod_set_cache_.find(member);
+  if (it == lod_set_cache_.end()) {
+    (void)lod_set(member);
+    it = lod_set_cache_.find(member);
+  }
+  if (it == lod_set_cache_.end() || it->second.empty()) return -1;
+  const auto& set = it->second;
   return set[std::min<size_t>(size_t(std::max(level, 0)), set.size() - 1)];
 }
 

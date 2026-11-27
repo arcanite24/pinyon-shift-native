@@ -230,7 +230,7 @@ if(ANDROID AND NOT SHIFT_ANDROID_EXECUTABLE)
 else()
   add_executable(carview ${carview_sources})
   if(WIN32)
-    target_sources(carview PRIVATE carview.rc)
+    target_sources(carview PRIVATE carview.rc carview.manifest)
   endif()
   if(APPLE)
     set_target_properties(carview PROPERTIES
