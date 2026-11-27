@@ -31,6 +31,24 @@ std::vector<uint32_t> placed_ambience_events(const audio::WorldAcousticsData& d)
   return out;
 }
 
+// CHudRadioCycleLogos (first_time_career Radio_Unlock): cycles the HUD radio
+// popup strip across the unlocked FM stations so the player sees them.
+struct RadioLogoCycleState {
+  bool active = false;
+  std::chrono::steady_clock::time_point t0{};
+  std::vector<int> stations;
+};
+
+std::mutex& logo_cycle_mutex() {
+  static std::mutex mu;
+  return mu;
+}
+
+std::map<const AudioHost*, RadioLogoCycleState>& logo_cycles() {
+  static std::map<const AudioHost*, RadioLogoCycleState> map;
+  return map;
+}
+
 }  // namespace
 
 bool AudioConfig::parse_arg(const std::vector<std::string>& args, size_t& i, AudioConfig& out) {
@@ -136,6 +154,10 @@ AudioHost::AudioHost() {
 }
 
 AudioHost::~AudioHost() {
+  {
+    std::lock_guard<std::mutex> lk(logo_cycle_mutex());
+    logo_cycles().erase(this);
+  }
   if (acoustics_loader_.joinable()) acoustics_loader_.join();
   stop_other_worker();
   stop_device();
@@ -1050,9 +1072,31 @@ void AudioHost::radio_trigger_immediate(std::string_view gameplay_event) {
       radio_wristband_ready(0);
       return;
     case audio::RadioDjState::kPostRace:
-    case audio::RadioDjState::kCycleRadioLogos:
-      // Recognized flow/HUD states (empty radiodj.post_race and HUD-only CHudRadioCycleLogos).
+      // Recognized empty radiodj.post_race state.
       return;
+    case audio::RadioDjState::kCycleRadioLogos: {
+      // CHudRadioCycleLogos (first_time_career Radio_Unlock): cycle through the
+      // unlocked FM stations on the HUD radio popup strip.
+      std::vector<int> stations;
+      for (int idx : radio_data_.cycle) {
+        if (idx >= 0 && size_t(idx) < radio_data_.stations.size() && !radio_data_.stations[size_t(idx)].off) {
+          stations.push_back(idx);
+        }
+      }
+      if (stations.empty()) {
+        for (size_t i = 0; i < radio_data_.stations.size(); ++i) {
+          if (!radio_data_.stations[i].off) stations.push_back(int(i));
+        }
+      }
+      if (!stations.empty()) {
+        std::lock_guard<std::mutex> lk(logo_cycle_mutex());
+        auto& st = logo_cycles()[this];
+        st.active = true;
+        st.t0 = std::chrono::steady_clock::now();
+        st.stations = std::move(stations);
+      }
+      return;
+    }
     case audio::RadioDjState::kNone:
       break;
   }
@@ -1798,6 +1842,29 @@ audio::AudioTelemetry AudioHost::telemetry() {
       tel.radio_popup.alpha = alpha;
     } else if (alpha <= 0.0) {
       custom_popup_active_ = false;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lk(logo_cycle_mutex());
+    if (auto it = logo_cycles().find(this); it != logo_cycles().end() && it->second.active) {
+      auto& st = it->second;
+      constexpr double kStepS = 1.1;
+      constexpr double kFadeS = 0.2;
+      const double elapsed =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - st.t0).count();
+      const double total = kStepS * double(st.stations.size());
+      if (elapsed >= 0.0 && elapsed < total && !st.stations.empty()) {
+        const size_t idx = std::min(st.stations.size() - 1, size_t(elapsed / kStepS));
+        double alpha = 1.0;
+        if (elapsed < kFadeS) alpha = elapsed / kFadeS;
+        else if (elapsed > total - kFadeS) alpha = (total - elapsed) / kFadeS;
+        tel.radio_popup.station = st.stations[idx];
+        tel.radio_popup.track = -1;
+        tel.radio_popup.alpha = std::clamp(alpha, 0.0, 1.0);
+        tel.radio_popup.press = true;
+      } else {
+        st.active = false;
+      }
     }
   }
   return tel;

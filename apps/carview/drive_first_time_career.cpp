@@ -71,14 +71,17 @@ bool query_cutscene_ground_snap(const drive::Ground* g, double x, double y_hint,
 
 bool query_cutscene_eye_ground(const drive::Ground* g, double x, double eye_y, double z, double& out_y) {
   if (!g) return false;
-  // Probe from 2.5 m above the eye so low cameras dipping beneath a road crown
-  // or kerb are caught without hitting overhead bridges/arches (> 4.5 m up).
-  constexpr double kProbeAbove = 2.5;
-  constexpr double kProbeDepth = 5.5;
-  drive::Hit h{};
-  if (!g->raycast({x, eye_y + kProbeAbove, z}, {0, -1, 0}, kProbeDepth, h) || h.normal.y < 0.5) return false;
-  out_y = (eye_y + kProbeAbove) - h.distance;
-  return true;
+  // Probe from +2.5 m above the eye first so low cameras near road level do not
+  // snap onto overhead bridges/arches (> 4.5 m up); if that misses (camera
+  // dipped deeper underground), fall back to +8.0 m so road height is still found.
+  for (const auto [above, depth] : std::array<std::pair<double, double>, 2>{{{2.5, 5.5}, {8.0, 12.0}}}) {
+    drive::Hit h{};
+    if (g->raycast({x, eye_y + above, z}, {0, -1, 0}, depth, h) && h.normal.y >= 0.5) {
+      out_y = (eye_y + above) - h.distance;
+      return true;
+    }
+  }
+  return false;
 }
 
 constexpr double kFtcPi = 3.14159265358979323846;
@@ -401,7 +404,7 @@ void DriveSession::feed_first_time_career() {
   const drive::Vec3 vp = vehicle.position();
   in.player_pos = {vp.x, vp.y, vp.z};
   in.throttle = ftc_throttle;
-  in.screen_open = map_open || autoshow.is_open() || app.pending_autoshow_open;
+  in.screen_open = map_open || ftc_open_map_pending || autoshow.is_open() || app.pending_autoshow_open;
   in.loading = loading_screen.active() || host.showroom.has_pending_world();
   in.racing = app.race != nullptr;
   // The driving tutor's inputs.
@@ -540,7 +543,8 @@ void DriveSession::apply_first_time_career() {
       const cutscene::Event* src_ev = nullptr;
       if (cur_cs) {
         for (const auto& ev : cur_cs->events) {
-          if (car.release && ev.type == cutscene::EventType::kReleaseCar && iequal(ev.name, car.name)) {
+          if (car.release && ev.type == cutscene::EventType::kReleaseCar &&
+              (iequal(ev.attr("carName", ev.name), car.name) || iequal(ev.name, car.name))) {
             src_ev = &ev;
             break;
           }
@@ -569,6 +573,13 @@ void DriveSession::apply_first_time_career() {
                     traffic::ScriptedCars::canonical_name(car.name).c_str(), car.speed_mps,
                     ok ? "" : " (not spawned)");
       } else {
+        // NEW_Diner_Cutscene_1 places the player's own yellow Viper via
+        // PlacePlayerCar; skip spawning a duplicate scripted Viper alongside it.
+        if (cur_cs && iequal(cur_cs->name, "NEW_Diner_Cutscene_1") &&
+            car.car_id == race::FirstTimeCareer::kViperCarId &&
+            iequal(app.car, race::FirstTimeCareer::kViperMedia)) {
+          continue;
+        }
         int64_t paint_rgb = -1;
         traffic::ScriptedCars::SpawnParams sp{};
         sp.name = car.name;
@@ -643,11 +654,20 @@ void DriveSession::apply_first_time_career() {
   // The race's way back to free roam restarts the session, so the
   // showcase's map is also opened whenever its lock is on and it is not up
   // (that covers a resume at the showcase too).
+  if (ftc_open_map_pending && (!c.ftc_active() || !c.ftc().map_locked())) {
+    ftc_open_map_pending = false;
+  }
   const bool showcase_map = c.ftc_active() && c.ftc().stage() == race::FtcStage::kShowcase && c.ftc().map_locked();
-  if ((ftc_open_map_pending || showcase_map) && !app.race && !app.fmv_player.active() && !loading_screen.active() &&
-      !host.showroom.has_pending_world() && !app.show_title) {
+  if ((ftc_open_map_pending || showcase_map) && c.ftc_active() && c.ftc().map_locked() && !app.race &&
+      !app.fmv_player.active() && !loading_screen.active() && !host.showroom.has_pending_world() && !app.show_title) {
     ftc_open_map_pending = false;
     if (!map_open) open_map();
+  }
+  // If FTC enters a cutscene (Radio_Unlock, Skills_Unlock, Wristband_Intro, etc.)
+  // while the map is somehow still open, close the map cleanly so it never
+  // locks over the cutscene or subsequent free roam.
+  if (c.ftc_active() && c.cutscenes().active() && map_open) {
+    close_map();
   }
 }
 

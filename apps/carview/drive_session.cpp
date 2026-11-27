@@ -187,7 +187,7 @@ DriveSession::DriveSession(DriveApp& a, DriveWorldHost& h)
       vehicle(build_session_vehicle_params(a, h, h.showroom.car(), audio_upgrades, audio_trans_level,
                                            audio_turbo_level, audio_sc_level, audio_sc_is_centrifugal,
                                            audio_camshaft_level, physics_notes)),
-      race_models{a.race.get()},
+      race_models{&a.race, a.race.get()},
       festival_guard{&h.renderer, &h.showroom, &festival_guests, &festival_guest_loads},
       save_due(a.new_career_save_pending),
       live_motion_blur(a.motion_blur_flag >= 0 ? a.motion_blur_flag == 1 : !a.low_preset),
@@ -1055,6 +1055,7 @@ void DriveSession::finalize_session(bool& session_again) {
           if (app.race) {
             app.race->release_models();
             app.race.reset();
+            race_models.disarm();
             app.race_event.clear();
             app.loading_out_of_event = true;
             std::printf("race: left for free roam\n");
@@ -1092,6 +1093,7 @@ void DriveSession::finalize_session(bool& session_again) {
           }
           if (app.race) app.race->release_models();
           app.race.reset();
+          race_models.disarm();
           std::string opened_id;
           if (app.start_race(id, why)) {
             opened_id = id;
@@ -1122,6 +1124,7 @@ void DriveSession::finalize_session(bool& session_again) {
             if (app.race) {
               app.race->release_models();
               app.race.reset();
+              race_models.disarm();
               app.race_event.clear();
             }
             app.rally_service_resume_after_reload = false;
@@ -1131,6 +1134,7 @@ void DriveSession::finalize_session(bool& session_again) {
             std::printf("race: left for a car change\n");
             app.race->release_models();
             app.race.reset();
+            race_models.disarm();
             app.race_event.clear();
             app.pre_loaner_car.clear();
             app.pre_loaner_garage_id = 0;

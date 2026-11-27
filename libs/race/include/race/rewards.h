@@ -241,7 +241,7 @@ struct RaceBonusInputs {
 // One finished (or not-finished) race of an event with one race, applied
 // to `record` in the spec's order. `style`: Events.CareerEventStyle (1:
 // festival, the only style with wristband points; 6: Horizon Finale 50k CR
-// first-win override); `level`: Events.Level.
+// repeat-win override); `level`: Events.Level.
 // `prize_car`: the event's Rewards_EventPrizes car (0: none), given once
 // for place 1.
 RaceAward award_race(CareerRecord& record, int64_t event_id, int64_t race_id, int career_type, int style, int level,

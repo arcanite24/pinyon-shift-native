@@ -1305,12 +1305,19 @@ bool DriveWorldHost::leave_room_world() {
     const double cx = streamer->centre_x();
     const double cz = streamer->centre_z();
     const bool was_async = streamer_async;
+    // Invalidate raw ground pointers before synchronous regather replaces MeshGround.
+    showroom.set_world_ground(nullptr);
+    world::AnimatedWorldSystem::clear_last_ground();
+    ground = nullptr;
     streamer->set_async(false);
     streamer->force_regather();
     bool changed = false;
     std::string regather_err;
     const bool ok_gather = streamer->update(cx, cz, &changed, &regather_err);
     streamer->set_async(was_async);
+    ground = &streamer->ground();
+    follower.set_ground(&streamer->ground());
+    showroom.set_world_ground(ground);
     if (!ok_gather) {
       std::fprintf(stderr, "carview: Colorado regather after hub room: %s\n", regather_err.c_str());
       return false;

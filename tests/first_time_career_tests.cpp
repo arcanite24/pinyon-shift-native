@@ -30,6 +30,7 @@ using race::FtcStage;
 constexpr std::array<double, 3> kHeatsNode = {-3200.0, 5.0, -1460.0};
 constexpr std::array<double, 3> kRedRockNode = {-5400.0, 70.0, -3200.0};
 constexpr std::array<double, 3> kRaceCentralSite = {-830.0, -6.0, -250.0};
+constexpr std::array<double, 3> kRecaroRushNode = {-1250.0, 12.0, -540.0};
 
 struct FakeHost {
   double cutscene_left = 0, movie_left = 0, screen_left = 0;
@@ -111,6 +112,7 @@ void test_order() {
   ftc.set_event_trigger(FirstTimeCareer::kAllComerFinal, kHeatsNode, FirstTimeCareer::kHeatsSignUpRadius);
   ftc.set_event_trigger(FirstTimeCareer::kMustangRace, kRedRockNode, 25.0);
   ftc.set_race_central(kRaceCentralSite, 24.0);
+  ftc.set_recaro_rush(kRecaroRushNode);
   FakeHost host;
   host.apply(ftc.start());
   check(ftc.stage() == FtcStage::kControls && ftc.show_controls_screen(), "starts on the controls screen");
@@ -127,6 +129,8 @@ void test_order() {
     in.cutscene_active = host.cutscene_left > 0;
     in.movie_active = host.movie_left > 0;
     in.screen_open = host.screen_left > 0;
+    // On a locked map, simulate the player setting the required route while the map is open.
+    if (ftc.map_locked() && in.screen_open) ftc.release_map_lock();
     in.throttle = 1.0;
     // Drive: move the player through the stage's zones.
     switch (ftc.stage()) {
@@ -156,9 +160,13 @@ void test_order() {
     if (host.pending_event) {
       in.race_finished = true;
       in.race_event_id = host.pending_event;
-      // Miss the cut in the final once, then make it.
-      if (host.pending_event == FirstTimeCareer::kAllComerFinal) ++final_attempts;
-      in.race_place = (host.pending_event == FirstTimeCareer::kAllComerFinal && final_attempts == 1) ? 6 : 2;
+      // Miss the cut in the final once, then make it; win the 2-participant showcase (1st).
+      if (host.pending_event == FirstTimeCareer::kAllComerFinal) {
+        ++final_attempts;
+        in.race_place = (final_attempts == 1) ? 6 : 2;
+      } else {
+        in.race_place = 1;
+      }
       host.pending_event = 0;
       // The lost final: the player drives off and comes back to sign up again.
       if (in.race_place > 3) host.pos = {kHeatsNode[0] + 100.0, kHeatsNode[1], kHeatsNode[2]};
@@ -218,8 +226,15 @@ void test_order() {
   check(has(host.dj, "IntroCutscene") && has(host.dj, "E3Intro") && has(host.dj, "FestivalTicketsDepleting9") &&
             has(host.dj, "FestivalTicketsDepleting4") && !has(host.dj, "FestivalTicketsDepleting3"),
         "DJ lines: intro, E3, the places countdown 9..4");
+  check(has(host.dj, "CycleRadioLogos") && has(host.dj, "RamonaOpinionOfPlayerInterview"),
+        "DJ lines: CycleRadioLogos and RamonaOpinionOfPlayerInterview after Heats");
   check(!has(host.dj, "TicketGiveawayReminder1"), "no giveaway reminder while places are left");
   check(has(host.vo, "RadioFixedByDak"), "Dak's radio VO");
+  check(has(host.vo, "PaintshopPreFirstYellowEvent") && has(host.vo, "AutoshowPreFirstYellowEvent") &&
+            has(host.vo, "FIrstYellowEventOnMap"),
+        "closing sat-nav tutorial VO lines");
+  check(host.dest[0] == kRecaroRushNode[0] && host.dest[1] == kRecaroRushNode[2],
+        "Recaro Rush (FR02) coordinates populated for sat-nav tutorial");
   check(has(host.mixes, "OpeningCutscene") && has(host.mixes, "VOPlayingInstant"), "mixer snapshots");
   check(host.saves >= 5, "save checkpoints");
   check(ftc.controls_enabled() && ftc.hud_visible() && !ftc.ai_driving(), "free roam handed back");
@@ -352,23 +367,29 @@ void test_heats_and_showcase() {
   check(ftc.hud_instruction() == "IDS_HudInstruction_Go_To_Red_Rock" && ftc.large_instruction_2() == "IDS_HudMsg_ShowcaseEvent",
         "the map let go: Get to the Showcase event in Red Rock");
   check(launched == 101, "the showcase launches");
+  // PLANE_RACE_001 Showcase (2 participants): 2nd place does not advance; 1st is required.
   in.race_finished = true;
   in.race_event_id = 101;
+  in.race_place = 2;
+  c = ftc.update(in);
+  check(ftc.stage() == FtcStage::kShowcase, "2nd in the showcase does not advance");
   in.race_place = 1;
   c = ftc.update(in);
   check(ftc.stage() == FtcStage::kTravelToRaceCentral && c.place_car && c.pos == FirstTimeCareer::kPlaneRacePlace,
         "showcase won: placed by the plane race, Race Central next");
   check(c.play_cutscene == "Skills_Unlock" && c.vo.size() == 1 && c.vo[0] == "RedRockSkillsIntro" &&
-            c.set_time_of_day && c.time_of_day_s == FirstTimeCareer::kPostPlaneRaceTimeOfDay,
-        "PopularitySkillsFlow: 18:40, Skills_Unlock over RedRockSkillsIntro");
+            c.set_time_of_day && c.time_of_day_s == FirstTimeCareer::kPostPlaneRaceTimeOfDay &&
+            c.set_time_locked && c.time_locked,
+        "PopularitySkillsFlow: ToD locked at 18:40, Skills_Unlock over RedRockSkillsIntro");
   check(!ftc.controls_enabled() && !ftc.hud_visible() && !ftc.skills_unlocked(), "no controls or skills under it");
   in.race_finished = false;
   in.cutscene_active = true;
   ftc.update(in);
   check(!ftc.skills_unlocked(), "still under Skills_Unlock");
   in.cutscene_active = false;
-  ftc.update(in);
-  check(ftc.controls_enabled() && ftc.hud_visible() && ftc.skills_unlocked(), "it ends: controls, HUD, skills");
+  c = ftc.update(in);
+  check(ftc.controls_enabled() && ftc.hud_visible() && ftc.skills_unlocked() && c.set_time_locked && !c.time_locked,
+        "it ends: controls, HUD, skills, ToD unlocked");
   check(ftc.hud_instruction() == "IDS_HudInstruction_Travel_To_RaceCentral", "Drive to Race Central");
   // With a sign-up trigger the final waits for the player to drive there.
   FirstTimeCareer f2;
@@ -535,6 +556,58 @@ void test_stage_names_and_resume() {
     const auto rc = ftc.update(rin);
     check(ftc.stage() == FtcStage::kFirstAutoshow && rc.open_map, "the rewards go straight to the map");
   }
+  // Festival arrival does not commit Save 7 or emit an unlinked white flash;
+  // Save 7 commits in post_map_flow (kRadioUnlock) after workshop_map closes.
+  {
+    FirstTimeCareer f_arr;
+    f_arr.resume(FtcStage::kRaceToFestival);
+    race::FtcInput ain;
+    ain.dt = 0.1;
+    ain.player_pos = FirstTimeCareer::kEndRacePosition;
+    const auto arr_cmd = f_arr.update(ain);
+    check(f_arr.stage() == FtcStage::kFestivalArrive && !arr_cmd.save_requested && arr_cmd.fades.empty(),
+          "kFestivalArrive does not save prematurely or emit an unlinked white flash");
+    check(f_arr.checkpoint() == FtcStage::kDinerCutscenes,
+          "checkpoint stays at kDinerCutscenes until post_map_flow");
+  }
+  // P0-2: kWorkshopMap must NEVER advance to kRadioUnlock while map_locked() is
+  // still true (even if screen_open is false while a loading screen clears).
+  {
+    FirstTimeCareer f_wm;
+    f_wm.resume(FtcStage::kWorkshopMap);
+    check(f_wm.map_locked(), "workshop_map starts with map locked");
+    check(f_wm.checkpoint() == FtcStage::kDinerCutscenes, "workshop_map has not committed Save 7 yet");
+    race::FtcInput win;
+    win.dt = 0.5;
+    win.screen_open = false;
+    f_wm.update(win);
+    f_wm.update(win);
+    check(f_wm.stage() == FtcStage::kWorkshopMap && f_wm.map_locked(),
+          "workshop_map stays locked when screen_open is false before route set");
+    win.screen_open = true;
+    f_wm.update(win);
+    f_wm.release_map_lock();
+    win.screen_open = false;
+    const auto ru = f_wm.update(win);
+    check(f_wm.stage() == FtcStage::kRadioUnlock && ru.save_requested && f_wm.checkpoint() == FtcStage::kHeats,
+          "workshop_map advances to Radio_Unlock and commits Save 7 only after route set + map close");
+  }
+  // P0-6: kFirstAutoshow waits for map_locked() release and emits show_loading into Autoshow.
+  {
+    FirstTimeCareer f_as;
+    f_as.resume(FtcStage::kFirstAutoshow);
+    race::FtcInput asin;
+    asin.dt = 0.5;
+    asin.screen_open = false;
+    f_as.update(asin);
+    check(f_as.stage() == FtcStage::kFirstAutoshow && f_as.map_locked(),
+          "first_autoshow waits for route set on its locked map");
+    f_as.release_map_lock();
+    const auto ac = f_as.update(asin);
+    check(ac.open_autoshow && ac.show_loading && ac.place_car && ac.autoshow_restricted,
+          "first_autoshow transitions with show_loading into restricted Autoshow");
+  }
+
   c = ftc.resume(FtcStage::kRadioUnlock);
   check(ftc.checkpoint() == FtcStage::kHeats, "the festival arrival resumes at the heats (save 7)");
   c = ftc.resume(FtcStage::kWristbandIntro);

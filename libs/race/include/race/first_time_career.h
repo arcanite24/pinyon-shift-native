@@ -298,6 +298,11 @@ class FirstTimeCareer {
   }
   void set_race_central(const std::array<double, 3>& pos, double radius);
   const std::array<double, 3>& race_central() const { return race_central_; }
+  // Recaro Rush (FR02) trigger position for the closing sat-nav tutorial.
+  void set_recaro_rush(const std::array<double, 3>& pos) {
+    have_recaro_rush_ = true;
+    recaro_rush_ = pos;
+  }
   // Route 170's waypoints (route_waypoint_NN in order). The route is the
   // race to the festival's: its grid is at the diner and its waypoints run
   // through the toll booth into the festival. When the AI takes the car at
@@ -389,6 +394,8 @@ class FirstTimeCareer {
   bool have_race_central_ = false;
   std::array<double, 3> race_central_ = kRaceCentral;
   double race_central_radius_ = kRaceCentralRadius;
+  bool have_recaro_rush_ = false;
+  std::array<double, 3> recaro_rush_{};
   struct Timed {
     double t;
     std::string dj;

@@ -245,6 +245,8 @@ void CampaignDirector::prime_ftc_world() {
     ftc_.set_event_trigger(ev->event_id, ev->trigger_pos, race::FirstTimeCareer::kHeatsSignUpRadius);
   if (const auto* ev = catalog_->find_event_by_id(race::FirstTimeCareer::kMustangRace))
     ftc_.set_event_trigger(ev->event_id, ev->trigger_pos, ev->trigger_radius);
+  if (const auto* ev = catalog_->find_event(race::FirstTimeCareer::kRecaroRush))
+    ftc_.set_recaro_rush(ev->trigger_pos);
   if (const auto* rc = catalog_->find_site(race::FestivalSite::kRaceCentral)) ftc_.set_race_central(rc->pos, rc->radius);
 }
 
@@ -421,10 +423,19 @@ race::CampaignAction CampaignDirector::apply_ftc(const race::FtcCommands& c, Fmv
     act.pos = c.pos;
     act.heading = c.heading_deg * kPi / 180.0;
   }
-  if (c.set_destination && (c.destination_xz[0] != 0.0 || c.destination_xz[1] != 0.0)) {
-    act.set_gps = true;
-    act.gps_label = c.destination_label;
-    act.gps_xz = c.destination_xz;
+  if (c.set_destination) {
+    std::array<double, 2> dest_xz = c.destination_xz;
+    if (dest_xz[0] == 0.0 && dest_xz[1] == 0.0 && c.destination_label == race::FirstTimeCareer::kRecaroRush &&
+        catalog_) {
+      if (const auto* ev = catalog_->find_event(c.destination_label)) {
+        dest_xz = {ev->trigger_pos[0], ev->trigger_pos[2]};
+      }
+    }
+    if (dest_xz[0] != 0.0 || dest_xz[1] != 0.0) {
+      act.set_gps = true;
+      act.gps_label = c.destination_label;
+      act.gps_xz = dest_xz;
+    }
   }
   if (c.launch_event_id) {
     act.launch_event = true;
@@ -647,6 +658,7 @@ race::CampaignAction CampaignDirector::on_wristband_collected(int wristband_leve
 
 race::CampaignAction CampaignDirector::on_barn_find(bool discovered, const std::string& barn_id,
                                                     const std::string& car_name, AudioHost* audio) {
+  if (ftc_.active()) return {};
   auto act = flow_.on_barn_find(discovered, barn_id, car_name);
   pump_audio(audio);
   return act;
@@ -654,12 +666,14 @@ race::CampaignAction CampaignDirector::on_barn_find(bool discovered, const std::
 
 race::CampaignAction CampaignDirector::on_barn_restored(const std::string& barn_id, const std::string& car_name,
                                                         AudioHost* audio) {
+  if (ftc_.active()) return {};
   auto act = flow_.on_barn_restored(barn_id, car_name);
   pump_audio(audio);
   return act;
 }
 
 void CampaignDirector::on_popularity_rank_changed(int old_rank, int new_rank, AudioHost* audio) {
+  if (ftc_.active()) return;
   flow_.on_popularity_rank_changed(old_rank, new_rank);
   pump_audio(audio);
 }

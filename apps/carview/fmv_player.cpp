@@ -1400,6 +1400,9 @@ void FmvPlayer::mf_worker(std::filesystem::path wmv_path, int target_video_id, i
       v_full = video_q_.size() >= 6;
     }
     const bool a_full = !have_audio || (audio_ring_.available_read() >= size_t(kAudioRate) * 2);
+    // If video has already hit EOF and audio is either finished or not draining
+    // (e.g. --no-sound), exit cleanly instead of deadlocking waiting for a_eof.
+    if (v_eof && !loop && (a_eof || a_full)) break;
     if (v_full && a_full) {
       std::this_thread::sleep_for(std::chrono::milliseconds(4));
       continue;
@@ -1407,8 +1410,8 @@ void FmvPlayer::mf_worker(std::filesystem::path wmv_path, int target_video_id, i
 
     // Prefer reading the stream whose queue has room so neither starves.
     DWORD want_stream = MF_SOURCE_READER_ANY_STREAM;
-    if (v_full && !a_full && !a_eof) want_stream = audio_stream_idx;
-    else if (a_full && !v_full && !v_eof) want_stream = video_stream_idx;
+    if ((v_full || v_eof) && !a_full && !a_eof) want_stream = audio_stream_idx;
+    else if ((a_full || a_eof) && !v_full && !v_eof) want_stream = video_stream_idx;
 
     DWORD actual_stream = 0;
     DWORD flags = 0;
@@ -1452,6 +1455,10 @@ void FmvPlayer::mf_worker(std::filesystem::path wmv_path, int target_video_id, i
       if (actual_stream == video_stream_idx) v_eof = true;
       else if (actual_stream == audio_stream_idx) a_eof = true;
       else { v_eof = true; a_eof = true; }
+      if (v_eof && !loop) {
+        video_eof_.store(true, std::memory_order_release);
+        if (a_eof || !have_audio || audio_ring_.available_read() >= size_t(kAudioRate) * 2) break;
+      }
       if (v_eof && a_eof) {
         if (loop) {
           PROPVARIANT pos;
@@ -1648,7 +1655,12 @@ void FmvPlayer::ff_worker(std::filesystem::path wmv_path, int target_video_id, i
         }
       }
     } else if (actx && pkt->stream_index == aidx) {
-      if (avcodec_send_packet(actx, pkt) >= 0) {
+      // When audio is not draining (e.g. --no-sound) and the ring is already full,
+      // skip decoding audio packets so push_audio_stereo never stalls video playback or EOF.
+      const bool audio_stalled =
+          a_full && (audio_ring_.available_write() < size_t(kAudioRate) / 2 ||
+                     audio_frames_played_.load(std::memory_order_acquire) == 0);
+      if (!audio_stalled && avcodec_send_packet(actx, pkt) >= 0) {
         while (avcodec_receive_frame(actx, fr) == 0) emit_audio_frame(fr);
       }
     }

@@ -573,7 +573,7 @@ bool DriveSession::free_roam_step() {
           if (host.streamer) host.streamer->set_hidden(host.hidden_sent);
           if (host.free_roam->hidden()) app.smashables.sync_barns_from_hidden(*host.free_roam->hidden());
         }
-        if (!host.free_roam || app.campaign.flow().is_onboarding()) return false;
+        if (!host.free_roam || app.campaign.ftc_active() || app.campaign.flow().is_onboarding()) return false;
         freeroam::CarState cs;
         const drive::Vec3 at = vehicle.position();
         const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
@@ -1643,9 +1643,10 @@ bool DriveSession::step(const drive::Input& user_in) {
           have_prev_speed_pos = false;
         }
         if (app.freeroam_challenges && !app.race && !app.campaign.cutscene_drives_player() &&
-            !app.campaign.flow().is_onboarding())
+            !(app.campaign.ftc_active() || app.campaign.flow().is_onboarding()))
           step_freeroam_challenges(*this);  // before club_step() clears this step's skills and cameras
-        club_step();  // evaluates all active 1000 Club challenges on full step signals
+        if (!app.campaign.ftc_active())
+          club_step();  // evaluates all active 1000 Club challenges on full step signals
         if (!host.streamer) return true;
         // Headless runs put a car that is stuck or rolled back on the
         // nearest road; windowed free-roam also auto-recovers sustained rollovers (~2.0 s).

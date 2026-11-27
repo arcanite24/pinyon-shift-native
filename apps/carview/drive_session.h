@@ -80,9 +80,11 @@ struct DriveSession {
   static constexpr double kIntroSeconds = 6.0;
 
   struct RaceModelsGuard {
-    RaceView* r = nullptr;
+    std::unique_ptr<RaceView>* slot = nullptr;
+    RaceView* target = nullptr;
+    void disarm() { target = nullptr; }
     ~RaceModelsGuard() {
-      if (r) r->release_models();
+      if (slot && target && slot->get() == target) target->release_models();
     }
   };
 

@@ -21,6 +21,7 @@
 #include "garage/pi_calc.h"
 #include "race/campaign_flow.h"
 #include "race/career.h"
+#include "race/rewards.h"
 #include "race/showcase.h"
 #include "race/event.h"
 
@@ -91,6 +92,25 @@ void test_registry_and_fast_travel() {
   CHECK(hero1.upgrades.size() == 1 && hero1.upgrades.at("Brakes") == 1);
   freeroam::Registry empty;
   CHECK(!freeroam::parse_registry("<Registry/>", empty, &err));
+}
+
+void test_headline_repeat_prize() {
+  // Style 6 (HEADLINE_EVENT / Horizon Finale): full CashPrize (5,000,000 Cr) on
+  // first win, fixed 50,000 Cr base cash prize on repeat wins (SPEC-EVENT-REWARDS).
+  race::WristbandTables wb;
+  race::CareerRecord rec;
+  // Finishing 2nd on first attempt: WinnerTakesAll pays 0 and does not mark won.
+  const auto loss = race::award_race(rec, 169, 169, 12, 6, 6, 5000000.0, 8, 2, true, 300.0, 80.0, 0, wb);
+  CHECK(loss.base_credits == 0 && !loss.won && rec.event_places[169] == 2);
+  // First win (1st place after a prior 2nd): pays the full 5,000,000 Cr prize.
+  const auto first_win = race::award_race(rec, 169, 169, 12, 6, 6, 5000000.0, 8, 1, true, 290.0, 85.0, 0, wb);
+  CHECK(first_win.base_credits == 5000000 && first_win.won && rec.event_places[169] == 1);
+  // Repeat win (already won before): base prize drops to 50,000 Cr.
+  const auto repeat_win = race::award_race(rec, 169, 169, 12, 6, 6, 5000000.0, 8, 1, true, 285.0, 86.0, 0, wb);
+  CHECK(repeat_win.base_credits == 50000 && repeat_win.won);
+  // Repeat non-win: still 0 under WinnerTakesAll.
+  const auto repeat_loss = race::award_race(rec, 169, 169, 12, 6, 6, 5000000.0, 8, 2, true, 295.0, 84.0, 0, wb);
+  CHECK(repeat_loss.base_credits == 0 && !repeat_loss.won);
 }
 
 }  // namespace
@@ -439,6 +459,7 @@ int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--corpus") return corpus();
   test_event_bonus_meaning();
   test_registry_and_fast_travel();
+  test_headline_repeat_prize();
   std::printf("progression_tests: %d failures\n", failures);
   return failures ? 1 : 0;
 }

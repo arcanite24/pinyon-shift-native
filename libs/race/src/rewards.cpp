@@ -460,9 +460,12 @@ RaceAward compute_race_award(const CareerRecord& r, int64_t event_id, int career
                              const RaceBonusInputs& extras) {
   RaceAward a;
   const auto prev = r.event_places.find(event_id);
-  a.base_credits = race_credits(prize, winnings_for_career_type(career_type), racers, place, finished);
-  // No first-win floor or repeat cut: the original's payout never reads past
-  // results (the Horizon Finale's CashPrize is 5,000,000 on its own).
+  const bool already_won = (prev != r.event_places.end() && prev->second == 1);
+  // Events of career style 6 (HEADLINE_EVENT / Horizon Finale) pay their full
+  // Events.CashPrize (5,000,000 Cr) on first win, and a fixed 50,000 Cr base
+  // prize on repeat wins (SPEC-EVENT-REWARDS).
+  const double effective_prize = (style == 6 && already_won) ? 50000.0 : prize;
+  a.base_credits = race_credits(effective_prize, winnings_for_career_type(career_type), racers, place, finished);
   // The original's post-race order (decoded): FINISHED (or BOUNTY), plus
   // BEAT THE STAR, plus MILEAGE BONUS, then the DIFFICULTY & ASSISTS BONUS
   // as round(total * pct), half away from zero. SKILLS is an XP line on the

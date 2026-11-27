@@ -142,13 +142,14 @@ FtcStage FirstTimeCareer::checkpoint() const {
     case FtcStage::kControls:
     case FtcStage::kOpeningCutscene:
     case FtcStage::kInitialDrive: return FtcStage::kOpeningCutscene;
-    // Save 1 at the diner.
+    // Save 1 at the diner; kept through festival arrival, FMV_01, and
+    // workshop_map until post_map_flow (Radio_Unlock) commits Save 7.
     case FtcStage::kDinerCutscenes:
-    case FtcStage::kRaceToFestival: return FtcStage::kDinerCutscenes;
-    // Save 7 on arriving at the festival: a reload waits for the heats.
+    case FtcStage::kRaceToFestival:
     case FtcStage::kFestivalArrive:
     case FtcStage::kFestivalArriveMovie:
-    case FtcStage::kWorkshopMap:
+    case FtcStage::kWorkshopMap: return FtcStage::kDinerCutscenes;
+    // Save 7 in post_map_flow after workshop_map: a reload waits for the heats.
     case FtcStage::kRadioUnlock:
     case FtcStage::kHeats: return FtcStage::kHeats;
     case FtcStage::kShowcase: return FtcStage::kShowcase;
@@ -396,9 +397,8 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
 
     case FtcStage::kFestivalArrive:
       // FestivalArrive: controls off, the AI drives into the festival under
-      // Festival_Race_Outro, then a 2 s fade to black. Save 7.
-      c.save_requested = true;
-      c.fades = {fade(FtcFadeKind::kWhiteFlash)};
+      // Festival_Race_Outro, then a 2 s fade to black (Save 7 is committed in
+      // post_map_flow after workshop_map, not here; no unlinked white flash).
       c.play_cutscene = "Festival_Race_Outro";
       // The AI drives on along route 170 to its last waypoint, in the festival.
       if (!route_waypoints_.empty()) {
@@ -440,6 +440,8 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
       break;
 
     case FtcStage::kRadioUnlock:
+      // post_map_flow after workshop_map: commit Save 7 (kHeats checkpoint).
+      c.save_requested = true;
       c.fades = {fade(FtcFadeKind::kBlackOut)};
       c.repair_car = true;
       c.set_time_locked = true;
@@ -553,10 +555,15 @@ FtcCommands FirstTimeCareer::enter(FtcStage next) {
 
     case FtcStage::kSatNavTutorial:
       // Without Kinect the sat-nav popup gives way to the map input hint;
-      // Recaro Rush becomes the destination and the clock runs again.
+      // Recaro Rush becomes the destination, closing VOs queue, and the clock
+      // runs again.
       c.show_map_hint = true;
       c.set_destination = true;
       c.destination_label = kRecaroRush;
+      if (have_recaro_rush_) {
+        c.destination_xz = {recaro_rush_[0], recaro_rush_[2]};
+      }
+      c.vo = {"PaintshopPreFirstYellowEvent", "AutoshowPreFirstYellowEvent", "FIrstYellowEventOnMap"};
       c.set_time_locked = true;
       c.time_locked = false;
       c.set_civilian_traffic = true;
@@ -607,8 +614,8 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
     return n;
   };
   // An event the activity waits on: its result place moves the career on.
-  auto event_result = [&](int64_t id) {
-    return in.race_finished && in.race_event_id == id && in.race_place >= 1 && in.race_place <= kCutoffPlace;
+  auto event_result = [&](int64_t id, int max_place) {
+    return in.race_finished && in.race_event_id == id && in.race_place >= 1 && in.race_place <= max_place;
   };
   // Drive to an event's sign-up sphere, then sign up with X: the
   // activation's banner asks SIGN ME UP! and driving in does not start it
@@ -768,7 +775,9 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       break;
 
     case FtcStage::kWorkshopMap:
-      if (waited(in.screen_open)) return go(FtcStage::kRadioUnlock);
+      // Never advance until the player has actually set a route on the open
+      // locked map (releasing map_locked_) and the map has closed.
+      if (!map_locked_ && waited(in.screen_open)) return go(FtcStage::kRadioUnlock);
       break;
 
     case FtcStage::kRadioUnlock:
@@ -788,23 +797,30 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
 
     case FtcStage::kHeats:
       if (in.race_finished) awaiting_race_ = false;
-      if (event_result(kAllComerFinal)) return go(FtcStage::kShowcase);
+      if (event_result(kAllComerFinal, kCutoffPlace)) {
+        FtcCommands n = go(FtcStage::kShowcase);
+        n.dj_lines.push_back("RamonaOpinionOfPlayerInterview");
+        return n;
+      }
       sign_up(kAllComerFinal);
       break;
 
     case FtcStage::kShowcase:
       if (!map_locked_ && !in.screen_open && instruction_.empty()) set_instruction(12);
       if (in.race_finished) awaiting_race_ = false;
-      if (event_result(kMustangRace)) {
+      // PLANE_RACE_001 Showcase (2 participants): 1st place required to win/advance.
+      if (event_result(kMustangRace, 1)) {
         FtcCommands n = go(FtcStage::kTravelToRaceCentral);
         n.place_car = true;
         n.pos = kPlaneRacePlace;
         n.heading_deg = kPlaneRaceHeading;
-        // PopularitySkillsFlow: 18:40, no traffic, Skills_Unlock (it places
-        // the car where the plane race leaves it) over RedRockSkillsIntro;
-        // controls and the HUD come back when it ends.
+        // PopularitySkillsFlow: lock ToD at 18:40 during Skills_Unlock, no
+        // traffic, Skills_Unlock over RedRockSkillsIntro; unlock ToD, controls
+        // and the HUD when it ends.
         n.set_time_of_day = true;
         n.time_of_day_s = kPostPlaneRaceTimeOfDay;
+        n.set_time_locked = true;
+        n.time_locked = true;
         n.set_civilian_traffic = true;
         n.civilian_traffic = false;
         n.play_cutscene = kSkillsCutscene;
@@ -824,6 +840,8 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
           controls_ = true;
           hud_ = true;
           set_instruction(8);  // its large line shows with the HUD, not under the cutscene
+          c.set_time_locked = true;
+          c.time_locked = false;
           c.set_civilian_traffic = true;
           c.civilian_traffic = true;
         }
@@ -853,7 +871,8 @@ FtcCommands FirstTimeCareer::update(const FtcInput& in) {
       return go(FtcStage::kFirstAutoshow);
 
     case FtcStage::kFirstAutoshow:
-      if (step_ == 0 && waited(in.screen_open)) {
+      if (step_ == 0 && !map_locked_ && waited(in.screen_open)) {
+        c.show_loading = true;
         c.place_car = true;
         c.pos = kWorkshopPlace;
         c.heading_deg = kWorkshopHeading;

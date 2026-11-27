@@ -444,7 +444,9 @@ void DriveSession::start_new_career() {
           app.saved.has_spawn = false;
           app.show_title = false;
           app.title.reset();
+          if (app.race) app.race->release_models();
           app.race.reset();
+          race_models.disarm();
           app.race_event.clear();
           app.pre_loaner_car.clear();
           app.pre_loaner_garage_id = 0;

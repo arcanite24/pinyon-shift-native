@@ -755,6 +755,11 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                 app.audio_host.trigger_ui(audio::UiCue::kMove);
               };
               auto test_drive = [&]() {
+                if (autoshow.tutorial_mode() ||
+                    (app.campaign.ftc_active() && app.campaign.ftc().stage() == race::FtcStage::kFirstAutoshow)) {
+                  app.audio_host.trigger_ui(audio::UiCue::kError);
+                  return;
+                }
                 std::string td_media;
                 int64_t td_cid = 0, td_col = 0;
                 if (!autoshow.prepare_test_drive(td_media, td_cid, td_col)) {
@@ -849,6 +854,13 @@ bool DriveSession::handle_hub_shop_event(const SDL_Event& e) {
                   return;
                 }
                 if (!autoshow.back_step()) {
+                  if (autoshow.tutorial_mode() ||
+                      (app.campaign.ftc_active() && app.campaign.ftc().stage() == race::FtcStage::kFirstAutoshow)) {
+                    // Retail CSetRestrictionsForFirstAutoshow disables Back at the
+                    // top level so the player must purchase a starter car before leaving.
+                    app.audio_host.trigger_ui(audio::UiCue::kError);
+                    return;
+                  }
                   autoshow.close();
                   app.hub_orbit_dragging = false;
                   app.hub_orbit_dragged = false;
