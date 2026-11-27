@@ -6,6 +6,7 @@ param(
     [string]$BuildDir = 'build',
     [string]$Config = 'Release',
     [switch]$Clean,
+    [switch]$NoLtcg,
     [string]$Target = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -25,7 +26,9 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 
 $build = Join-Path $root $BuildDir
 if ($Clean -and (Test-Path $build)) { Remove-Item -Recurse -Force $build }
-cmake -S $root -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
+$cmakeArgs = @('-S', $root, '-B', $build, '-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Config", '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl')
+if ($NoLtcg) { $cmakeArgs += '-DSHIFT_MSVC_LTCG=OFF' }
+cmake @cmakeArgs
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 if ($Target) { cmake --build $build --target $Target } else { cmake --build $build }
 exit $LASTEXITCODE

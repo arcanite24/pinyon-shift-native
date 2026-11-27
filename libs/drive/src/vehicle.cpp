@@ -1553,6 +1553,7 @@ void Vehicle::update_gearbox(double dt) {
       break;
     }
   }
+  if (sputter_cut_) engine_throttle_ = 0.0;
 }
 
 void Vehicle::update_sputter(double dt) {

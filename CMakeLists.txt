@@ -18,6 +18,7 @@ option(SHIFT_BUILD_CARVIEW "Build the carview app (SDL3 + Vulkan)" ON)
 option(SHIFT_BUILD_LAUNCHER "Build the unified cross-platform GUI launcher" ON)
 option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path tracing backend" ${_shift_default_rt})
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
+option(SHIFT_MSVC_LTCG "Enable MSVC /GL + /LTCG whole-program optimization in Release" ON)
 set(SHIFT_ANDROID_ARM64_ARCH "armv8.2-a+lse+crc+fp16+dotprod" CACHE STRING
     "Android arm64-v8a -march target (use armv8-a for maximum legacy compatibility)")
 set(SHIFT_WIN_ARCH "/arch:AVX2" CACHE STRING
@@ -38,12 +39,14 @@ if(MSVC)
     add_compile_options($<$<CONFIG:Release>:${SHIFT_WIN_ARCH}>)
   endif()
   add_link_options(
-    $<$<CONFIG:Release>:/LTCG>
     $<$<CONFIG:Release>:/OPT:REF>
     $<$<CONFIG:Release>:/OPT:ICF>
     $<$<CONFIG:Release>:/INCREMENTAL:NO>)
-  if(NOT CMAKE_STATIC_LINKER_FLAGS_RELEASE MATCHES "/LTCG")
-    string(APPEND CMAKE_STATIC_LINKER_FLAGS_RELEASE " /LTCG")
+  if(SHIFT_MSVC_LTCG)
+    add_link_options($<$<CONFIG:Release>:/LTCG>)
+    if(NOT CMAKE_STATIC_LINKER_FLAGS_RELEASE MATCHES "/LTCG")
+      string(APPEND CMAKE_STATIC_LINKER_FLAGS_RELEASE " /LTCG")
+    endif()
   endif()
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
@@ -78,7 +81,10 @@ if(ANDROID)
 elseif(MSVC)
   # Whole-program optimization (/GL -> /LTCG) and RTTI removal across project
   # libraries/apps (SDL3/third-party untouched).
-  add_compile_options($<$<CONFIG:Release>:/GL> $<$<COMPILE_LANGUAGE:CXX>:/GR->)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/GR->)
+  if(SHIFT_MSVC_LTCG)
+    add_compile_options($<$<CONFIG:Release>:/GL>)
+  endif()
 endif()
 
 # Refresh SHIFT_GIT_COMMIT automatically whenever HEAD or its active branch ref moves.

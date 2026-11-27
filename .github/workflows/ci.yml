@@ -50,7 +50,7 @@ jobs:
           }
       - name: Configure and build (Release)
         shell: powershell
-        run: .\tools\build-windows.ps1 -BuildDir build -Config Release
+        run: .\tools\build-windows.ps1 -BuildDir build -Config Release -NoLtcg
       - name: Run unit tests
         shell: powershell
         run: ctest --test-dir build -LE corpus --output-on-failure -j 4
