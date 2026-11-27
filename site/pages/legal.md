@@ -29,7 +29,7 @@ This repository is written from format and behavioral specifications rather than
 Two automated checks enforce these boundaries:
 
 - **Source provenance (`tools/check-provenance.py`):** Runs in CI on every push and pull request. Scans tracked source files and fails if any guest function symbol, guest address range or generated-code register/macro pattern appears.
-- **Release binary-content check (`tools/check-binary-content.py`):** Inspects every file in a built release folder or `.zip` archive (run via `tools/package.py --check --game-root <disc>`) for provenance text, retail game filenames or container headers (XEX, XPR, SQLite), PowerPC instruction sequences (`blr` / `mflr r0`), and 32-byte content-hash fingerprints against your game tree. See [docs/RELEASE_CHECK.md](https://github.com/arcanite24/pinyon-shift-native/blob/main/docs/RELEASE_CHECK.md).
+- **Release binary-content check (`tools/check-binary-content.py`):** Inspects every file in a built release folder or `.zip` archive (run via `tools/package.py --check --game-root <disc>`) for provenance text, retail game filenames or container headers (XEX, XPR, SQLite), PowerPC instruction sequences (`blr` / `mflr r0`), and 32-byte content-hash fingerprints against your game tree. See [docs/RELEASE_CHECK.md](https://github.com/arcanite24/shift-engine/blob/main/docs/RELEASE_CHECK.md).
 
 ## Do not redistribute
 
@@ -39,8 +39,8 @@ Two automated checks enforce these boundaries:
 
 ## Licence and third-party notices
 
-Independently written code in this repository is licensed under the [GNU General Public License v3.0 or later](https://github.com/arcanite24/pinyon-shift-native/blob/main/LICENSE). That licence covers only Shift Engine's own code and grants no rights to *Forza Horizon* or any files you supply.
+Independently written code in this repository is licensed under the [GNU General Public License v3.0 or later](https://github.com/arcanite24/shift-engine/blob/main/LICENSE). That licence covers only Shift Engine's own code and grants no rights to *Forza Horizon* or any files you supply.
 
-Third-party libraries fetched at build time (`libmspack` LGPL-2.1, `SDL3` zlib, `Vulkan-Headers` Apache-2.0/MIT, `volk` MIT, `VulkanMemoryAllocator` MIT, `SQLite` public domain, `stb` MIT/public domain, `dr_libs` MIT-0/public domain) are pinned in `cmake/Dependencies.cmake` and documented in [THIRD_PARTY_NOTICES.md](https://github.com/arcanite24/pinyon-shift-native/blob/main/THIRD_PARTY_NOTICES.md).
+Third-party libraries fetched at build time (`libmspack` LGPL-2.1, `SDL3` zlib, `Vulkan-Headers` Apache-2.0/MIT, `volk` MIT, `VulkanMemoryAllocator` MIT, `SQLite` public domain, `stb` MIT/public domain, `dr_libs` MIT-0/public domain) are pinned in `cmake/Dependencies.cmake` and documented in [THIRD_PARTY_NOTICES.md](https://github.com/arcanite24/shift-engine/blob/main/THIRD_PARTY_NOTICES.md).
 
 Microsoft, Xbox, Turn 10 Studios, Playground Games and *Forza Horizon* are the property of their respective owners. Shift Engine is not affiliated with or endorsed by them. This page describes the project's policy and is not legal advice.

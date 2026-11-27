@@ -7,7 +7,7 @@ description: How to install and set up Shift Engine on Windows, Linux, the Steam
 
 # Install
 
-Release archives contain only Shift Engine's own programs: `shift-launcher`, `carview`, `carbake`, `soundbake`, `profile-import`, setup scripts and licences. They contain no game data. Verify downloaded archives against `SHA256SUMS.txt` on the [GitHub Releases](https://github.com/arcanite24/pinyon-shift-native/releases/latest) page before running them.
+Release archives contain only Shift Engine's own programs: `shift-launcher`, `carview`, `carbake`, `soundbake`, `profile-import`, setup scripts and licences. They contain no game data. Verify downloaded archives against `SHA256SUMS.txt` on the [GitHub Releases](https://github.com/arcanite24/shift-engine/releases/latest) page before running them.
 
 ## What you need
 

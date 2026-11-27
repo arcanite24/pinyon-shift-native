@@ -27,7 +27,7 @@ from pathlib import Path
 
 SITE = Path(__file__).resolve().parent
 ROOT = SITE.parent
-REPO = "arcanite24/pinyon-shift-native"
+REPO = "arcanite24/shift-engine"
 REPO_URL = f"https://github.com/{REPO}"
 BRANCH = "main"
 SECTIONS = ["Start", "Playing", "Technical", "Project"]
@@ -698,7 +698,7 @@ def build(out: Path, offline: bool = False) -> None:
         target.write_text(rendered, encoding="utf-8")
 
     (out / ".nojekyll").write_text("", encoding="utf-8")
-    base = os.environ.get("SITE_BASE", "/pinyon-shift-native/")
+    base = os.environ.get("SITE_BASE", "/shift-engine/")
     missing = {
         "title": "Not found · Shift Engine",
         "description": "",

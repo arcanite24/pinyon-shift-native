@@ -681,7 +681,7 @@ struct UpdateCheckResult {
 UpdateCheckResult check_github_updates(std::string_view current_version,
                                        std::string_view channel,
                                        std::string_view platform_asset_name,
-                                       std::string_view repo = "shift-engine/shift-engine");
+                                       std::string_view repo = "arcanite24/shift-engine");
 
 struct StagedUpdatePlan {
   std::filesystem::path staging_dir;
