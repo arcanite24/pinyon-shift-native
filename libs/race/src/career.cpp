@@ -87,7 +87,104 @@ bool read_zip_xml(fh1::Archive& zip, const std::string& member, audio::XmlNode& 
   return audio::parse_xml(sv, out, nullptr);
 }
 
+int hex_nibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+
+// SPEC-EVENT-RESTRICTIONS: standard field widths plus the career engine
+// placement (bit 29, 1-byte ID) and cylinders (bit 31, 1-byte ID) slots.
+constexpr int kCareerMaskBits = 40;
+constexpr size_t kCareerMaskBytes = 5;
+constexpr int kBitEnginePlacement = 29;
+constexpr int kBitCylinders = 31;
+
+constexpr std::array<int, kCareerMaskBits> kCareerBitWidths = [] {
+  std::array<int, kCareerMaskBits> w{};
+  for (int& x : w) x = -1;
+  namespace b = shift::data::restriction_bit;
+  w[b::kYearMin] = 4;
+  w[b::kYearMax] = 4;
+  w[b::kBodyFamily] = 1;
+  w[b::kRegion] = 1;
+  w[b::kCountry] = 1;
+  w[b::kMake] = 2;
+  w[b::kModelFamily] = 2;
+  w[b::kDriveType] = 1;
+  w[kBitEnginePlacement] = 1;
+  w[kBitCylinders] = 1;
+  w[b::kFlag34] = 0;
+  w[b::kValueMin] = 4;
+  w[b::kValueMax] = 4;
+  w[b::kRallyUpgraded] = 0;
+  return w;
+}();
+
 }  // namespace
+
+bool decode_career_restriction_bucket(shift::data::EventRestrictions& out, int64_t bucket_id, std::string_view value,
+                                      CareerRestrictionExtras* extras) {
+  if (value.empty()) return false;
+  shift::data::RestrictionDecode dec;
+  const auto err = shift::data::set_restriction_bucket(out, bucket_id, value, &dec);
+  if (err == shift::data::BucketError::kNone) return true;
+  if (err != shift::data::BucketError::kBadValue || dec.error != shift::data::RestrictionError::kUnknownBit ||
+      (dec.bit != kBitEnginePlacement && dec.bit != kBitCylinders)) {
+    return false;
+  }
+  if (value.size() % 2 != 0 || value.size() < kCareerMaskBytes * 2) return false;
+  std::vector<uint8_t> bytes(value.size() / 2);
+  for (size_t i = 0; i < bytes.size(); ++i) {
+    const int hi = hex_nibble(value[2 * i]);
+    const int lo = hex_nibble(value[2 * i + 1]);
+    if (hi < 0 || lo < 0) return false;
+    bytes[i] = uint8_t((hi << 4) | lo);
+  }
+  uint64_t mask = 0;
+  for (size_t i = 0; i < kCareerMaskBytes; ++i) mask |= uint64_t(bytes[i]) << (8 * i);
+  for (int bit = 0; bit < kCareerMaskBits; ++bit) {
+    if (((mask >> bit) & 1ull) && kCareerBitWidths[size_t(bit)] < 0) return false;
+  }
+  uint64_t std_mask = mask;
+  std_mask &= ~(uint64_t(1) << kBitEnginePlacement);
+  std_mask &= ~(uint64_t(1) << kBitCylinders);
+  std::vector<uint8_t> std_bytes(kCareerMaskBytes, 0);
+  for (size_t i = 0; i < kCareerMaskBytes; ++i) std_bytes[i] = uint8_t((std_mask >> (8 * i)) & 0xFFu);
+
+  int ep = 0;
+  int cyl = 0;
+  size_t pos = kCareerMaskBytes;
+  for (int bit = 0; bit < kCareerMaskBits; ++bit) {
+    if (!((mask >> bit) & 1ull)) continue;
+    const size_t width = size_t(kCareerBitWidths[size_t(bit)]);
+    if (bytes.size() - pos < width) return false;
+    if (bit == kBitEnginePlacement) {
+      ep = int(bytes[pos]);
+    } else if (bit == kBitCylinders) {
+      cyl = int(bytes[pos]);
+    } else {
+      for (size_t i = 0; i < width; ++i) std_bytes.push_back(bytes[pos + i]);
+    }
+    pos += width;
+  }
+  if (pos != bytes.size()) return false;
+
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string std_hex;
+  std_hex.reserve(std_bytes.size() * 2);
+  for (uint8_t b : std_bytes) {
+    std_hex.push_back(kHex[b >> 4]);
+    std_hex.push_back(kHex[b & 0x0Fu]);
+  }
+  if (shift::data::set_restriction_bucket(out, bucket_id, std_hex) != shift::data::BucketError::kNone) return false;
+  if (extras && bucket_id == 0) {
+    if (ep > 0) extras->engine_placement = ep;
+    if (cyl > 0) extras->cylinder_id = cyl;
+  }
+  return true;
+}
 
 const CareerEvent* CareerCatalog::find_event(const std::string& horizon_id) const {
   for (const auto& e : events)
@@ -381,16 +478,44 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                [&](sqlite3_stmt* s) { prereqs[col_i64(s, 1)] = col_i64(s, 0); }, error))
     return false;
 
-  // 3. Event restrictions.
+  // 3. Event restrictions (standard buckets + optional EnginePlacementId /
+  // CylinderId from extended mask bits 29/31 or explicit columns).
   std::map<int64_t, shift::data::EventRestrictions> restrictions;
-  if (!db.each("select EventID, BucketId, coalesce(Value, '') from EventRestrictions", {},
-               [&](sqlite3_stmt* s) {
-                 const std::string val = col_txt(s, 2);
-                 if (val.empty()) return;
-                 shift::data::set_restriction_bucket(restrictions[col_i64(s, 0)], col_i64(s, 1), val);
-               },
-               error))
-    return false;
+  std::map<int64_t, CareerRestrictionExtras> restriction_extras;
+  {
+    std::string er_ep_col, er_cyl_col;
+    std::string pragma_err;
+    db.each("PRAGMA table_info(EventRestrictions)", {},
+            [&](sqlite3_stmt* s) {
+              const std::string raw = col_txt(s, 1);
+              const std::string low = lower_str(raw);
+              if (low == "engineplacementid" || low == "requiredengineplacement") er_ep_col = raw;
+              else if (low == "cylinderid" || low == "cylinders" || low == "requiredcylinders") er_cyl_col = raw;
+            },
+            &pragma_err);
+    const std::string er_sql =
+        "select EventID, BucketId, coalesce(Value, ''), " +
+        (er_ep_col.empty() ? std::string("0") : ("coalesce(" + er_ep_col + ", 0)")) + ", " +
+        (er_cyl_col.empty() ? std::string("0") : ("coalesce(" + er_cyl_col + ", 0)")) + " from EventRestrictions";
+    if (!db.each(er_sql, {},
+                 [&](sqlite3_stmt* s) {
+                   const int64_t eid = col_i64(s, 0);
+                   const int64_t bid = col_i64(s, 1);
+                   const std::string val = col_txt(s, 2);
+                   if (!val.empty()) {
+                     decode_career_restriction_bucket(restrictions[eid], bid, val,
+                                                      bid == 0 ? &restriction_extras[eid] : nullptr);
+                   }
+                   if (bid == 0) {
+                     const int ep_col_v = int(col_i64(s, 3));
+                     const int cyl_col_v = int(col_i64(s, 4));
+                     if (ep_col_v > 0) restriction_extras[eid].engine_placement = ep_col_v;
+                     if (cyl_col_v > 0) restriction_extras[eid].cylinder_id = cyl_col_v;
+                   }
+                 },
+                 error))
+      return false;
+  }
 
   // 4. Street race hubs.
   if (!db.each("select Id, coalesce(Name, ''), coalesce(UnlockPointsReq, 0) from EventHubs order by Id", {},
@@ -415,25 +540,32 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
 
   // 5. Playable career events (joined with Races & Tracks).
   bool ev_has_tod_start = false, ev_has_tod_end = false;
+  std::string ev_ep_col, ev_cyl_col;
   {
     std::string pragma_err;
     db.each("PRAGMA table_info(Events)", {},
             [&](sqlite3_stmt* s) {
-              const std::string col = lower_str(col_txt(s, 1));
+              const std::string raw = col_txt(s, 1);
+              const std::string col = lower_str(raw);
               if (col == "timeofdaystart") ev_has_tod_start = true;
               else if (col == "timeofdayend") ev_has_tod_end = true;
+              else if (col == "engineplacementid" || col == "requiredengineplacement") ev_ep_col = raw;
+              else if (col == "cylinderid" || col == "cylinders" || col == "requiredcylinders") ev_cyl_col = raw;
             },
             &pragma_err);
   }
   const std::string ev_tod_start_expr = ev_has_tod_start ? "e.TimeOfDayStart" : "NULL";
   const std::string ev_tod_end_expr = ev_has_tod_end ? "coalesce(e.TimeOfDayEnd, 0)" : "0";
+  const std::string ev_ep_expr = ev_ep_col.empty() ? "0" : ("coalesce(e." + ev_ep_col + ", 0)");
+  const std::string ev_cyl_expr = ev_cyl_col.empty() ? "0" : ("coalesce(e." + ev_cyl_col + ", 0)");
+  std::map<int64_t, int> pending_event_cyl_ids;
   if (!db.each("select e.Id, coalesce(e.HorizonEventID, ''), coalesce(e.Name, ''), "
                "coalesce(e.RestrictionDescription, ''), coalesce(e.Level, 0), coalesce(e.CareerEventStyle, 0), "
                "coalesce(e.CareerTypeId, 0), coalesce(e.UnlockPointsReq, 0), coalesce(e.PopularityPointsReq, 0), "
                "coalesce(e.HubId, 0), coalesce(e.TargetClass, 0), coalesce(e.CashPrize, 0), "
                "coalesce(e.PlayerCarId, 0), r.NumLaps, t.RouteId, t.RibbonConfiguration, "
                "(select count(*) from EventParticipants p where p.EventID = e.Id), " +
-                   ev_tod_start_expr + ", " + ev_tod_end_expr +
+                   ev_tod_start_expr + ", " + ev_tod_end_expr + ", " + ev_ep_expr + ", " + ev_cyl_expr +
                    " from Events e join Races r on r.EventId = e.Id join Tracks t on t.id = r.TrackId "
                    "where t.RibbonConfiguration >= 0 and e.CareerEventStyle > 0 "
                    "and t.EnvironmentId != 111 and e.CareerTypeId != 9 "
@@ -467,12 +599,20 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
                      ev.tod_end_sec = end_sec > 0.0 ? std::fmod(std::fmod(end_sec, 86400.0) + 86400.0, 86400.0) : 0.0;
                    }
                  }
+                 const int ev_ep = int(col_i64(s, 19));
+                 const int ev_cyl = int(col_i64(s, 20));
                  if (auto it = prize_cars.find(ev.event_id); it != prize_cars.end()) {
                    ev.prize_car_id = it->second.first;
                    ev.prize_car_colour = it->second.second;
                  }
                  if (auto it = prereqs.find(ev.event_id); it != prereqs.end()) ev.prereq_event_id = it->second;
                  if (auto it = restrictions.find(ev.event_id); it != restrictions.end()) ev.restrictions = it->second;
+                 if (auto it = restriction_extras.find(ev.event_id); it != restriction_extras.end()) {
+                   if (it->second.engine_placement > 0) ev.required_engine_placement = it->second.engine_placement;
+                   if (it->second.cylinder_id > 0) pending_event_cyl_ids[ev.event_id] = it->second.cylinder_id;
+                 }
+                 if (ev_ep > 0) ev.required_engine_placement = ev_ep;
+                 if (ev_cyl > 0) pending_event_cyl_ids[ev.event_id] = ev_cyl;
                  out.events.push_back(std::move(ev));
                },
                error))
@@ -620,6 +760,18 @@ bool load_career_catalog(const std::filesystem::path& game_root, const std::file
             [&](sqlite3_stmt* s) { cylinder_counts[int(col_i64(s, 0))] = int(col_i64(s, 1)); }, &ignored);
     db.each("select Ordinal from List_UpgradeTireCompound where IsStock != 0 and (Level = 5 or TireCompoundID = 9)", {},
             [&](sqlite3_stmt* s) { stock_rally_cars.insert(col_i64(s, 0)); }, &ignored);
+  }
+  if (!pending_event_cyl_ids.empty()) {
+    for (auto& ev : out.events) {
+      if (auto it = pending_event_cyl_ids.find(ev.event_id); it != pending_event_cyl_ids.end()) {
+        const int raw_cyl = it->second;
+        if (auto cit = cylinder_counts.find(raw_cyl); cit != cylinder_counts.end() && cit->second > 0) {
+          ev.required_cylinders = cit->second;
+        } else {
+          ev.required_cylinders = raw_cyl;
+        }
+      }
+    }
   }
 
   // 6. Car specs for restriction checks.

@@ -10,6 +10,10 @@
 #include "cars/sources.h"
 #include "cars/strings.h"
 #include "fh1data/stringtables.h"
+#include "game_hud.h"
+#include "race/career.h"
+#include "race/event.h"
+#include "race/session.h"
 #include "race_flow.h"
 #include "race_screens.h"
 
@@ -235,6 +239,170 @@ void disc_ticket_strings() {
   CHECK(winner_takes == "WINNER TAKES");
 }
 
+void nemesis_grid_placement() {
+  auto make_opponents = [](size_t star_pos) {
+    std::vector<race::Opponent> ops;
+    for (size_t i = 0; i < 7; ++i) {
+      race::Opponent o;
+      o.participant_id = int64_t(i + 1);
+      o.car_id = int64_t(1000 + i);
+      o.performance_index = 0.70 - 0.02 * double(i);
+      o.nemesis = (i == star_pos);
+      ops.push_back(o);
+    }
+    return ops;
+  };
+
+  // FR01: PlayerGridPosition=7 (slot 6), NemesisGridPosition=1 (slot 0).
+  {
+    auto ops = make_opponents(4);  // star originally sorted 5th by PI
+    const int pslot = race::player_slot(7, 8);
+    const auto slots = race::opponent_slots(pslot, 7);
+    race::place_nemesis_on_grid(ops, slots, 1);
+    CHECK(ops[0].nemesis && slots[0] == 0);
+    // Remaining opponents stay in relative PI order.
+    CHECK(ops[1].car_id == 1000 && ops[2].car_id == 1001 && ops[3].car_id == 1002 && ops[4].car_id == 1003);
+  }
+
+  // FR06 / FR22: PlayerGridPosition=7 (slot 6), NemesisGridPosition=3 (slot 2).
+  {
+    auto ops = make_opponents(0);  // star originally on pole by PI
+    const int pslot = race::player_slot(7, 8);
+    const auto slots = race::opponent_slots(pslot, 7);
+    race::place_nemesis_on_grid(ops, slots, 3);
+    CHECK(ops[2].nemesis && slots[2] == 2);
+    CHECK(ops[0].car_id == 1001 && ops[1].car_id == 1002 && ops[3].car_id == 1003);
+  }
+
+  // HEADLINE_EVENT: NemesisGridPosition=0 leaves PI order untouched.
+  {
+    auto ops = make_opponents(3);
+    const int pslot = race::player_slot(0, 8);
+    const auto slots = race::opponent_slots(pslot, 7);
+    race::place_nemesis_on_grid(ops, slots, 0);
+    CHECK(ops[3].nemesis);
+  }
+
+  // Clamping: out-of-range NemesisGridPosition clamps to last available slot.
+  {
+    auto ops = make_opponents(0);
+    const int pslot = race::player_slot(7, 8);
+    const auto slots = race::opponent_slots(pslot, 7);
+    race::place_nemesis_on_grid(ops, slots, 99);
+    CHECK(ops[6].nemesis && slots[6] == 7);
+  }
+}
+
+void missed_checkpoint_hairpin_and_fade() {
+  carview::MissedCheckpointTracker tr;
+  // Approach gate at progress 600 on incoming leg of a tight hairpin.
+  CHECK(!tr.step(1.0 / 120.0, true, false, 2, 550.0, 600.0, -50.0, 50.0, 18.0, 2.0));
+  CHECK(!tr.active);
+  // Spline snaps +95 m onto outgoing leg in one tick while car is still physically
+  // behind the gate plane (gate_plane_side < 0): must NOT false-trigger!
+  CHECK(!tr.step(1.0 / 120.0, true, false, 2, 645.0, 600.0, -45.0, 48.0, 18.0, 3.0));
+  CHECK(!tr.active);
+  // Even if the car keeps creeping on the incoming leg while snapped, stay clear.
+  CHECK(!tr.step(1.0 / 120.0, true, false, 2, 646.0, 600.0, -44.0, 47.0, 18.0, 3.0));
+  CHECK(!tr.active);
+
+  // Genuine monotonic bypass past gate plane outside gate reach: triggers 4.0 s countdown.
+  tr.reset();
+  CHECK(!tr.step(0.1, true, false, 2, 595.0, 600.0, -5.0, 22.0, 18.0, 5.0));
+  CHECK(!tr.step(0.1, true, false, 2, 610.0, 600.0, 10.0, 24.0, 18.0, 6.0));
+  CHECK(!tr.step(0.1, true, false, 2, 618.0, 600.0, 18.0, 26.0, 18.0, 6.0));
+  CHECK(tr.active);
+  // Returning cleanly before the gate cancels countdown.
+  CHECK(!tr.step(0.1, true, false, 2, 595.0, 600.0, -5.0, 10.0, 18.0, 2.0));
+  CHECK(!tr.active);
+
+  // Drive past gate again and let countdown expire -> returns true to trigger fade reset.
+  CHECK(!tr.step(0.1, true, false, 2, 618.0, 600.0, 18.0, 26.0, 18.0, 6.0));
+  CHECK(tr.active);
+  bool fired = false;
+  for (int i = 0; i < 45; ++i) {
+    if (tr.step(0.1, true, false, 2, 630.0, 600.0, 30.0, 35.0, 18.0, 6.0)) {
+      fired = true;
+      break;
+    }
+  }
+  CHECK(fired);
+
+  // MissedCheckpointFade: smooth fade-out -> reposition once at full black -> fade-in -> idle.
+  carview::MissedCheckpointFade fade;
+  CHECK(!fade.active() && fade.alpha() == 0.0f);
+  fade.trigger(588.0, 0.30, 0.30);
+  CHECK(fade.active());
+  int resets = 0;
+  float peak_alpha = 0.0f;
+  for (int i = 0; i < 100; ++i) {
+    if (fade.step(0.01)) {
+      ++resets;
+      CHECK(fade.alpha() >= 0.99f);
+    }
+    if (fade.alpha() > peak_alpha) peak_alpha = fade.alpha();
+  }
+  CHECK(resets == 1);
+  CHECK(peak_alpha >= 0.99f);
+  CHECK(!fade.active() && fade.alpha() == 0.0f);
+}
+
+void career_restriction_engine_placement_and_cylinders() {
+  // Mask with Make (bit 19, 2B), EnginePlacement (bit 29, 1B), Cylinders (bit 31, 1B), Flag34 (bit 34, 0B).
+  // Byte 0: 0x00 (bits 0..7)
+  // Byte 1: 0x00 (bits 8..15)
+  // Byte 2: 0x08 (bit 19)
+  // Byte 3: 0xA0 (bit 29 = 0x20, bit 31 = 0x80)
+  // Byte 4: 0x04 (bit 34)
+  // Payloads in ascending bit order: Make=0x000C (12), EnginePlacement=0x02 (Mid), Cylinders=0x08 (8).
+  shift::data::EventRestrictions res;
+  race::CareerRestrictionExtras extras;
+  CHECK(race::decode_career_restriction_bucket(res, 0, "000008A004000C0208", &extras));
+  CHECK(res.buckets[0].make.has_value() && *res.buckets[0].make == 12u);
+  CHECK(res.buckets[0].flag34);
+  CHECK(extras.engine_placement == 2);
+  CHECK(extras.cylinder_id == 8);
+
+  // Unknown even bit 28 (0x10 in byte 3) is still rejected.
+  shift::data::EventRestrictions bad;
+  CHECK(!race::decode_career_restriction_bucket(bad, 0, "000000100002", nullptr));
+
+  // Verify CareerCatalog::check_eligibility enforces both required_engine_placement and required_cylinders.
+  race::CareerCatalog cat;
+  cat.engine_placement_names = {{1, "Front"}, {2, "Mid"}, {3, "Rear"}};
+  race::CarSpec front_v8;
+  front_v8.car_id = 1;
+  front_v8.props.make = 12;
+  front_v8.engine_placement = 1;
+  front_v8.cylinder_count = 8;
+  cat.cars[1] = front_v8;
+
+  race::CarSpec mid_i4 = front_v8;
+  mid_i4.car_id = 2;
+  mid_i4.engine_placement = 2;
+  mid_i4.cylinder_count = 4;
+  cat.cars[2] = mid_i4;
+
+  race::CarSpec mid_v8 = front_v8;
+  mid_v8.car_id = 3;
+  mid_v8.engine_placement = 2;
+  mid_v8.cylinder_count = 8;
+  cat.cars[3] = mid_v8;
+
+  race::CareerEvent ev;
+  ev.restrictions = res;
+  ev.required_engine_placement = extras.engine_placement;
+  ev.required_cylinders = extras.cylinder_id;
+  const std::vector<std::string> classes = {"E", "D", "C", "B", "A", "S", "R3", "R2", "R1"};
+
+  const auto r1 = cat.check_eligibility(ev, 1, 4, classes);
+  CHECK(!r1.eligible && r1.reason.find("MID-ENGINE") != std::string::npos);
+  const auto r2 = cat.check_eligibility(ev, 2, 4, classes);
+  CHECK(!r2.eligible && r2.reason.find("8-CYLINDER") != std::string::npos);
+  const auto r3 = cat.check_eligibility(ev, 3, 4, classes);
+  CHECK(r3.eligible);
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +411,9 @@ int main() {
   entry();
   timed();
   disc_ticket_strings();
+  nemesis_grid_placement();
+  missed_checkpoint_hairpin_and_fade();
+  career_restriction_engine_placement_and_cylinders();
   if (failures) {
     std::printf("race_flow_tests: %d failure(s)\n", failures);
     return 1;

@@ -116,6 +116,7 @@ struct EventData {
   int route_id = 0, laps = 1;
   double track_length = 0;  // Tracks.Length (not the race distance)
   int player_grid_position = 0;
+  int nemesis_grid_position = 0;  // Events.NemesisGridPosition (1-based grid slot for Star Driver; 0 = PI order)
   int event_skill = 50, event_temperament = 5, event_rubberband = 0;
   double cash_prize = 0;
   // SPEC-EVENT-REWARDS: Races.Id, Events.Level, CareerEventStyle and
@@ -156,6 +157,12 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                 const std::filesystem::path& state_root = {},
                 const cars::PartsDb* db = nullptr,
                 AiMode ai_mode = AiMode::kStock);
+
+// Places the event's Star Driver (first opponent with `nemesis == true`) at
+// their authored 1-based `nemesis_grid_position` slot when > 0, preserving
+// the relative PI order of all other opponents.
+void place_nemesis_on_grid(std::vector<Opponent>& opponents, const std::vector<int>& opp_slots,
+                           int nemesis_grid_position);
 
 // The census (SPEC-EVENTS, Tests): row counts and how many races resolve
 // to a route file and an AI line name.

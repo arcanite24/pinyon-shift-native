@@ -369,7 +369,6 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
     }
   }
   const auto slots = route_.slots();
-  const bool is_showcase_event = !stage_ && race::is_airborne_showcase(event_.career_type, event_.horizon_id);
   const auto cps = race::checkpoints(route_);
   checkpoint_gates_.clear();
   checkpoint_progress_.clear();
@@ -383,15 +382,16 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
       line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
     }
   }
-  // Load route_checkpoint_NN gates for street races AND all airborne showcase events
-  // (even when a showcase has a .owt AI line and street_ == false).
-  if ((street_ || is_showcase_event) && !cps.empty() && !slots.empty()) {
+  // Load route_checkpoint_NN gates whenever the route defines checkpoints
+  // (street races, airborne showcases, and checkpointed festival sprints such
+  // as Route 147 used by FR51 and FR59).
+  if (!stage_ && !cps.empty() && !slots.empty()) {
     if (!gate) {
       const auto* s0 = slots[0];
       gate = race::Gate{s0->x, s0->z, s0->fx, s0->fz, 60};
       line_.gate_progress = line_.line.nearest(s0->x, s0->z, 0, std::min(400.0, line_.line.length())) + 5;
     }
-    if (!finish) finish = race::checkpoint_gate(route_, cps.size() - 1);
+    if (!circuit_ && !finish) finish = race::checkpoint_gate(route_, cps.size() - 1);
     double from = line_.gate_progress;
     for (size_t k = 0; k < cps.size(); ++k) {
       if (auto g = race::checkpoint_gate(route_, k)) {
@@ -404,9 +404,10 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
         checkpoint_progress_.push_back(from);
       }
     }
-    // When the route has an explicit finish line past the final intermediate checkpoint
-    // (e.g. Route 206 / PLANE_RACE_006), append it so every checkpoint must be cleared first.
-    if (finish && !checkpoint_gates_.empty()) {
+    // On point-to-point routes with an explicit finish line past the final
+    // intermediate checkpoint (e.g. Route 147 / FR51 & FR59, Route 206 /
+    // PLANE_RACE_006), append it so every checkpoint must be cleared first.
+    if (!circuit_ && finish && !checkpoint_gates_.empty()) {
       const auto& last_cp = checkpoint_gates_.back();
       if (std::hypot(finish->x - last_cp.x, finish->z - last_cp.z) > 15.0) {
         race::Gate fin_gate = *finish;
@@ -479,6 +480,9 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   const int cars = std::min(int(slots.size()), int(event_.opponents.size()) + 1);
   player_slot_ = race::player_slot(event_.player_grid_position, cars);
   const auto opp = race::opponent_slots(player_slot_, cars - 1);
+  // Place the event's Star Driver at their authored NemesisGridPosition (1-based)
+  // rather than leaving them in pure PI order.
+  race::place_nemesis_on_grid(event_.opponents, opp, event_.nemesis_grid_position);
   race::Session::Options sopt;
   sopt.player_index = size_t(cars - 1);  // start-line Hand-of-God launch grace (< 25 s && !has_launched)
   {
@@ -658,6 +662,7 @@ bool RaceView::open(const std::filesystem::path& root, const std::string& event,
   }
   smashables_reset_pending_ = true;
   missed_cp_.reset();
+  missed_cp_fade_.reset();
   std::printf("race: %s, route %d (%s, %d lap%s, line %.0f m a lap), %d cars, player on slot %02d, %zu ribbon "
               "triangles\n",
               event.c_str(), event_.route_id, circuit_ ? "circuit" : "sprint", laps, laps == 1 ? "" : "s",
@@ -695,17 +700,18 @@ void RaceView::opponent_positions(std::vector<std::array<double, 2>>& out) const
 }
 
 bool RaceView::next_checkpoint_pos(std::array<double, 2>& out) const {
-  if (checkpoint_gates_.size() <= 1 || !session_ || session_->finished(player_index())) return false;
+  const size_t required =
+      circuit_ ? checkpoint_gates_.size() : (checkpoint_gates_.empty() ? 0 : checkpoint_gates_.size() - 1);
+  if (required == 0 || !session_ || session_->finished(player_index())) return false;
   const size_t pi = player_index();
   const size_t k = pi < next_checkpoint_.size() ? next_checkpoint_[pi] : 0;
-  const size_t last = checkpoint_gates_.size() - 1;
-  if (k >= last) return false;
+  if (k >= required) return false;
   out = {checkpoint_gates_[k].x, checkpoint_gates_[k].z};
   return true;
 }
 
 bool RaceView::finish_pos(std::array<double, 2>& out) const {
-  if (!checkpoint_gates_.empty()) {
+  if (!circuit_ && !checkpoint_gates_.empty()) {
     const auto& fin = checkpoint_gates_.back();
     out = {fin.x, fin.z};
     return true;
@@ -1531,34 +1537,48 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
   };
   for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
   sample(n, player, ppx_, ppz_);
-  // Checkpoints in order (SPEC-EVENTS, Pass rule); the last is the finish,
-  // held until every earlier one is passed. A missed checkpoint triggers a
-  // 4.0 s return-to-track countdown banner and auto-resets just before the gate.
-  bool trigger_missed_cp_reset = false;
-  double missed_cp_reset_progress = 0.0;
-  if (checkpoint_gates_.size() > 1) {
+  // Checkpoints in order (SPEC-EVENTS, Pass rule); on point-to-point routes the
+  // last entry is the finish, held until every earlier checkpoint is passed. On
+  // multi-lap circuits with checkpoints, gate indices wrap cleanly to 0 on each
+  // lap crossing. A missed checkpoint triggers a 4.0 s return-to-track countdown
+  // followed by a smooth HandOfGodReset fade-out / reposition / fade-in.
+  const size_t required_gates =
+      circuit_ ? checkpoint_gates_.size() : (checkpoint_gates_.empty() ? 0 : checkpoint_gates_.size() - 1);
+  std::vector<int> prev_crossings;
+  if (circuit_ && required_gates > 0) {
+    prev_crossings.resize(n + 1, 0);
+    for (size_t i = 0; i <= n; ++i) prev_crossings[i] = session_->car(i).crossings;
+  }
+  if (required_gates > 0) {
     next_checkpoint_.resize(n + 1, 0);
-    const size_t last = checkpoint_gates_.size() - 1;
     for (size_t i = 0; i <= n; ++i) {
       const auto& q = samples_[i];
       size_t& k = next_checkpoint_[i];
-      // Player must cross checkpoint gate planes in order (SPEC-EVENTS); AI keeps
-      // a +10 m line-progress fallback so off-line AI avoidance never deadlocks a race.
-      const bool crossed = checkpoint_gates_[k].crossing(q.x0, q.z0, q.x1, q.z1) >= 0;
-      const bool ai_fallback = (i < n) && (q.progress > checkpoint_progress_[k] + 10);
-      const bool gate_passed = session_->started() && k < last && (crossed || ai_fallback);
-      if (gate_passed) ++k;
-      session_->hold_finish(i, k < last);
+      const int lap_idx = circuit_ ? std::max(0, session_->car(i).crossings - 1) : 0;
+      const double lap_offset = circuit_ ? (double(lap_idx) * line_.lap_length) : 0.0;
+      bool gate_passed = false;
+      if (session_->started() && k < required_gates) {
+        const double cp_prog = checkpoint_progress_[k] + lap_offset;
+        // Player must cross checkpoint gate planes in order (SPEC-EVENTS); AI keeps
+        // a +10 m line-progress fallback so off-line AI avoidance never deadlocks a race.
+        const bool crossed = checkpoint_gates_[k].crossing(q.x0, q.z0, q.x1, q.z1) >= 0;
+        const bool ai_fallback = (i < n) && (q.progress > cp_prog + 10.0);
+        gate_passed = crossed || ai_fallback;
+        if (gate_passed) ++k;
+      }
+      session_->hold_finish(i, k < required_gates);
       if (i == n) {
-        const bool racing_now = session_->started() && !session_->finished(n) && k < last;
+        const bool racing_now = session_->started() && !session_->finished(n) && k < required_gates &&
+                                !missed_cp_fade_.active();
         if (racing_now) {
           const auto& gate = checkpoint_gates_[k];
-          const double gate_side = race::checkpoint_plane_side(gate, q.x1, q.z1, q.progress, checkpoint_progress_[k]);
+          const double cp_prog = checkpoint_progress_[k] + lap_offset;
+          const double gate_side = race::checkpoint_plane_side(gate, q.x1, q.z1, q.progress, cp_prog);
           const double gate_dist = std::hypot(q.x1 - gate.x, q.z1 - gate.z);
-          if (missed_cp_.step(drive::Vehicle::kStep, true, gate_passed, k, q.progress, checkpoint_progress_[k],
+          if (missed_cp_.step(drive::Vehicle::kStep, true, gate_passed, k, q.progress, cp_prog,
                               gate_side, gate_dist, gate.reach, q.off_route)) {
-            trigger_missed_cp_reset = true;
-            missed_cp_reset_progress = std::max(line_.gate_progress, checkpoint_progress_[k] - 12.0);
+            const double reset_p = std::max(line_.gate_progress + lap_offset, cp_prog - 12.0);
+            missed_cp_fade_.trigger(reset_p, hand_of_god_.fade_out * 0.25, hand_of_god_.fade_in * 0.35);
           }
         } else {
           missed_cp_.reset();
@@ -1567,10 +1587,21 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     }
   } else {
     missed_cp_.reset();
+    missed_cp_fade_.reset();
   }
   session_->step(drive::Vehicle::kStep, samples_);
-  if (trigger_missed_cp_reset) {
-    reset_car_to_progress(player, n, missed_cp_reset_progress, near, cx, cz, radius);
+  if (circuit_ && required_gates > 0) {
+    for (size_t i = 0; i <= n; ++i) {
+      if (!session_->finished(i) && session_->car(i).crossings > prev_crossings[i]) {
+        next_checkpoint_[i] = 0;
+        if (i == n) missed_cp_.reset();
+      }
+    }
+  }
+  if (missed_cp_fade_.step(drive::Vehicle::kStep)) {
+    const double reset_p = missed_cp_fade_.target_progress;
+    reset_car_to_progress(player, n, reset_p, near, cx, cz, radius);
+    if (on_missed_checkpoint_reset_) on_missed_checkpoint_reset_(reset_p);
   }
   // Wrong way (ours: no player wrong-way rule in the specs): facing back
   // along the line and moving; it builds over a second, clears in a third.
@@ -1943,6 +1974,9 @@ RaceHud RaceView::hud_info() const {
   h.wrong_way = wrong_way_ > 1.0;
   h.missed_checkpoint = missed_cp_.active;
   h.missed_checkpoint_countdown_s = missed_cp_.countdown_s;
+  if (const float fade_a = missed_cp_fade_.alpha(); fade_a > 0.0f) {
+    h.cut_fade = {0.0f, 0.0f, 0.0f, fade_a};
+  }
   h.cars = int(n + 1);
   h.laps = s.laps();
   h.lap = s.lap(n);
@@ -2765,6 +2799,7 @@ void RaceView::restore_rewind(const RewindSnapshot& s, bool mark_player_lap_dirt
   ppz_ = s.ppz;
   wrong_way_ = s.wrong_way;
   missed_cp_.reset();
+  missed_cp_fade_.reset();
   split_times_ = s.split_times;
   last_split_delta_ = s.last_split_delta;
   last_split_at_ = s.last_split_at;

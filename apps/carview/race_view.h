@@ -9,6 +9,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -224,9 +225,14 @@ class RaceView {
   // The opponents' positions (x, z), for the maps.
   void opponent_positions(std::vector<std::array<double, 2>>& out) const;
   void opponent_tags(std::vector<OpponentTag>& out) const;
-  // R3-UI-04: Missed checkpoint state for HUD warning & countdown.
+  // R3-UI-04: Missed checkpoint state for HUD warning, countdown & HandOfGodReset fade.
   bool missed_checkpoint() const { return missed_cp_.active; }
   double missed_checkpoint_countdown_s() const { return missed_cp_.countdown_s; }
+  bool missed_checkpoint_resetting() const { return missed_cp_fade_.active(); }
+  float missed_checkpoint_reset_fade_alpha() const { return missed_cp_fade_.alpha(); }
+  void set_missed_checkpoint_reset_callback(std::function<void(double)> cb) {
+    on_missed_checkpoint_reset_ = std::move(cb);
+  }
   // R3-UI-12: Minimap race markers (next unpassed checkpoint, checkered finish line, and AI race leader).
   bool next_checkpoint_pos(std::array<double, 2>& out) const;
   bool finish_pos(std::array<double, 2>& out) const;
@@ -401,6 +407,8 @@ class RaceView {
   std::vector<size_t> next_checkpoint_;       // each car's next checkpoint (the player last)
   std::vector<double> checkpoint_progress_;   // each checkpoint's distance along the line
   MissedCheckpointTracker missed_cp_{};       // R3-UI-04: missed checkpoint countdown & reset tracker
+  MissedCheckpointFade missed_cp_fade_{};     // Smooth HandOfGodReset fade-out / reposition / fade-in
+  std::function<void(double)> on_missed_checkpoint_reset_;
   std::vector<race::RouteTransform> slots_;
   // Per step, every car (opponents, then the player).
   std::vector<drive::AiCarState> states_;

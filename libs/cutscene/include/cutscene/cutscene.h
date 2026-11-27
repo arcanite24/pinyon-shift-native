@@ -353,10 +353,11 @@ class Player {
     std::string name;
     Frame raw;
     bool snap_to_ground = false;
+    const Event* event = nullptr;
   };
 
   void fire_range(double t0, double t1, bool inclusive_start, std::vector<const Event*>& out);
-  Frame event_frame(const Event& e, int depth) const;
+  Frame event_frame(const Event& e, int depth, bool apply_snap = true) const;
   Frame snap_frame(const Frame& f, bool snap_to_ground) const;
 
   const Cutscene* cs_ = nullptr;

@@ -228,7 +228,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
   out.horizon_id = horizon_id;
   static const char* kSuffix[] = {"Easy", "Med", "Hard", "Pro"};
   const std::string sfx = kSuffix[effective_db_difficulty(difficulty, ai_mode)];
-  bool has_tod_start_col = false, has_tod_end_col = false;
+  bool has_tod_start_col = false, has_tod_end_col = false, has_nemesis_grid_col = false;
   {
     std::string pragma_err;
     db.each("PRAGMA table_info(Events)", {},
@@ -236,16 +236,19 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
               const std::string col = lower_ascii(txt(s, 1));
               if (col == "timeofdaystart") has_tod_start_col = true;
               else if (col == "timeofdayend") has_tod_end_col = true;
+              else if (col == "nemesisgridposition") has_nemesis_grid_col = true;
             },
             &pragma_err);
   }
   const std::string tod_start_expr = has_tod_start_col ? "TimeOfDayStart" : "NULL";
   const std::string tod_end_expr = has_tod_end_col ? "coalesce(TimeOfDayEnd, 0)" : "0";
+  const std::string nemesis_grid_expr = has_nemesis_grid_col ? "coalesce(NemesisGridPosition, 0)" : "0";
   bool found = false;
   if (!db.each("select Id, AISkill" + sfx + ", AITemperament" + sfx + ", AIRubberband" + sfx +
                    ", PlayerGridPosition, CashPrize, coalesce(Level, 0), coalesce(CareerEventStyle, 0), "
                    "coalesce(CareerTypeId, 0), coalesce(UpgradeAI, 0), coalesce(TargetClass, 0), coalesce(Name, ''), " +
-                   tod_start_expr + ", " + tod_end_expr + " from Events where HorizonEventID = ?",
+                   tod_start_expr + ", " + tod_end_expr + ", " + nemesis_grid_expr +
+                   " from Events where HorizonEventID = ?",
                {horizon_id},
                [&](sqlite3_stmt* s) {
                  found = true;
@@ -270,6 +273,7 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
                      out.tod_end_sec = end_sec > 0.0 ? std::fmod(std::fmod(end_sec, 86400.0) + 86400.0, 86400.0) : 0.0;
                    }
                  }
+                 out.nemesis_grid_position = int(i64(s, 14));
                },
                error))
     return false;
@@ -296,15 +300,29 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
     if (error) *error = "gamedb: event " + horizon_id + " has no race and track";
     return false;
   }
-  if (!db.each("select RewardCarId, coalesce(Position, 1) from Rewards_EventPrizes where EventId = ? order by Id limit 1",
-               {ev},
-               [&](sqlite3_stmt* s) {
-                 out.prize_car = i64(s, 0);
-                 out.prize_car_max_place = std::max(1, int(i64(s, 1)));
-               },
-               nullptr)) {
-    if (!db.each("select RewardCarId from Rewards_EventPrizes where EventId = ? order by Id limit 1", {ev},
-                 [&](sqlite3_stmt* s) { out.prize_car = i64(s, 0); }, error))
+  {
+    // Retail Rewards_EventPrizes has no Position column; inspect schema first so
+    // retail databases avoid a failing query while modded/synthetic DBs with an
+    // explicit Position (or MaxPlace) column are respected.
+    std::string pos_col;
+    std::string pragma_err;
+    db.each("PRAGMA table_info(Rewards_EventPrizes)", {},
+            [&](sqlite3_stmt* s) {
+              const std::string raw_col = txt(s, 1);
+              const std::string col = lower_ascii(raw_col);
+              if (col == "position" || col == "maxplace" || col == "maxposition") pos_col = raw_col;
+            },
+            &pragma_err);
+    const std::string prize_sql =
+        pos_col.empty()
+            ? "select RewardCarId, 1 from Rewards_EventPrizes where EventId = ? order by Id limit 1"
+            : ("select RewardCarId, coalesce(" + pos_col + ", 1) from Rewards_EventPrizes where EventId = ? order by Id limit 1");
+    if (!db.each(prize_sql, {ev},
+                 [&](sqlite3_stmt* s) {
+                   out.prize_car = i64(s, 0);
+                   out.prize_car_max_place = std::max(1, int(i64(s, 1)));
+                 },
+                 error))
       return false;
   }
   auto load_participant = [&](sqlite3_stmt* s, bool has_tuning_livery) {
@@ -411,6 +429,36 @@ bool load_event(const std::filesystem::path& game_root, const std::string& horiz
           [&](sqlite3_stmt* s) { out.skill_adjustments.emplace_back(int(i64(s, 0)), int(i64(s, 1))); }, &adj_err);
   read_ai_player_colors(db, out.ai_player_colors);
   return true;
+}
+
+void place_nemesis_on_grid(std::vector<Opponent>& opponents, const std::vector<int>& opp_slots,
+                           int nemesis_grid_position) {
+  if (nemesis_grid_position <= 0 || opponents.empty() || opp_slots.empty()) return;
+  const size_t count = std::min(opponents.size(), opp_slots.size());
+  size_t star_idx = opponents.size();
+  for (size_t i = 0; i < opponents.size(); ++i) {
+    if (opponents[i].nemesis) {
+      star_idx = i;
+      break;
+    }
+  }
+  if (star_idx >= opponents.size()) return;
+  int max_slot = int(count) - 1;
+  for (size_t i = 0; i < count; ++i) max_slot = std::max(max_slot, opp_slots[i]);
+  const int target_slot = std::clamp(nemesis_grid_position - 1, 0, max_slot);
+  size_t dest_idx = 0;
+  int best_dist = std::abs(opp_slots[0] - target_slot);
+  for (size_t i = 1; i < count; ++i) {
+    const int dist = std::abs(opp_slots[i] - target_slot);
+    if (dist < best_dist) {
+      best_dist = dist;
+      dest_idx = i;
+    }
+  }
+  if (star_idx == dest_idx) return;
+  Opponent star = std::move(opponents[star_idx]);
+  opponents.erase(opponents.begin() + ptrdiff_t(star_idx));
+  opponents.insert(opponents.begin() + ptrdiff_t(dest_idx), std::move(star));
 }
 
 bool event_census(const std::filesystem::path& game_root, EventCensus& out, std::string* error,

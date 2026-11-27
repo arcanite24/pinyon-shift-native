@@ -456,6 +456,122 @@ void test_ground_snap_lift_and_angle_unwrap() {
         "car frame override anchors TargetName=\"\" cams to the scripted hero car");
 }
 
+void test_wp6_target_part_parents_and_clearance() {
+  static const char* kDoc = R"(<?xml version="1.0"?>
+<CutsceneManager>
+  <Cutscene name="WP6_Cutscene" PlaybackMode="Normal" Duration="6.0" LoopFrom="0.0">
+    <Cams CutQueueType="Cutscene" NumCams="4">
+      <Cam Version="3" Type="Animateable" StartCut="0.0" TargetName="" duration="1.5">
+        <Anim PosAnimType="CarSpace" RotAnimType="TargetPart" RotAnimPartToTarget="steering" IsInCockpit="1" NumKeys="2">
+          <Key Time="0.0" PosX="-0.3" PosY="0.6" PosZ="-0.3" Yaw="0" Pitch="0" Roll="0" FOV="55"/>
+          <Key Time="1.5" PosX="-0.3" PosY="0.6" PosZ="-0.3" Yaw="30" Pitch="0" Roll="0" FOV="50"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Type="Animateable" StartCut="1.5" TargetName="" duration="1.5">
+        <Anim PosAnimType="TargetPart" RotAnimType="CarSpace" RotAnimPartToTarget="wheelLF" NumKeys="2">
+          <Key Time="0.0" PosX="0" PosY="0.5" PosZ="1.0" Yaw="0" Pitch="0" Roll="0" FOV="45"/>
+          <Key Time="1.5" PosX="0" PosY="0.5" PosZ="1.0" Yaw="0" Pitch="0" Roll="0" FOV="45"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Type="Animateable" StartCut="3.0" TargetName="ChildSnapNode" duration="1.5">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" NumKeys="2">
+          <Key Time="0.0" PosX="0" PosY="1.0" PosZ="0" Yaw="0" Pitch="0" Roll="0" FOV="45"/>
+          <Key Time="1.5" PosX="0" PosY="1.0" PosZ="0" Yaw="0" Pitch="0" Roll="0" FOV="45"/>
+        </Anim>
+      </Cam>
+      <Cam Version="3" Type="Animateable" StartCut="4.5" TargetName="" duration="1.5">
+        <Anim PosAnimType="CarSpace" RotAnimType="CarSpace" NumKeys="2">
+          <Key Time="0.0" PosX="0" PosY="-0.8" PosZ="-5.0" Yaw="0" Pitch="0" Roll="10" FOV="45"/>
+          <Key Time="1.5" PosX="0" PosY="-0.8" PosZ="-5.0" Yaw="0" Pitch="0" Roll="10" FOV="45"/>
+        </Anim>
+      </Cam>
+    </Cams>
+    <Events>
+      <Event time="0.0">
+        <EventTrigger name="RootCar" id="CCutsceneCarTrigger" x="10.0" y="2.0" z="20.0" rotation="90.0" parent=""/>
+      </Event>
+      <Event time="0.0">
+        <EventTrigger name="AnimParent" id="CCutsceneAnimationTrigger" x="0.0" y="0.0" z="4.0" rotation="0.0" parent="RootCar"/>
+      </Event>
+      <Event time="0.0">
+        <EventTrigger name="AnimChild" id="CCutsceneAnimationTrigger" x="2.0" y="0.0" z="0.0" rotation="45.0" parent="AnimParent"/>
+      </Event>
+      <Event time="0.0">
+        <EventTrigger name="ChildSnapNode" id="CCutsceneCameraNodeTrigger" x="0.0" y="0.0" z="3.0" rotation="0.0" parent="RootCar" snapToGround="1"/>
+      </Event>
+    </Events>
+  </Cutscene>
+</CutsceneManager>)";
+
+  cutscene::Library lib;
+  std::string err;
+  check(cutscene::parse_cutscenes(kDoc, lib, &err), "WP6 cutscene doc parses");
+  const auto* cs = lib.find("WP6_Cutscene");
+  if (!cs) return;
+
+  cutscene::Player pl;
+  pl.start(cs);
+  pl.step(0.0);
+
+  // 1) kCar and kAnimation parents in event_frame():
+  // RootCar is at (10, 2, 20), heading +90 deg (+X).
+  // AnimParent local (0, 0, 4) -> world (14, 2, 20), heading +90 deg.
+  // AnimChild local (2, 0, 0) rotated by +90 deg -> (0, 0, -2) -> world (14, 2, 18), heading +135 deg.
+  const cutscene::Frame ap = pl.event_frame(cs->events[1]);
+  const cutscene::Frame ac = pl.event_frame(cs->events[2]);
+  check(near(ap.origin[0], 14.0, 1e-6) && near(ap.origin[2], 20.0, 1e-6) && near(ap.heading_deg, 90.0, 1e-6),
+        "event_frame resolves kCar parent");
+  check(near(ac.origin[0], 14.0, 1e-6) && near(ac.origin[2], 18.0, 1e-6) && near(ac.heading_deg, 135.0, 1e-6),
+        "event_frame resolves kAnimation parent chain");
+
+  // 2) RotAnimType="TargetPart" with RotAnimPartToTarget="steering":
+  const cutscene::Frame car{{100.0, 10.0, 200.0}, 0.0};
+  const cutscene::CarParts parts{
+      {"steering", {-0.3, 0.9, 0.7}},
+      {"wheelLF", {-0.8, 0.35, 1.3}},
+  };
+  cutscene::WorldCamera w;
+  check(pl.world_camera(car, w, &parts), "TargetPart rotation cam evaluates");
+  // Eye is at (99.7, 10.6, 199.7), steering at (99.7, 10.9, 200.7) -> dir = (0, 0.3, 1.0).
+  const double inv = 1.0 / std::hypot(0.3, 1.0);
+  check(near(w.forward[0], 0.0, 1e-5) && near(w.forward[1], 0.3 * inv, 1e-5) && near(w.forward[2], 1.0 * inv, 1e-5),
+        "RotAnimType=TargetPart aims directly at named car part when yaw/pitch offset is 0");
+  // At t=1.5, Yaw=+30 deg rotates right from the steering target.
+  pl.step(1.5);
+  check(pl.world_camera(car, w, &parts) && near(w.eye[0], 99.2, 1e-5) && near(w.eye[1], 10.85, 1e-5) &&
+            near(w.eye[2], 202.3, 1e-5),
+        "PosAnimType=TargetPart anchors camera position to named car part");
+
+  // 3) Parented snapToGround="1" node lazily re-snaps once ground query arrives:
+  pl.step(1.5);  // t = 3.0 -> ChildSnapNode
+  check(pl.world_camera(car, w, &parts) && near(w.eye[0], 13.0, 1e-5) && near(w.eye[1], 3.0, 1e-5) &&
+            near(w.eye[2], 20.0, 1e-5),
+        "parented snapToGround node uses parent height before terrain streams in");
+  pl.set_ground_query([](double, double, double, double& out_y) {
+    out_y = 7.25;
+    return true;
+  });
+  check(pl.world_camera(car, w, &parts) && near(w.eye[1], 7.25 + 1.0, 1e-5),
+        "parented snapToGround node lazily re-snaps when terrain streams in");
+
+  // 4) Ground-clearance lift preserves target framing smoothly (pitches forward down toward aim point):
+  pl.step(1.5);  // t = 4.5 -> eye at (100, 9.2, 195), forward (0, 0, 1) before clearance
+  cutscene::WorldCamera unlifted;
+  check(pl.world_camera(car, unlifted, &parts) && near(unlifted.forward[1], 0.0, 1e-5),
+        "baseline low exterior cam forward is horizontal before clearance clamp");
+  pl.set_eye_clearance_query([](double, double, double, double& out_y) {
+    out_y = 10.0;
+    return true;
+  });
+  cutscene::WorldCamera lifted;
+  check(pl.world_camera(car, lifted, &parts) && near(lifted.eye[1], 10.2, 1e-5),
+        "ground clearance lifts exterior eye to min_y");
+  const double dot_fu =
+      lifted.forward[0] * lifted.up[0] + lifted.forward[1] * lifted.up[1] + lifted.forward[2] * lifted.up[2];
+  check(lifted.forward[1] < -0.15 && std::abs(dot_fu) < 1e-6 && lifted.up[1] > 0.8,
+        "ground clearance lift re-aims forward down toward focus point and keeps up orthogonal");
+}
+
 }  // namespace
 
 int main() {
@@ -467,6 +583,7 @@ int main() {
   test_parts_and_nodes();
   test_parented_node();
   test_ground_snap_lift_and_angle_unwrap();
+  test_wp6_target_part_parents_and_clearance();
   if (g_failures) {
     std::fprintf(stderr, "cutscene_tests: %d failure(s)\n", g_failures);
     return 1;

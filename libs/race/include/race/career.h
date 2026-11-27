@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "data/event_restrictions.h"
@@ -182,6 +183,21 @@ struct CareerCatalog {
   // Display category label ("FESTIVAL RACE", "STREET RACE", "SHOWCASE", "STAR SHOWDOWN", "HORIZON FINALE").
   static const char* event_style_label(const CareerEvent& ev);
 };
+
+// Extended career restriction fields beyond shift::data::RestrictionSet
+// (SPEC-EVENT-RESTRICTIONS: bit 29 = 1-byte EnginePlacementId, bit 31 = 1-byte
+// CylinderId). Populated during load_career_catalog() so check_eligibility()
+// enforces engine-placement and cylinder-count restrictions when present.
+struct CareerRestrictionExtras {
+  int engine_placement = 0;  // 0 = any, 1 = Front, 2 = Mid, 3 = Rear
+  int cylinder_id = 0;       // 0 = any, else Data_Car.CylinderID (or count if not in List_Cylinders)
+};
+
+// Decodes one EventRestrictions bucket value into `out` and (for bucket 0)
+// extracts optional EnginePlacementId (bit 29) and CylinderId (bit 31) into
+// `extras`. Standard rows pass straight through shift::data::set_restriction_bucket.
+bool decode_career_restriction_bucket(shift::data::EventRestrictions& out, int64_t bucket_id, std::string_view value,
+                                      CareerRestrictionExtras* extras = nullptr);
 
 // Loads the full career catalog from the merged v4+DLC database when
 // `db` or `state_root` is provided (falling back to `<game_root>/media/db/gamedb.slt`),
