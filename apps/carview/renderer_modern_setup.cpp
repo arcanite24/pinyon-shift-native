@@ -171,8 +171,9 @@ bool Renderer::create_modern_passes(std::string& error) {
     }
   }
   if (!vol_ubo_.buffer &&
-      !create_buffer(sizeof(VolumetricState), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, vol_ubo_)) {
+      (!create_buffer(kVolUboStride * kFramesInFlight, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vol_ubo_) ||
+       vmaMapMemory(allocator_, vol_ubo_.allocation, &vol_ubo_mapped_) != VK_SUCCESS)) {
     error = "volumetric UBO";
     return false;
   }
@@ -215,7 +216,7 @@ bool Renderer::create_modern_passes(std::string& error) {
       {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+      {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
   VkDescriptorSetLayoutCreateInfo vol_set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
   vol_set_info.bindingCount = 4;
   vol_set_info.pBindings = vol_bindings;
@@ -247,7 +248,7 @@ bool Renderer::create_modern_passes(std::string& error) {
 
   const VkDescriptorPoolSize pool_sizes[2] = {
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 96},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4}};
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 4}};
   VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool_info.maxSets = 40;
   pool_info.poolSizeCount = 2;
@@ -451,6 +452,10 @@ void Renderer::destroy_modern_passes() {
     vkDestroyDescriptorSetLayout(device_, single_tex_set_layout_, nullptr), single_tex_set_layout_ = VK_NULL_HANDLE;
   if (ssao_set_layout_)
     vkDestroyDescriptorSetLayout(device_, ssao_set_layout_, nullptr), ssao_set_layout_ = VK_NULL_HANDLE;
+  if (vol_ubo_mapped_ && vol_ubo_.allocation) {
+    vmaUnmapMemory(allocator_, vol_ubo_.allocation);
+    vol_ubo_mapped_ = nullptr;
+  }
   destroy_buffer(vol_ubo_);
   destroy_image(inspector_thumb_);
   destroy_image(vol_identity_);
@@ -602,7 +607,7 @@ void Renderer::update_modern_descriptors() {
     b_writes[uidx].dstSet = vol_sets_[s];
     b_writes[uidx].dstBinding = 3;
     b_writes[uidx].descriptorCount = 1;
-    b_writes[uidx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    b_writes[uidx].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
     b_writes[uidx].pBufferInfo = &vol_buf_info;
   }
   vkUpdateDescriptorSets(device_, 16, b_writes, 0, nullptr);

@@ -173,25 +173,9 @@ void Renderer::record_volumetric(VkCommandBuffer cmd) {
     vol_state_ = {};
   }
   vol_state_.height_p[3] = float(frames_submitted_ & 63u) / 64.0f;
-  {
-    VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    ub.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    ub.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    ub.srcQueueFamilyIndex = ub.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    ub.buffer = vol_ubo_.buffer;
-    ub.size = VK_WHOLE_SIZE;
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &ub;
-    vkCmdPipelineBarrier2(cmd, &dep);
-    vkCmdUpdateBuffer(cmd, vol_ubo_.buffer, 0, sizeof(VolumetricState), &vol_state_);
-    ub.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    ub.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    ub.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    ub.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier2(cmd, &dep);
+  const uint32_t vol_dyn_off = uint32_t(slot_ * kVolUboStride);
+  if (vol_ubo_mapped_) {
+    std::memcpy(static_cast<uint8_t*>(vol_ubo_mapped_) + vol_dyn_off, &vol_state_, sizeof(VolumetricState));
   }
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
@@ -217,7 +201,7 @@ void Renderer::record_volumetric(VkCommandBuffer cmd) {
     vkCmdSetViewport(cmd, 0, 1, &vp);
     vkCmdSetScissor(cmd, 0, 1, &sc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vol_pipe_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vol_layout_, 0, 1, &set, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, vol_layout_, 0, 1, &set, 1, &vol_dyn_off);
     struct {
       float proj_params[4], vol_params[4];
     } pc = {{cam_near_, cam_far_, options_.reverse_z ? 1.0f : 0.0f, 0.0f},
@@ -690,7 +674,7 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
       float src_size[4], dst_size[4], params[4];
     } pc = {{float(sw), float(sh), 1.0f / float(std::max(1u, sw)), 1.0f / float(std::max(1u, sh))},
             {float(dw), float(dh), 1.0f / float(std::max(1u, dw)), 1.0f / float(std::max(1u, dh))},
-            {mode, sharp, 0.0f, 0.0f}};
+            {mode, sharp, 0.0f, leave_color_att ? display_brightness_offset_ : 0.0f}};
     vkCmdPushConstants(cmd, upscale_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);

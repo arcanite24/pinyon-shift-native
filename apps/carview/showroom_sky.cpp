@@ -133,18 +133,14 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
     star_count_ = uint32_t(assets.stars.size());
   }
 
-  for (int i = 0; i < 2; ++i) {
-    if (!r_.create_buffer(sizeof(SkyUniforms),
-                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, sky_ubo_[i])) {
-      error = "sky uniform buffer";
-      return false;
-    }
+  if (!create_ubo_ring(sky_ubo_, sizeof(SkyUniforms), Renderer::kFramesInFlight * 2u, error)) {
+    error = "sky uniform buffer";
+    return false;
   }
 
-  // Sky descriptor set layout: binding 0 UBO, bindings 1..11 combined image samplers.
+  // Sky descriptor set layout: binding 0 dynamic UBO, bindings 1..11 combined image samplers.
   VkDescriptorSetLayoutBinding bindings[12]{};
-  bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+  bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
   for (uint32_t b = 1; b < 12; ++b)
     bindings[b] = {b, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
   VkDescriptorSetLayoutCreateInfo set_ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -164,59 +160,56 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   spl_ci.pPushConstantRanges = &star_pc;
   VK_TRY(vkCreatePipelineLayout(r_.device_, &spl_ci, nullptr, &stars_pipe_layout_), "stars pipeline layout");
 
-  // Descriptor pool & 12 sets (2 modes x 6 discs: 0=sun, 1..5=moon0..4).
-  const VkDescriptorPoolSize psizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12},
-                                          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12 * 11}};
+  // Descriptor pool & 6 sets (6 discs: 0=sun, 1..5=moon0..4) with dynamic UBO offset for (slot, mode).
+  const VkDescriptorPoolSize psizes[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 6},
+                                          {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * 11}};
   VkDescriptorPoolCreateInfo pool_ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool_ci.maxSets = 12;
+  pool_ci.maxSets = 6;
   pool_ci.poolSizeCount = 2;
   pool_ci.pPoolSizes = psizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &pool_ci, nullptr, &sky_pool_), "sky descriptor pool");
 
-  VkDescriptorSetLayout set_layouts[12];
-  for (int i = 0; i < 12; ++i) set_layouts[i] = sky_set_layout_;
+  VkDescriptorSetLayout set_layouts[6];
+  for (int i = 0; i < 6; ++i) set_layouts[i] = sky_set_layout_;
   VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   alloc.descriptorPool = sky_pool_;
-  alloc.descriptorSetCount = 12;
+  alloc.descriptorSetCount = 6;
   alloc.pSetLayouts = set_layouts;
   VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, sky_sets_), "sky descriptor sets");
 
-  for (int mode = 0; mode < 2; ++mode) {
-    for (int disc = 0; disc < 6; ++disc) {
-      const int idx = mode * 6 + disc;
-      VkDescriptorBufferInfo buf{sky_ubo_[mode].buffer, 0, sizeof(SkyUniforms)};
-      const VkImageView views[11] = {
-          disc == 0 ? sky_sun_.view : sky_moons_[disc - 1].view,
-          sky_dither_.view,
-          sky_far_f_.view,
-          sky_far_b_.view,
-          sky_far_mask_.view,
-          sky_close_ad_f_.view,
-          sky_close_ad_b_.view,
-          sky_close_am_f_.view,
-          sky_close_am_b_.view,
-          sky_close_tb_f_.view,
-          sky_close_tb_b_.view,
-      };
-      VkDescriptorImageInfo imgs[11];
-      VkWriteDescriptorSet writes[12]{};
-      writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      writes[0].dstSet = sky_sets_[idx];
-      writes[0].dstBinding = 0;
-      writes[0].descriptorCount = 1;
-      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      writes[0].pBufferInfo = &buf;
-      for (uint32_t b = 0; b < 11; ++b) {
-        imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        writes[b + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[b + 1].dstSet = sky_sets_[idx];
-        writes[b + 1].dstBinding = b + 1;
-        writes[b + 1].descriptorCount = 1;
-        writes[b + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[b + 1].pImageInfo = &imgs[b];
-      }
-      vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+  for (int disc = 0; disc < 6; ++disc) {
+    VkDescriptorBufferInfo buf{sky_ubo_.buf.buffer, 0, sizeof(SkyUniforms)};
+    const VkImageView views[11] = {
+        disc == 0 ? sky_sun_.view : sky_moons_[disc - 1].view,
+        sky_dither_.view,
+        sky_far_f_.view,
+        sky_far_b_.view,
+        sky_far_mask_.view,
+        sky_close_ad_f_.view,
+        sky_close_ad_b_.view,
+        sky_close_am_f_.view,
+        sky_close_am_b_.view,
+        sky_close_tb_f_.view,
+        sky_close_tb_b_.view,
+    };
+    VkDescriptorImageInfo imgs[11];
+    VkWriteDescriptorSet writes[12]{};
+    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[0].dstSet = sky_sets_[disc];
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+    writes[0].pBufferInfo = &buf;
+    for (uint32_t b = 0; b < 11; ++b) {
+      imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      writes[b + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+      writes[b + 1].dstSet = sky_sets_[disc];
+      writes[b + 1].dstBinding = b + 1;
+      writes[b + 1].descriptorCount = 1;
+      writes[b + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      writes[b + 1].pImageInfo = &imgs[b];
     }
+    vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
   }
 
   // Create sky pipelines (base opaque + layers premultiplied alpha) & starfield instanced-quad pipeline.
@@ -331,55 +324,52 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
       eatt = att;
       res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &egp, nullptr, &env_sky_pipe_layers_);
     }
-    if (res == VK_SUCCESS) {
-      const VkDescriptorPoolSize eps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 12},
-                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12 * 11}};
+    if (res == VK_SUCCESS && env_sky_ubo_.ready()) {
+      const VkDescriptorPoolSize eps[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 6},
+                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * 11}};
       VkDescriptorPoolCreateInfo epci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-      epci.maxSets = 12;
+      epci.maxSets = 6;
       epci.poolSizeCount = 2;
       epci.pPoolSizes = eps;
       if (vkCreateDescriptorPool(r_.device_, &epci, nullptr, &env_pool_) == VK_SUCCESS) {
         VkDescriptorSetAllocateInfo ealloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ealloc.descriptorPool = env_pool_;
-        ealloc.descriptorSetCount = 12;
+        ealloc.descriptorSetCount = 6;
         ealloc.pSetLayouts = set_layouts;
         if (vkAllocateDescriptorSets(r_.device_, &ealloc, env_sky_sets_) == VK_SUCCESS) {
-          for (int mode = 0; mode < 2; ++mode) {
-            for (int disc = 0; disc < 6; ++disc) {
-              const int idx = mode * 6 + disc;
-              VkDescriptorBufferInfo buf{env_sky_ubo_[mode].buffer, 0, sizeof(SkyUniforms)};
-              const VkImageView views[11] = {
-                  disc == 0 ? sky_sun_.view : sky_moons_[disc - 1].view,
-                  sky_dither_.view,
-                  sky_far_f_.view,
-                  sky_far_b_.view,
-                  sky_far_mask_.view,
-                  sky_close_ad_f_.view,
-                  sky_close_ad_b_.view,
-                  sky_close_am_f_.view,
-                  sky_close_am_b_.view,
-                  sky_close_tb_f_.view,
-                  sky_close_tb_b_.view,
-              };
-              VkDescriptorImageInfo imgs[11];
-              VkWriteDescriptorSet writes[12]{};
-              writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-              writes[0].dstSet = env_sky_sets_[idx];
-              writes[0].dstBinding = 0;
-              writes[0].descriptorCount = 1;
-              writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-              writes[0].pBufferInfo = &buf;
-              for (uint32_t b = 0; b < 11; ++b) {
-                imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-                writes[b + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                writes[b + 1].dstSet = env_sky_sets_[idx];
-                writes[b + 1].dstBinding = b + 1;
-                writes[b + 1].descriptorCount = 1;
-                writes[b + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[b + 1].pImageInfo = &imgs[b];
-              }
-              vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+          for (int disc = 0; disc < 6; ++disc) {
+            VkDescriptorBufferInfo buf{env_sky_ubo_.buf.buffer, 0, sizeof(SkyUniforms)};
+            const VkImageView views[11] = {
+                disc == 0 ? sky_sun_.view : sky_moons_[disc - 1].view,
+                sky_dither_.view,
+                sky_far_f_.view,
+                sky_far_b_.view,
+                sky_far_mask_.view,
+                sky_close_ad_f_.view,
+                sky_close_ad_b_.view,
+                sky_close_am_f_.view,
+                sky_close_am_b_.view,
+                sky_close_tb_f_.view,
+                sky_close_tb_b_.view,
+            };
+            VkDescriptorImageInfo imgs[11];
+            VkWriteDescriptorSet writes[12]{};
+            writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            writes[0].dstSet = env_sky_sets_[disc];
+            writes[0].dstBinding = 0;
+            writes[0].descriptorCount = 1;
+            writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            writes[0].pBufferInfo = &buf;
+            for (uint32_t b = 0; b < 11; ++b) {
+              imgs[b] = {sampler_, views[b], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+              writes[b + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+              writes[b + 1].dstSet = env_sky_sets_[disc];
+              writes[b + 1].dstBinding = b + 1;
+              writes[b + 1].descriptorCount = 1;
+              writes[b + 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+              writes[b + 1].pImageInfo = &imgs[b];
             }
+            vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
           }
         }
       }
@@ -530,43 +520,27 @@ void Showroom::fill_sky_uniforms(const ShowroomFrame& view_frame, SkyUniforms& u
   u.fog_sky[3] = t.star_fade;
 }
 
-void Showroom::record_sky_before(VkCommandBuffer cmd) {
+void Showroom::record_sky_before(VkCommandBuffer /*cmd*/) {
+  if (!sky_ubo_.ready()) return;
   SkyUniforms u{};
   fill_sky_uniforms(frame_, u);
 
   // When no starfield is visible (daytime), combine atmosphere + disc + clouds + horizon fog
-  // into a single opaque pass (mode 2) using sky_ubo_[0] only — halving sky fullscreen passes.
+  // into a single opaque pass (mode 2) using slot 0 only — halving sky fullscreen passes.
+  const uint32_t base_slot = r_.frame_slot() * 2u;
   const bool need_stars = (star_count_ > 0 && tod_state_.star_fade > 0.005f);
-  const int pass_count = need_stars ? 2 : 1;
-  for (int m = 0; m < pass_count; ++m) {
+  const uint32_t pass_count = need_stars ? 2u : 1u;
+  for (uint32_t m = 0; m < pass_count; ++m) {
     u.cam_fwd[3] = need_stars ? float(m) : 2.0f;
-    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.buffer = sky_ubo_[m].buffer;
-    b.size = sizeof(SkyUniforms);
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &dep);
-
-    vkCmdUpdateBuffer(cmd, sky_ubo_[m].buffer, 0, sizeof(SkyUniforms), &u);
-
-    b.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier2(cmd, &dep);
+    std::memcpy(sky_ubo_.ptr(base_slot + m), &u, sizeof(SkyUniforms));
   }
 }
 
 void Showroom::record_sky_draw(VkCommandBuffer cmd) {
-  if (!sky_ready_) return;
+  if (!sky_ready_ || !sky_ubo_.ready()) return;
   const int disc = tod_state_.is_moon ? (1 + tod_moon_phase_) : 0;
   const bool need_stars = (star_count_ > 0 && tod_state_.star_fade > 0.005f);
+  const uint32_t base_slot = r_.frame_slot() * 2u;
 
   // Smooth sky gradients and clouds are low-frequency: apply 2x2 VRS on Android or when VRS is active.
   auto set_sky_vrs = [&]() {
@@ -583,9 +557,11 @@ void Showroom::record_sky_draw(VkCommandBuffer cmd) {
   };
 
   // 1. Atmosphere gradient dome (or combined single-pass daytime sky when !need_stars).
+  const uint32_t dyn_off0 = uint32_t(sky_ubo_.offset(base_slot + 0u));
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_base_);
   set_sky_vrs();
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[disc], 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[disc], 1,
+                          &dyn_off0);
   vkCmdDraw(cmd, 3, 1, 0, 0);
 
   if (!need_stars) {
@@ -619,10 +595,11 @@ void Showroom::record_sky_draw(VkCommandBuffer cmd) {
   }
 
   // 3. Sun/Moon disc + Far clouds (2 layers) + Close lit clouds (2 layers) + Horizon fog skirt.
+  const uint32_t dyn_off1 = uint32_t(sky_ubo_.offset(base_slot + 1u));
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layers_);
   set_sky_vrs();
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[6 + disc], 0,
-                          nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[disc], 1,
+                          &dyn_off1);
   vkCmdDraw(cmd, 3, 1, 0, 0);
   r_.apply_vrs(cmd);
 }

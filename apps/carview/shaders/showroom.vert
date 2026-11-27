@@ -101,7 +101,14 @@ void main() {
   v_instance = uint(gl_InstanceIndex);
   mat4 model_mat = (flags & kFlagInstanced) != 0u ? (car_instances[v_instance].model * draw.model) : draw.model;
   vec4 world = model_mat * vec4(p, 1.0);
-  mat3 normal_matrix = transpose(inverse(mat3(model_mat)));
+  // Cofactor matrix avoids expensive per-vertex mat3 inverse() while preserving exact normals
+  // under non-uniform wheel/tyre scaling and mirrored transforms.
+  mat3 m3 = mat3(model_mat);
+  vec3 cf0 = cross(m3[1], m3[2]);
+  vec3 cf1 = cross(m3[2], m3[0]);
+  vec3 cf2 = cross(m3[0], m3[1]);
+  float det_sign = dot(m3[0], cf0) < 0.0 ? -1.0 : 1.0;
+  mat3 normal_matrix = mat3(cf0 * det_sign, cf1 * det_sign, cf2 * det_sign);
   vec3 wn = normalize(normal_matrix * n);
   vec3 wt = normalize(normal_matrix * t);
   vec3 wb = normalize(normal_matrix * b);

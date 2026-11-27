@@ -275,6 +275,12 @@ bool Renderer::create_swapchain(std::string& error) {
     return true;
   }
   uint32_t image_count = caps.minImageCount + 1;
+#ifdef __ANDROID__
+  // With 3 frames in flight on Android FIFO (SurfaceFlinger holds 1-2 buffers),
+  // request 4 swapchain images so vkAcquireNextImageKHR returns an already-free
+  // image and image_ready never blocks offscreen HDR/env passes.
+  image_count = std::max(image_count, frames_in_flight_ + 1u);
+#endif
   if (caps.maxImageCount) image_count = std::min(image_count, caps.maxImageCount);
   VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
   info.surface = surface_;

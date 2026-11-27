@@ -140,9 +140,13 @@ void main() {
   uint flags = uint(round(draw.params.y));
   v_fade = vec2(0.0);
   // Deterministic per-instance dusk/dawn switch-on threshold (ModelData.x in [0.06, 0.94])
-  // derived from the prop's stable world-space centre so buildings illuminate staggered.
-  vec3 prop_cell = floor((in_pos + vec3(in_centre.xyz) * 0.1) * 0.25);
-  v_emissive_thresh = 0.06 + 0.88 * fract(sin(dot(prop_cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+  // computed only for emissive-map draws (skips SFU sin() on >98% of world vertices).
+  if ((flags & 8388608u) != 0u) {
+    vec3 prop_cell = floor((in_pos + vec3(in_centre.xyz) * 0.1) * 0.25);
+    v_emissive_thresh = 0.06 + 0.88 * fract(sin(dot(prop_cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+  } else {
+    v_emissive_thresh = 0.06;
+  }
   // A prop's level, picked per instance: its LOD00 inside the LOD band,
   // its LOD02 outside it, both dithered only across the band; the far
   // levels fade out at the gather's edge. An instance wholly hidden goes

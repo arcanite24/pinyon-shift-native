@@ -217,9 +217,11 @@ bool Renderer::create_post(std::string& error) {
   dsampler.addressModeU = dsampler.addressModeV = dsampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   dsampler.maxLod = VK_LOD_CLAMP_NONE;
   VK_TRY(vkCreateSampler(device_, &dsampler, nullptr, &post_depth_sampler_), "post depth sampler");
-  constexpr VkDeviceSize kOpticalUboBytes = 15 * 16;  // 15 vec4s = 240 bytes
-  if (!create_buffer(kOpticalUboBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, post_optical_buf_)) {
+  constexpr VkDeviceSize kOpticalUboBytes = 16 * 16;  // 16 vec4s = 256 bytes
+  static_assert(kOpticalUboBytes <= kOpticalUboStride);
+  if (!create_buffer(kOpticalUboStride * kFramesInFlight, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, post_optical_buf_) ||
+      vmaMapMemory(allocator_, post_optical_buf_.allocation, &post_optical_mapped_) != VK_SUCCESS) {
     error = "post optical UBO";
     return false;
   }
@@ -229,7 +231,7 @@ bool Renderer::create_post(std::string& error) {
       {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-      {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
       {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -250,7 +252,7 @@ bool Renderer::create_post(std::string& error) {
   VK_TRY(vkCreatePipelineLayout(device_, &layout, nullptr, &post_layout_), "post pipeline layout");
   const VkDescriptorPoolSize pool_sizes[2] = {
       {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kPostSetCount * 12},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kPostSetCount}};
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, kPostSetCount}};
   VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pool.maxSets = kPostSetCount;
   pool.poolSizeCount = 2;
@@ -376,8 +378,9 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       float modern_p[4];
       float sota_p[4];
       float phase_b[4];
+      float display_p[4];
     };
-    static_assert(sizeof(PostOpticalUbo) == 240);
+    static_assert(sizeof(PostOpticalUbo) == 256);
     const uint32_t oflags = (s.motion_blur ? 1u : 0u) | (s.dof ? 2u : 0u) | (s.god_rays ? 4u : 0u) |
                             (s.lens_flare ? 8u : 0u) | (options_.reverse_z ? 16u : 0u) |
                             (s.paired_vignette ? 32u : 0u) | (s.motion_blur_directional ? 64u : 0u) |
@@ -500,24 +503,10 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     u.phase_b[1] = vol_on ? 1.0f : 0.0f;
     u.phase_b[2] = vol_width_ ? 1.0f / float(vol_width_) : 0.0f;
     u.phase_b[3] = vol_height_ ? 1.0f / float(vol_height_) : 0.0f;
-    VkBufferMemoryBarrier2 ub{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    ub.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    ub.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    ub.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    ub.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    ub.srcQueueFamilyIndex = ub.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    ub.buffer = post_optical_buf_.buffer;
-    ub.size = VK_WHOLE_SIZE;
-    VkDependencyInfo udep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    udep.bufferMemoryBarrierCount = 1;
-    udep.pBufferMemoryBarriers = &ub;
-    vkCmdPipelineBarrier2(cmd, &udep);
-    vkCmdUpdateBuffer(cmd, post_optical_buf_.buffer, 0, sizeof u, &u);
-    ub.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    ub.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    ub.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    ub.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier2(cmd, &udep);
+    u.display_p[0] = (!uses_modern_chain() && hdr_mode_ == modern::HdrMode::kOff) ? display_brightness_offset_ : 0.0f;
+    if (post_optical_mapped_) {
+      std::memcpy(static_cast<uint8_t*>(post_optical_mapped_) + size_t(slot_ * kOpticalUboStride), &u, sizeof u);
+    }
   }
   // Upload updated N^3 3D LUT when dirty (zero pipeline stall).
   const size_t want_lut_bytes = size_t(lut_image_size_) * lut_image_size_ * lut_image_size_ * 4u;
@@ -612,7 +601,8 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout_, 0, 1, &set, 0, nullptr);
+    const uint32_t opt_dyn_off = uint32_t(slot_ * kOpticalUboStride);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout_, 0, 1, &set, 1, &opt_dyn_off);
     push.mode[0] = mode, push.mode[1] = dx, push.mode[2] = dy, push.mode[3] = mw;
     vkCmdPushConstants(cmd, post_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof push, &push);
     vkCmdDraw(cmd, 3, 1, 0, 0);

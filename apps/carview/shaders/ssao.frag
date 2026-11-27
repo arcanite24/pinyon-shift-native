@@ -134,21 +134,22 @@ vec4 compute_xegtao(vec2 uv) {
     float proj_n_len = length(proj_n);
     if (proj_n_len < 1e-5) continue;
 
-    float cos_n = clamp(dot(proj_n / proj_n_len, V), -1.0, 1.0);
+    mediump float cos_n = clamp(dot(proj_n / proj_n_len, V), -1.0, 1.0);
     // Angle of projected surface normal from V toward +ortho_dir (matches +omega screen step).
-    float sgn = sign(dot(proj_n, ortho_dir));
-    float n_angle = sgn * fast_acos(cos_n);
+    mediump float sgn = sign(dot(proj_n, ortho_dir));
+    mediump float n_angle = sgn * fast_acos(cos_n);
+    mediump float sin_n = sin(n_angle);
 
-    // Intel XeGTAO horizon baseline (avoids hard silhouette dark bands on thin objects).
-    float low_h_cos1 = cos(n_angle + kHalfPi);
-    float low_h_cos2 = cos(n_angle - kHalfPi);
-    float max_h_cos1 = low_h_cos1;
-    float max_h_cos2 = low_h_cos2;
+    // Intel XeGTAO horizon baseline: cos(n +/- pi/2) == -/+ sin(n) (saves 2 trig SFU calls/slice).
+    mediump float low_h_cos1 = -sin_n;
+    mediump float low_h_cos2 = sin_n;
+    mediump float max_h_cos1 = low_h_cos1;
+    mediump float max_h_cos2 = low_h_cos2;
 
     for (int st = 0; st < steps_per_side; ++st) {
       // Power-distributed step spacing (XeGTAO: dense micro-detail near center, wide reach far).
-      float step_base = (float(st) + noise_step) / float(steps_per_side);
-      float step_frac = step_base * step_base * 0.85 + step_base * 0.15;
+      mediump float step_base = (float(st) + noise_step) / float(steps_per_side);
+      mediump float step_frac = step_base * step_base * 0.85 + step_base * 0.15;
       vec2 step_uv = omega * (screen_r * step_frac);
 
       // + side (toward +ortho_dir)
@@ -158,10 +159,10 @@ vec4 compute_xegtao(vec2 uv) {
         if (d1 < 350.0) {
           vec3 H1 = view_pos_from_depth(uv1, d1) - P_biased;
           float h1_len = length(H1);
-          float h1_cos = dot(H1, V) / max(h1_len, 1e-5);
+          mediump float h1_cos = dot(H1, V) / max(h1_len, 1e-5);
           // Thin-object thickness & distance falloff (Intel XeGTAO).
-          float weight = clamp(h1_len * falloff_mul + falloff_add, 0.0, 1.0);
-          float h1_weighted = mix(low_h_cos1, h1_cos, weight);
+          mediump float weight = clamp(h1_len * falloff_mul + falloff_add, 0.0, 1.0);
+          mediump float h1_weighted = mix(low_h_cos1, h1_cos, weight);
           max_h_cos1 = max(max_h_cos1, h1_weighted);
         }
       }
@@ -173,35 +174,34 @@ vec4 compute_xegtao(vec2 uv) {
         if (d2 < 350.0) {
           vec3 H2 = view_pos_from_depth(uv2, d2) - P_biased;
           float h2_len = length(H2);
-          float h2_cos = dot(H2, V) / max(h2_len, 1e-5);
-          float weight = clamp(h2_len * falloff_mul + falloff_add, 0.0, 1.0);
-          float h2_weighted = mix(low_h_cos2, h2_cos, weight);
+          mediump float h2_cos = dot(H2, V) / max(h2_len, 1e-5);
+          mediump float weight = clamp(h2_len * falloff_mul + falloff_add, 0.0, 1.0);
+          mediump float h2_weighted = mix(low_h_cos2, h2_cos, weight);
           max_h_cos2 = max(max_h_cos2, h2_weighted);
         }
       }
     }
 
-    float h1 = n_angle + max(-fast_acos(max_h_cos2) - n_angle, -kHalfPi);
-    float h2 = n_angle + min(fast_acos(max_h_cos1) - n_angle, kHalfPi);
+    mediump float h1 = n_angle + max(-fast_acos(max_h_cos2) - n_angle, -kHalfPi);
+    mediump float h2 = n_angle + min(fast_acos(max_h_cos1) - n_angle, kHalfPi);
 
     // Exact Jimenez cosine-weighted hemisphere visibility integral, normalized by
     // the exact unoccluded slice integral (cos_n + n_angle * sin_n) so flat surfaces
     // at any oblique viewing angle evaluate cleanly to 1.0 with zero dark halos.
-    float sin_n = sin(n_angle);
-    float i1 = -cos(2.0 * h1 - n_angle) + cos_n + 2.0 * h1 * sin_n;
-    float i2 = -cos(2.0 * h2 - n_angle) + cos_n + 2.0 * h2 * sin_n;
-    float unocc_norm = max(cos_n + n_angle * sin_n, 0.05);
-    float slice_vis = clamp(0.25 * (i1 + i2) / unocc_norm, 0.0, 1.0);
+    mediump float i1 = -cos(2.0 * h1 - n_angle) + cos_n + 2.0 * h1 * sin_n;
+    mediump float i2 = -cos(2.0 * h2 - n_angle) + cos_n + 2.0 * h2 * sin_n;
+    mediump float unocc_norm = max(cos_n + n_angle * sin_n, 0.05);
+    mediump float slice_vis = clamp(0.25 * (i1 + i2) / unocc_norm, 0.0, 1.0);
 
     vis_sum += proj_n_len * slice_vis;
     weight_sum += proj_n_len;
 
-    // Exact Jimenez bent normal slice integral.
-    float t0 = (6.0 * sin(h1 - n_angle) - sin(3.0 * h1 - n_angle) +
-                6.0 * sin(h2 - n_angle) - sin(3.0 * h2 - n_angle) +
-                16.0 * sin_n - 3.0 * (sin(h1 + n_angle) + sin(h2 + n_angle))) / 12.0;
-    float t1 = (-cos(3.0 * h1 - n_angle) - cos(3.0 * h2 - n_angle) +
-                8.0 * cos_n - 3.0 * (cos(h1 + n_angle) + cos(h2 + n_angle))) / 12.0;
+    // Exact Jimenez bent normal slice integral in FP16.
+    mediump float t0 = (6.0 * sin(h1 - n_angle) - sin(3.0 * h1 - n_angle) +
+                        6.0 * sin(h2 - n_angle) - sin(3.0 * h2 - n_angle) +
+                        16.0 * sin_n - 3.0 * (sin(h1 + n_angle) + sin(h2 + n_angle))) / 12.0;
+    mediump float t1 = (-cos(3.0 * h1 - n_angle) - cos(3.0 * h2 - n_angle) +
+                        8.0 * cos_n - 3.0 * (cos(h1 + n_angle) + cos(h2 + n_angle))) / 12.0;
     bent_sum += proj_n_len * (ortho_dir * t0 + V * t1);
   }
 
@@ -219,36 +219,36 @@ vec4 compute_xegtao(vec2 uv) {
 }
 
 // 7-tap depth- and bent-normal-aware edge-preserving spatial bilateral denoiser (XeGTAO style).
-vec4 bilateral_denoise(vec2 uv, vec2 dir) {
-  vec4 center = texture(src_tex, uv);
+mediump vec4 bilateral_denoise(vec2 uv, vec2 dir) {
+  mediump vec4 center = texture(src_tex, uv);
   float center_d = linear_depth(uv);
   if (center_d > 320.0) return vec4(1.0, 0.5, 0.5, 1.0);
 
-  vec3 center_bn = normalize(center.gba * 2.0 - 1.0);
-  const float kSpatial[4] = float[](0.280, 0.215, 0.110, 0.035);
+  mediump vec3 center_bn = normalize(center.gba * 2.0 - 1.0);
+  const mediump float kSpatial[4] = float[](0.280, 0.215, 0.110, 0.035);
   float depth_inv = 1.0 / max(center_d * 0.065, 0.09);
 
-  vec4 acc = center * kSpatial[0];
-  float wsum = kSpatial[0];
+  mediump vec4 acc = center * kSpatial[0];
+  mediump float wsum = kSpatial[0];
 
   for (int side = -1; side <= 1; side += 2) {
     for (int i = 1; i <= 3; ++i) {
       vec2 suv = clamp(uv + dir * (float(side * i)), vec2(0.0005), vec2(0.9995));
       float sd = linear_depth(suv);
-      vec4 sample_v = texture(src_tex, suv);
-      float dz = abs(sd - center_d) * depth_inv;
+      mediump vec4 sample_v = texture(src_tex, suv);
+      mediump float dz = abs(sd - center_d) * depth_inv;
       // Sharp edge-stopping weight on depth discontinuities + bent-normal consistency.
-      float w_depth = exp(-dz * dz * 1.8);
-      vec3 s_bn = normalize(sample_v.gba * 2.0 - 1.0);
-      float w_norm = clamp(dot(center_bn, s_bn) * 0.5 + 0.5, 0.15, 1.0);
-      float w = kSpatial[i] * w_depth * w_norm;
+      mediump float w_depth = exp(-dz * dz * 1.8);
+      mediump vec3 s_bn = normalize(sample_v.gba * 2.0 - 1.0);
+      mediump float w_norm = clamp(dot(center_bn, s_bn) * 0.5 + 0.5, 0.15, 1.0);
+      mediump float w = kSpatial[i] * w_depth * w_norm;
       acc += sample_v * w;
       wsum += w;
     }
   }
-  vec4 out_v = acc / max(wsum, 1e-4);
-  vec3 bn = out_v.gba * 2.0 - 1.0;
-  float blen = length(bn);
+  mediump vec4 out_v = acc / max(wsum, 1e-4);
+  mediump vec3 bn = out_v.gba * 2.0 - 1.0;
+  mediump float blen = length(bn);
   bn = blen > 1e-4 ? (bn / blen) : center_bn;
   return vec4(clamp(out_v.r, 0.0, 1.0), bn * 0.5 + 0.5);
 }

@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision mediump float;
 // carview real-time sky shader (SPEC-SKY-AND-TOD §3):
 //   mode 0: atmosphere gradient dome + elliptical sun haze + sky dither
 //   mode 1: sun/moon billboard disc + far clouds (2 layers) + close lit clouds
@@ -63,23 +65,23 @@ layout(set = 0, binding = 9) uniform sampler2D tex_close_am_b; // CloseCloudAmbi
 layout(set = 0, binding = 10) uniform sampler2D tex_close_tb_f;// CloseCloudTopBottomAmbientFront0.xds
 layout(set = 0, binding = 11) uniform sampler2D tex_close_tb_b;// CloseCloudTopBottomAmbientBack0.xds
 
-layout(location = 0) in vec2 v_ndc;
-layout(location = 1) in vec2 v_uv;
+layout(location = 0) in highp vec2 v_ndc;
+layout(location = 1) in highp vec2 v_uv;
 
-layout(location = 0) out vec4 out_color;
+layout(location = 0) out mediump vec4 out_color;
 
-const float kPi = 3.14159265359;
-const float kTwoPi = 6.28318530718;
+const highp float kPi = 3.14159265359;
+const highp float kTwoPi = 6.28318530718;
 
-vec3 encode_srgb(vec3 c) {
+mediump vec3 encode_srgb(mediump vec3 c) {
   c = clamp(c, vec3(0.0), vec3(1.0));
   return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
 }
 
-vec3 out_rgb(vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : encode_srgb(c); }
+mediump vec3 out_rgb(mediump vec3 c) { return kLinearOut ? min(max(c, vec3(0.0)), vec3(64.0)) : encode_srgb(c); }
 
 void main() {
-  vec3 V = normalize(sky.cam_fwd.xyz + v_ndc.x * sky.cam_right.xyz - v_ndc.y * sky.cam_up.xyz);
+  highp vec3 V = normalize(sky.cam_fwd.xyz + v_ndc.x * sky.cam_right.xyz - v_ndc.y * sky.cam_up.xyz);
   int mode = int(sky.cam_fwd.w + 0.5);
 
   vec3 base_lin_rgb = vec3(0.0);
@@ -112,7 +114,8 @@ void main() {
       float golden = (1.0 - smoothstep(0.06, 0.52, max(sun_elev, 0.0))) * day_vis;
       float cos_s = max(dot(V, S), 0.0);
       vec3 glow_col = mix(sky.atmo_haze.rgb, max(sky.fog_scatter.rgb, sky.sun_obj_col.rgb * 0.85), 0.62);
-      float wide_glow = pow(cos_s, 6.0) * (1.0 - smoothstep(0.0, 0.55, vy)) * (0.22 + 0.68 * golden);
+      float cos_s2 = cos_s * cos_s;
+      float wide_glow = (cos_s2 * cos_s2 * cos_s2) * (1.0 - smoothstep(0.0, 0.55, vy)) * (0.22 + 0.68 * golden);
       float core_glow = pow(cos_s, 28.0) * (0.32 + 0.85 * golden);
       lin_rgb += glow_col * (wide_glow + core_glow) * sky.sun_dir.w * day_vis;
     }
@@ -174,26 +177,27 @@ void main() {
 
     // 4. Far high-altitude clouds (2 scrolling layers, SPEC-SKY-AND-TOD §3.5).
     if (sky.fog_sky.z > 0.5 && V.y > 0.005) {
-      vec2 plane_uv = V.xz / (V.y + 0.14) * 0.22;
+      highp vec2 plane_uv = V.xz / (V.y + 0.14) * 0.22;
       float horizon_t = smoothstep(0.02, 0.30, V.y);
 
       // Back far layer
-      vec2 uv_b = plane_uv + sky.far_scroll.zw;
+      highp vec2 uv_b = plane_uv + sky.far_scroll.zw;
       float mb1 = texture(tex_far_mask, uv_b * 1.7 + vec2(0.13, 0.27)).r;
       float mb2 = texture(tex_far_mask, uv_b * 0.85 - sky.far_scroll.zw * 0.5).r;
       float raw_b = texture(tex_far_back, uv_b).r * mb1 * mb2;
       float dens_b = clamp((raw_b - (1.0 - sky.far_params.w)) * 1.8, 0.0, 1.0);
-      float alpha_b = pow(dens_b, clamp(sky.far_thin.w * 0.03, 0.35, 3.0)) *
+      float far_exp = clamp(sky.far_thin.w * 0.03, 0.35, 3.0);
+      float alpha_b = pow(dens_b, far_exp) *
                       mix(sky.far_back_thin.w, sky.far_back_dense.w, horizon_t) * horizon_t * 0.55;
       vec3 col_b = mix(sky.far_back_thin.rgb * sky.far_dense.w, sky.far_back_dense.rgb, dens_b) * sky_gain;
 
       // Front far layer
-      vec2 uv_f = plane_uv * 1.15 + sky.far_scroll.xy;
+      highp vec2 uv_f = plane_uv * 1.15 + sky.far_scroll.xy;
       float mf1 = texture(tex_far_mask, uv_f * 1.5 + vec2(0.41, 0.19)).r;
       float mf2 = texture(tex_far_mask, uv_f * 0.75 + sky.far_scroll.xy * 0.4).r;
       float raw_f = texture(tex_far_front, uv_f).r * mf1 * mf2;
       float dens_f = clamp((raw_f - (1.0 - sky.far_params.z)) * 1.8, 0.0, 1.0);
-      float alpha_f = pow(dens_f, clamp(sky.far_thin.w * 0.03, 0.35, 3.0)) *
+      float alpha_f = pow(dens_f, far_exp) *
                       mix(sky.far_params.y, sky.far_params.x, horizon_t) * horizon_t * 0.65;
       vec3 col_f = mix(sky.far_thin.rgb * sky.far_dense.w, sky.far_dense.rgb, dens_f) * sky_gain;
 
@@ -205,50 +209,49 @@ void main() {
       }
 
       // 5. Close lit dome clouds (2 rotating bands, SPEC-SKY-AND-TOD §3.6).
-      float az = atan(V.z, V.x) / kTwoPi + 0.5;
+      highp float az = atan(V.z, V.x) / kTwoPi + 0.5;
       // Clamp V slightly inside (0,1) so REPEAT sampler never wraps a bright/dark seam at the horizon.
-      float elev_v = clamp(1.0 - (asin(clamp(V.y, 0.0, 1.0)) / (kPi * 0.5)), 0.002, 0.998);
+      highp float elev_v = clamp(1.0 - (asin(clamp(V.y, 0.0, 1.0)) / (kPi * 0.5)), 0.002, 0.998);
       // Unwrap 1.0 <-> 0.0 azimuth wrap derivatives so 2x2 quads crossing -X (or fract wrap)
       // never spike implicit mip gradients into the coarsest mip (eliminates the 1-px sky seam).
-      vec2 cuv_dx = vec2(fract(dFdx(az) + 0.5) - 0.5, dFdx(elev_v));
-      vec2 cuv_dy = vec2(fract(dFdy(az) + 0.5) - 0.5, dFdy(elev_v));
+      highp vec2 cuv_dx = vec2(fract(dFdx(az) + 0.5) - 0.5, dFdx(elev_v));
+      highp vec2 cuv_dy = vec2(fract(dFdy(az) + 0.5) - 0.5, dFdy(elev_v));
       float sun_dot = clamp(dot(V, D), 0.0, 1.0);
       // Gentle half-Lambert wrap keeps clouds away from the sun softly lit at dawn/dusk.
       float sun_wrap = clamp(dot(V, D) * 0.5 + 0.5, 0.0, 1.0);
+      // Hoist identical sun phase terms shared by front and back close cloud layers.
+      float back_phase = pow(sun_dot, max(sky.close_back_col.w, 0.5));
+      float top_phase = mix(0.32, 1.0, pow(sun_wrap, max(sky.close_top_col.w * 0.5, 0.5)));
+      float top_mask_pow = max(sky.close_masks.x, 0.25);
+      float bot_mask_pow = max(sky.close_masks.y, 0.25);
+      float alpha_curve = clamp(sky.close_intens.w * 0.10, 0.45, 2.2);
 
-      vec2 cuv_f = vec2(fract(az + sky.close_layers.z), elev_v);
+      highp vec2 cuv_f = vec2(fract(az + sky.close_layers.z), elev_v);
       vec2 ad_f = textureGrad(tex_close_ad_f, cuv_f, cuv_dx, cuv_dy).rg;
       float am_f = textureGrad(tex_close_am_f, cuv_f, cuv_dx, cuv_dy).r;
       vec2 tb_f = textureGrad(tex_close_tb_f, cuv_f, cuv_dx, cuv_dy).rg;
 
       vec3 base_f = mix(sky.close_dense_col.rgb * sky.close_dense_col.w,
                         sky.close_thin_col.rgb * sky.close_thin_col.w, am_f);
-      vec3 back_f = sky.close_back_col.rgb * sky.close_intens.x *
-                    pow(sun_dot, max(sky.close_back_col.w, 0.5)) * (1.0 - ad_f.g);
-      vec3 top_f = sky.close_top_col.rgb * sky.close_intens.y *
-                   mix(0.32, 1.0, pow(sun_wrap, max(sky.close_top_col.w * 0.5, 0.5))) *
-                   pow(tb_f.r, max(sky.close_masks.x, 0.25));
+      vec3 back_f = sky.close_back_col.rgb * sky.close_intens.x * back_phase * (1.0 - ad_f.g);
+      vec3 top_f = sky.close_top_col.rgb * sky.close_intens.y * top_phase * pow(tb_f.r, top_mask_pow);
       vec3 bot_f = sky.close_bot_col.rgb * sky.close_intens.z *
                    mix(0.28, 1.0, pow(sun_wrap, max(sky.close_bot_col.w * 0.5, 0.5))) *
-                   pow(tb_f.g, max(sky.close_masks.y, 0.25));
-      float alpha_curve = clamp(sky.close_intens.w * 0.10, 0.45, 2.2);
+                   pow(tb_f.g, bot_mask_pow);
       vec3 lit_f = (base_f + back_f + top_f + bot_f) * sky_gain;
       float ca_f = pow(smoothstep(0.03, 0.96, ad_f.r), alpha_curve) * sky.close_layers.x;
 
-      vec2 cuv_b = vec2(fract(az + sky.close_layers.w), elev_v);
+      highp vec2 cuv_b = vec2(fract(az + sky.close_layers.w), elev_v);
       vec2 ad_b = textureGrad(tex_close_ad_b, cuv_b, cuv_dx, cuv_dy).rg;
       float am_b = textureGrad(tex_close_am_b, cuv_b, cuv_dx, cuv_dy).r;
       vec2 tb_b = textureGrad(tex_close_tb_b, cuv_b, cuv_dx, cuv_dy).rg;
       vec3 base_b = mix(sky.close_back_dense_col.rgb * sky.close_dense_col.w,
                         sky.close_back_thin_col.rgb * sky.close_thin_col.w, am_b);
-      vec3 back_b = sky.close_back_col.rgb * sky.close_intens.x * 0.5 *
-                    pow(sun_dot, max(sky.close_back_col.w, 0.5)) * (1.0 - ad_b.g);
-      vec3 top_b = sky.close_top_col.rgb * sky.close_intens.y * 0.5 *
-                   mix(0.32, 1.0, pow(sun_wrap, max(sky.close_top_col.w * 0.5, 0.5))) *
-                   pow(tb_b.r, max(sky.close_masks.x, 0.25));
+      vec3 back_b = sky.close_back_col.rgb * sky.close_intens.x * 0.5 * back_phase * (1.0 - ad_b.g);
+      vec3 top_b = sky.close_top_col.rgb * sky.close_intens.y * 0.5 * top_phase * pow(tb_b.r, top_mask_pow);
       vec3 bot_b = sky.close_back_bot_col.rgb * sky.close_back_thin_col.w *
                    mix(0.28, 1.0, pow(sun_wrap, max(sky.close_back_bot_col.w * 0.5, 0.5))) *
-                   pow(tb_b.g, max(sky.close_masks.y, 0.25));
+                   pow(tb_b.g, bot_mask_pow);
       vec3 lit_b = (base_b + back_b + top_b + bot_b) * sky_gain;
       float ca_b = pow(smoothstep(0.03, 0.96, ad_b.r), alpha_curve) * sky.close_layers.y;
 

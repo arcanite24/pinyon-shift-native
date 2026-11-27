@@ -45,16 +45,74 @@ bool Showroom::upload(std::string& error) {
   const auto pipe_t0 = std::chrono::steady_clock::now();
   if (!r_.ensure_shadow_map(error) || !create_pipelines(error)) return false;
   pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - pipe_t0).count();
-  const bool shadows = r_.options_.shadow.size > 0;
-  if (shadows && (!r_.create_buffer(sizeof(ShowroomFrame),
-                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_buffer_) ||
-                  !r_.create_buffer(sizeof(ShowroomFrame),
-                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_mid_buffer_) ||
-                  !r_.create_buffer(sizeof(ShowroomFrame),
-                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, shadow_frame_far_buffer_))) {
+  // Merge rigid bodywork draws on guest cars (identical material/push state) into
+  // contiguous index runs so 7-car race packs drop from ~550-850 draws to ~100-150.
+  if (guest_ && !indices_.empty() && (!draws_.empty() || !far_draws_.empty())) {
+    std::vector<uint32_t> merged_indices;
+    merged_indices.reserve(indices_.size());
+    auto compact_list = [&](std::vector<Draw>& list) {
+      if (list.size() <= 1) {
+        for (auto& d : list) {
+          const uint32_t nf = uint32_t(merged_indices.size());
+          merged_indices.insert(merged_indices.end(), indices_.begin() + d.first_index,
+                                indices_.begin() + d.first_index + d.index_count);
+          d.first_index = nf;
+        }
+        return;
+      }
+      std::vector<Draw> out;
+      out.reserve(list.size());
+      std::vector<bool> merged(list.size(), false);
+      auto can_merge = [](const Draw& d) {
+        return d.wheel < 0 && d.cockpit_role < 0 && !d.detached && !d.is_blur_rim && !d.is_static_spoke;
+      };
+      auto same_state = [](const Draw& a, const Draw& b) {
+        return a.glass == b.glass && a.is_cover == b.is_cover && a.lamp_channel == b.lamp_channel &&
+               a.textures == b.textures &&
+               std::memcmp(&a.push, &b.push, sizeof(ShowroomPush)) == 0;
+      };
+      for (size_t i = 0; i < list.size(); ++i) {
+        if (merged[i]) continue;
+        if (!can_merge(list[i])) {
+          Draw d = list[i];
+          const uint32_t nf = uint32_t(merged_indices.size());
+          merged_indices.insert(merged_indices.end(), indices_.begin() + d.first_index,
+                                indices_.begin() + d.first_index + d.index_count);
+          d.first_index = nf;
+          out.push_back(std::move(d));
+          continue;
+        }
+        Draw acc = list[i];
+        const uint32_t nf = uint32_t(merged_indices.size());
+        auto append_rebased = [&](const Draw& src) {
+          const uint32_t base_v = uint32_t(src.vertex_offset);
+          for (uint32_t k = 0; k < src.index_count; ++k) {
+            merged_indices.push_back(indices_[src.first_index + k] + base_v);
+          }
+        };
+        append_rebased(list[i]);
+        merged[i] = true;
+        for (size_t j = i + 1; j < list.size(); ++j) {
+          if (merged[j] || !can_merge(list[j]) || !same_state(acc, list[j])) continue;
+          append_rebased(list[j]);
+          merged[j] = true;
+        }
+        acc.first_index = nf;
+        acc.index_count = uint32_t(merged_indices.size()) - nf;
+        acc.vertex_offset = 0;
+        acc.anim_part = -1;
+        out.push_back(std::move(acc));
+      }
+      list.swap(out);
+    };
+    compact_list(draws_);
+    compact_list(far_draws_);
+    indices_.swap(merged_indices);
+  }
+  const bool shadows = !guest_ && r_.options_.shadow.size > 0;
+  if (shadows && (!create_ubo_ring(shadow_frame_buffer_, sizeof(ShowroomFrame), Renderer::kFramesInFlight, error) ||
+                  !create_ubo_ring(shadow_frame_mid_buffer_, sizeof(ShowroomFrame), Renderer::kFramesInFlight, error) ||
+                  !create_ubo_ring(shadow_frame_far_buffer_, sizeof(ShowroomFrame), Renderer::kFramesInFlight, error))) {
     error = "shadow frame buffer";
     return false;
   }
@@ -102,19 +160,11 @@ bool Showroom::upload(std::string& error) {
     }
   }
   if (!geom_uploaded ||
-      !r_.create_buffer(sizeof(ShowroomFrame),
-                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, frame_buffer_) ||
-      !r_.create_buffer(sizeof(HeadlightUbo),
-                        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, headlights_ubo_) ||
-      (!guest_ && !r_.create_buffer(kMaxOverlayVertices * sizeof(WorldVertex),
-                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, overlay_vertices_)) ||
+      (!guest_ && !create_ubo_ring(frame_buffer_, sizeof(ShowroomFrame), Renderer::kFramesInFlight, error)) ||
+      (!guest_ && !create_ubo_ring(headlights_ubo_, sizeof(HeadlightUbo), Renderer::kFramesInFlight, error)) ||
+      (!guest_ && !create_dyn_buffer(overlay_buf_, kMaxOverlayVertices * sizeof(WorldVertex), error)) ||
       (!guest_ && !create_dyn_buffer(car_inst_buf_, kMaxCarInstances * sizeof(CarInstanceGpu), error,
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) ||
-      (guest_ && !r_.create_buffer(sizeof(CarInstanceGpu), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, empty_inst_ssbo_))) {
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))) {
     error = "showroom buffers";
     return false;
   }
@@ -144,7 +194,7 @@ bool Showroom::upload(std::string& error) {
     std::vector<TextureUploadItem> batch;
     batch.reserve(textures_.size() + 5);
     batch.push_back({&flat_n, false, &flat_normal_tex_, false});
-    batch.push_back({&def_cookie, false, &headlight_cookie_, false});
+    if (!guest_) batch.push_back({&def_cookie, false, &headlight_cookie_, false});
     for (size_t i = 0; i < textures_.size(); ++i) {
       if (i == 1) {
         batch.push_back({&black, false, &gpu_textures_[i], false});
@@ -168,44 +218,46 @@ bool Showroom::upload(std::string& error) {
       }
       batch.push_back({t, srgb, &gpu_textures_[i], true});
     }
-    const bake::Texture* sd_p = find_shared("dirt_pattern.xds");
-    const bake::Texture* sd_m = find_shared("dirt_mask.xds");
-    const bake::Texture* sd_g = find_shared("glass_texture.xds");
-    batch.push_back({sd_p ? sd_p : &fb_dirt_p, sd_p != nullptr, &shared_dirt_pattern_, true});
-    batch.push_back({sd_m ? sd_m : &fb_dirt_m, false, &shared_dirt_mask_, true});
-    batch.push_back({sd_g ? sd_g : &fb_glass, false, &shared_glass_crack_, true});
-    // Per-car dirt_mask.xds (if present in the car archive/bake).
     const bake::Texture* car_dm_tex = nullptr;
-    for (const auto& tx : car_.textures) {
-      const std::string tn = lower(tx.name);
-      if (tn == "dirt_mask.xds" || tn == "dirt_mask_lod0.xds") {
-        car_dm_tex = &tx;
-        break;
+    if (!guest_) {
+      const bake::Texture* sd_p = find_shared("dirt_pattern.xds");
+      const bake::Texture* sd_m = find_shared("dirt_mask.xds");
+      const bake::Texture* sd_g = find_shared("glass_texture.xds");
+      batch.push_back({sd_p ? sd_p : &fb_dirt_p, sd_p != nullptr, &shared_dirt_pattern_, true});
+      batch.push_back({sd_m ? sd_m : &fb_dirt_m, false, &shared_dirt_mask_, true});
+      batch.push_back({sd_g ? sd_g : &fb_glass, false, &shared_glass_crack_, true});
+      // Per-car dirt_mask.xds (if present in the car archive/bake).
+      for (const auto& tx : car_.textures) {
+        const std::string tn = lower(tx.name);
+        if (tn == "dirt_mask.xds" || tn == "dirt_mask_lod0.xds") {
+          car_dm_tex = &tx;
+          break;
+        }
       }
-    }
-    if (car_dm_tex) {
-      batch.push_back({car_dm_tex, false, &car_dirt_mask_, false});
+      if (car_dm_tex) {
+        batch.push_back({car_dm_tex, false, &car_dirt_mask_, false});
+      }
     }
     if (!upload_textures_batch(batch, error)) return false;
     has_car_dirt_mask_ = (car_dm_tex != nullptr && car_dirt_mask_.view != VK_NULL_HANDLE);
     sync_paint_shader_uniforms();
   }
 #ifdef __ANDROID__
-  // Free CPU-side geometry and (for guest/traffic cars) decoded texture pixels once resident on GPU.
+  // Free CPU-side geometry and decoded texture pixels once resident on GPU.
   if (!r_.rt_supported()) {
     std::vector<bake::Vertex>().swap(vertices_);
     std::vector<uint32_t>().swap(indices_);
   }
+  std::vector<bake::Model>().swap(car_.models);
+  std::vector<bake::Model>().swap(wheel_.models);
+  std::vector<bake::Model>().swap(shared_.models);
+  std::vector<bake::Texture>().swap(wheel_.textures);
+  std::vector<bake::Texture>().swap(shared_.textures);
   if (guest_) {
     std::vector<bake::Texture>().swap(car_.textures);
-    std::vector<bake::Texture>().swap(wheel_.textures);
-    std::vector<bake::Texture>().swap(shared_.textures);
-    std::vector<bake::Model>().swap(car_.models);
-    std::vector<bake::Model>().swap(wheel_.models);
-    std::vector<bake::Model>().swap(shared_.models);
   }
 #endif
-  if (!upload_environment(error)) return false;
+  if (!guest_ && !upload_environment(error)) return false;
   if (!guest_ && !init_dynamic_reflections(error)) return false;
 
   VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -269,15 +321,6 @@ bool Showroom::upload(std::string& error) {
     d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
-  // Frame/offscreen pool (kept alive across car hot-swaps, with generous spare sets for zero-stall rebinding).
-  const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 144},
-                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 832},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64}};
-  VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pool.maxSets = 64;
-  pool.poolSizeCount = 3;
-  pool.pPoolSizes = sizes;
-  VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
   const VkDescriptorPoolSize mat_sizes[1] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(1u, sets) * 5}};
   VkDescriptorPoolCreateInfo mat_pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   mat_pool.maxSets = std::max(1u, sets);
@@ -285,105 +328,80 @@ bool Showroom::upload(std::string& error) {
   mat_pool.pPoolSizes = mat_sizes;
   VK_TRY(vkCreateDescriptorPool(r_.device_, &mat_pool, nullptr, &material_pool_), "material descriptor pool");
   VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  alloc.descriptorPool = pool_;
-  alloc.descriptorSetCount = 1;
-  alloc.pSetLayouts = &frame_layout_;
-  VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &frame_set_), "frame set");
-  if (shadows) {
-    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_), "shadow frame set");
-    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_mid_), "shadow mid frame set");
-    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &shadow_set_far_), "shadow far frame set");
-  }
-  if (!guest_ && dyn_env_ready_) {
-    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, &env_frame_set_), "env frame set");
-    if (env_prefilter_set_layout_ && dyn_env_mip0_cube_) {
-      VkDescriptorSetAllocateInfo palloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-      palloc.descriptorPool = pool_;
-      palloc.descriptorSetCount = 1;
-      palloc.pSetLayouts = &env_prefilter_set_layout_;
-      VK_TRY(vkAllocateDescriptorSets(r_.device_, &palloc, &env_prefilter_set_), "env prefilter set");
-      VkDescriptorImageInfo pinfo{sampler_, dyn_env_mip0_cube_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkWriteDescriptorSet pw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      pw.dstSet = env_prefilter_set_;
-      pw.dstBinding = 0;
-      pw.descriptorCount = 1;
-      pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-      pw.pImageInfo = &pinfo;
-      vkUpdateDescriptorSets(r_.device_, 1, &pw, 0, nullptr);
+  if (!guest_) {
+    // Frame/offscreen pool (per-slot frame/shadow/env sets + spare sets for zero-stall car hot-swaps).
+    const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 384},
+                                           {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1920},
+                                           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 192}};
+    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = 192;
+    pool.poolSizeCount = 3;
+    pool.pPoolSizes = sizes;
+    VK_TRY(vkCreateDescriptorPool(r_.device_, &pool, nullptr, &pool_), "vkCreateDescriptorPool");
+    VkDescriptorSetLayout flayouts[kMaxEnvViews];
+    for (uint32_t i = 0; i < kMaxEnvViews; ++i) flayouts[i] = frame_layout_;
+    alloc.descriptorPool = pool_;
+    alloc.descriptorSetCount = Renderer::kFramesInFlight;
+    alloc.pSetLayouts = flayouts;
+    VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, frame_sets_dip_), "frame sets");
+    frame_set_ = frame_sets_dip_[0];
+    if (shadows) {
+      VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, shadow_sets_), "shadow frame sets");
+      VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, shadow_sets_mid_), "shadow mid frame sets");
+      VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, shadow_sets_far_), "shadow far frame sets");
+      shadow_set_ = shadow_sets_[0];
+      shadow_set_mid_ = shadow_sets_mid_[0];
+      shadow_set_far_ = shadow_sets_far_[0];
     }
-  }
-  // Frame sets: main, shadow near, shadow mid, shadow far, and offscreen env/mirror.
-  for (VkDescriptorSet target : {frame_set_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
-    if (!target) continue;
-    VkBuffer ubo = frame_buffer_.buffer;
-    if (target == shadow_set_) ubo = shadow_frame_buffer_.buffer;
-    else if (target == shadow_set_mid_) ubo = shadow_frame_mid_buffer_.buffer;
-    else if (target == shadow_set_far_) ubo = shadow_frame_far_buffer_.buffer;
-    else if (target == env_frame_set_) ubo = env_frame_buffer_.buffer;
-    VkDescriptorBufferInfo buffer{ubo, 0, sizeof(ShowroomFrame)};
-    // Main frame binds live dyn_env_ & mirror_tex_ once active; guests inherit host's dyn_env_ at upload time
-    // to avoid any post-upload vkDeviceWaitIdle stall.
-    VkImageView cube_view = environment_.view;
-    VkSampler cube_sampler = sampler_;
-    if (target == frame_set_) {
-      if (guest_ && shared_dyn_env_view_ && shared_dyn_env_sampler_) {
-        cube_view = shared_dyn_env_view_;
-        cube_sampler = shared_dyn_env_sampler_;
-        bound_dyn_env_view_ = shared_dyn_env_view_;
-      } else if (dyn_env_ready_ && r_.post()) {
-        cube_view = dyn_env_.view;
-        dyn_env_bound_ = true;
+    if (dyn_env_ready_) {
+      alloc.descriptorSetCount = kMaxEnvViews;
+      for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) {
+        VK_TRY(vkAllocateDescriptorSets(r_.device_, &alloc, env_frame_sets_[s]), "env frame sets");
+      }
+      env_frame_set_ = env_frame_sets_[0][0];
+      if (env_prefilter_set_layout_ && dyn_env_mip0_cube_) {
+        VkDescriptorSetAllocateInfo palloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        palloc.descriptorPool = pool_;
+        palloc.descriptorSetCount = 1;
+        palloc.pSetLayouts = &env_prefilter_set_layout_;
+        VK_TRY(vkAllocateDescriptorSets(r_.device_, &palloc, &env_prefilter_set_), "env prefilter set");
+        VkDescriptorImageInfo pinfo{sampler_, dyn_env_mip0_cube_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet pw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        pw.dstSet = env_prefilter_set_;
+        pw.dstBinding = 0;
+        pw.descriptorCount = 1;
+        pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pw.pImageInfo = &pinfo;
+        vkUpdateDescriptorSets(r_.device_, 1, &pw, 0, nullptr);
       }
     }
-    const VkImageView mirror_view =
-        (target == frame_set_ && dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
-    VkDescriptorImageInfo cube{cube_sampler, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
-                              VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
-                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
-    VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
-    VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo dirt_m{
-        sampler_, (has_car_dirt_mask_ && car_dirt_mask_.view) ? car_dirt_mask_.view : shared_dirt_mask_.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet writes[12]{};
-    for (int wi = 0; wi < 12; ++wi) {
-      writes[wi] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      writes[wi].dstSet = target;
-      writes[wi].dstBinding = uint32_t(wi);
-      writes[wi].descriptorCount = 1;
+    // Populate all per-slot frame, shadow cascade, and offscreen env/mirror descriptor sets.
+    VkImageView main_cube_view = environment_.view;
+    if (dyn_env_ready_ && r_.post()) {
+      main_cube_view = dyn_env_.view;
+      dyn_env_bound_ = true;
     }
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[0].pBufferInfo = &buffer;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &cube;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].pImageInfo = &map;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo = &cookie;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[4].pBufferInfo = &hl_buf;
-    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[5].pImageInfo = &mir;
-    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[6].pBufferInfo = &inst_buf;
-    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[7].pImageInfo = &static_cube;
-    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[8].pImageInfo = &dirt_p;
-    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[9].pImageInfo = &dirt_m;
-    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[10].pImageInfo = &gcrack;
-    writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[11].pImageInfo = &map_raw;
-    vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+    const VkImageView main_mirror_view =
+        (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
+    for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) {
+      write_frame_set(frame_sets_dip_[s], s, frame_buffer_.buf.buffer, frame_buffer_.offset(s), main_cube_view,
+                      sampler_, headlight_cookie_.view, main_mirror_view);
+      if (shadows) {
+        write_frame_set(shadow_sets_[s], s, shadow_frame_buffer_.buf.buffer, shadow_frame_buffer_.offset(s),
+                        environment_.view, sampler_, headlight_cookie_.view, gpu_textures_[1].view);
+        write_frame_set(shadow_sets_mid_[s], s, shadow_frame_mid_buffer_.buf.buffer, shadow_frame_mid_buffer_.offset(s),
+                        environment_.view, sampler_, headlight_cookie_.view, gpu_textures_[1].view);
+        write_frame_set(shadow_sets_far_[s], s, shadow_frame_far_buffer_.buf.buffer, shadow_frame_far_buffer_.offset(s),
+                        environment_.view, sampler_, headlight_cookie_.view, gpu_textures_[1].view);
+      }
+      if (dyn_env_ready_) {
+        for (uint32_t v = 0; v < kMaxEnvViews; ++v) {
+          const uint32_t ring_idx = s * kMaxEnvViews + v;
+          write_frame_set(env_frame_sets_[s][v], s, env_frame_buffer_.buf.buffer, env_frame_buffer_.offset(ring_idx),
+                          environment_.view, sampler_, headlight_cookie_.view, gpu_textures_[1].view);
+        }
+      }
+    }
   }
   material_sets_.resize(sets);
   std::vector<VkDescriptorSetLayout> layouts(sets, material_layout_);
@@ -466,6 +484,11 @@ bool Showroom::upload(std::string& error) {
   SceneHooks hooks;
   hooks.before = [this](VkCommandBuffer cmd) {
     ++world_frame_;
+    const uint32_t fslot = r_.frame_slot();
+    if (frame_sets_dip_[fslot]) frame_set_ = frame_sets_dip_[fslot];
+    if (shadow_sets_[fslot]) shadow_set_ = shadow_sets_[fslot];
+    if (shadow_sets_mid_[fslot]) shadow_set_mid_ = shadow_sets_mid_[fslot];
+    if (shadow_sets_far_[fslot]) shadow_set_far_ = shadow_sets_far_[fslot];
     release_retired();
     pump_deferred_uploads(cmd);
     if (world_lit_ && draw_car_) {
@@ -673,7 +696,9 @@ bool Showroom::upload(std::string& error) {
       // Fallback per-guest frame upload when instanced SSBO is unavailable.
       std::vector<Showroom*> seen;
       for (const auto& in : instances_) {
-        if (!in.car || std::find(seen.begin(), seen.end(), in.car) != seen.end()) continue;
+        if (!in.car || !in.car->frame_buffer_.ready() ||
+            std::find(seen.begin(), seen.end(), in.car) != seen.end())
+          continue;
         seen.push_back(in.car);
         in.car->frame_ = frame_;
         for (int i = 0; i < 4; ++i) in.car->frame_.stripe[i] = in.car->stripe_[i];
@@ -682,26 +707,29 @@ bool Showroom::upload(std::string& error) {
         in.car->frame_.shadow_far_bias[2] = guest_has_dyn ? 1.0f : 0.0f;
         in.car->frame_.shadow_far_bias[3] = 0.0f;
         in.car->update_frame(cmd);
-        if (shadows && in.car->shadow_set_) {
+        if (shadows && in.car->shadow_sets_[fslot]) {
+          in.car->shadow_set_ = in.car->shadow_sets_[fslot];
           in.car->shadow_frame_ = shadow_frame_;
-          in.car->update_buffer(cmd, in.car->shadow_frame_buffer_.buffer, in.car->shadow_frame_);
-          if (in.car->shadow_set_mid_) {
+          in.car->write_frame_ubo(in.car->shadow_frame_buffer_, fslot, in.car->shadow_frame_);
+          if (in.car->shadow_sets_mid_[fslot]) {
+            in.car->shadow_set_mid_ = in.car->shadow_sets_mid_[fslot];
             in.car->shadow_frame_mid_ = shadow_frame_mid_;
-            in.car->update_buffer(cmd, in.car->shadow_frame_mid_buffer_.buffer, in.car->shadow_frame_mid_);
+            in.car->write_frame_ubo(in.car->shadow_frame_mid_buffer_, fslot, in.car->shadow_frame_mid_);
           }
-          if (in.car->shadow_set_far_) {
+          if (in.car->shadow_sets_far_[fslot]) {
+            in.car->shadow_set_far_ = in.car->shadow_sets_far_[fslot];
             in.car->shadow_frame_far_ = shadow_frame_far_;
-            in.car->update_buffer(cmd, in.car->shadow_frame_far_buffer_.buffer, in.car->shadow_frame_far_);
+            in.car->write_frame_ubo(in.car->shadow_frame_far_buffer_, fslot, in.car->shadow_frame_far_);
           }
         }
       }
     }
     if (shadows) {
-      update_buffer(cmd, shadow_frame_buffer_.buffer, shadow_frame_);
-      if (shadow_frame_mid_buffer_.buffer)
-        update_buffer(cmd, shadow_frame_mid_buffer_.buffer, shadow_frame_mid_);
-      if (shadow_frame_far_buffer_.buffer)
-        update_buffer(cmd, shadow_frame_far_buffer_.buffer, shadow_frame_far_);
+      write_frame_ubo(shadow_frame_buffer_, fslot, shadow_frame_);
+      if (shadow_frame_mid_buffer_.ready())
+        write_frame_ubo(shadow_frame_mid_buffer_, fslot, shadow_frame_mid_);
+      if (shadow_frame_far_buffer_.ready())
+        write_frame_ubo(shadow_frame_far_buffer_, fslot, shadow_frame_far_);
       record_shadow(cmd);
       r_.mark(cmd, "shadows");
     }

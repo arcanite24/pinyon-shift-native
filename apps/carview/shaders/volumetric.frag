@@ -64,7 +64,7 @@ float ign(vec2 px) {
 mediump float hg_phase(mediump float cos_theta, mediump float g) {
   mediump float g2 = g * g;
   mediump float denom = max(1.0 + g2 - 2.0 * g * cos_theta, 0.02);
-  return (1.0 - g2) / (4.0 * 3.14159265 * pow(denom, 1.5));
+  return (1.0 - g2) / (4.0 * 3.14159265 * denom * sqrt(denom));
 }
 
 float sample_csm_vol(vec3 p) {

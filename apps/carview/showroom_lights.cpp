@@ -57,8 +57,8 @@ void Showroom::load_car_lamps(const std::filesystem::path& game_root, const std:
 
 void Showroom::update_frame_cookie_descriptor() {
   if (!r_.device_ || !headlight_cookie_.view) return;
-  for (VkDescriptorSet target : {frame_set_, frame_set_dip_, shadow_set_, shadow_set_mid_, shadow_set_far_, env_frame_set_}) {
-    if (!target || target == frame_set_fullbeam_) continue;
+  auto upd = [&](VkDescriptorSet target) {
+    if (!target) return;
     VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = target;
@@ -67,63 +67,39 @@ void Showroom::update_frame_cookie_descriptor() {
     w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.pImageInfo = &cookie;
     vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+  };
+  for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) {
+    upd(frame_sets_dip_[s]);
+    upd(shadow_sets_[s]);
+    upd(shadow_sets_mid_[s]);
+    upd(shadow_sets_far_[s]);
+    for (uint32_t v = 0; v < kMaxEnvViews; ++v) upd(env_frame_sets_[s][v]);
   }
 }
 
-void Showroom::sync_fullbeam_frame_set(VkDescriptorSet dip_set, VkImageView cube_view, VkSampler cube_sampler) {
-  if (guest_ || !r_.device_ || !pool_ || !frame_layout_ || !headlight_cookie_full_.view || !dip_set) return;
-  VkDescriptorSet fresh = VK_NULL_HANDLE;
-  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  ai.descriptorPool = pool_;
-  ai.descriptorSetCount = 1;
-  ai.pSetLayouts = &frame_layout_;
-  if (vkAllocateDescriptorSets(r_.device_, &ai, &fresh) != VK_SUCCESS || !fresh) return;
-
-  VkDescriptorBufferInfo buffer{frame_buffer_.buffer, 0, sizeof(ShowroomFrame)};
+void Showroom::sync_fullbeam_frame_sets(VkImageView cube_view, VkSampler cube_sampler) {
+  if (guest_ || !r_.device_ || !pool_ || !frame_layout_ || !headlight_cookie_full_.view) return;
   VkImageView use_cube = cube_view
                              ? cube_view
                              : (bound_dyn_env_view_
                                     ? bound_dyn_env_view_
                                     : ((dyn_env_bound_ && dyn_env_.view) ? dyn_env_.view : environment_.view));
   VkSampler use_sampler = cube_sampler ? cube_sampler : sampler_;
-  VkDescriptorImageInfo cube{use_sampler, use_cube, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
-                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-  VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
-                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-  VkDescriptorImageInfo cookie{sampler_, headlight_cookie_full_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
   const VkImageView mirror_view =
       (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
-  VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
-  VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  const VkImageView dm_view = (has_car_dirt_mask_ && car_dirt_mask_.view) ? car_dirt_mask_.view : shared_dirt_mask_.view;
-  VkDescriptorImageInfo dirt_m{sampler_, dm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  VkWriteDescriptorSet writes[12]{};
-  for (int i = 0; i < 12; ++i) {
-    writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[i].dstSet = fresh;
-    writes[i].dstBinding = uint32_t(i);
-    writes[i].descriptorCount = 1;
+  VkDescriptorSetLayout layouts[Renderer::kFramesInFlight];
+  for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) layouts[s] = frame_layout_;
+  VkDescriptorSet fresh[Renderer::kFramesInFlight] = {};
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool = pool_;
+  ai.descriptorSetCount = Renderer::kFramesInFlight;
+  ai.pSetLayouts = layouts;
+  if (vkAllocateDescriptorSets(r_.device_, &ai, fresh) != VK_SUCCESS) return;
+  for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) {
+    write_frame_set(fresh[s], s, frame_buffer_.buf.buffer, frame_buffer_.offset(s), use_cube, use_sampler,
+                    headlight_cookie_full_.view, mirror_view);
+    frame_sets_fullbeam_[s] = fresh[s];
   }
-  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[0].pBufferInfo = &buffer;
-  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &cube;
-  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[2].pImageInfo = &map;
-  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[3].pImageInfo = &cookie;
-  writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[4].pBufferInfo = &hl_buf;
-  writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[5].pImageInfo = &mir;
-  writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[6].pBufferInfo = &inst_buf;
-  writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[7].pImageInfo = &static_cube;
-  writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
-  writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
-  writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
-  writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
-  vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
-  frame_set_dip_ = dip_set;
-  frame_set_fullbeam_ = fresh;
 }
 
 bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::string& error) {
@@ -218,7 +194,7 @@ bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::str
                 retired_.push_back({std::numeric_limits<uint64_t>::max(), [rptr, doomed_full]() mutable {
                                       rptr->destroy_image(doomed_full);
                                     }});
-                sync_fullbeam_frame_set(frame_set_, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                sync_fullbeam_frame_sets(VK_NULL_HANDLE, VK_NULL_HANDLE);
               }
             }
           }
@@ -233,9 +209,7 @@ bool Showroom::upload_carlights(const std::filesystem::path& media_dir, std::str
     if (!load_xds_rgba(carlights / name, glow_tex_[i], true)) return false;
   }
 
-  if (!r_.create_buffer(kMaxGlowSprites * sizeof(GlowSpriteGpu),
-                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glow_buffer_)) {
+  if (!create_dyn_buffer(glow_buf_, kMaxGlowSprites * sizeof(GlowSpriteGpu), error)) {
     error = "glow instance buffer";
     return false;
   }
@@ -383,8 +357,9 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   };
   const bool has_full_cookie = headlight_cookie_full_.view != VK_NULL_HANDLE;
   const bool player_fullbeam = draw_car_ && world_lit_ && (lamp_vectors_.dynamic_lights_2[1] > 0.5f);
-  if (frame_set_dip_ && frame_set_fullbeam_) {
-    frame_set_ = player_fullbeam ? frame_set_fullbeam_ : frame_set_dip_;
+  const uint32_t slot = r_.frame_slot();
+  if (frame_sets_dip_[slot]) {
+    frame_set_ = (player_fullbeam && frame_sets_fullbeam_[slot]) ? frame_sets_fullbeam_[slot] : frame_sets_dip_[slot];
   }
   auto build_beam_at = [&](const float render_from_body[16], const std::array<float, 3>& origin_body,
                            const std::array<float, 3>& color, float head_amt, bool fullbeam, float yaw_deg,
@@ -532,25 +507,8 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     dst_b.color_cos[3] = 0.72f;  // ~44 deg volumetric cone half-angle matching automotive low/high beam
   }
 
-  {
-    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.buffer = headlights_ubo_.buffer;
-    b.size = sizeof(HeadlightUbo);
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &dep);
-    vkCmdUpdateBuffer(cmd, headlights_ubo_.buffer, 0, sizeof(HeadlightUbo), &hl);
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-    vkCmdPipelineBarrier2(cmd, &dep);
+  if (headlights_ubo_.ready()) {
+    std::memcpy(headlights_ubo_.ptr(slot), &hl, sizeof(HeadlightUbo));
   }
 
   // R3-REN-10 & R3-REN-19: Populate dynamic car point lights (player brake/reverse/backfire spill
@@ -623,7 +581,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
 
   // Collect additive glow sprites (car .carbin lamp points + world streetlamp/outpost glows).
   glow_count_ = 0;
-  if (!carlights_ready_ || !glow_buffer_.buffer) return;
+  if (!carlights_ready_ || !glow_buf_.ready()) return;
   std::vector<GlowSpriteGpu> sprites;
   sprites.reserve(256);
 
@@ -926,37 +884,20 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
   }
 
   glow_count_ = uint32_t(sprites.size());
-  if (glow_count_ > 0) {
+  if (glow_count_ > 0 && glow_buf_.ready()) {
     const VkDeviceSize bytes = VkDeviceSize(glow_count_) * sizeof(GlowSpriteGpu);
-    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-    b.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.buffer = glow_buffer_.buffer;
-    b.size = bytes;
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.bufferMemoryBarrierCount = 1;
-    dep.pBufferMemoryBarriers = &b;
-    vkCmdPipelineBarrier2(cmd, &dep);
-    // vkCmdUpdateBuffer limit is 65536 bytes (= 1024 * 64 = kMaxGlowSprites * sizeof(GlowSpriteGpu)).
-    vkCmdUpdateBuffer(cmd, glow_buffer_.buffer, 0, bytes, sprites.data());
-    b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-    b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-    b.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-    vkCmdPipelineBarrier2(cmd, &dep);
+    std::memcpy(glow_buf_.data(), sprites.data(), size_t(bytes));
+    ++glow_buf_.ver;
+    glow_vb_offset_ = dyn_sync(glow_buf_, bytes);
   }
 }
 
 void Showroom::record_glows_draw(VkCommandBuffer cmd) {
-  if (!carlights_ready_ || glow_count_ == 0 || !glow_pipe_) return;
+  if (!carlights_ready_ || glow_count_ == 0 || !glow_pipe_ || !glow_buf_.ready()) return;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glow_pipe_);
   const VkDescriptorSet sets[2] = {frame_set_, glow_set_};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glow_pipe_layout_, 0, 2, sets, 0, nullptr);
-  VkDeviceSize zero = 0;
-  vkCmdBindVertexBuffers(cmd, 0, 1, &glow_buffer_.buffer, &zero);
+  vkCmdBindVertexBuffers(cmd, 0, 1, &glow_buf_.buf.buffer, &glow_vb_offset_);
   vkCmdDraw(cmd, 6, glow_count_, 0, 0);
 }
 

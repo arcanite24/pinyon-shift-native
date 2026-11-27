@@ -48,6 +48,7 @@ layout(set = 0, binding = 5) uniform Optical {
   vec4 modern_p;      // x ao_strength, y lut_size, z lut_strength, w out_alpha
   vec4 sota_p;        // x tonemapper (0=Hable, 1=AgX, 2=GT, 3=PBRNeutral), y sscs_strength, z mblur_taps (0/9/13), w gtao_bent_strength
   vec4 phase_b;       // x ssr_strength, y volumetric_active (>0.5), z vol_inv_w, w vol_inv_h
+  vec4 display_p;     // x sdr_brightness_offset (when drawing directly to final target), yzw unused
 } opt;
 
 layout(push_constant) uniform Post {
@@ -93,50 +94,50 @@ mediump vec3 tonemap_agx(mediump vec3 color) {
 }
 
 // Gran Turismo / Uchimura Filmic (Hajime Uchimura, Polyphony Digital CEDEC 2017).
-float gt_filmic_channel(float x) {
-  const float P = 1.0, a = 1.0, m = 0.22, l = 0.4, c = 1.33, b = 0.0;
-  const float l0 = ((P - m) * l) / a;
-  const float S0 = m + l0;
-  const float S1 = m + a * l0;
-  const float C2 = (a * P) / (P - S1);
-  const float CP = -C2 / P;
+mediump float gt_filmic_channel(mediump float x) {
+  const mediump float P = 1.0, a = 1.0, m = 0.22, l = 0.4, c = 1.33, b = 0.0;
+  const mediump float l0 = ((P - m) * l) / a;
+  const mediump float S0 = m + l0;
+  const mediump float S1 = m + a * l0;
+  const mediump float C2 = (a * P) / (P - S1);
+  const mediump float CP = -C2 / P;
   x = max(x, 0.0);
-  float w0 = 1.0 - smoothstep(0.0, m, x);
-  float w2 = step(m + l0, x);
-  float w1 = 1.0 - w0 - w2;
-  float T = m * pow(x / m, c) + b;
-  float S = P - (P - S1) * exp(CP * (x - S0));
-  float L = m + a * (x - m);
+  mediump float w0 = 1.0 - smoothstep(0.0, m, x);
+  mediump float w2 = step(m + l0, x);
+  mediump float w1 = 1.0 - w0 - w2;
+  mediump float T = m * pow(x / m, c) + b;
+  mediump float S = P - (P - S1) * exp(CP * (x - S0));
+  mediump float L = m + a * (x - m);
   return clamp(T * w0 + L * w1 + S * w2, 0.0, 1.0);
 }
 
-vec3 tonemap_gt_filmic(vec3 color) {
+mediump vec3 tonemap_gt_filmic(mediump vec3 color) {
   return vec3(gt_filmic_channel(color.r), gt_filmic_channel(color.g), gt_filmic_channel(color.b));
 }
 
 // Khronos PBR Neutral Tone Mapper (2024 spec, exact hue fidelity for paint & liveries).
-vec3 tonemap_pbr_neutral(vec3 color) {
+mediump vec3 tonemap_pbr_neutral(mediump vec3 color) {
   color = max(color, vec3(0.0));
-  const float startCompression = 0.8 - 0.04;
-  const float desaturation = 0.15;
-  float x = min(color.r, min(color.g, color.b));
-  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  const mediump float startCompression = 0.8 - 0.04;
+  const mediump float desaturation = 0.15;
+  mediump float x = min(color.r, min(color.g, color.b));
+  mediump float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
   color -= offset;
-  float peak = max(color.r, max(color.g, color.b));
+  mediump float peak = max(color.r, max(color.g, color.b));
   if (peak < startCompression) return clamp(color, vec3(0.0), vec3(1.0));
-  const float d = 1.0 - startCompression;
-  float newPeak = 1.0 - d * d / (peak + d - startCompression);
+  const mediump float d = 1.0 - startCompression;
+  mediump float newPeak = 1.0 - d * d / (peak + d - startCompression);
   color *= newPeak / max(peak, 1e-6);
-  float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+  mediump float g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
   return clamp(mix(color, vec3(newPeak), g), vec3(0.0), vec3(1.0));
 }
 
 // Jimenez et al. GTAO multi-bounce diffuse albedo approximation (restores warm colored crevice bounce).
-vec3 gtao_multi_bounce(float visibility, vec3 albedo_approx) {
-  vec3 a =  2.0404 * albedo_approx - 0.3324;
-  vec3 b = -4.7951 * albedo_approx + 0.6417;
-  vec3 c =  2.7552 * albedo_approx + 0.6903;
-  float v = clamp(visibility, 0.0, 1.0);
+mediump vec3 gtao_multi_bounce(mediump float visibility, mediump vec3 albedo_approx) {
+  mediump vec3 a =  2.0404 * albedo_approx - 0.3324;
+  mediump vec3 b = -4.7951 * albedo_approx + 0.6417;
+  mediump vec3 c =  2.7552 * albedo_approx + 0.6903;
+  mediump float v = clamp(visibility, 0.0, 1.0);
   return max(vec3(v), ((v * a + b) * v + c) * v);
 }
 
@@ -708,5 +709,7 @@ void main() {
   }
 
   // FH1 display transfer (SKY_AND_TOD.md §5.5): gamma-2.0 sqrt output, preserving modern_p.w alpha.
-  out_color = vec4(sqrt(t), opt.modern_p.w);
+  vec3 disp = sqrt(t);
+  if (abs(opt.display_p.x) > 1e-5) disp = clamp(disp + vec3(opt.display_p.x), 0.0, 1.0);
+  out_color = vec4(disp, opt.modern_p.w);
 }

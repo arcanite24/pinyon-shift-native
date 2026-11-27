@@ -817,10 +817,11 @@ void RtPipeline::record(VkCommandBuffer cmd, const Showroom& host, const RtScene
 namespace carview {
 RtPipeline::RtPipeline(Renderer& r) : r_(r) {}
 RtPipeline::~RtPipeline() {}
-bool RtPipeline::init(VkDescriptorSetLayout, VkSampler, VkImageView, std::string& error) {
+bool RtPipeline::init(VkDescriptorSetLayout, VkSampler, VkImageView, std::string& error, RetireFn) {
   error = "RT disabled at compile time";
   return false;
 }
+bool RtPipeline::prewarm_targets(uint32_t, uint32_t) { return false; }
 void RtPipeline::shutdown() {}
 void RtPipeline::record(VkCommandBuffer, const Showroom&, const RtScene&, VkImage, VkImageView, VkImageView,
                         VkImageView, uint32_t, uint32_t) {}

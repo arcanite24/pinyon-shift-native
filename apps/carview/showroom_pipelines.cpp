@@ -499,6 +499,12 @@ bool Showroom::create_pipelines(std::string& error) {
   layout.pushConstantRangeCount = 1;
   layout.pPushConstantRanges = &push;
   VK_TRY(vkCreatePipelineLayout(r_.device_, &layout, nullptr, &pipeline_layout_), "pipeline layout");
+  if (guest_) {
+    // Guest cars are always rendered via the host Showroom's pipelines (instanced
+    // record_all_instances / record_instance_offscreen); they only need the shared
+    // material descriptor set layout and compatible pipeline layout.
+    return true;
+  }
   const VkDescriptorSetLayout world_layouts[2] = {frame_layout_, world_material_layout_};
   layout.pSetLayouts = world_layouts;
   VK_TRY(vkCreatePipelineLayout(r_.device_, &layout, nullptr, &world_pipeline_layout_), "world pipeline layout");
@@ -685,7 +691,8 @@ bool Showroom::create_pipelines(std::string& error) {
       info.pDepthStencilState = &depth;
       info.pColorBlendState = &blend;
       const bool use_vrs = r_.vrs_supported() && color_out &&
-                           ((blend_mode == 0) || (dst == &world_alpha_)) && samples == r_.samples_ &&
+                           ((blend_mode == 0) || (blend_mode == 1) || (blend_mode == 2) || (blend_mode == 3) ||
+                            (dst == &world_alpha_)) && samples == r_.samples_ &&
                            (dst != &env_world_opaque_) && (dst != &env_world_coverage_) && (dst != &env_car_opaque_);
       info.pDynamicState = (blend_mode == 5) ? &dynamic_blend_const
                                              : (vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)

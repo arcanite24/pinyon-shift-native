@@ -34,21 +34,21 @@
     {
       "name": "showroom_frag.glsl",
       "kind": "header",
-      "lines": 1591,
+      "lines": 1595,
       "uses_bda": false,
       "notes": []
     },
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 1375,
+      "lines": 1385,
       "uses_bda": false,
       "notes": []
     },
     {
       "name": "world_vert.glsl",
       "kind": "header",
-      "lines": 332,
+      "lines": 336,
       "uses_bda": false,
       "notes": []
     }
@@ -892,7 +892,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 59492,
+      "spirv_bytes": 61916,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -1953,7 +1953,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 167392,
+      "spirv_bytes": 168716,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2121,7 +2121,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 8772,
+      "spirv_bytes": 8964,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -2190,7 +2190,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 148872,
+      "spirv_bytes": 150196,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2482,7 +2482,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 21560,
+      "spirv_bytes": 27556,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -2652,7 +2652,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 23932,
+      "spirv_bytes": 25696,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -2738,7 +2738,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 21704,
+      "spirv_bytes": 21884,
       "local_size": null,
       "push_constant_bytes": 64,
       "spec_constants": [],
@@ -3113,7 +3113,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 27160,
+      "spirv_bytes": 27488,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3152,7 +3152,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 15656,
+      "spirv_bytes": 15896,
       "local_size": null,
       "push_constant_bytes": 32,
       "spec_constants": [],
@@ -3214,7 +3214,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 160900,
+      "spirv_bytes": 162820,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3366,7 +3366,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 18356,
+      "spirv_bytes": 18680,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3517,7 +3517,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 164548,
+      "spirv_bytes": 166468,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3630,7 +3630,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 18880,
+      "spirv_bytes": 19204,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3714,7 +3714,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 111644,
+      "spirv_bytes": 113128,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3827,7 +3827,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 108416,
+      "spirv_bytes": 109900,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

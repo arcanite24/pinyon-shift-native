@@ -282,21 +282,23 @@ float ign_shadow() {
 
 float sample_cascade_pcf(vec4 s, float x_off, float inv_cascades) {
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
-  float tx = frame.shadow.y * inv_cascades * 0.75;
-  float ty = frame.shadow.y * 0.75;
   float u_lo = x_off + frame.shadow.y * inv_cascades;
   float u_hi = x_off + inv_cascades - frame.shadow.y * inv_cascades;
-  const vec2 offs[4] = vec2[4](vec2(-tx, -ty), vec2(tx, -ty), vec2(-tx, ty), vec2(tx, ty));
-  float lit = 0.0;
-  for (int i = 0; i < 4; ++i) {
-    vec2 suv = vec2(clamp(uv.x + offs[i].x, u_lo, u_hi), clamp(uv.y + offs[i].y, 0.0005, 0.9995));
-    lit += texture(shadow_map, vec3(suv, s.z));
+  if (frame.shadow.w > 1.5) {
+    float tx = frame.shadow.y * inv_cascades * 0.75;
+    float ty = frame.shadow.y * 0.75;
+    vec2 uv0 = vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995));
+    vec2 uv1 = vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y - ty, 0.0005, 0.9995));
+    vec2 uv2 = vec2(clamp(uv.x - tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995));
+    vec2 uv3 = vec2(clamp(uv.x + tx, u_lo, u_hi), clamp(uv.y + ty, 0.0005, 0.9995));
+    return 0.25 * (texture(shadow_map, vec3(uv0, s.z)) + texture(shadow_map, vec3(uv1, s.z)) +
+                   texture(shadow_map, vec3(uv2, s.z)) + texture(shadow_map, vec3(uv3, s.z)));
   }
-  return 0.25 * lit;
+  return texture(shadow_map, vec3(vec2(clamp(uv.x, u_lo, u_hi), clamp(uv.y, 0.0005, 0.9995)), s.z));
 }
 
 float sample_cascade_car(vec4 s, float x_off, float inv_cascades, float pcss_mode, float cascade_scale) {
-  if (pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades);
+  if (kMobileFast || pcss_mode < 0.5) return sample_cascade_pcf(s, x_off, inv_cascades);
   vec2 uv = vec2((s.x * 0.5 + 0.5) * inv_cascades + x_off, s.y * 0.5 + 0.5);
   float texel_x = frame.shadow.y * inv_cascades;
   float texel_y = frame.shadow.y;
@@ -1322,11 +1324,12 @@ void main() {
     diffuse_light = sun_col * ndl * lit * mix(0.6, 1.0, occlusion) +
                     mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb * occlusion * sh_amb_tint;
     // Projected headlight beams illuminating other vehicles at night (CAR_LAMPS.md §5).
-    int hl_count = int(headlights.count_night.x + 0.5);
-    float hl_night = headlights.count_night.y;
+    int hl_cap = kMobileFast ? 6 : 16;
+    int hl_count = min(int(headlights.count_night.x + 0.5), hl_cap);
+    mediump float hl_night = headlights.count_night.y;
     if (hl_count > 0 && hl_night > 0.004) {
-      vec3 hl_sum = vec3(0.0);
-      for (int i = 0; i < hl_count && i < 16; ++i) {
+      mediump vec3 hl_sum = vec3(0.0);
+      for (int i = 0; i < hl_count; ++i) {
         vec3 origin = headlights.beams[i].origin_range.xyz;
         float range = headlights.beams[i].origin_range.w;
         vec3 to_p = v_position - origin;
@@ -1394,7 +1397,61 @@ void main() {
   }
 
   vec3 colour;
-  if (is_clearcoat) {
+  if ((flags & kFlagMirror) != 0u) {
+    if (frame.shadow_far_bias.w > 0.5 && draw.uv1.y > 0.0 && draw.uv1.w > 0.0) {
+      // Dedicated 3-band cockpit mirror atlas (1024x256):
+      // submat 10 = mirrorLeft [0..1/3], 11 = mirrorMiddle [1/3..2/3], 12 = mirrorRight [2/3..1].
+      // Map each mirror glass quad 1:1 to its dedicated 342x256 rear-facing camera band
+      // using car-space XY bounds stored in draw.uv1 (rendering.toml:1167).
+      float u_lo = 0.338, u_hi = 0.662;
+      if (submat == 10u) {
+        u_lo = 0.004;
+        u_hi = 0.329;
+      } else if (submat == 12u) {
+        u_lo = 0.671;
+        u_hi = 0.996;
+      }
+      float u_loc = clamp((v_position.x - draw.uv1.x) * draw.uv1.y, 0.0, 1.0);
+      float v_loc = clamp(1.0 - (v_position.y - draw.uv1.z) * draw.uv1.w, 0.0, 1.0);
+      // Rear camera right is -X (driver's left), so u_band = 1 - u_loc keeps left on the left.
+      vec2 muv = vec2(mix(u_lo, u_hi, 1.0 - u_loc), clamp(v_loc, 0.01, 0.99));
+      colour = texture(mirror_map, muv).rgb * 0.92;
+    } else {
+      colour = env(r, 0.25) * 0.85;
+    }
+    alpha = 1.0;
+#ifndef SHOWROOM_OPAQUE_NO_DISCARD
+  } else if (klass == kGlass) {
+    if ((flags & kFlagCover) != 0u && submat == 8u) {
+      // Pass 2 Additive reflection + sun glint on detail_glass_red/amber/clear covers.
+      bool is_red = draw.tint.r > 0.15 && draw.tint.g < 0.05;
+      bool is_amber = draw.tint.r > 0.35 && draw.tint.g > 0.10 && draw.tint.b < 0.05;
+      float f_idx = is_red ? 1.65 : is_amber ? 1.45 : 3.55;
+      float f_scl = (is_red || is_amber) ? 0.70 : 1.00;
+      float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
+      vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
+      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit + dyn_spec_coat * 0.65;
+      // Subtle translucent plastic diffuse scattering on red/amber lamp lenses (P1-3)
+      // so unlit daylight rear fog/tail lenses read deep ruby-red instead of dull grey-brown.
+      vec3 lens_diff = is_red ? (vec3(0.065, 0.002, 0.002) * diffuse_light)
+                     : is_amber ? (vec3(0.14, 0.055, 0.004) * diffuse_light)
+                     : vec3(0.0);
+      colour = lens_diff + F_cov * cov_refl + cov_spec;
+      alpha = 1.0;
+    } else if (submat == 6u) {
+      colour = base * (diffuse_light + vec3(0.02)) * alpha;
+    } else {
+      // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
+      // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
+      float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
+      vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl * (1.0 - glass_crack_vein * 0.55);
+      vec3 glass_spec = (direct_col * pow(nh, 140.0) * 2.2 * ndl * lit + dyn_spec_coat) * (1.0 - glass_crack_vein * 0.50);
+      vec3 crack_scatter = vec3(0.48, 0.56, 0.54) * (diffuse_light + direct_col * 0.25) * glass_crack_vein * 0.42;
+      colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + crack_scatter + emissive;
+      alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
+    }
+#endif
+  } else if (is_clearcoat) {
     // Phase B Energy-Conserving 2-Layer Clearcoat + Multiscale Anti-Aliased Metallic Flake BRDF:
     // Close-up (< 6 m) clearcoat-only orange-peel micro-normal on high/ultra gives authentic painted-panel realism.
     vec3 n_coat = n;
@@ -1449,7 +1506,7 @@ void main() {
       vec3 flake_tint = mix(base, vec3(0.95), 0.35);
       basecoat += base * met_cube * 0.36 * paint_metallic * base_atten_ibl;
       basecoat += base * direct_col * (lobe_mid + lobe_broad) * ndl * lit * paint_metallic * base_atten_direct;
-      if (flake_boost > 0.01) {
+      if (!kMobileFast && !is_inst && flake_boost > 0.01) {
         float glint = eval_multiscale_flake(v_local_pos, n, h, T_frame, B_frame, 220.0, frame.phase_b_params.x);
         basecoat += flake_tint * direct_col * glint * flake_boost * ndl * lit * paint_metallic * base_atten_direct;
       }
@@ -1461,102 +1518,49 @@ void main() {
     float rlen = length(rad_v);
     vec3 R_axis = rlen > 1e-4 ? (rad_v / rlen) : T_frame;
     vec3 T_axis = normalize(cross(n, R_axis));
-    float d_aniso = aniso_ggx_d(n, h, T_axis, R_axis, 0.09, 0.45);
-    vec3 rotor_f0 = mix(vec3(0.04), base * 1.15, metal);
-    vec3 rotor_f = rotor_f0 + (vec3(1.0) - rotor_f0) * pow(1.0 - nv, 5.0);
-    vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit + dyn_spec_std * 0.45;
+    mediump float d_aniso = aniso_ggx_d(n, h, T_axis, R_axis, 0.09, 0.45);
+    mediump vec3 rotor_f0 = mix(vec3(0.04), base * 1.15, metal);
+    mediump float omv_rot = 1.0 - nv;
+    mediump float omv_rot2 = omv_rot * omv_rot;
+    mediump vec3 rotor_f = rotor_f0 + (vec3(1.0) - rotor_f0) * (omv_rot2 * omv_rot2 * omv_rot);
+    mediump vec3 aniso_spec = direct_col * rotor_f * (d_aniso * 0.18) * ndl * lit + dyn_spec_std * 0.45;
     // Planckian thermal glow across the swept brake-pad friction ring (900 K -> 1450 K).
     // Split front/rear channels (~70/30 front brake bias) so front rotors visibly glow hotter.
     // Guarded to player car so hard braking never makes instanced traffic/AI rotors glow.
     float disc_r = length(v_local_pos.yz);
-    float pad_ring = smoothstep(0.065, 0.115, disc_r) * (1.0 - smoothstep(0.165, 0.24, disc_r));
-    float rotor_heat = 0.0;
+    mediump float pad_ring = smoothstep(0.065, 0.115, disc_r) * (1.0 - smoothstep(0.165, 0.24, disc_r));
+    mediump float rotor_heat = 0.0;
     if ((flags & kFlagInstanced) == 0u) {
       bool is_rear_rotor = (submat == 13u) || (v_position.z > 0.15);
-      float front_h = max(frame.dyn_light_meta.y, frame.phase_b_params.y);
-      float rear_h = (frame.dyn_light_meta.y > 1e-4 || frame.dyn_light_meta.z > 1e-4)
+      mediump float front_h = max(frame.dyn_light_meta.y, frame.phase_b_params.y);
+      mediump float rear_h = (frame.dyn_light_meta.y > 1e-4 || frame.dyn_light_meta.z > 1e-4)
                          ? frame.dyn_light_meta.z
                          : (frame.phase_b_params.y * 0.4286);
       rotor_heat = is_rear_rotor ? rear_h : front_h;
     }
-    vec3 thermal_glow = blackbody_rotor_rgb(rotor_heat) * pad_ring;
-    vec3 reflection = env(r, (1.0 - gloss) * 6.0) * frame.reflect_tint.rgb * occ_refl;
+    mediump vec3 thermal_glow = blackbody_rotor_rgb(rotor_heat) * pad_ring;
+    mediump vec3 reflection = env(r, (1.0 - gloss) * 6.0) * frame.reflect_tint.rgb * occ_refl;
     colour = base * (1.0 - metal) * diffuse_light + rotor_f * reflection * 0.85 + aniso_spec + thermal_glow + emissive;
   } else {
-    float fresnel = reflectivity + (1.0 - reflectivity) * pow(1.0 - nv, 5.0);
-    vec3 specular_colour = mix(vec3(fresnel), base * mix(0.5, 1.0, fresnel), metal);
-    vec3 reflection = env(r, (1.0 - gloss) * 6.0) * frame.reflect_tint.rgb * occ_refl;
-    vec3 highlight = (frame.drive.w > 0.5)
-                         ? (direct_col * pow(nh, mix(8.0, 400.0, gloss)) * (mix(8.0, 400.0, gloss) + 8.0) * 0.04 *
-                                ndl * lit * gloss +
-                            dyn_spec_std)
-                         : (pow(nh, mix(8.0, 400.0, gloss)) * direct_col * gloss);
+    mediump float omv_std = 1.0 - nv;
+    mediump float omv_std2 = omv_std * omv_std;
+    mediump float fresnel = reflectivity + (1.0 - reflectivity) * (omv_std2 * omv_std2 * omv_std);
+    mediump vec3 specular_colour = mix(vec3(fresnel), base * mix(0.5, 1.0, fresnel), metal);
+    mediump vec3 reflection = env(r, (1.0 - gloss) * 6.0) * frame.reflect_tint.rgb * occ_refl;
+    mediump float spec_exp = mix(8.0, 400.0, gloss);
+    mediump vec3 highlight = (frame.drive.w > 0.5)
+                                 ? (direct_col * pow(nh, spec_exp) * (spec_exp + 8.0) * 0.04 * ndl * lit * gloss +
+                                    dyn_spec_std)
+                                 : (pow(nh, spec_exp) * direct_col * gloss);
     colour = base * (1.0 - metal) * diffuse_light + specular_colour * (reflection + highlight) + emissive;
     if (klass == kTyre) {
       // Tire/Normal.xml: broad satin rubber specular (SpecularPower = 5.0) + soft grazing rubber sheen.
-      float rubber_spec = pow(nh, 5.0) * 0.16 * ndl * lit;
-      float rubber_rim = pow(1.0 - nv, 3.0) * 0.06;
+      mediump float nh2 = nh * nh;
+      mediump float rubber_spec = (nh2 * nh2 * nh) * 0.16 * ndl * lit;
+      mediump float rubber_rim = (omv_std2 * omv_std) * 0.06;
       colour += direct_col * rubber_spec + env(n, 5.0) * rubber_rim * occlusion;
     }
   }
-
-  if ((flags & kFlagMirror) != 0u) {
-    if (frame.shadow_far_bias.w > 0.5 && draw.uv1.y > 0.0 && draw.uv1.w > 0.0) {
-      // Dedicated 3-band cockpit mirror atlas (1024x256):
-      // submat 10 = mirrorLeft [0..1/3], 11 = mirrorMiddle [1/3..2/3], 12 = mirrorRight [2/3..1].
-      // Map each mirror glass quad 1:1 to its dedicated 342x256 rear-facing camera band
-      // using car-space XY bounds stored in draw.uv1 (rendering.toml:1167).
-      float u_lo = 0.338, u_hi = 0.662;
-      if (submat == 10u) {
-        u_lo = 0.004;
-        u_hi = 0.329;
-      } else if (submat == 12u) {
-        u_lo = 0.671;
-        u_hi = 0.996;
-      }
-      float u_loc = clamp((v_position.x - draw.uv1.x) * draw.uv1.y, 0.0, 1.0);
-      float v_loc = clamp(1.0 - (v_position.y - draw.uv1.z) * draw.uv1.w, 0.0, 1.0);
-      // Rear camera right is -X (driver's left), so u_band = 1 - u_loc keeps left on the left.
-      vec2 muv = vec2(mix(u_lo, u_hi, 1.0 - u_loc), clamp(v_loc, 0.01, 0.99));
-      colour = texture(mirror_map, muv).rgb * 0.92;
-    } else {
-      colour = env(r, 0.25) * 0.85;
-    }
-    alpha = 1.0;
-#ifndef SHOWROOM_OPAQUE_NO_DISCARD
-  } else if (klass == kGlass) {
-    if ((flags & kFlagCover) != 0u && submat == 8u) {
-      // Pass 2 Additive reflection + sun glint on detail_glass_red/amber/clear covers.
-      bool is_red = draw.tint.r > 0.15 && draw.tint.g < 0.05;
-      bool is_amber = draw.tint.r > 0.35 && draw.tint.g > 0.10 && draw.tint.b < 0.05;
-      float f_idx = is_red ? 1.65 : is_amber ? 1.45 : 3.55;
-      float f_scl = (is_red || is_amber) ? 0.70 : 1.00;
-      float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
-      vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
-      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit + dyn_spec_coat * 0.65;
-      // Subtle translucent plastic diffuse scattering on red/amber lamp lenses (P1-3)
-      // so unlit daylight rear fog/tail lenses read deep ruby-red instead of dull grey-brown.
-      vec3 lens_diff = is_red ? (vec3(0.065, 0.002, 0.002) * diffuse_light)
-                     : is_amber ? (vec3(0.14, 0.055, 0.004) * diffuse_light)
-                     : vec3(0.0);
-      colour = lens_diff + F_cov * cov_refl + cov_spec;
-      alpha = 1.0;
-    } else if (submat == 6u) {
-      colour = base * (diffuse_light + vec3(0.02)) * alpha;
-    } else {
-      // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
-      // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
-      float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
-      vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl * (1.0 - glass_crack_vein * 0.55);
-      vec3 glass_spec = (direct_col * pow(nh, 140.0) * 2.2 * ndl * lit + dyn_spec_coat) * (1.0 - glass_crack_vein * 0.50);
-      vec3 crack_scatter = vec3(0.48, 0.56, 0.54) * (diffuse_light + direct_col * 0.25) * glass_crack_vein * 0.42;
-      colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + crack_scatter + emissive;
-      alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
-    }
-  }
-#else
-  }
-#endif
   if (frame.drive.w > 0.5 && (flags & kFlagMirror) == 0u) {
 #ifdef SHOWROOM_OPAQUE_NO_DISCARD
     colour = apply_car_haze(colour, v_position, normalize(frame.drive.xyz), key, 1.0, false);

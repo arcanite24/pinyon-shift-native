@@ -277,47 +277,38 @@ void Showroom::set_world_overlay(std::span<const WorldVertex> triangles) {
   }
 }
 
-void Showroom::update_frame(VkCommandBuffer cmd) {
-  update_buffer(cmd, frame_buffer_.buffer, frame_);
-  if (overlay_dirty_ && overlay_vertices_.buffer) {
-    overlay_dirty_ = false;
-    if (!overlay_cpu_.empty()) {
-      VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-      b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-      b.srcAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-      b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      b.buffer = overlay_vertices_.buffer;
-      b.size = VK_WHOLE_SIZE;
-      VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-      dep.bufferMemoryBarrierCount = 1;
-      dep.pBufferMemoryBarriers = &b;
-      vkCmdPipelineBarrier2(cmd, &dep);
-      vkCmdUpdateBuffer(cmd, overlay_vertices_.buffer, 0, overlay_cpu_.size() * sizeof(WorldVertex),
-                        overlay_cpu_.data());
-      b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-      b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-      b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-      b.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-      vkCmdPipelineBarrier2(cmd, &dep);
-    }
+bool Showroom::create_ubo_ring(MappedRing& ring, VkDeviceSize elem_size, uint32_t slots, std::string& error) {
+  destroy_ubo_ring(ring);
+  VkPhysicalDeviceProperties props{};
+  if (r_.physical_) vkGetPhysicalDeviceProperties(r_.physical_, &props);
+  const VkDeviceSize align = std::max<VkDeviceSize>(256u, VkDeviceSize(props.limits.minUniformBufferOffsetAlignment));
+  const VkDeviceSize stride = (elem_size + align - 1u) & ~(align - 1u);
+  if (!r_.create_buffer(stride * slots, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ring.buf)) {
+    error = "ubo ring buffer";
+    return false;
   }
+  if (vmaMapMemory(r_.allocator_, ring.buf.allocation, &ring.mapped) != VK_SUCCESS || !ring.mapped) {
+    r_.destroy_buffer(ring.buf);
+    ring.mapped = nullptr;
+    error = "ubo ring map";
+    return false;
+  }
+  ring.stride = stride;
+  ring.slots = slots;
+  return true;
 }
 
-void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f) {
-  VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-  b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-  b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-  b.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  b.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  b.buffer = buffer;
-  b.size = VK_WHOLE_SIZE;
-  VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-  dep.bufferMemoryBarrierCount = 1;
-  dep.pBufferMemoryBarriers = &b;
-  vkCmdPipelineBarrier2(cmd, &dep);
+void Showroom::destroy_ubo_ring(MappedRing& ring) {
+  if (ring.buf.allocation && ring.mapped) vmaUnmapMemory(r_.allocator_, ring.buf.allocation);
+  r_.destroy_buffer(ring.buf);
+  ring.mapped = nullptr;
+  ring.stride = 0;
+  ring.slots = 0;
+}
+
+void Showroom::write_frame_ubo(MappedRing& ring, uint32_t slot, const ShowroomFrame& f) const {
+  if (!ring.ready() || slot >= ring.slots) return;
   ShowroomFrame copy = f;
   for (int k = 0; k < 4; ++k) {
     copy.cockpit_mfd[k] = cockpit_mfd_[k];
@@ -337,12 +328,69 @@ void Showroom::update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const Showroo
       copy.region_finish[r][k] = region_finish_[r][k];
     }
   }
-  vkCmdUpdateBuffer(cmd, buffer, 0, sizeof(ShowroomFrame), &copy);
-  b.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
-  b.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-  b.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-  b.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
-  vkCmdPipelineBarrier2(cmd, &dep);
+  std::memcpy(ring.ptr(slot), &copy, sizeof(ShowroomFrame));
+}
+
+void Showroom::write_frame_set(VkDescriptorSet dst, uint32_t slot, VkBuffer ubo_buf, VkDeviceSize ubo_off,
+                               VkImageView cube_view, VkSampler cube_sampler, VkImageView cookie_view,
+                               VkImageView mirror_view) const {
+  if (!dst || !r_.device_) return;
+  VkDescriptorBufferInfo buffer{ubo_buf, ubo_off, sizeof(ShowroomFrame)};
+  VkDescriptorImageInfo cube{cube_sampler ? cube_sampler : sampler_, cube_view,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
+                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo cookie{sampler_, cookie_view ? cookie_view : headlight_cookie_.view,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const uint32_t hl_slot = headlights_ubo_.slots > 0 ? (slot % headlights_ubo_.slots) : 0u;
+  VkDescriptorBufferInfo hl_buf{headlights_ubo_.buf.buffer, headlights_ubo_.offset(hl_slot), sizeof(HeadlightUbo)};
+  VkDescriptorImageInfo mir{sampler_, mirror_view ? mirror_view : gpu_textures_[1].view,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
+  VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkImageView dm_view = (has_car_dirt_mask_ && car_dirt_mask_.view) ? car_dirt_mask_.view : shared_dirt_mask_.view;
+  VkDescriptorImageInfo dirt_m{sampler_, dm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  VkWriteDescriptorSet writes[12]{};
+  for (int i = 0; i < 12; ++i) {
+    writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    writes[i].dstSet = dst;
+    writes[i].dstBinding = uint32_t(i);
+    writes[i].descriptorCount = 1;
+  }
+  writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[0].pBufferInfo = &buffer;
+  writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &cube;
+  writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[2].pImageInfo = &map;
+  writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[3].pImageInfo = &cookie;
+  writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[4].pBufferInfo = &hl_buf;
+  writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[5].pImageInfo = &mir;
+  writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[6].pBufferInfo = &inst_buf;
+  writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[7].pImageInfo = &static_cube;
+  writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
+  writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
+  writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
+  writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
+  vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
+}
+
+void Showroom::update_frame(VkCommandBuffer /*cmd*/) {
+  write_frame_ubo(frame_buffer_, r_.frame_slot(), frame_);
+  if (overlay_buf_.ready()) {
+    if (overlay_dirty_) {
+      overlay_dirty_ = false;
+      if (!overlay_cpu_.empty()) {
+        const size_t bytes = std::min(overlay_cpu_.size() * sizeof(WorldVertex), size_t(overlay_buf_.cap));
+        std::memcpy(overlay_buf_.data(), overlay_cpu_.data(), bytes);
+        ++overlay_buf_.ver;
+      }
+    }
+    if (overlay_count_ > 0) {
+      overlay_vb_offset_ = dyn_sync(overlay_buf_, VkDeviceSize(overlay_count_) * sizeof(WorldVertex));
+    }
+  }
 }
 
 
@@ -661,9 +709,9 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
     // beyond 55 m (14 m mobile low-mem / 25 m mobile) skip interior, gauges, calipers, and cockpit-only parts;
     // beyond 145 m (80 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
 #ifdef __ANDROID__
-    const float mid_dist = low_memory_mode_ ? 14.0f : 25.0f;
-    const float far_dist = low_memory_mode_ ? 65.0f : 100.0f;
-    const bool use_far_lod = !g->far_draws_.empty() && min_inst_d2 > 22.0f * 22.0f;
+    const float mid_dist = low_memory_mode_ ? 12.0f : 22.0f;
+    const float far_dist = low_memory_mode_ ? 55.0f : 90.0f;
+    const bool use_far_lod = !g->far_draws_.empty() && min_inst_d2 > (low_memory_mode_ ? 12.0f * 12.0f : 18.0f * 18.0f);
 #else
     const float mid_dist = low_memory_mode_ ? 35.0f : 55.0f;
     const float far_dist = low_memory_mode_ ? 95.0f : 145.0f;
@@ -722,10 +770,11 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
                                  sizeof(ShowroomPush), &push);
               vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
             } else {
-              VkPipeline want = pass ? g->glass_ : (needs_discard ? op_cutout_pipe : op_pipe);
+              VkPipeline want = pass ? glass_ : (needs_discard ? op_cutout_pipe : op_pipe);
               if (bound_p != want) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
                 if (!pass || lod_mid) r_.apply_vrs(cmd);
+                else r_.reset_vrs(cmd);
               }
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
@@ -1009,11 +1058,10 @@ void Showroom::record_world_blended(VkCommandBuffer cmd) {
       record_world_textured(cmd, fading_.draws, m, 3.0f + swap, true, 2);
     }
   }
-  if (overlay_count_ >= 3 && overlay_vertices_.buffer && world_alpha_ && world_white_set_) {
+  if (overlay_count_ >= 3 && overlay_buf_.ready() && world_alpha_ && world_white_set_) {
     const auto it_anchor = driving_line_anchors().find(this);
     const bool is_driving_line = it_anchor != driving_line_anchors().end() && it_anchor->second.active;
-    VkDeviceSize off = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_vertices_.buffer, &off);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &overlay_buf_.buf.buffer, &overlay_vb_offset_);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_alpha_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &world_white_set_, 0,
                             nullptr);
@@ -1098,9 +1146,9 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
     // Bucket visible pass_mode==1 draws so ALL discard-free solid opaque terrain/roads/buildings
     // render FIRST (keeping Adreno Hardware LRZ active and eliminating pipeline thrashing),
     // followed by dithered LOD opaque props, followed by alpha-cutout vegetation/fences.
-    std::vector<uint32_t> buckets[3];
-    std::vector<uint32_t> touched_textures;
-    touched_textures.reserve(256);
+    for (auto& b : world_buckets_) b.clear();
+    world_touched_tex_.clear();
+    if (world_touched_tex_.capacity() < 256) world_touched_tex_.reserve(256);
     const bool swap_dither = (swap < 1.5f || swap > 2.5f);
     for (uint32_t di = 0; di < uint32_t(draws.size()); ++di) {
       const auto& d = draws[di];
@@ -1115,19 +1163,55 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
       const uint32_t draw_fl = uint32_t(std::lround(d.push.params[1]));
       const bool sky = draw_fl == 2;
       if (sky && sky_ready_ && !sky_hidden_) continue;
+      // Resolve and cache VkDescriptorSet per draw keyed by world_sets_gen_ so steady-state
+      // frames do zero std::map lookups per draw and sort cleanly by (descriptor, decal).
+      if (d.cached_set_gen != world_sets_gen_) {
+        VkDescriptorSet resolved = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+        uint8_t fallback = 0;
+        const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
+                               d.light_map != kNoWorldTexture || d.normal_map != kNoWorldTexture ||
+                               d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
+                               d.spec_map != kNoWorldTexture;
+        if ((resolved || d.texture == kNoWorldTexture) && has_extra) {
+          VkDescriptorSet layered = world_layer_set(
+              {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
+          if (layered) {
+            resolved = layered;
+          } else if (d.texture_b != kNoWorldTexture) {
+            fallback = 1;
+          }
+        }
+        d.cached_set = resolved;
+        d.cached_layer_fallback = fallback;
+        d.cached_set_gen = world_sets_gen_;
+      }
       if (pass_mode == 1) {
         const bool needs_dither =
             swap_dither || ((draw_fl & (128u | 256u | 512u | 32u | 32768u)) != 0u) ||
             (((draw_fl & 1024u) != 0u) && ((draw_fl & 1u) == 0u)) || sky;
         const int b = (d.blend == 1) ? 2 : (needs_dither ? 1 : 0);
-        buckets[b].push_back(di);
+        world_buckets_[b].push_back(di);
       } else {
-        buckets[0].push_back(di);
+        world_buckets_[0].push_back(di);
       }
     }
     const int num_buckets = (pass_mode == 1) ? 3 : 1;
+    // Sort opaque/cutout buckets by (descriptor_set, decal) to minimize Vulkan descriptor & bias switches.
+    if (pass_mode == 1) {
+      for (int bi = 0; bi < num_buckets; ++bi) {
+        auto& bk = world_buckets_[bi];
+        if (bk.size() > 1) {
+          std::sort(bk.begin(), bk.end(), [&](uint32_t a, uint32_t b) {
+            const auto& da = draws[a];
+            const auto& db = draws[b];
+            if (da.cached_set != db.cached_set) return da.cached_set < db.cached_set;
+            return da.decal < db.decal;
+          });
+        }
+      }
+    }
     for (int bi = 0; bi < num_buckets; ++bi) {
-      for (uint32_t di : buckets[bi]) {
+      for (uint32_t di : world_buckets_[bi]) {
         const auto& d = draws[di];
         ++world_stats_.drawn;
         world_stats_.indices += d.index_count;
@@ -1166,26 +1250,19 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
           const float sign = r_.reverse_z() ? 1.0f : -1.0f;
           vkCmdSetDepthBias(cmd, d.decal ? sign * kDecalBiasConstant : 0.0f, 0.0f, d.decal ? sign * kDecalBiasSlope : 0.0f);
         }
-        VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
-        if (set) touched_textures.push_back(d.texture);
+        VkDescriptorSet set = d.cached_set;
         ShowroomPush push = d.push;
-        const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
-                               d.light_map != kNoWorldTexture || d.normal_map != kNoWorldTexture ||
-                               d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
-                               d.spec_map != kNoWorldTexture;
-        if ((set || d.texture == kNoWorldTexture) && has_extra) {
-          VkDescriptorSet layered = world_layer_set(
-              {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
-          if (layered) {
-            set = layered;
-            if (d.texture_b != kNoWorldTexture) touched_textures.push_back(d.texture_b);
-            if (d.splat != kNoWorldTexture) touched_textures.push_back(d.splat);
-            if (d.light_map != kNoWorldTexture) touched_textures.push_back(d.light_map);
-            if (d.normal_map != kNoWorldTexture) touched_textures.push_back(d.normal_map);
-            if (d.ao_map != kNoWorldTexture) touched_textures.push_back(d.ao_map);
-            if (d.layer_c != kNoWorldTexture) touched_textures.push_back(d.layer_c);
-            if (d.spec_map != kNoWorldTexture) touched_textures.push_back(d.spec_map);
-          } else if (d.texture_b != kNoWorldTexture) {
+        if (set) {
+          if (d.texture != kNoWorldTexture) world_touched_tex_.push_back(d.texture);
+          if (!d.cached_layer_fallback) {
+            if (d.texture_b != kNoWorldTexture) world_touched_tex_.push_back(d.texture_b);
+            if (d.splat != kNoWorldTexture) world_touched_tex_.push_back(d.splat);
+            if (d.light_map != kNoWorldTexture) world_touched_tex_.push_back(d.light_map);
+            if (d.normal_map != kNoWorldTexture) world_touched_tex_.push_back(d.normal_map);
+            if (d.ao_map != kNoWorldTexture) world_touched_tex_.push_back(d.ao_map);
+            if (d.layer_c != kNoWorldTexture) world_touched_tex_.push_back(d.layer_c);
+            if (d.spec_map != kNoWorldTexture) world_touched_tex_.push_back(d.spec_map);
+          } else {
             // A blend/extra layer did not upload: keep slot 0 and surface flags, drop extra-map flags.
             constexpr uint32_t kExtraTexMask = 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u | 4194304u |
                                                8388608u;
@@ -1231,9 +1308,9 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
         vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
       }
     }
-    if (!touched_textures.empty()) {
+    if (!world_touched_tex_.empty()) {
       std::lock_guard<std::mutex> lock(world_textures_mutex_);
-      for (uint32_t rec : touched_textures) world_lru_.touch(rec, world_frame_);
+      for (uint32_t rec : world_touched_tex_) world_lru_.touch(rec, world_frame_);
     }
     if (group >= 0 && group < 99) r_.mark(cmd, kGroup[std::min(group, 2)]);
   }

@@ -454,15 +454,20 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     pipeline_compile_ms_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - post_t0).count();
     const auto up_choice = modern::resolve_upscaler(graphics_.upscaler, upscaler_runtime_.support, {rw, rh},
                                                     {width, height});
-    const bool need_brightness = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
+    // SDR brightness is folded into upscale.frag / post.frag (no stand_in_ target needed).
     const modern::ModernTargetPlan plan = modern::plan_modern_targets(
         graphics_, {rw, rh}, {width, height}, options_.post.bloom, hdr_mode_, hdr_pattern_, inspector_active_,
-        inspector_view_ == InspectorView::kMotion, up_choice, options_.post.motion_blur, need_brightness);
+        inspector_view_ == InspectorView::kMotion, up_choice, options_.post.motion_blur, false);
     allocated_targets_ = plan;
 
     if (plan.bloom) {
-      // 6-level Jimenez / Dual-Kawase pyramid starting at half-resolution (rw/2 x rh/2).
+      // 6-level Jimenez / Dual-Kawase pyramid (quarter-res start on Android cuts bloom
+      // pixel count & memory bandwidth by 4x with identical soft glow).
+#ifdef __ANDROID__
+      uint32_t bw = std::max(1u, rw / 4), bh = std::max(1u, rh / 4);
+#else
       uint32_t bw = std::max(1u, rw / 2), bh = std::max(1u, rh / 2);
+#endif
       for (uint32_t k = 0; k < kBloomLevels; ++k) {
         bloom_w_[k] = bw;
         bloom_h_[k] = bh;
@@ -532,7 +537,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (plan.modern_chain) {
       const bool need_hdr_stage =
-          (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0) || need_brightness;
+          (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0);
       const bool need_standin = plan.fxaa_standin || need_hdr_stage;
       if (!create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
                         VK_IMAGE_ASPECT_COLOR_BIT, scene_sdr_) ||
@@ -671,13 +676,13 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
       }
       {
         const size_t widx = size_t(s) * 12 + 5;
-        buf_infos[s] = {post_optical_buf_.buffer, 0, VK_WHOLE_SIZE};
+        buf_infos[s] = {post_optical_buf_.buffer, 0, kOpticalUboStride};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = post_sets_[s];
         w.dstBinding = 5;
         w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         w.pBufferInfo = &buf_infos[s];
       }
       const VkImageView extra_views[6] = {ao_view, sscs_view, motion_view, neighbor_view, ssr_view, vol_view};

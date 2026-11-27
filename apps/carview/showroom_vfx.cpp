@@ -531,11 +531,18 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     }
     if (anim_ok) {
       const auto& cat = spectator_anim_.catalog();
-      if (upload_rgba_image_mips(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
+      if (!cat.atlas_rgba.empty() &&
+          upload_rgba_image_mips(cat.atlas_rgba.data(), world::SpectatorCatalog::kAtlasSize,
                                  world::SpectatorCatalog::kAtlasSize, world::SpectatorCatalog::kAtlasMipLevels, true,
                                  spectator_atlas_, "spectator atlas") &&
           gpu_textures_.size() >= 2 && allocate_world_set(spectator_set_, spec_err) &&
           create_dyn_buffer(spectator_buf_, VkDeviceSize(spectator_cap_verts) * sizeof(WorldVertex), spec_err)) {
+#ifdef __ANDROID__
+        // Free the 16 MiB CPU-side 2048x2048 RGBA spectator atlas once uploaded to GPU.
+        if (!r_.rt_supported()) {
+          const_cast<world::SpectatorCatalog&>(cat).release_atlas_rgba();
+        }
+#endif
         // Bind mipmapped 2048x2048 spectator atlas to both binding 0 (albedo) and binding 3
         // (light_map) so dusk/night festival & outpost floodlight bounce illuminates crowds cleanly.
         const VkImageView white = gpu_textures_[0].view;

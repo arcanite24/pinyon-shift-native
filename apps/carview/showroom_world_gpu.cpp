@@ -40,6 +40,7 @@ bool Showroom::begin_world_texture(const WorldTextureData& t, VkBuffer texels, V
     std::lock_guard<std::mutex> lock(world_textures_mutex_);
     world_textures_[t.record] = image;
     world_sets_[t.record] = set;
+    ++world_sets_gen_;
     world_lru_.insert(t.record, image.bytes, world_frame_);
     if (gpu_world_) gpu_world_->add_texture(t.record, image.view);
   }
@@ -132,6 +133,7 @@ bool Showroom::upload_world_textures(const std::vector<std::shared_ptr<const Wor
       std::lock_guard<std::mutex> lock(world_textures_mutex_);
       world_textures_[t->record] = image;
       world_sets_[t->record] = set;
+      ++world_sets_gen_;
       world_lru_.insert(t->record, image.bytes, world_frame_);
       if (gpu_world_) gpu_world_->add_texture(t->record, image.view);
     }
@@ -314,6 +316,7 @@ void Showroom::evict_world_textures() {
       if (auto it = world_sets_.find(record); it != world_sets_.end()) {
         evicted_sets.push_back(it->second);
         world_sets_.erase(it);
+        ++world_sets_gen_;
       }
     }
     if (!world_layer_sets_.empty()) {
@@ -329,6 +332,7 @@ void Showroom::evict_world_textures() {
         if (match) {
           evicted_sets.push_back(it->second);
           it = world_layer_sets_.erase(it);
+          ++world_sets_gen_;
         } else {
           ++it;
         }

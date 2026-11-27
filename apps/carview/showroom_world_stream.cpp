@@ -129,7 +129,11 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
   // draws against culled area: 128 / 768 m cut 4,100 draws but recorded
   // 1,400, which cost the UHD 620 more than the triangles saved;
   // SHIFT_WORLD_CELL="near far" overrides).
+#ifdef __ANDROID__
+  float near_cell = 384, far_cell = 1536;
+#else
   float near_cell = 256, far_cell = 1536;
+#endif
   if (const char* e = std::getenv("SHIFT_WORLD_CELL")) std::sscanf(e, "%f %f", &near_cell, &far_cell);
   near_cell = std::max(near_cell, 1.0f), far_cell = std::max(far_cell, 1.0f);
   // Within a draw, corners with the same attributes share one vertex, so
@@ -177,7 +181,12 @@ WorldGeometry build_textured_world(const WorldTriangles& world) {
     const bool fade_class = mat.fade != 0;
     // A prop's LOD00 copies (fade class 1) in small cells, so the ones past
     // the LOD band are left out whole on the CPU (near_lod_beyond).
-    const float cell = mat.far ? far_cell : mat.fade == 1 ? 64.0f : near_cell;
+#ifdef __ANDROID__
+    constexpr float kFadePropCell = 128.0f;
+#else
+    constexpr float kFadePropCell = 64.0f;
+#endif
+    const float cell = mat.far ? far_cell : mat.fade == 1 ? kFadePropCell : near_cell;
     cells.clear();
     for (uint32_t t : by_material[m]) {
       const auto& p = world.positions[size_t(t) * 3];

@@ -753,9 +753,7 @@ class Renderer {
     return (2.0f * (float(b) / 100.0f) - 1.0f) * 0.2f;
   }
   void set_display_brightness_offset(float offset) {
-    const bool was_on = (display_brightness_offset_ > 1e-5f || display_brightness_offset_ < -1e-5f);
-    const bool now_on = (offset > 1e-5f || offset < -1e-5f);
-    if (was_on != now_on) targets_dirty_ = true;
+    // SDR brightness is folded into upscale.frag / post.frag (no stand_in_ rebuild or wait_idle).
     display_brightness_offset_ = offset;
   }
   float display_brightness_offset() const { return display_brightness_offset_; }
@@ -1063,7 +1061,10 @@ class Renderer {
   VkDescriptorSet post_sets_[kPostSetCount] = {};
   VkSampler post_sampler_ = VK_NULL_HANDLE;
   VkSampler post_depth_sampler_ = VK_NULL_HANDLE;
-  Buffer post_optical_buf_;  // device-local, filled by vkCmdUpdateBuffer in the frame's commands
+  static constexpr VkDeviceSize kOpticalUboStride = 256;
+  static constexpr VkDeviceSize kVolUboStride = (sizeof(VolumetricState) + 255u) & ~VkDeviceSize(255u);
+  Buffer post_optical_buf_;  // persistently mapped kFramesInFlight ring (zero barriers)
+  void* post_optical_mapped_ = nullptr;
   // Modern post-FX & HDR targets (XeGTAO + Bent Normals, SSCS, Hi-Z SSR, Volumetric Scattering, McGuire motion blur, FXAA, upscale, HDR10/scRGB).
   modern::ModernTargetPlan allocated_targets_{};
   Image ao_white_, vel_zero_, ssr_zero_, vol_identity_, ao_raw_, ao_tmp_, ao_blur_, sscs_;
@@ -1073,6 +1074,7 @@ class Renderer {
   uint32_t ssr_width_ = 0, ssr_height_ = 0;
   uint32_t vol_width_ = 0, vol_height_ = 0;
   Buffer vol_ubo_;
+  void* vol_ubo_mapped_ = nullptr;
   VolumetricState vol_state_{};
   bool vol_state_valid_ = false;
   Image scene_sdr_, scene_fxaa_, upscale_tmp_, stand_in_, stand_in_fxaa_;

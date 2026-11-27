@@ -1409,57 +1409,28 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
   driver_wheel_rad_ = 0.0f;
   cockpit_camera_active_ = false;
   update_driver_mesh(0.0f);
-  // Rebind frame_set_ binding 9 to the new car's dirt_mask.xds (or Shared fallback) via a fresh set from pool_.
+  // Rebind frame_sets_dip_ binding 9 to the new car's dirt_mask.xds (or Shared fallback) via fresh sets from pool_.
   if (pool_ && frame_layout_ && sampler_ && shared_dirt_mask_.view) {
-    VkDescriptorSet fresh = VK_NULL_HANDLE;
+    VkDescriptorSetLayout layouts[Renderer::kFramesInFlight];
+    for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) layouts[s] = frame_layout_;
+    VkDescriptorSet fresh[Renderer::kFramesInFlight] = {};
     VkDescriptorSetAllocateInfo fai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     fai.descriptorPool = pool_;
-    fai.descriptorSetCount = 1;
-    fai.pSetLayouts = &frame_layout_;
-    if (vkAllocateDescriptorSets(r_.device_, &fai, &fresh) == VK_SUCCESS && fresh) {
-      VkDescriptorBufferInfo buffer{frame_buffer_.buffer, 0, sizeof(ShowroomFrame)};
+    fai.descriptorSetCount = Renderer::kFramesInFlight;
+    fai.pSetLayouts = layouts;
+    if (vkAllocateDescriptorSets(r_.device_, &fai, fresh) == VK_SUCCESS) {
       VkImageView cube_view = bound_dyn_env_view_
                                   ? bound_dyn_env_view_
                                   : ((dyn_env_bound_ && dyn_env_.view) ? dyn_env_.view : environment_.view);
-      VkDescriptorImageInfo cube{sampler_, cube_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorImageInfo static_cube{sampler_, environment_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorImageInfo map{r_.shadow_sampler_, r_.shadow_map_.view,
-                                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-      VkDescriptorImageInfo map_raw{r_.shadow_raw_sampler_, r_.shadow_map_.view,
-                                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
-      VkDescriptorImageInfo cookie{sampler_, headlight_cookie_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorBufferInfo hl_buf{headlights_ubo_.buffer, 0, sizeof(HeadlightUbo)};
       const VkImageView mirror_view =
           (dyn_env_ready_ && mirror_tex_.view) ? mirror_tex_.view : gpu_textures_[1].view;
-      VkDescriptorImageInfo mir{sampler_, mirror_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorBufferInfo inst_buf{guest_ ? empty_inst_ssbo_.buffer : car_inst_buf_.buf.buffer, 0, VK_WHOLE_SIZE};
-      VkDescriptorImageInfo dirt_p{sampler_, shared_dirt_pattern_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      const VkImageView dm_view = has_car_dirt_mask_ ? car_dirt_mask_.view : shared_dirt_mask_.view;
-      VkDescriptorImageInfo dirt_m{sampler_, dm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkDescriptorImageInfo gcrack{sampler_, shared_glass_crack_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      VkWriteDescriptorSet writes[12]{};
-      for (int i = 0; i < 12; ++i) {
-        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        writes[i].dstSet = fresh;
-        writes[i].dstBinding = uint32_t(i);
-        writes[i].descriptorCount = 1;
+      for (uint32_t s = 0; s < Renderer::kFramesInFlight; ++s) {
+        write_frame_set(fresh[s], s, frame_buffer_.buf.buffer, frame_buffer_.offset(s), cube_view, sampler_,
+                        headlight_cookie_.view, mirror_view);
+        frame_sets_dip_[s] = fresh[s];
       }
-      writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[0].pBufferInfo = &buffer;
-      writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[1].pImageInfo = &cube;
-      writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[2].pImageInfo = &map;
-      writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[3].pImageInfo = &cookie;
-      writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, writes[4].pBufferInfo = &hl_buf;
-      writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[5].pImageInfo = &mir;
-      writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, writes[6].pBufferInfo = &inst_buf;
-      writes[7].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[7].pImageInfo = &static_cube;
-      writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[8].pImageInfo = &dirt_p;
-      writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[9].pImageInfo = &dirt_m;
-      writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[10].pImageInfo = &gcrack;
-      writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, writes[11].pImageInfo = &map_raw;
-      vkUpdateDescriptorSets(r_.device_, 12, writes, 0, nullptr);
-      frame_set_ = fresh;
-      if (frame_set_dip_) frame_set_dip_ = fresh;
-      sync_fullbeam_frame_set(fresh, cube_view, sampler_);
+      frame_set_ = fresh[r_.frame_slot()];
+      sync_fullbeam_frame_sets(cube_view, sampler_);
     }
   }
   sync_paint_shader_uniforms();

@@ -12,7 +12,7 @@ layout(set = 0, binding = 0) uniform sampler2D src_tex;
 layout(push_constant) uniform UpscalePush {
   vec4 src_size;   // xy = src W,H, zw = 1/W, 1/H
   vec4 dst_size;   // xy = dst W,H, zw = 1/W, 1/H
-  vec4 params;     // x = mode (0..3), y = sharpening [0..1], z = out_alpha, w = unused
+  vec4 params;     // x = mode (0..3), y = sharpening [0..1], z = out_alpha, w = sdr_brightness_offset
 } pc;
 
 layout(location = 0) in highp vec2 v_uv;
@@ -188,5 +188,6 @@ void main() {
   else if (mode == 2) col = fsr1_easu(v_uv);
   else if (mode == 3) col = fsr1_rcas(v_uv, pc.params.y);
   else col = texture(src_tex, v_uv).rgb;
+  if (abs(pc.params.w) > 1e-5) col = clamp(col + vec3(pc.params.w), 0.0, 1.0);
   out_color = vec4(col, pc.params.z);
 }

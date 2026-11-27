@@ -665,6 +665,10 @@ struct WorldGeometry {
     uint64_t key = 0;
     uint32_t vertex_begin = 0, vertex_count = 0;  // its vertices in the staged buffer
     float shift[2] = {0, 0};
+    // Per-draw resolved descriptor cache invalidated by Showroom::world_sets_gen_.
+    mutable VkDescriptorSet cached_set = VK_NULL_HANDLE;
+    mutable uint64_t cached_set_gen = 0;
+    mutable uint8_t cached_layer_fallback = 0;
   };
   bool textured = false;
   std::vector<WorldVertex> textured_vertices;  // textured: in place of vertices
@@ -1300,8 +1304,23 @@ class Showroom {
   // The set binding eight uploaded world textures (albedo, layer_b, splat,
   // light_map, normal_map, ao_map, layer_c, spec_map; kNoWorldTexture uses fallbacks).
   VkDescriptorSet world_layer_set(const std::array<uint32_t, 8>& records);
+  // Persistently mapped kFramesInFlight-sliced uniform buffer ring (zero vkCmdUpdateBuffer, zero barriers).
+  struct MappedRing {
+    Renderer::Buffer buf;
+    void* mapped = nullptr;
+    VkDeviceSize stride = 0;
+    uint32_t slots = 0;
+    bool ready() const { return buf.buffer != VK_NULL_HANDLE && mapped != nullptr && stride > 0; }
+    VkDeviceSize offset(uint32_t idx) const { return VkDeviceSize(idx) * stride; }
+    void* ptr(uint32_t idx) const { return static_cast<uint8_t*>(mapped) + offset(idx); }
+  };
+  bool create_ubo_ring(MappedRing& ring, VkDeviceSize elem_size, uint32_t slots, std::string& error);
+  void destroy_ubo_ring(MappedRing& ring);
+  void write_frame_ubo(MappedRing& ring, uint32_t slot, const ShowroomFrame& f) const;
+  void write_frame_set(VkDescriptorSet dst, uint32_t slot, VkBuffer ubo_buf, VkDeviceSize ubo_off,
+                       VkImageView cube_view, VkSampler cube_sampler, VkImageView cookie_view,
+                       VkImageView mirror_view) const;
   void update_frame(VkCommandBuffer cmd);
-  void update_buffer(VkCommandBuffer cmd, VkBuffer buffer, const ShowroomFrame& f);
   // The sun shadow (ours): place_shadow fits the map's box around the car
   // and fills frame_'s shadow fields and shadow_frame_ (the sun's view);
   // record_shadow draws the pass (host); record_shadow_car the car's
@@ -1362,7 +1381,8 @@ class Showroom {
   bool has_car_dirt_mask_ = false;
   VkImageView bound_dyn_env_view_ = VK_NULL_HANDLE;
   VkSampler sampler_ = VK_NULL_HANDLE;
-  Renderer::Buffer vertex_buffer_, index_buffer_, frame_buffer_;
+  Renderer::Buffer vertex_buffer_, index_buffer_;
+  MappedRing frame_buffer_;
   VkDescriptorSetLayout frame_layout_ = VK_NULL_HANDLE, material_layout_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout world_material_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
@@ -1379,9 +1399,12 @@ class Showroom {
   VkDescriptorPool material_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet frame_set_ = VK_NULL_HANDLE;
   // The sun shadow pass: 2-cascade (Near/Far) or 3-cascade (Near/Mid/Far) D32_SFLOAT stabilized CSM atlas.
-  Renderer::Buffer shadow_frame_buffer_;
-  Renderer::Buffer shadow_frame_mid_buffer_;
-  Renderer::Buffer shadow_frame_far_buffer_;
+  MappedRing shadow_frame_buffer_;
+  MappedRing shadow_frame_mid_buffer_;
+  MappedRing shadow_frame_far_buffer_;
+  VkDescriptorSet shadow_sets_[Renderer::kFramesInFlight] = {};
+  VkDescriptorSet shadow_sets_mid_[Renderer::kFramesInFlight] = {};
+  VkDescriptorSet shadow_sets_far_[Renderer::kFramesInFlight] = {};
   VkDescriptorSet shadow_set_ = VK_NULL_HANDLE;
   VkDescriptorSet shadow_set_mid_ = VK_NULL_HANDLE;
   VkDescriptorSet shadow_set_far_ = VK_NULL_HANDLE;
@@ -1409,8 +1432,8 @@ class Showroom {
   // Scenery.
   Renderer::Buffer world_vertices_, world_indices_;
   // Dynamic world-space overlay (3D driving/braking line ribbon).
-  static constexpr size_t kMaxOverlayVertices = 1365;  // <= 65536 B for vkCmdUpdateBuffer
-  Renderer::Buffer overlay_vertices_;
+  static constexpr size_t kMaxOverlayVertices = 1365;
+  VkDeviceSize overlay_vb_offset_ = 0;
   std::vector<WorldVertex> overlay_cpu_;
   uint32_t overlay_count_ = 0;
   bool overlay_dirty_ = false;
@@ -1555,6 +1578,9 @@ class Showroom {
   std::map<uint32_t, VkDescriptorSet> world_sets_;   // by texture record
   // Sets for multi-texture world draws: bindings 0..7.
   std::map<std::array<uint32_t, 8>, VkDescriptorSet> world_layer_sets_;
+  uint64_t world_sets_gen_ = 1;
+  mutable std::vector<uint32_t> world_buckets_[3];
+  mutable std::vector<uint32_t> world_touched_tex_;
   VkDescriptorSet world_white_set_ = VK_NULL_HANDLE;  // untextured materials
   std::vector<VkDescriptorPool> world_pools_;
   uint32_t world_pool_left_ = 0;
@@ -1603,7 +1629,7 @@ class Showroom {
     float fog_sky[4];
   };
   static_assert(sizeof(SkyUniforms) == 31 * 16);
-  Renderer::Buffer sky_ubo_[2];  // mode 0 (atmosphere), mode 1 (disc+clouds+fog)
+  MappedRing sky_ubo_;  // kFramesInFlight * 2 slots (mode 0/2, mode 1), dynamic UBO
   Renderer::Buffer star_vertices_;
   uint32_t star_count_ = 0;
   GpuTexture sky_sun_, sky_moons_[5], sky_dither_;
@@ -1614,8 +1640,8 @@ class Showroom {
   VkPipelineLayout stars_pipe_layout_ = VK_NULL_HANDLE;
   VkPipeline sky_pipe_base_ = VK_NULL_HANDLE, sky_pipe_layers_ = VK_NULL_HANDLE, stars_pipe_ = VK_NULL_HANDLE;
   VkDescriptorPool sky_pool_ = VK_NULL_HANDLE;
-  // 6 sets per mode (sun + 5 moon phases) -> 12 sets total; index = mode * 6 + disc_idx (0=sun, 1..5=moon0..4).
-  VkDescriptorSet sky_sets_[12] = {};
+  // 6 sets (sun + 5 moon phases) with dynamic UBO offset for (frame_slot, mode).
+  VkDescriptorSet sky_sets_[6] = {};
   void record_sky_before(VkCommandBuffer cmd);
   void record_sky_draw(VkCommandBuffer cmd);
   void apply_tod_to_frame();
@@ -1646,9 +1672,9 @@ class Showroom {
   std::vector<world::WorldGlow> world_glows_;
   GpuTexture headlight_cookie_;
   GpuTexture headlight_cookie_full_;
-  VkDescriptorSet frame_set_dip_ = VK_NULL_HANDLE;
-  VkDescriptorSet frame_set_fullbeam_ = VK_NULL_HANDLE;
-  Renderer::Buffer headlights_ubo_;
+  VkDescriptorSet frame_sets_dip_[Renderer::kFramesInFlight] = {};
+  VkDescriptorSet frame_sets_fullbeam_[Renderer::kFramesInFlight] = {};
+  MappedRing headlights_ubo_;
   Renderer::VolumetricBeam vol_beams_[8]{};
   uint32_t vol_beam_count_ = 0;
   float vol_night_factor_ = 0.0f;
@@ -1658,7 +1684,7 @@ class Showroom {
   VkPipeline glow_pipe_ = VK_NULL_HANDLE;
   VkDescriptorPool glow_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet glow_set_ = VK_NULL_HANDLE;
-  Renderer::Buffer glow_buffer_;
+  VkDeviceSize glow_vb_offset_ = 0;
   uint32_t glow_count_ = 0;
   bool carlights_ready_ = false;
   void record_lights_before(VkCommandBuffer cmd);
@@ -1668,8 +1694,10 @@ class Showroom {
   std::filesystem::path env_xpr_path_;
   static constexpr uint32_t kDynEnvSize = 256;
   static constexpr uint32_t kDynEnvMips = 9;
+  static constexpr uint32_t kMaxEnvViews = 10;
   uint32_t dyn_env_size_ = kDynEnvSize;
   uint32_t dyn_env_mips_ = kDynEnvMips;
+  uint32_t env_view_cursor_ = 0;
   float reflection_rate_ = 1.0f;
   bool low_memory_mode_ = false;
   static constexpr uint32_t kMirrorWidth = 1024;
@@ -1681,11 +1709,12 @@ class Showroom {
   GpuTexture dyn_env_depth_;
   GpuTexture mirror_tex_;
   GpuTexture mirror_depth_;
-  Renderer::Buffer env_frame_buffer_;
+  MappedRing env_frame_buffer_;
+  VkDescriptorSet env_frame_sets_[Renderer::kFramesInFlight][kMaxEnvViews] = {};
   VkDescriptorSet env_frame_set_ = VK_NULL_HANDLE;
-  Renderer::Buffer env_sky_ubo_[2];
+  MappedRing env_sky_ubo_;
   VkDescriptorPool env_pool_ = VK_NULL_HANDLE;
-  VkDescriptorSet env_sky_sets_[12] = {};
+  VkDescriptorSet env_sky_sets_[6] = {};
   VkPipeline env_world_opaque_ = VK_NULL_HANDLE;
   VkPipeline env_world_coverage_ = VK_NULL_HANDLE;
   VkPipeline env_car_opaque_ = VK_NULL_HANDLE;
@@ -1704,7 +1733,7 @@ class Showroom {
   bool virtual_mirror_active_ = false;
   void update_mirror_mode();
   static void bind_post_virtual_mirror(Renderer& r, VkImageView view);
-  void sync_fullbeam_frame_set(VkDescriptorSet dip_set, VkImageView cube_view, VkSampler cube_sampler);
+  void sync_fullbeam_frame_sets(VkImageView cube_view, VkSampler cube_sampler);
   bool init_dynamic_reflections(std::string& error);
   bool ensure_mirror_targets();
   void record_env_and_mirror(VkCommandBuffer cmd);
@@ -1776,6 +1805,8 @@ class Showroom {
   };
   static_assert(sizeof(CarInstanceGpu) == 576);
   DynBuffer car_inst_buf_;
+  DynBuffer glow_buf_;
+  DynBuffer overlay_buf_;
   Renderer::Buffer empty_inst_ssbo_;
   DynBuffer particle_buf_;
   uint32_t particle_alpha_count_ = 0;

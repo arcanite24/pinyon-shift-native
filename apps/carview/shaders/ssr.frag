@@ -260,14 +260,16 @@ void main() {
     return;
   }
 
-  vec3 refl_rgb = min(max(texture(hdr_tex, clamp(hit_uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(32.0));
-  vec2 edge = min(hit_uv, vec2(1.0) - hit_uv);
-  float edge_fade = smoothstep(0.0, 0.08, min(edge.x, edge.y));
-  float dist_fade = 1.0 - smoothstep(0.70, 1.0, hit_dist_frac);
-  float rough_fade = 1.0 - smoothstep(0.14, 0.82, rough);
-  float fresnel = clamp(0.06 + 0.94 * pow(1.0 - nv, 4.0), 0.06, 0.96);
+  mediump vec3 refl_rgb = min(max(texture(hdr_tex, clamp(hit_uv, vec2(0.001), vec2(0.999))).rgb, vec3(0.0)), vec3(32.0));
+  mediump vec2 edge = min(hit_uv, vec2(1.0) - hit_uv);
+  mediump float edge_fade = smoothstep(0.0, 0.08, min(edge.x, edge.y));
+  mediump float dist_fade = 1.0 - smoothstep(0.70, 1.0, hit_dist_frac);
+  mediump float rough_fade = 1.0 - smoothstep(0.14, 0.82, rough);
+  mediump float omv = 1.0 - nv;
+  mediump float omv2 = omv * omv;
+  mediump float fresnel = clamp(0.06 + 0.94 * (omv2 * omv2), 0.06, 0.96);
   // Water & chrome stay highly reflective even at steeper viewing angles; car clearcoat obeys Fresnel.
-  float angle_weight = mix(fresnel, max(fresnel, 0.55), smoothstep(0.78, 0.95, gloss));
-  float conf = clamp(edge_fade * dist_fade * back_fade * rough_fade * angle_weight * gloss * pc.texel_mode.w, 0.0, 0.88);
+  mediump float angle_weight = mix(fresnel, max(fresnel, 0.55), smoothstep(0.78, 0.95, gloss));
+  mediump float conf = clamp(edge_fade * dist_fade * back_fade * rough_fade * angle_weight * gloss * pc.texel_mode.w, 0.0, 0.88);
   out_ssr = vec4(refl_rgb, conf);
 }

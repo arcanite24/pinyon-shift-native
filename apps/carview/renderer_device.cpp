@@ -103,6 +103,10 @@ Renderer::~Renderer() {
     if (post_pool_) vkDestroyDescriptorPool(device_, post_pool_, nullptr);
     if (post_sampler_) vkDestroySampler(device_, post_sampler_, nullptr);
     if (post_depth_sampler_) vkDestroySampler(device_, post_depth_sampler_, nullptr);
+    if (post_optical_mapped_ && post_optical_buf_.allocation) {
+      vmaUnmapMemory(allocator_, post_optical_buf_.allocation);
+      post_optical_mapped_ = nullptr;
+    }
     destroy_buffer(post_optical_buf_);
     destroy_image(lut3d_);
     destroy_image(lum_16_);
