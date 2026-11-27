@@ -2942,7 +2942,8 @@ void phase_r3_c1_audio_parity_checks() {
   static constexpr int kFrames = 2400;  // 50 ms at 48 kHz
   std::array<std::vector<float>, audio::kBuses> bufs;
   float* ptrs[audio::kBuses]{};
-  auto clear_bufs = [&](int n = kFrames) {
+  auto clear_bufs = [&](int n = 0) {
+    if (n <= 0) n = kFrames;
     for (int b = 0; b < audio::kBuses; ++b) {
       bufs[size_t(b)].assign(size_t(n) * 2, 0.0f);
       ptrs[b] = bufs[size_t(b)].data();
