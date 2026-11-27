@@ -1,6 +1,7 @@
 #include "world/stream.h"
 
 #include "world/road_follow.h"
+#include "world/world_anim.h"
 
 #include <chrono>
 #include <cmath>
@@ -219,6 +220,8 @@ Streamer::Streamer(World& world, GatherOptions options, double regather_distance
 
 Streamer::~Streamer() {
   if (job_.valid()) job_.wait();
+  if (composite_ground_) AnimatedWorldSystem::clear_last_ground(composite_ground_.get());
+  if (ground_) AnimatedWorldSystem::clear_last_ground(ground_.get());
 }
 
 std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) const {
@@ -385,6 +388,8 @@ bool Streamer::preload_async(double x, double z) {
 
 void Streamer::take(Gathered&& g) {
   // Swapped, not moved: `g` leaves with the old gather (the caller frees it).
+  if (composite_ground_) AnimatedWorldSystem::clear_last_ground(composite_ground_.get());
+  if (ground_) AnimatedWorldSystem::clear_last_ground(ground_.get());
   std::swap(ground_, g.ground);
   std::swap(composite_ground_, g.composite_ground);
   std::swap(mesh_, g.mesh);

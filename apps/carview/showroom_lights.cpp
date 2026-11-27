@@ -727,15 +727,19 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       double origin_z = 0.0;
       size_t raw_count = 0;
       size_t draw_count = 0;
+      bool has_ground = false;
       std::array<float, 3> first_pos{};
       std::vector<ValidatedWorldGlow> glows;
     };
     static ValidatedGlowCache s_wg_cache;
 
+    const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
+    const bool has_ground = (active_ground != nullptr);
     const bool cache_hit = s_wg_cache.owner == this && s_wg_cache.world_gen == world_generation_ &&
                            s_wg_cache.origin_x == world_origin_[0] && s_wg_cache.origin_z == world_origin_[1] &&
                            s_wg_cache.raw_count == world_glows_.size() &&
                            s_wg_cache.draw_count == world_draws_.size() &&
+                           s_wg_cache.has_ground == has_ground &&
                            s_wg_cache.first_pos == world_glows_[0].position;
     if (!cache_hit) {
       s_wg_cache.owner = this;
@@ -744,11 +748,11 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
       s_wg_cache.origin_z = world_origin_[1];
       s_wg_cache.raw_count = world_glows_.size();
       s_wg_cache.draw_count = world_draws_.size();
+      s_wg_cache.has_ground = has_ground;
       s_wg_cache.first_pos = world_glows_[0].position;
       s_wg_cache.glows.clear();
       s_wg_cache.glows.reserve(world_glows_.size());
 
-      const drive::Ground* active_ground = world_ground_ ? world_ground_ : world::AnimatedWorldSystem::last_ground();
       // Collect visible prop draw AABBs (exclude huge far-ring/terrain slabs) once for fast fixture anchoring.
       struct PropBox {
         float bmin[3];

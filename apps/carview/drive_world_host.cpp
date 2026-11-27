@@ -276,6 +276,7 @@ bool DriveWorldHost::set_staged_world() {
           return false;
         }
         follower.set_points(std::move(prepared->road));
+        showroom.set_world_ground(&streamer->ground());
         if (room_world != HubRoom::kNone) {
           // A hub room is drawn: Colorado's new gather waits for the room to
           // close (leave_room_world draws the streamer's latest).
@@ -562,7 +563,7 @@ bool DriveWorldHost::open_world_and_car() {
         });
       }
       if (want_audio) {
-        const bool async_sc = !app.headless && !app.bench;
+        const bool async_sc = !app.headless || app.bench;
         fut_audio = std::async(std::launch::async, [&, groot_cached, async_sc]() {
           const auto aud_world_t0 = std::chrono::steady_clock::now();
           if (app.radio_on &&
@@ -1123,6 +1124,12 @@ bool DriveWorldHost::hot_reload_car_and_world() {
               prepare_on_main = false;
               return ok;
             };
+            // Invalidate all raw ground pointers before streamer->update() runs on the
+            // worker thread and swaps/frees the previous MeshGround while pump_hot_frame
+            // renders the loading screen on the main thread.
+            showroom.set_world_ground(nullptr);
+            world::AnimatedWorldSystem::clear_last_ground();
+            ground = nullptr;
             bool gather_ok = false;
             if (hot_live_ui) {
               std::string g_err;

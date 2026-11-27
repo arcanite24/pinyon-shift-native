@@ -372,6 +372,10 @@ class AnimatedWorldSystem {
   // Active terrain height sampler observed during build_mesh() so spectator
   // grounding in Showroom::record_debris_draw() always has real terrain elevation.
   static const drive::Ground* last_ground();
+  // Clears the cached terrain sampler before a background world regather frees
+  // the previous Streamer ground (prevents dangling pointer dereferences while
+  // the loading screen renders on the main thread).
+  static void clear_last_ground(const drive::Ground* only_if = nullptr);
 
   // Appends animated world triangles (.pgeo animated props, hot-air balloons,
   // Rally stage props, and wind-swaying roadside grass quads) in game-frame coordinates.

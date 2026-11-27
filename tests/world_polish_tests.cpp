@@ -251,6 +251,11 @@ int main() {
 
     anim.invalidate_grass_ground_cache();
     CHECK(anim.cached_grass_ground_count() == 0);
+    // Clearing cached last_ground must reset the global terrain pointer so hot-reload
+    // workers can safely free the prior Streamer ground while the loading screen renders.
+    CHECK(world::AnimatedWorldSystem::last_ground() == &grass_ground);
+    world::AnimatedWorldSystem::clear_last_ground(&grass_ground);
+    CHECK(world::AnimatedWorldSystem::last_ground() == nullptr);
   }
 
   // 5. SettingsPage motion blur & depth of field toggles.

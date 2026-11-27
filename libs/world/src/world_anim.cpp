@@ -1441,7 +1441,19 @@ const std::vector<AnimatedWorldPlacement>& AnimatedWorldSystem::pgeo_placements(
 }
 
 const drive::Ground* AnimatedWorldSystem::last_ground() {
-  return g_last_ground.load(std::memory_order_relaxed);
+  return g_last_ground.load(std::memory_order_acquire);
+}
+
+void AnimatedWorldSystem::clear_last_ground(const drive::Ground* only_if) {
+  if (!only_if) {
+    g_last_ground.store(nullptr, std::memory_order_release);
+    g_last_ground_owner.store(nullptr, std::memory_order_release);
+    return;
+  }
+  const drive::Ground* expected = only_if;
+  if (g_last_ground.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel)) {
+    g_last_ground_owner.store(nullptr, std::memory_order_release);
+  }
 }
 
 bool AnimatedWorldSystem::init(const std::filesystem::path& media_dir, const TrackPostConfig& post_cfg,
