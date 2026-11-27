@@ -1,6 +1,10 @@
 # Build trees
 /build*/
 /out/
+/.local/
+# Python bytecode
+__pycache__/
+*.pyc
 # Static site output
 /site/_build/
 /_site/
