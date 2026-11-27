@@ -19,6 +19,8 @@ jobs:
           python-version: "3.12"
       - name: Check clean-room provenance
         run: python3 tools/check-provenance.py
+      - name: Check shader portability manifest (Vulkan 1.3 / Metal 3 / DX12)
+        run: python3 tools/check-shader-portability.py --check-manifest
       - name: Validate Android sources
         run: python3 tools/android-apk.py --validate-only
 

@@ -440,7 +440,7 @@ void test_all_prebuilt_spirv() {
     }
   }
   std::sort(spv_files.begin(), spv_files.end());
-  check_str(spv_files.size() == 53u, "expected 53 prebuilt SPIR-V shaders, found " + std::to_string(spv_files.size()));
+  check_str(spv_files.size() == 54u, "expected 54 prebuilt SPIR-V shaders, found " + std::to_string(spv_files.size()));
 
   uint32_t max_pc = 0;
   uint32_t bindless_count = 0;
@@ -461,7 +461,7 @@ void test_all_prebuilt_spirv() {
     max_pc = std::max(max_pc, r.push_constant_bytes);
 
     for (uint32_t sid : r.spec_ids) {
-      check_str(sid == 0u || sid == 1u, name + ": spec constant_id in {0, 1}");
+      check_str(sid == 0u || sid == 1u || sid == 2u, name + ": spec constant_id in {0, 1, 2}");
     }
 
     if (r.exec_model == 5u) {
@@ -487,7 +487,10 @@ void test_all_prebuilt_spirv() {
 
   check(max_pc <= 128u && max_pc > 0u, "observed max push constant size is within (0, 128] B");
   check(compute_count == 10u, "all 10 compute shaders (3 culling/Hi-Z + 7 RT) reflected cleanly");
-  check(bindless_count >= 9u, "all split-bindless world/RT shaders validated");
+  // glslc -O dead-strips unused set=1 bindings from RT shaders that do not sample world_textures[]
+  // (rt_ao, rt_composite, rt_svgf_*), leaving the 5 shaders that actively sample bindless textures:
+  // world_gpu.frag, world_gpu_opaque.frag, rt_shadows.comp, rt_reflections.comp, rt_pathtrace.comp.
+  check(bindless_count >= 5u, "all split-bindless world/RT shaders validated");
 }
 
 struct StarQuadVertexOut {
@@ -613,14 +616,14 @@ void test_manifest_and_host_source() {
   std::ifstream mf(manifest_path);
   check(mf.good(), "shader_manifest.json exists");
   const std::string text((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
-  check(text.find("\"total_shader_files\": 56") != std::string::npos, "manifest tracks all 56 shader files");
-  check(text.find("\"entry_shaders\": 53") != std::string::npos, "manifest tracks 53 entry shaders");
-  check(text.find("\"shared_headers\": 3") != std::string::npos, "manifest tracks 3 shared headers");
+  check(text.find("\"total_shader_files\": 58") != std::string::npos, "manifest tracks all 58 shader files");
+  check(text.find("\"entry_shaders\": 54") != std::string::npos, "manifest tracks 54 entry shaders");
+  check(text.find("\"shared_headers\": 4") != std::string::npos, "manifest tracks 4 shared headers");
   check(text.find("\"point_size_shaders\": 0") != std::string::npos, "manifest reports 0 PointSize shaders");
   check(text.find("\"point_coord_shaders\": 0") != std::string::npos, "manifest reports 0 PointCoord shaders");
-  check(text.find("\"vulkan_1_3_ready\": 53") != std::string::npos, "manifest reports 53/53 Vulkan 1.3 ready");
-  check(text.find("\"metal_3_ready\": 53") != std::string::npos, "manifest reports 53/53 Metal 3 ready");
-  check(text.find("\"dx12_sm_6_6_ready\": 53") != std::string::npos, "manifest reports 53/53 DirectX 12 SM 6.6 ready");
+  check(text.find("\"vulkan_1_3_ready\": 54") != std::string::npos, "manifest reports 54/54 Vulkan 1.3 ready");
+  check(text.find("\"metal_3_ready\": 54") != std::string::npos, "manifest reports 54/54 Metal 3 ready");
+  check(text.find("\"dx12_sm_6_6_ready\": 54") != std::string::npos, "manifest reports 54/54 DirectX 12 SM 6.6 ready");
   check(text.find("\"bda_shaders\": 0") != std::string::npos, "manifest reports 0 BDA shaders");
   check(text.find("\"name\": \"stars.vert\"") != std::string::npos, "manifest contains stars.vert entry");
   check(text.find("\"name\": \"stars.frag\"") != std::string::npos, "manifest contains stars.frag entry");
@@ -682,11 +685,11 @@ void test_flag_bitmask_float32_exact_decode() {
   // Static guard: car pipeline shaders and C++ files must never decode flags via params + 0.5.
   const std::filesystem::path root(SHIFT_SOURCE_DIR);
   const std::string sv = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.vert");
-  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.frag");
+  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom_frag.glsl");
   check(sv.find("draw.params.y + 0.5") == std::string::npos && sv.find("uint(round(draw.params.y))") != std::string::npos,
         "showroom.vert decodes draw.params.y with exact uint(round(...))");
   check(sf.find("draw.params.y + 0.5") == std::string::npos && sf.find("uint(round(draw.params.y))") != std::string::npos,
-        "showroom.frag decodes draw.params.y with exact uint(round(...))");
+        "showroom_frag.glsl decodes draw.params.y with exact uint(round(...))");
 
   const char* cpp_files[] = {
       "showroom_car_load.cpp",
@@ -758,18 +761,18 @@ void test_shadow_and_smoothstep_invariants() {
   // 3. Source invariants: no shadow.z floor leaking direct sun, instanced guards on tyre mud & rotor glow,
   //    and phantom shadow caster exclusions in showroom_shadows.cpp.
   const std::filesystem::path root(SHIFT_SOURCE_DIR);
-  const char* shadow_shaders[] = {"world_frag.glsl", "showroom.frag", "particle.frag", "skid.frag"};
+  const char* shadow_shaders[] = {"world_frag.glsl", "showroom_frag.glsl", "particle.frag", "skid.frag"};
   for (const char* sh : shadow_shaders) {
     const std::string src = read_text_file(root / "apps" / "carview" / "shaders" / sh);
     check_str(!src.empty() && src.find("mix(frame.shadow.z, 1.0,") == std::string::npos,
               std::string(sh) + ": direct sun shadow never floored by frame.shadow.z");
   }
-  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom.frag");
+  const std::string sf = read_text_file(root / "apps" / "carview" / "shaders" / "showroom_frag.glsl");
   check(sf.find("(flags & kFlagInstanced) == 0u && frame.damage_dirt.y > 0.01") != std::string::npos,
-        "showroom.frag guards player tyre mud from leaking onto instanced cars");
+        "showroom_frag.glsl guards player tyre mud from leaking onto instanced cars");
   check(sf.find("float rotor_heat = 0.0;") != std::string::npos &&
             sf.find("if ((flags & kFlagInstanced) == 0u)") != std::string::npos,
-        "showroom.frag guards player brake rotor glow from leaking onto instanced cars");
+        "showroom_frag.glsl guards player brake rotor glow from leaking onto instanced cars");
   const std::string shadows_cpp = read_text_file(root / "apps" / "carview" / "showroom_shadows.cpp");
   check(shadows_cpp.find("d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0") != std::string::npos,
         "showroom_shadows.cpp skips detached, blur_rim, and cockpit-only parts in shadow pass");
@@ -785,7 +788,7 @@ int main() {
   test_flag_bitmask_float32_exact_decode();
   test_shadow_and_smoothstep_invariants();
   if (g_failed == 0) {
-    std::printf("rhi_shader_compat_tests: PASS (56 shaders audited, stars instanced quads + R3-A1 invariants verified)\n");
+    std::printf("rhi_shader_compat_tests: PASS (58 shaders audited, stars instanced quads + R3-A1 invariants verified)\n");
     return 0;
   }
   std::fprintf(stderr, "rhi_shader_compat_tests: %d check(s) failed\n", g_failed);

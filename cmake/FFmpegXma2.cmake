@@ -10,6 +10,17 @@ if(SHIFT_EMBED_XMA2)
   FetchContent_MakeAvailable(ffmpeg_xma2)
 
   set(SHIFT_FFMPEG_DIR "${ffmpeg_xma2_SOURCE_DIR}")
+  # Binutils 2.41+ rejects negative immediate operands for x86 shift instructions
+  # (FFmpeg commit effadce6c756): constrain NEG_SSR32/NEG_USR32 shift count to %cl.
+  set(_shift_ff_x86_mathops "${SHIFT_FFMPEG_DIR}/libavcodec/x86/mathops.h")
+  if(EXISTS "${_shift_ff_x86_mathops}")
+    file(READ "${_shift_ff_x86_mathops}" _shift_ff_mathops_src)
+    string(REPLACE "\"ic\" ((uint8_t)(-s))" "\"c\" ((uint8_t)(-s))"
+           _shift_ff_mathops_patched "${_shift_ff_mathops_src}")
+    if(NOT _shift_ff_mathops_patched STREQUAL _shift_ff_mathops_src)
+      file(WRITE "${_shift_ff_x86_mathops}" "${_shift_ff_mathops_patched}")
+    endif()
+  endif()
   set(SHIFT_FFMPEG_OVERLAY "${CMAKE_BINARY_DIR}/ffmpeg_xma2_overlay")
   file(MAKE_DIRECTORY "${SHIFT_FFMPEG_OVERLAY}/libavcodec")
 

@@ -81,7 +81,7 @@ if(SHIFT_BUILD_CARVIEW)
     # (Mesa Turnip) and KGSL GPU turbo clocks on Android 9+ arm64.
     FetchContent_Declare(libadrenotools
       GIT_REPOSITORY https://github.com/bylaws/libadrenotools.git
-      GIT_TAG 8fae8ce2543862f262695b31a75375175657731a
+      GIT_TAG 8fae8ce254dfc1344527e05301e43f37dea2df80
       GIT_SUBMODULES "lib/linkernsbypass"
       GIT_SUBMODULES_RECURSE TRUE)
     FetchContent_MakeAvailable(libadrenotools)
