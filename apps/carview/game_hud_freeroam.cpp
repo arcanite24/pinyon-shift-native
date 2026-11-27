@@ -129,6 +129,8 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
 
     const NameTagLod lod = compute_name_tag_lod(t.distance_m);
     if (!lod.visible) continue;
+    // In free roam, suppress distant roaming AI tags to keep the horizon uncluttered.
+    if (!in_race && t.distance_m > 65.0) continue;
 
     Candidate c;
     c.distance_m = t.distance_m;
@@ -203,7 +205,7 @@ void layout_world_labels(const std::vector<NameTagHud>& tags, const WorldMarkerH
     return a.tag.source_index < b.tag.source_index;
   });
 
-  const size_t max_tags = in_race ? 3u : 6u;
+  constexpr size_t max_tags = 3u;
   if (cands.size() > max_tags) cands.resize(max_tags);
 
   struct Obstacle {
@@ -648,11 +650,12 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
   const double since_bank = time - sk.banked_at;
   const double since_lost = time - sk.lost_at;
   const double since_rank = time - sk.rank_up_at;
+  const bool chain_live = sk.active && sk.chain_points > 0 && (sk.shown_points < 0 || sk.shown_points > 0);
   const bool show_bank = since_bank >= 0 && since_bank < 3.5;
   const bool show_lost = since_lost >= 0 && since_lost < 2.2;
   const bool show_rank = since_rank >= 0 && since_rank < 4.0;
   const bool rank_anim_active = (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
-  if (!sk.active && !show_bank && !show_lost && !show_rank && !rank_anim_active) return;
+  if (!chain_live && !show_bank && !show_lost && !show_rank && !rank_anim_active) return;
 
   const PopularityBadgeAnimFrame anim = evaluate_popularity_badge_anim(sk, time);
   const float s = g.s;
@@ -737,10 +740,11 @@ void skill_chain_hud(ui::List& l, const SkillChainHud& sk, const Layout& g, doub
 
   // 2. 947_HUD/DrivingSkill: #DAFF00 score + white X1.0..X5.0 multiplier pill with
   //    expiry countdown ring + clean drop-shadowed skill callout + bank/shatter animations.
-  if (sk.active) {
+  if (chain_live) {
     const float mult_f = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
+    const int shown_pts = sk.shown_points > 0 ? sk.shown_points : sk.chain_points;
     char pts_buf[32], mult_buf[16];
-    std::snprintf(pts_buf, sizeof pts_buf, "%s", thousands(sk.chain_points).c_str());
+    std::snprintf(pts_buf, sizeof pts_buf, "%s", thousands(shown_pts).c_str());
     std::snprintf(mult_buf, sizeof mult_buf, "X%.1f", mult_f);
     TextStyle pts_ts = font(ui::Font::kE, 26 * s, kSkillYellow);
     TextStyle mul_ts = font(ui::Font::kE, 16.5f * s, ui4::kWhite, Align::kCenter);

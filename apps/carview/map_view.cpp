@@ -1183,9 +1183,10 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     }
   };
 
-  // Wide crisp road ribbons with dark outline casing (SPEC-UI-LAYOUTS a), wide
-  // enough that the centered GPS/race route always leaves visible grey/white
-  // road shoulders and dark casing on both sides.
+  // Road ribbons with subtle drop-shadow casing and road-discovery visited tint:
+  // undiscovered roads render darker and more translucent, discovered roads render
+  // crisp bright white (paved) or retail warm tan/grey (dirt).
+  const bool has_disc = scene.road_discovery && scene.road_discovery->ready();
   for (int pass = 0; pass < 2; ++pass)
     for (int style = 0; style < kRoadTypeCount; ++style) {
       const auto st = mini_.roads.find(kRoadTypes[style]);
@@ -1193,18 +1194,28 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       const LineStyle& ls = st->second;
       // The profile's line Size is its width in px at the car (b roads 14).
       const double road_world_w = 12.6 * double(ls.line_size) / 14.0;
+      const bool is_dirt = (style == 0);
+      const Rgba shadow_vis{ls.under.r, ls.under.g, ls.under.b, std::min(ls.under.a, 78.0f)};
+      const Rgba shadow_unvis{ls.under.r, ls.under.g, ls.under.b, std::min(ls.under.a, 78.0f) * 0.65f};
+      const Rgba core_vis = is_dirt ? Rgba{196.0f, 178.0f, 156.0f, 234.0f}
+                                    : Rgba{ls.core.r, ls.core.g, ls.core.b, 248.0f};
+      const Rgba core_unvis = is_dirt ? Rgba{126.0f, 118.0f, 108.0f, 142.0f}
+                                      : Rgba{ls.edge.r, ls.edge.g, ls.edge.b, 148.0f};
       for (const auto& [r, s] : segs) {
         if (roads_[r].style != style) continue;
         const auto& a = roads_[r].points[s];
         const auto& b = roads_[r].points[s + 1];
-        // The profile's under-line (line_fade_lr, black at its own alpha)
-        // and line: white roads with a soft edge, every road alike
-        // (04_roam_hud_day_idle_orig.png).
+        bool driven = true;
+        if (has_disc && s + 1 < roads_[r].nodes.size()) {
+          driven = scene.road_discovery->is_node_discovered(roads_[r].nodes[s]) &&
+                   scene.road_discovery->is_node_discovered(roads_[r].nodes[s + 1]);
+        }
         if (pass == 0) {
-          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 2.4, 3.0, ls.under);
+          draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 1.6, 2.4,
+                                 driven ? shadow_vis : shadow_unvis);
         } else {
           draw_projected_segment(a[0], a[1], b[0], b[1], road_world_w, 0.0, 2.0,
-                                 Rgba{ls.core.r, ls.core.g, ls.core.b, 252.0f});
+                                 driven ? core_vis : core_unvis);
         }
       }
     }
@@ -1240,12 +1251,30 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
   }
 
   // Icons, standing up, shrinking with depth as the roads do (R / (a + R)).
+  // Off-panel GPS destination and nearby target icons clamp to the minimap rim
+  // instead of disappearing.
   const double unit = size / 300.0;
-  if (scene.has_gps_dest && std::hypot(scene.gps_dest_x - scene.x, scene.gps_dest_z - scene.z) <= reach) {
-    const P dp = project(scene.gps_dest_x, scene.gps_dest_z);
-    if (dp.depth >= 1) {
+  const double rim_r = size * 0.41;
+  auto clamp_to_rim = [&](double wx, double wz, P& out_p) -> bool {
+    const double dx = wx - scene.x;
+    const double dz = wz - scene.z;
+    const double sx = dx * rx + dz * rz;
+    const double sy = -(dx * fx + dz * fz);
+    const double sl = std::hypot(sx, sy);
+    if (sl < 1e-4) return false;
+    out_p.x = cxp + (sx / sl) * rim_r;
+    out_p.y = cyp + (sy / sl) * rim_r;
+    out_p.depth = std::max(1.0, kMiniR * 1.15);
+    return true;
+  };
+  if (scene.has_gps_dest) {
+    P dp = project(scene.gps_dest_x, scene.gps_dest_z);
+    const bool in_panel = dp.depth >= 1.0 && std::hypot(dp.x - cxp, dp.y - cyp) <= rim_r;
+    if (in_panel) {
       const double k = persp(dp.depth);
       cv.icon(small_icons_, 2, 4, dp.x, dp.y - 20 * unit * k, 52 * unit * k, 0, Rgba{74, 238, 97, 255});
+    } else if (clamp_to_rim(scene.gps_dest_x, scene.gps_dest_z, dp)) {
+      cv.icon(small_icons_, 2, 4, dp.x, dp.y - 10 * unit, 40 * unit, 0, Rgba{74, 238, 97, 240});
     }
   }
   // The activity icons by their profile's VisibleRange (2,400 m, faded out
@@ -1255,6 +1284,7 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     Mark m;
     P p;
     double dist;
+    bool clamped = false;
   };
   std::vector<MiniMark> mini_marks;
   for (const auto& m : marks(scene, false)) {
@@ -1266,11 +1296,16 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
     for (const auto& ic : it->second) range = std::max(range, ic.max_distance);
     if (range <= 0.0) range = reach;
     if (dist > range) continue;
-    const P p = project(m.x, m.z);
-    if (p.depth < 1) continue;
-    // Off the panel by more than an icon: nothing of it would show.
-    if (p.x < -40 * unit || p.x > size + 40 * unit || p.y < -60 * unit || p.y > size + 40 * unit) continue;
-    mini_marks.push_back({m, p, dist});
+    P p = project(m.x, m.z);
+    const bool on_panel = p.depth >= 1.0 && p.x >= -12 * unit && p.x <= size + 12 * unit &&
+                          p.y >= -12 * unit && p.y <= size + 12 * unit;
+    if (on_panel) {
+      mini_marks.push_back({m, p, dist, false});
+    } else if (dist <= reach * 1.15 && (m.key == "race" || m.key == "exhibition" || m.key == "nemesisrace" ||
+                                        m.key == "streetrace" || m.key == "festival" || m.key == "gas_station" ||
+                                        m.key == "race_encounter_finish")) {
+      if (clamp_to_rim(m.x, m.z, p)) mini_marks.push_back({m, p, dist, true});
+    }
   }
   std::stable_sort(mini_marks.begin(), mini_marks.end(),
                    [](const MiniMark& a, const MiniMark& b) { return a.p.depth > b.p.depth; });
@@ -1366,37 +1401,6 @@ HudImage MapView::minimap(const MapScene& scene, int size) const {
       cv.line(lp.x, lp.y, lp.x, lp.y, 20 * unit + 2.5, Rgba{14, 16, 22, 230});
       cv.line(lp.x, lp.y, lp.x, lp.y, 18 * unit + 1.5, Rgba{249, 0, 100, 255});
       cv.line(lp.x, lp.y, lp.x, lp.y, 13 * unit, Rgba{255, 214, 48, 255});
-    }
-  }
-  // R3-UI-12: Next race checkpoint beacon (bright cyan/pink concentric ring, rim-clamped if ahead).
-  if (scene.has_next_checkpoint) {
-    const P cp = project(scene.next_checkpoint[0], scene.next_checkpoint[1]);
-    double bx = cp.x, by = cp.y;
-    const double max_r = size * 0.39;
-    bool on_screen = (cp.depth >= 1.0) && (std::hypot(bx - cxp, by - cyp) <= max_r);
-    if (!on_screen) {
-      const double dx = scene.next_checkpoint[0] - scene.x;
-      const double dz = scene.next_checkpoint[1] - scene.z;
-      const double sx = dx * rx + dz * rz;
-      const double sy = -(dx * fx + dz * fz);
-      const double sl = std::hypot(sx, sy);
-      if (sl > 1e-4) {
-        bx = cxp + (sx / sl) * max_r;
-        by = cyp + (sy / sl) * max_r;
-        on_screen = true;
-      }
-    }
-    if (on_screen) {
-      const double r = std::max(5.5, 11.5 * unit);
-      for (int k = 0; k < 16; ++k) {
-        const double a0 = 2.0 * kPi * k / 16.0;
-        const double a1 = 2.0 * kPi * (k + 1) / 16.0;
-        cv.line(bx + r * std::cos(a0), by + r * std::sin(a0), bx + r * std::cos(a1), by + r * std::sin(a1),
-                std::max(2.6, 5.2 * unit), Rgba{12, 14, 20, 225});
-        cv.line(bx + r * std::cos(a0), by + r * std::sin(a0), bx + r * std::cos(a1), by + r * std::sin(a1),
-                std::max(1.8, 3.2 * unit), Rgba{249, 0, 100, 250});
-      }
-      cv.line(bx, by, bx, by, std::max(3.8, 7.6 * unit), Rgba{56, 224, 255, 250});
     }
   }
   // R3-UI-12: Checkered race finish flag marker.

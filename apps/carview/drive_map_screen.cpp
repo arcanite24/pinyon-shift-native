@@ -96,7 +96,9 @@ void DriveSession::map_screen_open() {
   map_opened_at = now_s();
   map_anim_hover = map_anim_prev = false;
   map_anim_hover_since = 0.0, map_anim_ghost_since = -1.0, map_anim_drawn = -1.0;
-  map_base_zoom = map_zoom;
+  // Allow zooming out ~1/6 past the opening scale (Cursor_Zoom_Max vs Zoom_Default, Q241),
+  // clamped to the authored map's minimum zoom floor.
+  map_base_zoom = std::max(app.map_view.min_zoom(map_w, map_h), map_zoom * (5.0 / 6.0));
   map_filter_open = false;
   map_filter_row = map_filter_first = 0;
   map_dialog = MapDialog::kNone;
@@ -154,10 +156,12 @@ void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axi
   }
   if (map_filter_open || map_dialog != MapDialog::kNone || map_details || map_w <= 64 || map_h <= 64) return;
   const SceneFrame f = SceneScreen::frame(float(map_w), float(map_h));
-  bool changed = false;
-  if (std::fabs(sx) > 1e-4f || std::fabs(sy) > 1e-4f) {
+  bool cursor_moved = false;
+  bool cam_changed = false;
+  constexpr float kStickNoiseDeadzone = 0.10f;
+  if (std::fabs(sx) > kStickNoiseDeadzone || std::fabs(sy) > kStickNoiseDeadzone) {
     const auto scroll = map_cursor.step(dt, sx, sy, map_screen_hud.locked);
-    changed = true;
+    cursor_moved = true;
     if (scroll[0] != 0.0f || scroll[1] != 0.0f) {
       const double mpp = app.map_view.map_scale(map_w, map_h, map_zoom);
       const double px_m = double(f.s) * mpp;
@@ -167,11 +171,11 @@ void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axi
       map_cursor.absorb(scroll[0] - float((ncx - map_cx) / px_m), scroll[1] + float((ncz - map_cz) / px_m));
       if (ncx != map_cx || ncz != map_cz) {
         map_cx = ncx, map_cz = ncz;
-        map_dirty = true;
+        map_dirty = cam_changed = true;
       }
     }
   }
-  if (std::fabs(zoom_axis) > 1e-4f) {
+  if (std::fabs(zoom_axis) > kStickNoiseDeadzone) {
     const double nz = MapZoom::step(map_zoom, map_base_zoom, zoom_axis, dt);
     if (nz != map_zoom) {
       // About the cursor: the world point under it stays put.
@@ -182,11 +186,11 @@ void DriveSession::map_screen_step(double dt, float sx, float sy, float zoom_axi
       map_cx = px - (double(f.x(map_cursor.x)) - 0.5 * map_w) * mpp;
       map_cz = pz + (double(f.y(map_cursor.y)) - 0.5 * map_h) * mpp;
       app.map_view.clamp_camera(map_w, map_h, map_zoom, map_cx, map_cz);
-      map_dirty = changed = true;
+      map_dirty = cam_changed = true;
     }
   }
-  if (changed) {
-    map_cam.reset(map_cx, map_cz, map_zoom);
+  if (cam_changed) map_cam.reset(map_cx, map_cz, map_zoom);
+  if (cursor_moved || cam_changed) {
     const int was = map_selected_marker;
     update_map_selection();
     // The selected icon grows and the rest dim: a new raster.
@@ -364,6 +368,7 @@ void DriveSession::map_screen_fill() {
         } else {
           p.kind = MapPopupKind::kCareerRace;
           p.points = m.points;
+          if (!m.eligible && !m.completed) p.line = "!";
         }
         x_label = text_of(map_text::kDetails);
         break;
@@ -409,8 +414,8 @@ void DriveSession::map_screen_fill() {
     else if (map_travel_quote(m, cost))
       x_label = format1(text_of(map_text::kFastTravelButton), format1(text_of(map_text::kCredits), thousands(cost)));
   } else {
-    // Found or revealed discount sign or barn find under the cursor (no
-    // invented gamertag popup over the player arrow).
+    // Found or revealed discount sign, barn find, or (on normal pause maps) the
+    // player arrow gamertag popup under the cursor.
     const double snap = kSnapPx;
     auto near = [&](const std::array<float, 2>& c) {
       return std::hypot(double(c[0] - map_cursor.x), double(c[1] - map_cursor.y)) <= snap;
@@ -441,6 +446,26 @@ void DriveSession::map_screen_fill() {
           p.x = c[0], p.y = c[1];
           ms.locked = true;
         }
+      }
+    }
+    const bool ftc_map_locked = app.campaign.ftc_active() && app.campaign.ftc().map_locked();
+    if (p.kind == MapPopupKind::kNone && !ftc_map_locked) {
+      const auto at = vehicle.position();
+      const auto pc = to_canvas(at.x, at.z);
+      if (near(pc)) {
+        std::string gt = app.save_session.gamertag();
+        if (gt.empty()) {
+          for (const char* v : {"SHIFT_PLAYER_NAME", "USERNAME", "USER"})
+            if (const char* e = std::getenv(v); e && *e) {
+              gt = std::string(e).substr(0, 15);
+              break;
+            }
+        }
+        if (gt.empty()) gt = "User";
+        p.kind = MapPopupKind::kSimple;
+        p.title = std::move(gt);
+        p.x = pc[0], p.y = pc[1];
+        ms.locked = true;
       }
     }
   }
@@ -661,7 +686,32 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
     // backs out of the restrictions and then the ticket, Y turns it over.
     if (k == Key::kA) {
       map_details = map_details_restrictions = false;
-      map_route_to_selected();
+      if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
+        const FtcMapTarget target = ftc_map_target();
+        bool matches_target = false;
+        if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size()) {
+          const MapMarker& m = cached_map_markers[size_t(map_selected_marker)];
+          matches_target = (m.kind == MapMarker::kEvent || m.kind == MapMarker::kFestivalSite) &&
+                           ((target.event_id > 0 && m.id == std::to_string(target.event_id)) ||
+                            (target.have_pos && std::hypot(m.x - target.pos[0], m.z - target.pos[2]) < 60.0));
+        }
+        if (matches_target) {
+          if (target.have_pos && app.gps_solver.ready()) {
+            const drive::Vec3 at = vehicle.position();
+            fire_satnav_event(app.gps_nav.set_destination(target.pos[0], target.pos[2], target.gps_kind,
+                                                          target.gps_label, at.x, at.z));
+            app.audio_host.trigger_ui(audio::UiCue::kAccept);
+          } else {
+            map_route_to_selected();
+          }
+          app.campaign.ftc_release_map_lock();
+          map_heats_close_left = kMapHeatsCloseSeconds;
+        } else {
+          map_route_to_selected();
+        }
+      } else {
+        map_route_to_selected();
+      }
     } else if (k == Key::kB) {
       app.audio_host.trigger_ui(audio::UiCue::kCancel);
       if (map_details_restrictions) map_details_restrictions = false;
@@ -720,6 +770,10 @@ bool DriveSession::map_screen_event(const SDL_Event& e) {
     return true;
   }
   if (k == Key::kX) {
+    if (app.campaign.ftc_active() && app.campaign.ftc().map_locked()) {
+      if (map_open_details()) map_dirty = true;
+      return true;
+    }
     if (map_selected_marker >= 0 && size_t(map_selected_marker) < cached_map_markers.size() &&
         map_marker_is_here(cached_map_markers[size_t(map_selected_marker)])) {
       close_map();

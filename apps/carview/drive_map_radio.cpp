@@ -276,16 +276,20 @@ MapScene DriveSession::map_scene() {
             mm.detail_line = std::move(det);
             if (ev.target_class > 0 && size_t(ev.target_class) < app.class_bands.size())
               mm.class_name = app.class_bands[size_t(ev.target_class)].name;
-            if (const int pts = app.wristbands.points_for(ev.level, 1); pts > 0)
-              mm.points = carview::format1(carview::text_of({"UnitStrings", "IDS_Units_PTS", 0, "{0} PTS"}),
-                                           carview::thousands(pts));
+            if (ev.style == 1 && ev.level >= 0) {
+              if (const int pts = app.wristbands.points_for(ev.level, 1); pts > 0)
+                mm.points = carview::format1(carview::text_of({"UnitStrings", "IDS_Units_PTS", 0, "{0} PTS"}),
+                                             carview::thousands(pts));
+            }
             mm.money = carview::format1(carview::text_of(carview::map_text::kCredits),
                                         carview::thousands(int64_t(ev.cash_prize)));
             mm.x = ev.trigger_pos[0], mm.z = ev.trigger_pos[2];
             sc.markers.push_back(std::move(mm));
           }
           }
-          if (app.have_outposts) {
+          const bool hide_ftc_initial_icons =
+              app.campaign.ftc_active() && app.campaign.ftc().stage() <= race::FtcStage::kInitialDrive;
+          if (app.have_outposts && !hide_ftc_initial_icons) {
             for (const auto& op : app.outposts.outposts) {
               MapMarker mm;
               mm.kind = MapMarker::kOutpost;
@@ -315,7 +319,7 @@ MapScene DriveSession::map_scene() {
             }
             // PR stunts have no map icon (the original shows only the outpost).
           }
-          if (app.speed_tracker) {
+          if (app.speed_tracker && !hide_ftc_initial_icons) {
             for (const auto& t : app.speed_data.traps) {
               const double pb = app.speed_tracker->best_trap_mph(t.id);
               MapMarker mm;
@@ -439,13 +443,18 @@ void DriveSession::set_minimap(int height, bool force) {
         // strings via map_scene() on every minimap tick (refresh every 2.0 s or on race change).
         MapScene ms;
         const bool is_race = bool(app.race);
+        const bool hide_ftc_icons =
+            app.campaign.ftc_active() && app.campaign.ftc().stage() <= race::FtcStage::kInitialDrive;
+        static bool s_mm_was_hide_ftc_icons = false;
         const double marker_refresh_s = is_race ? 1.0 : 2.0;
         if (force || cached_map_markers.empty() || is_race != s_mm_was_race ||
-            t < s_mm_markers_t || (t - s_mm_markers_t) >= marker_refresh_s) {
+            hide_ftc_icons != s_mm_was_hide_ftc_icons || t < s_mm_markers_t ||
+            (t - s_mm_markers_t) >= marker_refresh_s) {
           ms = map_scene();
           cached_map_markers = ms.markers;
           s_mm_markers_t = t;
           s_mm_was_race = is_race;
+          s_mm_was_hide_ftc_icons = hide_ftc_icons;
         } else {
           ms.x = cur_pos.x;
           ms.z = cur_pos.z;

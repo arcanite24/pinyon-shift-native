@@ -150,7 +150,13 @@ void bind_popup(SceneScreen& sc, const MapPopupHud& p) {
       sc.at(child(sd, group, "Pin")).dy = -42.0f;
       sc.hide(bottom);
       name_row(top);
-      sc.hide(child(sd, top, "Pill_warning"));
+      const int warn = child(sd, top, "Pill_warning");
+      if (p.line.empty()) {
+        sc.hide(warn);
+      } else if (warn >= 0) {
+        sc.show(warn);
+        for (int c : sd.children_of(warn)) sc.show(c);
+      }
       rows.pills = {child(sd, top, "Pill_top"), child(sd, top, "Pill_bottom")};
       const int cls = child(sd, middle, "Class"), pts = child(sd, middle, "TEXT_PTS");
       const int pill_pts = child(sd, middle, "Pillpoints"), money = child(sd, middle, "TEXT_MONEY");

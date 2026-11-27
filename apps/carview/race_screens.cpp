@@ -333,8 +333,13 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
   if (r.mileage_bonus > 0) lines.push_back({text_of(race_text::kMileageBonus), credits_text(r.mileage_bonus)});
   if (r.difficulty_pct > 0)
     lines.push_back({text_of(race_text::kDifficultyBonus), "+" + std::to_string(r.difficulty_pct) + "%"});
-  // The first line with the title; the rest within 30 frames.
-  const int shown = t < race_flow::timing::kCashLines ? 1 : int(lines.size());
+  // Progressive row reveal: item 0 appears with the title, subsequent breakdown
+  // lines stagger in sequentially, followed by TOTAL and BALANCE.
+  constexpr double kCashLineStagger = 0.24;
+  int shown = 1;
+  for (int i = 1; i < int(lines.size()); ++i) {
+    if (t >= double(i) * kCashLineStagger) shown = i + 1;
+  }
   for (int i = 0; i < 5; ++i) {
     const int item = sc.node("Breakdown/Item" + std::to_string(i + 1));
     if (item < 0) continue;
@@ -352,9 +357,11 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
     tape_text(sc, late, vt, value, vs, kCashLineX + lw + kCashValueGap, y + kCashValueDy, 22.0f, kCashValuePad, kTapePink,
               kWhite, kCashLineTapeDy);
   }
-  // The total and the balance (with the rest of the lines).
+  // Total appears after the final breakdown line, then Balance shortly after.
+  const double total_t = std::max(race_flow::timing::kCashLines, double(lines.size()) * kCashLineStagger + 0.14);
+  const double balance_t = total_t + 0.20;
   const int total = sc.node("TotalAlign"), balance = sc.node("Balance");
-  if (t < race_flow::timing::kCashLines) {
+  if (t < total_t) {
     sc.hide(total);
     sc.hide(balance);
   } else {
@@ -364,7 +371,7 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
     tape_text(sc, late, vg, child(sd, vg, "TEXT_WINNING"), credits_text(r.credits), kTotalValueX, kTotalValueY, 66.0f,
               kTotalPad, kTapePink);
     const int bt = sc.node("TEXT_BALANCE_TITLE"), bv = sc.node("TEXT_BALANCE");
-    if (r.balance >= 0 && bt >= 0 && bv >= 0) {
+    if (t >= balance_t && r.balance >= 0 && bt >= 0 && bv >= 0) {
       const std::string btxt = text_of(race_text::kBalance), bval = credits_text(r.balance);
       sc.text(bt, btxt);
       sc.text(bv, bval);
@@ -623,8 +630,16 @@ bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_vi
   fit_tapes(sc, main, 0.0f, kTapePink);
   for (const char* n : {"TEXT_MAIN", "CrispTapeBig02", "SmudgeTapeBig02", "dirt2"}) sc.hide(child(sd, main, n));
   show_tree(sc, sc.node("LevelBar"));
+  // Animate wristband FillBar smoothly from previous points to new points over r.screen_t.
+  constexpr double kPointsFillDelay = 0.35;
+  constexpr double kPointsFillDuration = 1.25;
+  const double raw_u = std::clamp((r.screen_t - kPointsFillDelay) / kPointsFillDuration, 0.0, 1.0);
+  const float fill_u = float(raw_u * raw_u * (3.0 - 2.0 * raw_u));
+  const double anim_pts =
+      r.band_before >= 0 ? (double(r.band_before) + double(std::max(0, r.band_after) - r.band_before) * double(fill_u))
+                         : double(std::max(0, r.band_after));
   if (r.band_hi > 0) {
-    const int left = std::max(0, r.band_hi - std::max(0, r.band_after));
+    const int left = std::max(0, r.band_hi - int(std::lround(anim_pts)));
     sc.text(sc.node("TEXT_POINTS_TO_NEXT"),
             format1(text_of(left == 1 ? race_text::kPointToNext : race_text::kPointsToNext), std::to_string(left)));
   }
@@ -638,9 +653,9 @@ bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_vi
       sc.at(wn).texture = "WRISTBANDS/" + upper(r.band_next.substr(0, r.band_next.find(' ')));
   sc.hide(sc.node("HeadlineEvent"));
   sc.hide(sc.node("GlowMover"));
-  // The fill: the band's span covered.
+  // The fill: animated smoothly across the band's span from band_before to band_after.
   float frac = 0.0f;
-  if (r.band_hi > r.band_lo) frac = float(std::max(0, r.band_after) - r.band_lo) / float(r.band_hi - r.band_lo);
+  if (r.band_hi > r.band_lo) frac = float(anim_pts - double(r.band_lo)) / float(r.band_hi - r.band_lo);
   frac = std::clamp(frac, 0.0f, 1.0f);
   for (const char* n : {"FillBar", "FillBar2"})
     if (const int fb = sc.node(n); fb >= 0) {

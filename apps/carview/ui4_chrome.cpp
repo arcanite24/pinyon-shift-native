@@ -737,9 +737,13 @@ void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, f
   const SlotMap& lm = kLayouts[id];
 
   // Center stylized vector gamepad silhouette (body, grips, sticks, D-pad, triggers, bumpers).
-  const float body_cy = y0 + 0.56f * h;
-  const float bw = std::min(126.0f * s, w * 0.34f);
-  const float bh = std::min(68.0f * s, h * 0.36f);
+  const bool is_kb = active_glyph_set() == GlyphSet::kKeyboard;
+  const float top_pad = 36.0f * s;
+  const float bot_pad = 14.0f * s;
+  const float avail_h = std::max(120.0f * s, h - top_pad - bot_pad);
+  const float body_cy = y0 + top_pad + 0.50f * avail_h;
+  const float bw = std::min(160.0f * s, w * 0.28f);
+  const float bh = std::min(92.0f * s, std::min(avail_h * 0.44f, bw * 0.58f));
   const float bx0 = cx - 0.5f * bw, bx1 = cx + 0.5f * bw;
   const float by0 = body_cy - 0.5f * bh, by1 = body_cy + 0.5f * bh;
 
@@ -768,36 +772,76 @@ void draw_controller_layout_diagram(ui::List& l, float x0, float y0, float x1, f
   l.line(dp_x, dp_y - 6.0f * s, dp_x, dp_y + 6.0f * s, 3.0f * s, ui::rgba(190, 196, 208, 220));
   // Face diamond cluster on right side of gamepad
   const float fc_x = bx1 - bw * 0.22f, fc_y = by0 + bh * 0.36f, fd = 7.2f * s;
-  button_glyph(l, fc_x, fc_y + fd, 4.2f * s, "A");
-  button_glyph(l, fc_x + fd, fc_y, 4.2f * s, "B");
-  button_glyph(l, fc_x - fd, fc_y, 4.2f * s, "X");
-  button_glyph(l, fc_x, fc_y - fd, 4.2f * s, "Y");
+  if (is_kb) {
+    l.circle(fc_x, fc_y + fd, 3.6f * s, kGreen);
+    l.circle(fc_x + fd, fc_y, 3.6f * s, kRed);
+    l.circle(fc_x - fd, fc_y, 3.6f * s, kBlue);
+    l.circle(fc_x, fc_y - fd, 3.6f * s, kYellow);
+  } else {
+    button_glyph(l, fc_x, fc_y + fd, 4.2f * s, "A");
+    button_glyph(l, fc_x + fd, fc_y, 4.2f * s, "B");
+    button_glyph(l, fc_x - fd, fc_y, 4.2f * s, "X");
+    button_glyph(l, fc_x, fc_y - fd, 4.2f * s, "Y");
+  }
 
-  // Callout rows flanking left & right of the gamepad silhouette with leader lines!
+  // On keyboard, resolve each driving action to its actual driving key token
+  // (matching drive::KeyBindings::defaults()) instead of menu button mappings
+  // like B->ESC or A->ENTER.
+  auto kb_token_for_action = [](std::string_view act, const char* pad_btn) -> const char* {
+    if (act == "GAS") return "W";
+    if (act == "BRAKE") return "S";
+    if (act == "STEER") return "A/D";
+    if (act == "HANDBRAKE") return "HANDBRAKE";  // renders SPACE
+    if (act == "CLUTCH") return "CLUTCH";        // renders SHIFT
+    if (act == "SHIFT UP") return "X";
+    if (act == "SHIFT DN") return "Z";
+    if (act == "CAMERA") return "CAMERA";        // renders V
+    if (act == "REWIND") return "Y";
+    if (act == "RADIO") return ",/.";
+    if (act == "MAP") return "MAP";              // renders M
+    return pad_btn;
+  };
+
+  // Callout rows flanking left & right of the gamepad silhouette, vertically
+  // centered on the silhouette with clean elbow leader lines to each anchor.
+  const float pitch = std::clamp(avail_h / 6.6f, 22.0f * s, 44.0f * s);
+  const float left_y0 = body_cy - 2.0f * pitch;
+  const float right_y0 = body_cy - 2.5f * pitch;
   const std::string hi_up = upper_copy(highlight_action);
   auto draw_callout = [&](bool left_col, int row_i, const char* btn, const char* action_txt, float ax, float ay) {
-    const float row_y = y0 + 38.0f * s + float(row_i) * 26.5f * s;
+    const float row_cy = (left_col ? left_y0 : right_y0) + float(row_i) * pitch;
+    const char* glyph = is_kb ? kb_token_for_action(action_txt, btn) : btn;
     const bool hi = !hi_up.empty() && upper_copy(action_txt).find(hi_up) != std::string::npos;
-    const uint32_t line_col = hi ? kYellow : ui::rgba(255, 255, 255, 78);
+    const uint32_t line_col = hi ? kYellow : ui::rgba(255, 255, 255, 110);
     const uint32_t txt_col = hi ? kYellow : kWhite;
+    const float gr = 8.2f * s;
+    const float ghw = button_glyph_half_width(glyph, gr);
     if (left_col) {
-      const float gx = x0 + 22.0f * s;
-      const float tx = x0 + 40.0f * s;
-      const float max_tx = bx0 - 10.0f * s;
-      l.line(max_tx + 2.0f * s, row_y + 7.0f * s, ax, ay, 1.1f * s, line_col);
-      button_glyph(l, gx, row_y + 7.0f * s, 8.2f * s, btn);
+      const float gx = x0 + 14.0f * s + ghw;
+      const float tx = gx + ghw + 8.0f * s;
+      const float max_tx = bx0 - 14.0f * s;
       ui::TextStyle ts = style(ui::Font::kB, 10.5f * s, txt_col);
       fit_text(action_txt, ts, std::max(36.0f * s, max_tx - tx), 7.5f * s);
-      l.text(tx, row_y + 1.5f * s, action_txt, ts);
+      const float label_end = std::min(max_tx, tx + ui::List::measure(action_txt, ts) + 6.0f * s);
+      const float elbow_x = std::min(bx0 - 6.0f * s, label_end + 8.0f * s);
+      l.line(label_end, row_cy, elbow_x, row_cy, 1.2f * s, line_col);
+      l.line(elbow_x, row_cy, ax, ay, 1.2f * s, line_col);
+      l.circle(ax, ay, 2.2f * s, hi ? kYellow : ui::rgba(255, 255, 255, 185));
+      button_glyph(l, gx, row_cy, gr, glyph);
+      l.text(tx, row_cy - 0.52f * ts.size, action_txt, ts);
     } else {
-      const float gx = x1 - 22.0f * s;
-      const float tx = x1 - 40.0f * s;
-      const float min_tx = bx1 + 10.0f * s;
-      l.line(ax, ay, min_tx - 2.0f * s, row_y + 7.0f * s, 1.1f * s, line_col);
-      button_glyph(l, gx, row_y + 7.0f * s, 8.2f * s, btn);
+      const float gx = x1 - 14.0f * s - ghw;
+      const float tx = gx - ghw - 8.0f * s;
+      const float min_tx = bx1 + 14.0f * s;
       ui::TextStyle ts = style(ui::Font::kB, 10.5f * s, txt_col, ui::Align::kRight);
       fit_text(action_txt, ts, std::max(36.0f * s, tx - min_tx), 7.5f * s);
-      l.text(tx, row_y + 1.5f * s, action_txt, ts);
+      const float label_end = std::max(min_tx, tx - ui::List::measure(action_txt, ts) - 6.0f * s);
+      const float elbow_x = std::max(bx1 + 6.0f * s, label_end - 8.0f * s);
+      l.line(ax, ay, elbow_x, row_cy, 1.2f * s, line_col);
+      l.line(elbow_x, row_cy, label_end, row_cy, 1.2f * s, line_col);
+      l.circle(ax, ay, 2.2f * s, hi ? kYellow : ui::rgba(255, 255, 255, 185));
+      button_glyph(l, gx, row_cy, gr, glyph);
+      l.text(tx, row_cy - 0.52f * ts.size, action_txt, ts);
     }
   };
 

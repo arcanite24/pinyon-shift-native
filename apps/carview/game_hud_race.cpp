@@ -402,20 +402,9 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& 
       const float y = g.T(ink[i]);
       pill(l, g.L(64), y - 5 * s, g.L(224), y + 19 * s, kPillGrey, true);
       l.text(g.L(74), y, rows[i].name, font(ui::Font::kB, 14 * s, kText));
-      l.text(g.L(215), y, clock_ms(rows[i].t), font(ui::Font::kB, 14 * s, kText, Align::kRight));
-    }
-    // Live lap split delta display (-0.42s green / +0.31s red).
-    const bool derived_delta =
-        !r.has_lap_split_delta && r.circuit && r.best_lap > 0.0 && r.last_lap > 0.0 &&
-        std::fabs(r.last_lap - r.best_lap) > 0.004;
-    if (racing && (r.has_lap_split_delta || derived_delta)) {
-      const double delta = r.has_lap_split_delta ? r.lap_split_delta : (r.last_lap - r.best_lap);
-      const uint32_t dcol = delta <= 0.0 ? ui4::kGreen : ui4::kRed;
-      const float dy = g.T(ink[std::min<size_t>(rows.size(), 3)] + (rows.size() >= 4 ? 28.0f : 0.0f));
-      pill(l, g.L(64), dy - 5 * s, g.L(224), dy + 19 * s, ui4::kBrushBlack, true);
-      l.rect(g.L(64), dy - 5 * s, g.L(68), dy + 19 * s, dcol);
-      l.text(g.L(74), dy, "SPLIT", font(ui::Font::kB, 13.0f * s, ui4::kOffWhite));
-      l.text(g.L(215), dy, format_split_delta(delta), font(ui::Font::kE, 14.0f * s, dcol, Align::kRight));
+      const uint32_t vcol =
+          (racing && r.has_lap_split_delta && i == 1) ? (r.lap_split_delta <= 0.0 ? ui4::kGreen : ui4::kRed) : kText;
+      l.text(g.L(215), y, clock_ms(rows[i].t), font(ui::Font::kB, 14 * s, vcol, Align::kRight));
     }
   }
   // Place: "PLACE 3/8".
@@ -441,27 +430,33 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& 
       pick = {0, last - 2, last - 1, last};
     }
     const float ty[] = {116, 143, 172, 200};
-    bool any_gap = false;
-    for (size_t idx : pick) {
-      if (r.rows[idx].gap > 0.05) any_gap = true;
-    }
-    const float pill_left = any_gap ? g.R(984) : g.R(1043);
+    const bool show_times = racing && r.clock >= 0.0;
+    const float name_left = g.R(1037);
+    const float time_left = g.R(944);
+    const float time_right = g.R(1033);
     for (size_t k = 0; k < pick.size(); ++k) {
       const RaceHudRow& row = r.rows[pick[k]];
       const float y = g.T(ty[k]);
-      // 947_HUD/PositionIndicators: HUDPILL01 per row, driver name in B right-aligned
-      // to 1181, place in E right-aligned to 1206, optional TEXT_TIME gap column on left.
-      pill(l, pill_left, y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kPillGrey);
+      // 947_HUD/PositionIndicators: HUDPositionTime (944..1033) + HUDPositionBar (1037..1213).
+      if (show_times) {
+        std::string tstr;
+        if (row.place == 1 || row.gap < 0.0) {
+          tstr = clock_ms(std::max(0.0, r.clock));
+        } else {
+          char gb[24];
+          std::snprintf(gb, sizeof gb, "+%.3f", std::max(0.0, row.gap));
+          tstr = gb;
+        }
+        pill(l, time_left, y - 5 * s, time_right, y + 19 * s, row.player ? kPinkRow : kPillGrey);
+        l.text(time_right - 8 * s, y, tstr, font(ui::Font::kB, 13.5f * s, kText, Align::kRight));
+      }
+      pill(l, name_left, y - 5 * s, g.R(1213), y + 19 * s, row.player ? kPinkRow : kPillGrey);
       char pos[8];
       std::snprintf(pos, sizeof pos, "%d", row.place);
       l.text(g.R(1206), y - 0.5f * s, pos, font(ui::Font::kE, 15 * s, kText, Align::kRight));
-      if (any_gap && row.gap > 0.05) {
-        l.text(pill_left + 8 * s, y + 1.5f * s, gap_ms(row.gap),
-               font(ui::Font::kB, 11.5f * s, row.player ? ui4::kWhite : ui4::kDim));
-      }
       TextStyle ns = font(ui::Font::kB, 14 * s, kText, Align::kRight);
       ns.keep_case = true;
-      fit(row.name, ns, g.R(1181) - (any_gap ? (pill_left + 64 * s) : g.R(1052)), 9 * s);
+      fit(row.name, ns, g.R(1181) - (name_left + 9 * s), 9 * s);
       l.text(g.R(1181), y + (14 * s - ns.size) * 0.5f, row.name, ns);
     }
   }

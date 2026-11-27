@@ -60,15 +60,27 @@ struct MissedCheckpointTracker {
   static constexpr double kBypassProgressMarginM = 16.0;
   static constexpr double kBypassPlaneMarginM = 10.0;
   static constexpr double kOffCorridorTriggerM = 28.0;
+  // Single-step progress jump threshold to reject hairpin spline snaps across
+  // adjacent legs when the car has not physically driven past the gate.
+  static constexpr double kMaxProgressStepM = 25.0;
+  static constexpr double kMaxBypassDistM = 250.0;
 
   bool active = false;
   double countdown_s = 0.0;
   size_t missed_gate_index = 0;
+  bool has_prev_progress = false;
+  double prev_progress = 0.0;
+  size_t tracked_gate_index = 0;
+  bool spline_snapped = false;
 
   void reset() {
     active = false;
     countdown_s = 0.0;
     missed_gate_index = 0;
+    has_prev_progress = false;
+    prev_progress = 0.0;
+    tracked_gate_index = 0;
+    spline_snapped = false;
   }
 
   // Advances missed-checkpoint state for one step.
@@ -84,12 +96,32 @@ struct MissedCheckpointTracker {
       reset();
       return false;
     }
+    const double step_dt = std::max(0.0, dt);
+    if (!has_prev_progress || next_gate_idx != tracked_gate_index) {
+      has_prev_progress = true;
+      prev_progress = player_progress;
+      tracked_gate_index = next_gate_idx;
+      spline_snapped = false;
+    } else {
+      const double max_step = std::max(kMaxProgressStepM, step_dt * 180.0);
+      const double progress_delta = player_progress - prev_progress;
+      if (prev_progress < gate_progress && progress_delta > max_step) {
+        spline_snapped = true;
+      } else if (player_progress <= gate_progress + kBypassProgressMarginM) {
+        spline_snapped = false;
+      }
+      prev_progress = player_progress;
+    }
     const double eff_reach = (gate_reach_m > 0.0 && gate_reach_m < 1e6) ? gate_reach_m : 18.0;
-    const bool bypassed_by_progress = (player_progress > gate_progress + kBypassProgressMarginM);
+    const bool bypassed_by_progress =
+        !spline_snapped && (player_progress > gate_progress + kBypassProgressMarginM) && (gate_plane_side > 0.0) &&
+        (dist_to_gate_m > eff_reach) && (dist_to_gate_m < kMaxBypassDistM);
     const bool bypassed_gate_plane =
         (gate_plane_side > kBypassPlaneMarginM) && (dist_to_gate_m > eff_reach) && (dist_to_gate_m < 400.0);
     const bool off_corridor_past_gate =
-        (off_route_m > kOffCorridorTriggerM) && (player_progress > gate_progress - 5.0 || gate_plane_side > 0.0);
+        (off_route_m > kOffCorridorTriggerM) &&
+        ((!spline_snapped && player_progress > gate_progress - 5.0 && gate_plane_side > -5.0) ||
+         gate_plane_side > 0.0);
     if (!active) {
       if (bypassed_by_progress || bypassed_gate_plane || off_corridor_past_gate) {
         active = true;
@@ -98,16 +130,97 @@ struct MissedCheckpointTracker {
       }
       return false;
     }
-    if (!bypassed_by_progress && gate_plane_side < -2.0 && off_route_m < 10.0) {
+    if (player_progress <= gate_progress + 2.0 && gate_plane_side < -2.0 && off_route_m < 10.0) {
       reset();
       return false;
     }
-    countdown_s = std::max(0.0, countdown_s - std::max(0.0, dt));
+    countdown_s = std::max(0.0, countdown_s - step_dt);
     if (countdown_s <= 0.0) {
       reset();
       return true;
     }
     return false;
+  }
+};
+
+// Smooth fade-out -> reposition at black peak -> fade-in transition for
+// missed-checkpoint HandOfGodReset (avoids a harsh 1-frame snap).
+struct MissedCheckpointFade {
+  enum class Phase : uint8_t { kIdle, kFadeOut, kHoldBlack, kFadeIn };
+
+  static constexpr double kDefaultFadeOutSec = 0.35;
+  static constexpr double kDefaultHoldSec = 0.08;
+  static constexpr double kDefaultFadeInSec = 0.35;
+
+  Phase phase = Phase::kIdle;
+  double timer_s = 0.0;
+  double fade_out_s = kDefaultFadeOutSec;
+  double hold_s = kDefaultHoldSec;
+  double fade_in_s = kDefaultFadeInSec;
+  double target_progress = 0.0;
+  bool reset_pending = false;
+
+  void reset() {
+    phase = Phase::kIdle;
+    timer_s = 0.0;
+    target_progress = 0.0;
+    reset_pending = false;
+  }
+
+  bool active() const { return phase != Phase::kIdle; }
+
+  void trigger(double reset_progress, double hog_fade_out = kDefaultFadeOutSec,
+               double hog_fade_in = kDefaultFadeInSec) {
+    fade_out_s = (hog_fade_out > 0.0) ? std::clamp(hog_fade_out, 0.15, 0.50) : kDefaultFadeOutSec;
+    hold_s = kDefaultHoldSec;
+    fade_in_s = (hog_fade_in > 0.0) ? std::clamp(hog_fade_in, 0.15, 0.50) : kDefaultFadeInSec;
+    target_progress = reset_progress;
+    phase = Phase::kFadeOut;
+    timer_s = 0.0;
+    reset_pending = true;
+  }
+
+  // Advances the fade by dt. Returns true once at peak black when the vehicle
+  // should be repositioned to `target_progress`.
+  bool step(double dt) {
+    if (phase == Phase::kIdle) return false;
+    timer_s += std::max(0.0, dt);
+    if (phase == Phase::kFadeOut) {
+      if (timer_s >= fade_out_s) {
+        timer_s -= fade_out_s;
+        phase = Phase::kHoldBlack;
+        const bool do_reset = reset_pending;
+        reset_pending = false;
+        return do_reset;
+      }
+      return false;
+    }
+    if (phase == Phase::kHoldBlack) {
+      if (timer_s >= hold_s) {
+        timer_s -= hold_s;
+        phase = Phase::kFadeIn;
+      }
+      return false;
+    }
+    if (phase == Phase::kFadeIn) {
+      if (timer_s >= fade_in_s) {
+        reset();
+      }
+      return false;
+    }
+    return false;
+  }
+
+  float alpha() const {
+    switch (phase) {
+      case Phase::kIdle: return 0.0f;
+      case Phase::kFadeOut:
+        return float(std::clamp(fade_out_s > 0.0 ? timer_s / fade_out_s : 1.0, 0.0, 1.0));
+      case Phase::kHoldBlack: return 1.0f;
+      case Phase::kFadeIn:
+        return float(std::clamp(1.0 - (fade_in_s > 0.0 ? timer_s / fade_in_s : 1.0), 0.0, 1.0));
+    }
+    return 0.0f;
   }
 };
 

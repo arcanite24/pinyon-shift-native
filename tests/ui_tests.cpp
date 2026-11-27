@@ -1768,6 +1768,111 @@ int main() {
     tin.rewind_available = true;
     tutor.update(tin);
     CHECK(tutor.message() != race::TutorMessage::kRewind);
+
+    // WP-3 checks:
+    // 1. Free-roam AI tags cap to 3 (matching races) and suppress distant (> 65 m) roaming tags.
+    {
+      std::vector<carview::NameTagHud> roam_tags;
+      const double rdists[5] = {20.0, 32.0, 44.0, 56.0, 90.0};
+      for (int i = 0; i < 5; ++i) {
+        carview::NameTagHud nt;
+        nt.screen_x = 300.0f + float(i) * 140.0f;
+        nt.screen_y = 320.0f;
+        nt.name = "DRIVER " + std::to_string(i + 1);
+        nt.distance_m = rdists[i];
+        roam_tags.push_back(nt);
+      }
+      std::vector<carview::ResolvedNameTag> resolved;
+      carview::layout_world_labels(roam_tags, nullptr, /*in_race=*/false, 1280.0f, 720.0f, resolved);
+      CHECK(resolved.size() == 3);
+      for (const auto& rt : resolved) CHECK(rt.source_index < 3);
+
+      carview::NameTagHud far_roam;
+      far_roam.screen_x = 640.0f;
+      far_roam.screen_y = 300.0f;
+      far_roam.name = "FAR ROAMER";
+      far_roam.distance_m = 80.0;
+      resolved.clear();
+      carview::layout_world_labels({far_roam}, nullptr, /*in_race=*/false, 1280.0f, 720.0f, resolved);
+      CHECK(resolved.empty());
+    }
+    // 2. Skill chain does not render a "0 x1.0" badge before points > 0.
+    {
+      carview::DriveHud d_zero;
+      d_zero.driving = true;
+      d_zero.time = 20.0;
+      carview::SkillChainHud sk_zero;
+      sk_zero.active = true;
+      sk_zero.chain_points = 0;
+      sk_zero.shown_points = 0;
+      sk_zero.multiplier = 1;
+      sk_zero.multiplier_f = 1.0f;
+      d_zero.skills = &sk_zero;
+      List l_zero, l_none;
+      carview::build_drive_hud(l_zero, d_zero, 1280.0f, 720.0f);
+      d_zero.skills = nullptr;
+      carview::build_drive_hud(l_none, d_zero, 1280.0f, 720.0f);
+      CHECK(l_zero.items().size() == l_none.items().size());
+    }
+    // 3. Barn find rumour popup stays alive for 10 s (GlobalRegistry BarnFindDiscovered).
+    {
+      carview::DriveHud d_barn;
+      d_barn.driving = true;
+      d_barn.time = 27.0;
+      d_barn.popup_kind = carview::NotifyKind::kBarnRumour;
+      d_barn.popup_title = "NEW BARN FIND RUMOR";
+      d_barn.popup_text = "A classic car was spotted near Eagle Ridge.";
+      d_barn.popup_at = 20.0;  // age = 7.0 s (> 4.5 s, < 10.0 s)
+      List l_barn, l_empty;
+      carview::build_drive_hud(l_barn, d_barn, 1280.0f, 720.0f);
+      d_barn.popup_title.clear();
+      carview::build_drive_hud(l_empty, d_barn, 1280.0f, 720.0f);
+      CHECK(l_barn.items().size() > l_empty.items().size());
+    }
+    // 4. Controller layout diagram keeps callout lines cleanly inside panel bounds on keyboard.
+    {
+      const auto prev_gs = carview::ui4::glyph_set();
+      carview::ui4::set_glyph_set(carview::ui4::GlyphSet::kKeyboard);
+      List l_ctrl;
+      const float x0 = 153.6f, y0 = 100.8f, x1 = 1126.4f, y1 = 619.2f;
+      carview::ui4::draw_controller_layout_diagram(l_ctrl, x0, y0, x1, y1, 1.0f, 0, false);
+      CHECK(!l_ctrl.items().empty());
+      for (const auto& it : l_ctrl.items()) {
+        if (it.kind == kLine) {
+          CHECK(it.p[0] >= x0 && it.p[0] <= x1 && it.p[2] >= x0 && it.p[2] <= x1);
+          CHECK(it.p[1] >= y0 && it.p[1] <= y1 && it.p[3] >= y0 && it.p[3] <= y1);
+        }
+      }
+      carview::ui4::set_glyph_set(prev_gs);
+    }
+    // 5. Race HUD fallback standings show times while racing and omit invented SPLIT row.
+    {
+      carview::RaceHud rh;
+      rh.phase = carview::RaceHud::kRacing;
+      rh.circuit = true;
+      rh.lap = 2;
+      rh.laps = 3;
+      rh.clock = 72.345;
+      rh.lap_time = 24.111;
+      rh.last_lap = 48.234;
+      rh.best_lap = 47.900;
+      rh.has_lap_split_delta = true;
+      rh.lap_split_delta = 0.334;
+      rh.place = 2;
+      rh.cars = 2;
+      carview::RaceHudRow r1, r2;
+      r1.name = "LEADER", r1.place = 1, r1.player = false, r1.gap = -1.0;
+      r2.name = "PLAYER", r2.place = 2, r2.player = true, r2.gap = 1.234;
+      rh.rows = {r1, r2};
+      carview::DriveHud d_race;
+      d_race.driving = true;
+      d_race.race = &rh;
+      List l_racing, l_grid;
+      carview::build_drive_hud(l_racing, d_race, 1280.0f, 720.0f);
+      rh.phase = carview::RaceHud::kGrid;
+      carview::build_drive_hud(l_grid, d_race, 1280.0f, 720.0f);
+      CHECK(l_racing.items().size() > l_grid.items().size());
+    }
   }
 
   if (const char* out = std::getenv("SHIFT_UI_SPECIMEN")) {

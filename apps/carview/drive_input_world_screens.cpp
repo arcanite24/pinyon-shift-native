@@ -263,7 +263,16 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                     app.saved.has_subtitles = true;
                     app.saved.subtitles = app.subtitles_enabled;
                     if (!app.no_save && !app.save_path.empty()) {
+                      const bool had_save = app.have_saved;
                       drive::DriveSave s = app.saved;
+                      if (!had_save) {
+                        // Persist video_seen & display preferences without marking a
+                        // playable Corrado career save before start_new_career() runs.
+                        s.career_started = false;
+                        s.owned_garage = false;
+                        s.credits = 0;
+                        s.intro_completed = false;
+                      }
                       if (s.car.empty()) s.car = app.car.empty() ? std::string("VW_CorradoVR6_95") : app.car;
                       s.video_seen = true;
                       s.brightness = app.display_brightness;
@@ -272,9 +281,8 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                       std::string err;
                       if (!drive::write_save(app.save_path, s, &err)) {
                         std::fprintf(stderr, "carview: %s\n", err.c_str());
-                      } else {
+                      } else if (had_save) {
                         app.saved = s;
-                        app.have_saved = true;
                       }
                     }
                     break;
@@ -487,18 +495,16 @@ bool DriveSession::handle_grid_and_map_event(const SDL_Event& e) {
               // Q275). The help bar then gives way
               // to PLEASE WAIT and the map closes by itself (first30e r7
               // n0-h00045; interim delay kMapHeatsCloseSeconds).
-              if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open) {
+              if (app.campaign.ftc_active() && app.campaign.ftc().map_locked() && !map_filter_open && !map_details) {
                 const bool key = e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat;
                 const bool pad = e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
                 const bool a = (key && (e.key.key == SDLK_RETURN || e.key.key == SDLK_KP_ENTER || e.key.key == SDLK_SPACE)) ||
                                (pad && e.gbutton.button == SDL_GAMEPAD_BUTTON_SOUTH);
                 const bool other = (key && (e.key.key == SDLK_ESCAPE || e.key.key == SDLK_M || e.key.key == SDLK_BACKSPACE ||
-                                            e.key.key == SDLK_X || e.key.key == SDLK_F || e.key.key == SDLK_Y ||
-                                            e.key.key == SDLK_TAB)) ||
+                                            e.key.key == SDLK_Y || e.key.key == SDLK_TAB)) ||
                                    (pad && (e.gbutton.button == SDL_GAMEPAD_BUTTON_EAST ||
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_BACK ||
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_START ||
-                                            e.gbutton.button == SDL_GAMEPAD_BUTTON_WEST ||
                                             e.gbutton.button == SDL_GAMEPAD_BUTTON_NORTH));
                 if (a) {
                   // The target's marker (the heats, or the showcase after

@@ -33,7 +33,7 @@ void DrivingTutor::show(TutorMessage m) {
 bool DrivingTutor::ebrake_due(const TutorInput& in) const {
   if (ebrake_cool_ > 0.0) return false;
   if (in.speed_mps * 2.2369 < kSpeedThresholdForEBrakeMph) return false;
-  return in.turn_ahead && in.turn_distance_m > 0.0 && in.turn_distance_m <= kDistanceThresholdForEBrake;
+  return in.turn_ahead && in.turn_distance_m >= 15.0 && in.turn_distance_m <= kDistanceThresholdForEBrake;
 }
 
 void DrivingTutor::update(const TutorInput& in) {
@@ -60,6 +60,7 @@ void DrivingTutor::update(const TutorInput& in) {
       }
       break;
     case 2:
+      if (in.throttle < kThrottleThreshold && in.speed_mps < 1.0) timer_ = std::max(0.0, timer_ - dt);
       if (timer_ >= kBrakeDelay) {
         show(TutorMessage::kBrake);
         state_ = 3;

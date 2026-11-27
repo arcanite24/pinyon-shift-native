@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -433,7 +434,42 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           gps_hud.turn_text = traffic::gps_turn_label(gg.next_turn);
           gps_hud.dest_label = gg.dest_label;
           gps_hud.dist_to_turn_m = gg.dist_to_turn_m;
-          gps_hud.dist_to_dest_m = gg.dist_to_dest_m;
+          double total_dest_m = gg.dist_to_dest_m;
+          // FTC initial_drive routes leg-by-leg through kInitialDrivePoints[0..2];
+          // accumulate remaining legs so the distance readout counts down smoothly
+          // to the Diner instead of jumping 0.2 MI -> 0.3 MI -> 1.8 MI.
+          if (app.campaign.ftc_active() && app.campaign.ftc().stage() == race::FtcStage::kInitialDrive) {
+            constexpr auto& kPts = race::FirstTimeCareer::kInitialDrivePoints;
+            static bool s_leg_cached = false;
+            static double s_leg_len[2] = {0.0, 0.0};
+            if (!s_leg_cached) {
+              for (int li = 0; li < 2; ++li) {
+                const traffic::GpsRoute leg_r =
+                    app.gps_solver.ready()
+                        ? app.gps_solver.solve(kPts[li][0], kPts[li][2], kPts[li + 1][0], kPts[li + 1][2])
+                        : traffic::GpsRoute{};
+                if (leg_r.valid && leg_r.total_length > 1.0) {
+                  s_leg_len[li] = leg_r.total_length;
+                } else {
+                  s_leg_len[li] = std::hypot(kPts[li + 1][0] - kPts[li][0], kPts[li + 1][2] - kPts[li][2]);
+                }
+              }
+              if (app.gps_solver.ready()) s_leg_cached = true;
+            }
+            int active_leg = -1;
+            double best_d = 45.0;
+            for (int li = 0; li < 3; ++li) {
+              const double d_pt = std::hypot(gr.dest_x - kPts[li][0], gr.dest_z - kPts[li][2]);
+              if (d_pt < best_d) {
+                best_d = d_pt;
+                active_leg = li;
+              }
+            }
+            if (active_leg >= 0 && active_leg < 2) {
+              for (int li = active_leg; li < 2; ++li) total_dest_m += s_leg_len[li];
+            }
+          }
+          gps_hud.dist_to_dest_m = total_dest_m;
           gps_hud.confirmed_uturn = raw_uturn && s_gps_uturn_since >= 0.0 && (vehicle.time() - s_gps_uturn_since >= 2.2);
           gps_hud.recalculating = (d.time < s_gps_recalc.recalc_until);
           gps_hud.time = d.time;
@@ -650,9 +686,64 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           }
         }
         if (!race_line) d.toast = banner;
-        d.popup_title = popup.title, d.popup_text = popup.text, d.popup_at = popup.at;
-        d.popup_progress = popup.progress, d.popup_colour = popup.colour;
-        d.popup_kind = popup.kind, d.popup_icon = popup.icon, d.popup_tag = popup.tag, d.popup_logo = popup.logo;
+        // FIFO queue for HUD notifications so concurrent toasts play sequentially
+        // instead of clobbering each other (GlobalRegistry: BarnFindDiscovered = 10 s).
+        {
+          auto popup_life_s = [](carview::NotifyKind k) -> double {
+            if (k == carview::NotifyKind::kBarnRumour || k == carview::NotifyKind::kBarnRestoring ||
+                k == carview::NotifyKind::kBarnReady)
+              return 10.0;
+            return carview::notify_seconds(k, carview::kPopupSeconds);
+          };
+          struct PopupQueueState {
+            const DriveSession* owner = nullptr;
+            std::deque<DriveSession::Popup> pending;
+            DriveSession::Popup active;
+            bool has_active = false;
+            double last_seen_at = -1e9;
+            std::string last_seen_title;
+            std::string last_seen_text;
+            carview::NotifyKind last_seen_kind = carview::NotifyKind{};
+          };
+          static PopupQueueState s_pq;
+          if (s_pq.owner != this || (s_pq.has_active && d.time < s_pq.active.at - 1.0)) {
+            s_pq = PopupQueueState{};
+            s_pq.owner = this;
+          }
+          if (!popup.title.empty() &&
+              (std::fabs(popup.at - s_pq.last_seen_at) > 1e-4 || popup.title != s_pq.last_seen_title ||
+               popup.text != s_pq.last_seen_text || popup.kind != s_pq.last_seen_kind)) {
+            s_pq.last_seen_at = popup.at;
+            s_pq.last_seen_title = popup.title;
+            s_pq.last_seen_text = popup.text;
+            s_pq.last_seen_kind = popup.kind;
+            const bool active_live =
+                s_pq.has_active && d.time >= s_pq.active.at && d.time < s_pq.active.at + popup_life_s(s_pq.active.kind);
+            if (!active_live) {
+              s_pq.active = popup;
+              s_pq.has_active = true;
+            } else {
+              const bool dup_back = !s_pq.pending.empty() && s_pq.pending.back().title == popup.title &&
+                                    s_pq.pending.back().text == popup.text;
+              if (!dup_back && s_pq.pending.size() < 8) s_pq.pending.push_back(popup);
+            }
+          }
+          if (s_pq.has_active && d.time >= s_pq.active.at + popup_life_s(s_pq.active.kind)) {
+            if (!s_pq.pending.empty()) {
+              s_pq.active = std::move(s_pq.pending.front());
+              s_pq.pending.pop_front();
+              s_pq.active.at = d.time;
+            } else {
+              s_pq.has_active = false;
+            }
+          }
+          if (s_pq.has_active) {
+            d.popup_title = s_pq.active.title, d.popup_text = s_pq.active.text, d.popup_at = s_pq.active.at;
+            d.popup_progress = s_pq.active.progress, d.popup_colour = s_pq.active.colour;
+            d.popup_kind = s_pq.active.kind, d.popup_icon = s_pq.active.icon, d.popup_tag = s_pq.active.tag,
+            d.popup_logo = s_pq.active.logo;
+          }
+        }
         // Career header panels (pause menu & sub-menus).
         d.credits = app.career.credits;
         d.popularity_rank = app.current_pop_rank();
@@ -1123,8 +1214,12 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           const bool suppress_hint = race_screens.active() || entry_screens.active() || event_summary_open() ||
                                      entry_black || ftc_ticket_at >= 0.0 || h2h_screens.active() ||
                                      (app.race && app.race->player_finished());
-          if (!app.campaign.is_blocking_gameplay() && !suppress_hint)
-            carview::ftc_ui::draw_hint(list, app.campaign.hint_message(), float(width), float(height));
+          const race::TutorMessage hint_msg = app.campaign.hint_message();
+          const bool ftc_initial_drive =
+              app.campaign.ftc_active() && app.campaign.ftc().stage() == race::FtcStage::kInitialDrive;
+          const bool allow_hint = !ftc_initial_drive || hint_msg == race::TutorMessage::kAccelerate;
+          if (!app.campaign.is_blocking_gameplay() && !suppress_hint && allow_hint)
+            carview::ftc_ui::draw_hint(list, hint_msg, float(width), float(height));
         }
         if (app.fmv_player.active()) {
           list.clear();
@@ -1397,9 +1492,17 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
                                      !events_page.is_open() && !outpost_hub_open && !paint_open && !club_open &&
                                      !car_club_open && !rewind_buf.active();
         // The tracked-achievement card is the engine's own (opt-in HUD row);
-        // unlock toasts still draw whatever the row says.
-        achievements.build_hud_overlays(list, float(width), float(height),
-                                        show_track_chip && live_hud.tracked_achievement);
+        // unlock toasts are suppressed over post-race CASH REWARD and blackout
+        // screens so they never collide with reward readouts (Q351/Q352).
+        const bool suppress_ach_toasts =
+            (race_screens.active() && (race_screens.screen() == race_flow::Screen::kCashReward ||
+                                       race_screens.screen() == race_flow::Screen::kBlackOut ||
+                                       race_screens.screen() == race_flow::Screen::kDone)) ||
+            entry_black || race_quitting || app.fmv_player.active();
+        if (!suppress_ach_toasts) {
+          achievements.build_hud_overlays(list, float(width), float(height),
+                                          show_track_chip && live_hud.tracked_achievement);
+        }
         if (show_track_chip) {
           app.touch_controls.build_overlay(list, float(width), float(height), vehicle.time());
         }

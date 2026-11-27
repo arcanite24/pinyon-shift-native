@@ -412,15 +412,6 @@ int bind_timers(SceneScreen& sc, const RaceHud& r) {
     if (r.last_lap > 0) rows.push_back({text_of(hud_text::kLast), hud_clock(r.last_lap)});
     if (r.best_lap > 0) rows.push_back({text_of(hud_text::kBest), hud_clock(r.best_lap)});
   }
-  // The engine's lap split (an extra) on the next line.
-  const bool derived = !r.has_lap_split_delta && r.circuit && r.best_lap > 0.0 && r.last_lap > 0.0 &&
-                       std::fabs(r.last_lap - r.best_lap) > 0.004;
-  const double delta = r.has_lap_split_delta ? r.lap_split_delta : r.last_lap - r.best_lap;
-  int split_line = -1;
-  if (r.phase == RaceHud::kRacing && (r.has_lap_split_delta || derived)) {
-    split_line = int(rows.size());
-    rows.push_back({text_of(hud_text::kSplit), format_split_delta(delta)});
-  }
   for (int i = 0; i < 5; ++i) {
     const std::string n = std::to_string(i + 1);
     const int line = child(sd, lines, "LINE" + n);
@@ -438,7 +429,6 @@ int bind_timers(SceneScreen& sc, const RaceHud& r) {
     sc.show(value);
     sc.text(title, rows[size_t(i)].title);
     sc.text(value, rows[size_t(i)].value);
-    if (i == split_line && value >= 0) sc.at(value).tint = delta <= 0.0 ? ui4::kGreen : ui4::kRed;
     const int bar = child(sd, line, "Bar");
     if (rows.size() > 1) sc.show(bar, kTimerTapeAlpha);
     else sc.hide(bar);
@@ -471,6 +461,17 @@ void bind_standings(SceneScreen& sc, const RaceHud& r) {
     const int name = child_path(sd, slots[k], "HUDPositionBar/Bar/TEXT_GAMERTAG");
     if (name >= 0) left = std::min(left, sd.at(name)[0] - sd.measure(name, r.rows[pick[k]].name) - kStandingsPad);
   }
+  const bool show_times = (r.phase == RaceHud::kRacing) && r.clock >= 0.0;
+  auto find_first_prefix = [&](int root, std::string_view prefix) {
+    if (root < 0) return -1;
+    std::vector<int> stack = sd.children_of(root);
+    for (size_t idx = 0; idx < stack.size(); ++idx) {
+      const int cur = stack[idx];
+      if (sd.object_name(cur).rfind(prefix, 0) == 0) return cur;
+      for (int c : sd.children_of(cur)) stack.push_back(c);
+    }
+    return -1;
+  };
   for (size_t k = 0; k < slots.size(); ++k) {
     if (k >= pick.size()) {
       sc.hide(slots[k]);
@@ -490,8 +491,37 @@ void bind_standings(SceneScreen& sc, const RaceHud& r) {
         sc.at(tape).alpha = 1.0f;
       }
     }
-    // The time box (a gap or lap time column) is not shown in a race.
-    sc.hide(child(sd, slots[k], "HUDPositionTime"));
+    // HUDPositionTime: leader shows mm:ss.fff race time, trailing drivers show +s.fff gap.
+    // Hidden on the grid / countdown (UI_LAYOUTS.md b2).
+    const int time_box = child(sd, slots[k], "HUDPositionTime");
+    if (!show_times || time_box < 0) {
+      sc.hide(time_box);
+    } else {
+      show_all(sc, time_box);
+      std::string tstr;
+      if (row.place == 1 || row.gap < 0.0) {
+        tstr = hud_clock(r.clock);
+      } else {
+        char gb[24];
+        std::snprintf(gb, sizeof gb, "+%.3f", std::max(0.0, row.gap));
+        tstr = gb;
+      }
+      int time_text = sd.find("TEXT_TIME", time_box);
+      if (time_text < 0) time_text = find_first_prefix(time_box, "TEXT_");
+      if (time_text >= 0) sc.text(time_text, tstr);
+      // Keep the time column cleanly to the left of the name bar.
+      const auto tr = sd.rect(time_box);
+      if (tr[2] > left - 4.0f) sc.at(time_box).dx = (left - 4.0f) - tr[2];
+      if (row.player) {
+        int time_tape = child_path(sd, time_box, "Bar/Bar/Bar");
+        if (time_tape < 0) time_tape = child_path(sd, time_box, "Bar/Bar");
+        if (time_tape < 0) time_tape = sd.find("Bar", time_box);
+        if (time_tape >= 0) {
+          sc.at(time_tape).tint = kPlayerRow;
+          sc.at(time_tape).alpha = 1.0f;
+        }
+      }
+    }
   }
 }
 
@@ -636,7 +666,8 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const bool lost = since_lost >= 0 && since_lost < kLostSeconds;
   const bool rank_up = (since_rank >= 0 && since_rank < kRankSeconds) ||
                        (sk.pop_rank_anim_t >= 0.0 && sk.pop_rank_anim_t < 0.999);
-  if (!sk.active && !disc_banked && !lost && !rank_up) return true;
+  const bool chain_live = sk.active && sk.chain_points > 0 && (sk.shown_points < 0 || sk.shown_points > 0);
+  if (!chain_live && !disc_banked && !lost && !rank_up) return true;
 
   // The chain: the score and multiplier, the last skill and its points.
   const int mult = child(sd, score, "Multiplier");
@@ -650,12 +681,12 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   static bool was_active = false;
   static double chain_started = -1e9;
   // A chain starts with its first skill: the last one as it goes active.
-  if (sk.active && (!was_active || time < chain_started))
+  if (chain_live && (!was_active || time < chain_started))
     chain_started = sk.last_skill_at > -1e8 && sk.last_skill_at <= time ? sk.last_skill_at : time;
-  was_active = sk.active;
+  was_active = chain_live;
   std::string_view score_slide;
   double score_ms = 0.0;
-  if (sk.active) {
+  if (chain_live) {
     score_slide = "SHOW", score_ms = (time - chain_started) * 1000.0;
   } else if (lost) {
     score_slide = since_lost < kScoreAbortSeconds ? "ABORT" : "HIDE";
@@ -665,7 +696,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     score_slide = "SHOW", score_ms = kScoreShowMs;
   }
   bool bank_played = false;
-  if (sk.active || lost || banked) {
+  if (chain_live || lost || banked) {
     const bool played =
         play_slide(sc, score_tl, child_path(sd, skill, "CompleteComponent/ScoreGroup"), score_slide, score_ms);
     if (played) {
@@ -674,17 +705,17 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       // out of a live chain's row).
       static SceneTimeline total_tl;
       const int total_c = child_path(sd, score, "Total");
-      bank_played = banked && !sk.active && play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
+      bank_played = banked && !chain_live && play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
       // Multiplier: ANIMATE as it changes, SHOWN while it holds.
       static float last_mult = 0.0f;
       static double mult_changed = -1e9;
       const float m = sk.multiplier_f > 0.0f ? sk.multiplier_f : float(std::max(1, sk.multiplier));
-      if (sk.active && std::fabs(m - last_mult) > 1e-4f) {
+      if (chain_live && std::fabs(m - last_mult) > 1e-4f) {
         // Not as a chain opens (its first X1.0 comes in with the group).
         if (last_mult > 0.0f && time >= chain_started + 1e-3) mult_changed = time;
         last_mult = m;
       }
-      if (!sk.active) last_mult = 0.0f;
+      if (!chain_live) last_mult = 0.0f;
       const double since_mult = time - mult_changed;
       const bool animate = since_mult >= 0 && since_mult < kMultAnimateSeconds;
       play_slide(sc, score_tl, mult, animate ? "ANIMATE" : "SHOWN", animate ? since_mult * 1000.0 : 0.0,
@@ -706,26 +737,26 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       sc.hide(c);
     // A lost chain shows the total it had (the tracker has cleared it by then).
     static int live_points = 0;
-    if (sk.active) live_points = sk.chain_points;
-    const int shown = banked && !sk.active                       ? sk.banked_total
-                      : lost && !sk.active && sk.chain_points == 0 ? live_points
-                      : sk.active && sk.shown_points >= 0          ? sk.shown_points  // Q282 count-up
-                                                                   : sk.chain_points;
+    if (sk.active && sk.chain_points > 0) live_points = sk.chain_points;
+    const int shown = banked && !chain_live                       ? sk.banked_total
+                      : lost && !chain_live && sk.chain_points == 0 ? live_points
+                      : chain_live && sk.shown_points > 0         ? sk.shown_points  // Q282 count-up
+                                                                  : sk.chain_points;
     const std::string total = thousands(shown);
-    if (sk.active) {
+    if (chain_live) {
       pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, skill_multiplier_text(sk)}}, cx, {kScoreGap, 0.0f});
     } else {
       sc.hide(mult);
       pack_row(sc, {{total_n, total}}, cx, {});
     }
     // BANK colours the banked total itself (yellow, a white flash at 0.5 s).
-    if (total_n >= 0 && !bank_played) sc.at(total_n).tint = lost && !sk.active ? kLostRed : kSkillYellow;
+    if (total_n >= 0 && !bank_played) sc.at(total_n).tint = lost && !chain_live ? kLostRed : kSkillYellow;
     // Without the slides, the measured fades (an alpha override, which the
     // slides' fade on the group would not reach).
     if (!played) {
-      const float fade = lost && !sk.active     ? 1.0f - float(std::clamp((since_lost - 1.5) / 0.7, 0.0, 1.0))
-                         : banked && !sk.active ? 1.0f - float(std::clamp((since_bank - 2.0) / 0.3, 0.0, 1.0))
-                                                : 1.0f;
+      const float fade = lost && !chain_live     ? 1.0f - float(std::clamp((since_lost - 1.5) / 0.7, 0.0, 1.0))
+                         : banked && !chain_live ? 1.0f - float(std::clamp((since_bank - 2.0) / 0.3, 0.0, 1.0))
+                                                 : 1.0f;
       for (int n : {total_n, x_n, m_n})
         if (n >= 0) sc.at(n).alpha = fade;
     }
@@ -734,7 +765,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   }
   const int skill_group = child_path(sd, skill, "CompleteComponent/SkillGroup");
   sc.hide(child_path(sd, skill_group, "Skill2"));
-  if (sk.active && !sk.last_skill.empty()) {
+  if (chain_live && !sk.last_skill.empty()) {
     // Skill1's slides: SHOWSKILL as a skill lands, WARNINGSKILL over the
     // chain's last 1.2 s, SHOWNSKILL between.
     static SceneTimeline skill_tl;
@@ -1060,10 +1091,12 @@ float notify_alpha(double age, double life) {
 // grows from 0.9 past 1.03 to 1 at 0.218 s; HIDE fades it out and shrinks it
 // to 0.8 over 0.002..0.137 s, ending the notification's life. Writes the
 // State node's look into the frame; false without the scene's timeline.
-bool notify_state_anim(SceneScreen& sc, int root, int state, double age, double life) {
-  static SceneTimeline tl;
+bool notify_state_anim(SceneScreen& sc, int root, int state, double age, double life,
+                       SceneTimeline* custom_tl = nullptr, bool subtree = false) {
+  static SceneTimeline default_tl;
+  SceneTimeline& tl = custom_tl ? *custom_tl : default_tl;
   tl.bind(sc.scene().scene());
-  if (!tl.ok() || !scene_timelines_enabled() || root < 0 || state < 0) return false;
+  if (!tl.ok() || !scene_timelines_enabled() || root < 0 || (!subtree && state < 0)) return false;
   const int comp = tl.item_of_node(root);
   const auto& d = sc.scene().scene()->bgf;
   if (comp < 0) return false;
@@ -1080,9 +1113,13 @@ bool notify_state_anim(SceneScreen& sc, int root, int state, double age, double 
   const char* want = left_ms <= hide_ms ? "HIDE" : "SHOW";
   if (tl.slide(uint32_t(comp)) != want) tl.go_to(uint32_t(comp), want);
   tl.set_time(uint32_t(comp), float(left_ms <= hide_ms ? hide_ms - left_ms : age * 1000.0));
-  SceneBindings all;
-  tl.apply(all);
-  if (auto it = all.anim.find(state); it != all.anim.end()) sc.bindings().anim[state] = it->second;
+  if (subtree) {
+    tl.apply_subtree(sc.bindings(), sc.scene(), root);
+  } else {
+    SceneBindings all;
+    tl.apply(all);
+    if (auto it = all.anim.find(state); it != all.anim.end()) sc.bindings().anim[state] = it->second;
+  }
   return true;
 }
 
@@ -1093,7 +1130,10 @@ float draw_popularity_unlock(ui::List& l, const NotifyView& st, float w, float h
   const int main = child(sd, root, "MainMessage"), show = child(sd, root, "ShowMe");
   if (root < 0 || main < 0) return 0.0f;
   sc.bindings().fit_text = false;
-  sc.bindings().opacity = a;
+  static SceneTimeline pop_tl;
+  if (!notify_state_anim(sc, root, main, st.age, st.life, &pop_tl, /*subtree=*/true)) {
+    sc.bindings().opacity = a;
+  }
   const int title = child(sd, main, "TEXT_TITLE");
   sc.text(title, st.title);
   // The tape centred under the title.

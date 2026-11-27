@@ -148,23 +148,27 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
   }
   if (!ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
   if (ftc.tickets_remaining() >= 0) {
-    // The places counter, top right: GET TO THE FESTIVAL over PLACES LEFT
-    // and the count (measured on f00420_first30a_orig.png at 1280x720).
+    // The places counter, top right: GET TO THE FESTIVAL cleanly above PLACES LEFT
+    // and the count (no vertical text overlap at 720p or 4K).
     const uint32_t band = ui::rgba(0, 0, 0, 110);
     const std::string top = text_for("InGame", "IDS_Get_to_the_Festival");
     const std::string mid = text_for("InGame", "IDS_Places_Left");
     const std::string num = std::to_string(ftc.tickets_remaining());
-    const auto ts = ui4::style(ui::Font::kE, 24.0f * s, ui4::kWhite, ui::Align::kRight);
+    const auto ts = ui4::style(ui::Font::kE, 23.0f * s, ui4::kWhite, ui::Align::kRight);
     const auto ms = ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite, ui::Align::kRight);
-    const auto ns = ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kRight);
+    const auto ns = ui4::style(ui::Font::kE, 52.0f * s, ui4::kWhite, ui::Align::kRight);
     const float right = 1178.0f * s + (w - 1280.0f * s);
     const float nw = ui::List::measure(num, ns);
-    l.rect(right - ui::List::measure(top, ts) - 10.0f * s, 36.0f * s, right + 8.0f * s, 61.0f * s, band);
-    l.rect(right + 27.0f * s - nw - ui::List::measure(mid, ms) - 14.0f * s, 60.0f * s, right + 27.0f * s - nw, 80.0f * s,
-           band);
-    l.text(right, 36.0f * s, top, ts);
-    l.text(right + 27.0f * s - nw - 4.0f * s, 60.0f * s, mid, ms);
-    l.text(right + 27.0f * s, 56.0f * s, num, ns);
+    const float top_y = 28.0f * s;
+    const float top_h = 28.0f * s;
+    const float mid_y = top_y + top_h + 6.0f * s;
+    const float mid_h = 24.0f * s;
+    l.rect(right - ui::List::measure(top, ts) - 10.0f * s, top_y, right + 8.0f * s, top_y + top_h, band);
+    l.rect(right + 27.0f * s - nw - ui::List::measure(mid, ms) - 14.0f * s, mid_y, right + 27.0f * s - nw,
+           mid_y + mid_h, band);
+    l.text(right, top_y + 2.0f * s, top, ts);
+    l.text(right + 27.0f * s - nw - 4.0f * s, mid_y + 2.0f * s, mid, ms);
+    l.text(right + 27.0f * s, mid_y - 2.0f * s, num, ns);
   }
 }
 

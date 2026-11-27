@@ -3,6 +3,8 @@
 #include "map_screen.h"
 #include "pause_screen.h"
 #include "race_screens.h"
+#include "scene_screen.h"
+#include "scene_timeline.h"
 #include "touch_controls.h"
 
 #include <cstdlib>
@@ -13,6 +15,13 @@ namespace carview {
 using namespace hud_detail;
 
 namespace {
+
+double effective_notify_seconds(NotifyKind kind, double base) {
+  // GlobalRegistry.xml: BarnFindDiscovered / BarnFindBeingRestored / BarnFindReady = 10 s.
+  if (kind == NotifyKind::kBarnRumour || kind == NotifyKind::kBarnRestoring || kind == NotifyKind::kBarnReady)
+    return 10.0;
+  return notify_seconds(kind, base);
+}
 
 uint32_t assist_badge_color(AssistBadgeState state, double time_s) {
   switch (state) {
@@ -404,7 +413,7 @@ void dial(ui::List& l, const DriveHud& st, const Layout& g) {
 // unreadable text and a stray yellow rectangle above the banner).
 bool popup_card(ui::List& l, const DriveHud& st, const Layout& g, float lift_canvas) {
   const double age = st.time - st.popup_at;
-  const double life = notify_seconds(st.popup_kind, kPopupSeconds);
+  const double life = effective_notify_seconds(st.popup_kind, kPopupSeconds);
   if (st.popup_title.empty() || age < 0.0 || age > life) return false;
   const float s = g.s;
   const float in = ease_in_time(age, 0.0, 0.28);
@@ -819,12 +828,8 @@ RewindOverlayAction rewind_overlay_action_for_button(bool rewinding, bool paused
 
 void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool loop_rewind, bool paused_at_keyframe,
                           bool at_oldest_slot, bool settling, const RewindScrubberHud* scrubber) {
-  // 921_I_REWIND overlay: KITPARTS/REWINDLOGO, KITPARTS/REWINDARROW,
-  // live animated scrubber bar (buffer fill, moving playhead & -X.Xs readout)
-  // + clickable BUTTON_BAR_SCENE.
+  // 921_I_REWIND UI4 overlay (REWINDING / LOOP_REWIND / STOP_REWIND) + interactive button bar.
   const float sf = h / 720.0f;
-  (void)ui_scene("921_I_REWIND");
-  ui4::subtle_vignette(list, w, h, 0.35f);
   const std::string base_rewind = str("HelpButtons", "IDS_Mulligan", "REWIND");
   std::string rw_title = base_rewind;
   std::vector<ui4::Prompt> rw_prompts;
@@ -847,17 +852,46 @@ void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool
     rw_title = "RESUMING";
   }
 
+  SceneScreen rsc("921_I_REWIND");
+  if (rsc.ok()) {
+    rsc.bindings().fit_text = false;
+    // Hide the scene's own help bar so ui4::button_bar emits clickable hit zones.
+    for (const char* bn : {"ButtonBar", "HELP_BUTTON_BAR", "HelpButtonBar"}) rsc.hide(rsc.node(bn));
+    static SceneTimeline rw_tl;
+    static double rw_last_t = -1.0;
+    rw_tl.bind(rsc.scene().scene());
+    if (rw_tl.ok() && scene_timelines_enabled()) {
+      const auto& bgf = rsc.scene().scene()->bgf;
+      std::string_view want = "STOP_REWIND";
+      if (rewinding) want = loop_rewind ? "LOOP_REWIND" : "REWINDING";
+      if (bgf.find_slide(0u, want) < 0 && rewinding) want = "REWINDING";
+      if (bgf.find_slide(0u, want) >= 0) {
+        if (rw_tl.slide(0u) != want) rw_tl.go_to(0u, want);
+        const double now_t = scrubber ? scrubber->anim_time : 0.0;
+        const float dt = (rw_last_t >= 0.0 && now_t >= rw_last_t)
+                             ? float(std::clamp(now_t - rw_last_t, 0.0, 0.1))
+                             : (1.0f / 60.0f);
+        rw_last_t = now_t;
+        rw_tl.advance(dt);
+        rsc.play(rw_tl);
+      }
+    }
+    rsc.draw(list, SceneScreen::frame(w, h));
+    ui4::button_bar(list, rw_prompts, w, h);
+    return;
+  }
+
+  // Fallback when 921_I_REWIND scene assets are absent.
+  ui4::subtle_vignette(list, w, h, 0.35f);
   const RewindScrubberHud fallback_sc =
       compute_rewind_scrubber(8, 8, at_oldest_slot ? 0 : (rewinding ? 4 : 5), 0.0, 20.0,
                               at_oldest_slot ? 0.0 : (rewinding ? 10.0 : 12.5), 0.0);
   const RewindScrubberHud& sc = scrubber ? *scrubber : fallback_sc;
-  const float buf_frac = std::clamp(sc.buffer_fraction, 0.05f, 1.0f);
-  const float head_frac = std::clamp(sc.playhead_fraction, 0.0f, 1.0f);
   const float pulse = rewinding ? (0.5f + 0.5f * std::sin(float(sc.anim_time) * 14.0f)) : 0.0f;
 
   const float cx = 0.5f * w;
-  const float logo_y = h - 204.0f * sf;
-  std::array<float, 4> rw_logo{}, rw_arrow{}, rw_bar{};
+  const float logo_y = h - 180.0f * sf;
+  std::array<float, 4> rw_logo{}, rw_arrow{};
   if (ui_texture("KITPARTS/REWINDLOGO", rw_logo)) {
     list.image(cx - 120.0f * sf, logo_y, cx + 120.0f * sf, logo_y + 44.0f * sf, rw_logo, ui4::kWhite);
   }
@@ -869,63 +903,6 @@ void build_rewind_overlay(ui::List& list, float w, float h, bool rewinding, bool
   const float pill_y = logo_y + 50.0f * sf;
   ui4::brush(list, cx - 190.0f * sf, pill_y, cx + 190.0f * sf, pill_y + 32.0f * sf, ui4::kPink);
   list.text(cx, pill_y + 7.0f * sf, rw_title, ui4::style(ui::Font::kE, 18.0f * sf, ui4::kWhite, ui::Align::kCenter));
-
-  // Animated Rewind scrubber bar with buffer capacity fill, keyframe ticks, moving playhead & live -X.Xs readout.
-  const float bar_x0 = cx - 224.0f * sf;
-  const float bar_x1 = cx + 224.0f * sf;
-  const float bar_w = bar_x1 - bar_x0;
-  const float bar_y = pill_y + 42.0f * sf;
-  const float bar_h = 10.0f * sf;
-
-  // Dark full-length track + top hairline.
-  list.rect(bar_x0 - 2.0f * sf, bar_y - 2.0f * sf, bar_x1 + 2.0f * sf, bar_y + bar_h + 2.0f * sf,
-            rgba(8, 10, 14, 215));
-  list.rect(bar_x0, bar_y, bar_x1, bar_y + bar_h, rgba(44, 48, 56, 175));
-
-  // Filled rewind buffer span anchored to right edge (older history grows leftward up to bar_x0).
-  const float fill_x0 = bar_x1 - bar_w * buf_frac;
-  list.rect(fill_x0, bar_y, bar_x1, bar_y + bar_h, rgba(96, 38, 66, 215));
-
-  // Moving playhead position within [fill_x0, bar_x1].
-  const float head_x = fill_x0 + (bar_x1 - fill_x0) * head_frac;
-  if (head_x > fill_x0 + 1.0f) {
-    if (ui_texture("MASKS/GRADIATEDBAR", rw_bar)) {
-      list.image(fill_x0, bar_y, head_x, bar_y + bar_h, rw_bar, ui4::kPink);
-    } else {
-      list.rect(fill_x0, bar_y, head_x, bar_y + bar_h, ui4::kPink);
-    }
-  }
-  // Highlight rewound tail from playhead to trigger point (bar_x1) in bright FH1 pink-amber glow.
-  if (bar_x1 > head_x + 1.0f) {
-    list.rect(head_x, bar_y + 2.0f * sf, bar_x1, bar_y + bar_h - 2.0f * sf,
-              ui::fade(ui4::kAmber, 0.55f + 0.30f * pulse));
-  }
-  // Keyframe slot notch ticks inside populated buffer.
-  if (sc.total_slots > 1) {
-    for (int k = 0; k < sc.total_slots; ++k) {
-      const float frac = float(k) / float(sc.total_slots - 1);
-      const float tx = fill_x0 + (bar_x1 - fill_x0) * frac;
-      list.rect(tx - 0.8f * sf, bar_y, tx + 0.8f * sf, bar_y + bar_h, rgba(255, 255, 255, 110));
-    }
-  }
-  // Moving playhead vertical needle + glowing marker cap.
-  list.rect(head_x - 2.5f * sf, bar_y - 5.0f * sf, head_x + 2.5f * sf, bar_y + bar_h + 5.0f * sf, ui4::kWhite);
-  list.circle(head_x, bar_y + 0.5f * bar_h, 5.5f * sf, rewinding ? ui4::kYellow : ui4::kPinkHi);
-  list.circle(head_x, bar_y + 0.5f * bar_h, 2.5f * sf, ui4::kWhite);
-
-  // Live "-X.Xs" rewound offset & remaining buffer seconds readout beneath scrubber.
-  char rw_off[32], rw_rem[48];
-  std::snprintf(rw_off, sizeof rw_off, "-%.1fs", std::max(0.0, sc.seconds_rewound));
-  if (sc.total_slots > 0) {
-    std::snprintf(rw_rem, sizeof rw_rem, "%.1fs LEFT  •  SLOT %d/%d", std::max(0.0, sc.seconds_remaining),
-                  sc.current_slot + 1, sc.total_slots);
-  } else {
-    std::snprintf(rw_rem, sizeof rw_rem, "%.1fs LEFT", std::max(0.0, sc.seconds_remaining));
-  }
-  const float meta_y = bar_y + bar_h + 7.0f * sf;
-  list.text(bar_x0, meta_y, rw_rem, ui4::style(ui::Font::kB, 11.5f * sf, ui4::kOffWhite));
-  list.text(bar_x1, meta_y - 1.0f * sf, rw_off,
-            ui4::style(ui::Font::kE, 14.0f * sf, ui4::kYellow, ui::Align::kRight, true));
 
   ui4::button_bar(list, rw_prompts, w, h);
 }
@@ -1117,7 +1094,7 @@ void build_drive_hud(ui::List& l, const DriveHud& st, float w, float h) {
       NotifyView n;
       n.kind = st.popup_kind, n.icon = st.popup_icon;
       n.tag = st.popup_tag, n.title = st.popup_title, n.message = st.popup_text, n.logo = st.popup_logo;
-      n.age = st.time - st.popup_at, n.life = notify_seconds(st.popup_kind, kPopupSeconds);
+      n.age = st.time - st.popup_at, n.life = effective_notify_seconds(st.popup_kind, kPopupSeconds);
       bottom_lift += draw_hud_notification(l, n, g.w, g.h, g.s, bottom_lift);
     } else if (popup_card(l, st, g, bottom_lift)) {
       bottom_lift += 72.0f;
