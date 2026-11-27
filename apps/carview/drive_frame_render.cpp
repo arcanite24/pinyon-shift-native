@@ -1714,6 +1714,39 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - wf_t0).count();
           host.last_frame_cpu_ms = double(wf_ns) * 1e-6;
           s_adpf.report_frame_ns(wf_ns);
+#ifdef __ANDROID__
+          // Lightweight Dynamic Resolution Scaling (live windowed gameplay only; off in --bench/--headless).
+          if (!app.headless && !app.bench && host.active_graphics.scale >= 0) {
+            static const bool s_drs_enabled = [] {
+              const char* e = std::getenv("SHIFT_ANDROID_DRS");
+              return !(e && *e == '0');
+            }();
+            if (s_drs_enabled) {
+              static double s_ema_ms = 0.0;
+              static uint64_t s_drs_frames = 0;
+              static uint64_t s_drs_last_change = 0;
+              ++s_drs_frames;
+              const double cur_ms = host.last_frame_cpu_ms;
+              s_ema_ms = (s_drs_frames == 1) ? cur_ms : (s_ema_ms * 0.92 + cur_ms * 0.08);
+              const double budget_ms = 1000.0 / double(std::max(30, adpf_target));
+              if (s_drs_frames > 45 && (s_drs_frames - s_drs_last_change) >= 90) {
+                const float cur_drs = host.renderer.drs_scale();
+                float next_drs = cur_drs;
+                if (s_ema_ms > budget_ms * 1.15 && cur_drs > 0.70f) {
+                  next_drs = std::max(0.70f, cur_drs - 0.05f);
+                } else if (s_ema_ms < budget_ms * 0.80 && cur_drs < 1.0f) {
+                  next_drs = std::min(1.0f, cur_drs + 0.05f);
+                }
+                if (std::fabs(next_drs - cur_drs) > 0.005f) {
+                  host.renderer.set_drs_scale(next_drs);
+                  s_drs_last_change = s_drs_frames;
+                  std::fprintf(stderr, "[drs] scale %.2f -> %.2f (ema=%.2f ms, budget=%.2f ms)\n",
+                               double(cur_drs), double(next_drs), s_ema_ms, budget_ms);
+                }
+              }
+            }
+          }
+#endif
           const double now_s =
               std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
           const double wait_s = host.frame_pacer.wait_for(now_s);

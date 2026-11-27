@@ -924,9 +924,12 @@ ReflectionStep schedule_reflections(uint64_t frame_index, float reflection_rate,
       s.first_face = 0;
       s.face_count = 6;
     } else {
-      // rate >= 1.0 -> 1 face every frame; 0.5 -> every 2 frames; <= 0.25 -> every 4 frames.
+      // rate >= 1.0 -> every frame; 0.5 -> every 2; 0.25 -> every 4; 0.125 -> every 8; <= 0.08 -> every 16.
       const uint64_t interval =
-          reflection_rate >= 0.99f ? 1ull : (reflection_rate >= 0.49f ? 2ull : 4ull);
+          reflection_rate >= 0.99f ? 1ull
+          : (reflection_rate >= 0.49f ? 2ull
+             : (reflection_rate >= 0.24f ? 4ull
+                : (reflection_rate >= 0.12f ? 8ull : 16ull)));
       const uint64_t f = frame_index > 0 ? frame_index - 1ull : 0ull;
       if ((f % interval) == 0ull) {
         s.render_cubemap = true;

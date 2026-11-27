@@ -519,7 +519,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
         if (!cli_msaa_explicit) msaa = 1;
         if (!cli_shadows_explicit) shadows_flag = "off";
         if (!cli_bloom_explicit) bloom_flag = 0;
-        preset_reflection_rate = 0.25f;
+        preset_reflection_rate = 0.0625f;
         preset_anisotropy = 2.0f;
         if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kOff;
         if (!cli_vrs_explicit) cli_graphics.vrs = true;
@@ -550,7 +550,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
         if (!cli_msaa_explicit) msaa = 1;
         if (!cli_shadows_explicit) shadows_flag = "off";
         if (!cli_bloom_explicit) bloom_flag = 1;
-        preset_reflection_rate = 0.25f;
+        preset_reflection_rate = 0.125f;
         preset_anisotropy = 4.0f;
         if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kOff;
         if (!cli_vrs_explicit) cli_graphics.vrs = true;

@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision highp float;
 // carview: the drive's HDR post-processing chain (SPEC-SKY-AND-TOD §5, SPEC-VFX-AND-PARTICLES)
 // + Phase A SOTA upgrades:
 //   - XeGTAO multi-bounce + Bent Normal directional occlusion (ao_tex RGBA8)
@@ -62,31 +64,31 @@ layout(push_constant) uniform Post {
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-vec3 hable(vec3 x) {
-  float A = p.abc.x, B = p.abc.y, C = p.abc.z, D = p.def.x, E = p.def.y, F = p.def.z;
+mediump vec3 hable(mediump vec3 x) {
+  mediump float A = p.abc.x, B = p.abc.y, C = p.abc.z, D = p.def.x, E = p.def.y, F = p.def.z;
   return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
 }
 
 // Troy Sobotka AgX (hue-preserving highlight desaturation, calibrated to 18% mid-grey).
-vec3 tonemap_agx(vec3 color) {
+mediump vec3 tonemap_agx(mediump vec3 color) {
   color = max(color, vec3(0.0));
-  const mat3 kAgxInset = mat3(
+  const mediump mat3 kAgxInset = mat3(
       0.842479062253094,  0.0423282422610123, 0.0423756549057051,
       0.0784335999999992, 0.878468636469772,  0.0784336,
       0.0792237451477643, 0.0791661274605434, 0.879142973793104);
-  const mat3 kAgxOutset = mat3(
+  const mediump mat3 kAgxOutset = mat3(
        1.19687900512017,  -0.0528968517574562, -0.0529716355144438,
       -0.0980208811401368, 1.15190312990417,   -0.0980434501171241,
       -0.0990297440797205,-0.0989611768448433,  1.15107367264116);
-  vec3 v = kAgxInset * color;
-  const float kMinEv = -12.47393;
-  const float kMaxEv = 4.026069;
-  v = clamp(log2(max(v, vec3(1e-10))), vec3(kMinEv), vec3(kMaxEv));
+  mediump vec3 v = kAgxInset * color;
+  const mediump float kMinEv = -12.47393;
+  const mediump float kMaxEv = 4.026069;
+  v = clamp(log2(max(v, vec3(1e-6))), vec3(kMinEv), vec3(kMaxEv));
   v = (v - kMinEv) / (kMaxEv - kMinEv);
-  vec3 v2 = v * v;
-  vec3 v4 = v2 * v2;
+  mediump vec3 v2 = v * v;
+  mediump vec3 v4 = v2 * v2;
   v = +15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
-  vec3 out_srgb = clamp(kAgxOutset * v, vec3(0.0), vec3(1.0));
+  mediump vec3 out_srgb = clamp(kAgxOutset * v, vec3(0.0), vec3(1.0));
   return pow(out_srgb, vec3(2.2));
 }
 

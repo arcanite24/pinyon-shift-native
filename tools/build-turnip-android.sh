@@ -13,7 +13,7 @@
 #   export ANDROID_NDK_HOME=/path/to/android-ndk-r27c  # API >= 29
 #
 # Usage:
-#   ./tools/build-turnip-android.sh [--mesa-ref mesa-25.2.0] [--patch path/to.patch]
+#   ./tools/build-turnip-android.sh [--mesa-ref mesa-25.2.0] [--hybrid-patch] [--patch path/to.patch]
 #
 # Notes on Shift Engine runtime tuning:
 #   - Shift Engine loads assets/drivers/turnip/libvulkan_freedreno.so through
@@ -38,6 +38,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mesa-ref) MESA_REF="$2"; shift 2 ;;
     --mesa-repo) MESA_REPO="$2"; shift 2 ;;
+    --hybrid-patch) PATCH_FILE="$(pwd)/tools/patches/turnip-adreno7xx-hybrid-sysmem.patch"; shift 1 ;;
     --patch) PATCH_FILE="$2"; shift 2 ;;
     --api) API_LEVEL="$2"; shift 2 ;;
     --work-dir) WORK_DIR="$2"; shift 2 ;;

@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision mediump float;
 // carview: Spatial Output Scaling pass.
 // mode 0: Bilinear resample
 // mode 1: AMD FidelityFX CAS (Contrast Adaptive Sharpening)
@@ -13,13 +15,13 @@ layout(push_constant) uniform UpscalePush {
   vec4 params;     // x = mode (0..3), y = sharpening [0..1], z = out_alpha, w = unused
 } pc;
 
-layout(location = 0) in vec2 v_uv;
+layout(location = 0) in highp vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 float luma_g(vec3 c) { return c.g * 0.5 + (c.r * 0.25 + c.b * 0.25); }
 
-vec3 cas_filter(vec2 uv, float sharp) {
-  vec2 d = pc.src_size.zw;
+vec3 cas_filter(highp vec2 uv, float sharp) {
+  highp vec2 d = pc.src_size.zw;
   vec3 a = texture(src_tex, uv + vec2(-d.x, -d.y)).rgb;
   vec3 b = texture(src_tex, uv + vec2(0.0,  -d.y)).rgb;
   vec3 c = texture(src_tex, uv + vec2(d.x,  -d.y)).rgb;
@@ -90,12 +92,12 @@ void easu_tap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len2, floa
   aW += w;
 }
 
-vec3 fsr1_easu(vec2 dst_uv) {
-  vec2 ip = dst_uv * pc.src_size.xy - 0.5;
-  vec2 fp = floor(ip);
+vec3 fsr1_easu(highp vec2 dst_uv) {
+  highp vec2 ip = dst_uv * pc.src_size.xy - 0.5;
+  highp vec2 fp = floor(ip);
   vec2 pp = ip - fp;
-  vec2 p0 = (fp + 0.5) * pc.src_size.zw;
-  vec2 d = pc.src_size.zw;
+  highp vec2 p0 = (fp + 0.5) * pc.src_size.zw;
+  highp vec2 d = pc.src_size.zw;
 
   vec3 b = texture(src_tex, p0 + vec2(0.0, -d.y)).rgb;
   vec3 c = texture(src_tex, p0 + vec2(d.x, -d.y)).rgb;

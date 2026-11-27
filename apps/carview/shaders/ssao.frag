@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision highp float;
 // carview: Intel XeGTAO / Ground-Truth Ambient Occlusion (Jimenez et al.) + Bent Normals
 // + edge-preserving depth/normal-aware bilateral spatial denoiser.
 // Output format: RGBA8_UNORM (.r = GTAO visibility [0..1], .gba = view-space bent normal * 0.5 + 0.5).
@@ -70,9 +72,9 @@ float ign(vec2 px) {
   return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
 }
 
-float fast_acos(float x) {
-  float ax = abs(clamp(x, -1.0, 1.0));
-  float res = -0.156583 * ax + kHalfPi;
+mediump float fast_acos(mediump float x) {
+  mediump float ax = abs(clamp(x, -1.0, 1.0));
+  mediump float res = -0.156583 * ax + kHalfPi;
   res *= sqrt(max(1.0 - ax, 0.0));
   return x >= 0.0 ? res : (kPi - res);
 }

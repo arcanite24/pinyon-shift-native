@@ -78,6 +78,9 @@ class Streamer {
   void clear_preload() { preload_active_ = false; }
   void set_prepare(Prepare prepare) { prepare_ = std::move(prepare); }
   const Prepare& prepare() const { return prepare_; }
+  // When true, compacts g->mesh down to road-only positions inside gather_now()
+  // immediately after prepare_() finishes, slashing peak RAM during GPU staging.
+  void set_compact_mesh_after_prepare(bool on) { compact_after_prepare_ = on; }
   // The Prepare result of the mesh in use (moved out by the caller).
   std::any& prepared() { return prepared_; }
   bool gathering() const { return job_.valid(); }
@@ -115,6 +118,8 @@ class Streamer {
   // One gather's results, built on whichever thread ran it.
   struct Gathered {
     Mesh mesh;
+    size_t raw_triangles = 0;
+    size_t raw_materials = 0;
     GatherStats stats;
     CollisionMesh collision;
     std::unique_ptr<drive::MeshGround> ground;
@@ -152,6 +157,7 @@ class Streamer {
   std::unique_ptr<drive::Ground> composite_ground_;
   bool async_ = false;
   bool lead_ = false;
+  bool compact_after_prepare_ = false;
   Prepare prepare_;
   std::any prepared_;
   double last_seconds_ = 0;

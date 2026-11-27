@@ -1203,7 +1203,12 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         if (vis) nearby.push_back({d2, i});
       }
       std::sort(nearby.begin(), nearby.end(), [](const CarCand& a, const CarCand& b) { return a.d2 < b.d2; });
-      const size_t max_cars = low_memory_mode_ ? 2u : 4u;
+      const size_t max_cars =
+#ifdef __ANDROID__
+          low_memory_mode_ ? 0u : 2u;
+#else
+          low_memory_mode_ ? 2u : 4u;
+#endif
       for (size_t k = 0; k < nearby.size() && k < max_cars; ++k) {
         const auto& in = instances_[nearby[k].idx];
         in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,

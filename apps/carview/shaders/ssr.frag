@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision highp float;
 // carview: Phase B Hi-Z Stochastic Screen-Space Reflections (SSR).
 // Marches the Reversed-Z Hi-Z pyramid (falling back to full-res depth when Hi-Z
 // is unavailable) with roughness-aware GGX jitter and binary hit refinement.
@@ -97,17 +99,18 @@ void main() {
     float rough = clamp(1.0 - gloss, 0.04, 0.85);
     vec2 step_uv = pc.texel_mode.xy * mix(0.75, 2.25, rough);
     const vec2 offs[4] = vec2[4](vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0));
-    vec4 acc = center * 2.0;
-    float wsum = 2.0;
+    mediump vec4 acc = center * 2.0;
+    mediump float wsum = 2.0;
     float z_tol = max(d_c * 0.045, 0.35);
     for (int i = 0; i < 4; ++i) {
       vec2 suv = clamp(v_uv + offs[i] * step_uv, vec2(0.001), vec2(0.999));
       float sd = sample_linear_depth(suv);
-      float sg = clamp(texture(hdr_tex, suv).a, 0.0, 1.0);
-      float wz = exp(-abs(sd - d_c) / z_tol);
-      float wg = exp(-abs(sg - gloss) * 6.0);
-      float w = wz * wg;
-      acc += texture(ssr_in, suv) * w;
+      mediump float sg = clamp(texture(hdr_tex, suv).a, 0.0, 1.0);
+      mediump float wz = exp(-abs(sd - d_c) / z_tol);
+      mediump float wg = exp(-abs(sg - gloss) * 6.0);
+      mediump float w = wz * wg;
+      mediump vec4 s_val = texture(ssr_in, suv);
+      acc += s_val * w;
       wsum += w;
     }
     out_ssr = acc / max(wsum, 1e-4);

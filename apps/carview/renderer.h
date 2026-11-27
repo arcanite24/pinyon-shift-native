@@ -598,6 +598,15 @@ class Renderer {
   bool window_focused() const { return window_focused_; }
   // Marks the swapchain dirty for clean rebuild on the next draw (e.g. Android foreground resume).
   void invalidate_swapchain() { swapchain_dirty_ = true; }
+  // Dynamic Resolution Scaling multiplier [0.65..1.0] applied on top of scene_extent().
+  void set_drs_scale(float s) {
+    const float clamped = std::clamp(s, 0.65f, 1.0f);
+    if (std::fabs(clamped - drs_scale_) > 0.005f) {
+      drs_scale_ = clamped;
+      targets_dirty_ = true;
+    }
+  }
+  float drs_scale() const { return drs_scale_; }
   uint32_t swapchain_recreate_count() const { return swapchain_recreate_count_; }
   uint32_t target_recreate_count() const { return target_recreate_count_; }
   static bool needs_swapchain_recreate(bool swapchain_dirty, bool has_swapchain, uint32_t cur_w, uint32_t cur_h,
@@ -1140,6 +1149,7 @@ class Renderer {
   FrameSlot slots_[kFramesInFlight];
   uint32_t slot_ = 0;
   uint32_t frames_in_flight_ = 2;  // options.frames_in_flight, SHIFT_FRAMES_IN_FLIGHT (1: the old one-frame lock step)
+  float drs_scale_ = 1.0f;
   bool gpu_driven_ = false;
   modern::VSync vsync_ = modern::VSync::kFifo, vsync_active_ = modern::VSync::kFifo;
   FrameSlot& slot() { return slots_[slot_]; }

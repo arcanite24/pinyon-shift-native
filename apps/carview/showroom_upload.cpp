@@ -262,6 +262,10 @@ bool Showroom::upload(std::string& error) {
       }
     }
   }
+  for (auto& d : far_draws_) {
+    auto [it, inserted] = descriptor_by_textures_.emplace(d.textures, uint32_t(descriptor_by_textures_.size()));
+    d.descriptor = it->second;
+  }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
   // Frame/offscreen pool (kept alive across car hot-swaps, with generous spare sets for zero-stall rebinding).
   const VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 144},
@@ -845,6 +849,7 @@ bool Showroom::init_minimal_for_precompile() {
   textures_.push_back({nullptr});  // 0: built-in white
   textures_.push_back({nullptr});  // 1: built-in black
   draws_.clear();
+  far_draws_.clear();
   Draw d{};
   d.first_index = 0;
   d.index_count = 3;

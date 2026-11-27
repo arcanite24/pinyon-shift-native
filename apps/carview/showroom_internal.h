@@ -241,7 +241,8 @@ std::string tyre_texture_member(const std::string& sheet, const std::string& tyr
 bool hidden_variant(const std::string& name, const std::set<std::string>& real);
 std::string family_member(const std::string& name);
 bool stock_hidden(const std::string& member, const cars::bake::StockRow& stock);
-int32_t best_lod(const bake::Part& part, bool prefer_lod1 = false);
+int32_t best_lod(const bake::Part& part, int32_t min_lod = 0);
+int32_t far_lod_for(const bake::Part& part, int32_t near_lod);
 bool placeholder(const bake::Part& part);
 
 // Opens a car's archive/folder from base disc, Title Update v4, or DLC packages.

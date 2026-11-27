@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision mediump float;
 // carview: Physically-Based Jimenez / Call of Duty SIGGRAPH 2014 13-tap progressive
 // bloom downsample with Karis Average anti-firefly weighting and soft-knee threshold on mip 0.
 //
@@ -23,7 +25,7 @@ layout(push_constant) uniform Post {
   vec4 exp_ev;
 } p;
 
-layout(location = 0) in vec2 v_uv;
+layout(location = 0) in highp vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 // Must stay bit-identical to eval_auto_exposure() in post.frag so bloom bright-pass
@@ -76,7 +78,7 @@ vec3 soft_threshold(vec3 c, float exp_scale) {
   return c * (max(excess, 0.0) * gain / max(lum, 1e-4));
 }
 
-vec3 sample_src(vec2 uv) {
+vec3 sample_src(highp vec2 uv) {
   vec3 c = texture(src, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb;
   c = mix(c, vec3(0.0), isnan(c));
   c = mix(c, vec3(0.0), isinf(c));
@@ -84,7 +86,7 @@ vec3 sample_src(vec2 uv) {
 }
 
 void main() {
-  vec2 d = p.mode.yz;
+  highp vec2 d = p.mode.yz;
   int mip = int(p.mode.x + 0.5);
 
   // Jimenez 13-tap overlapping box/cross filter pattern:

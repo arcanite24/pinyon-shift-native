@@ -335,6 +335,11 @@ bool DriveWorldHost::open_world_and_car() {
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options = build_car_options();
     Renderer::Options render_options{app.window, app.validation, app.msaa};
+#ifdef __ANDROID__
+    // Android SurfaceFlinger holds 2 swapchain buffers during 120 Hz presentation;
+    // 3 frames in flight eliminates the CPU/GPU fence stall bubble (~2-3 ms).
+    render_options.frames_in_flight = 3;
+#endif
     render_options.requested_backend = shift::rhi::parse_backend_kind(app.graphics_backend);
     render_options.reverse_z = app.reverse_z;
     render_options.backface_cull = app.backface_cull;
@@ -830,6 +835,12 @@ bool DriveWorldHost::open_world_and_car() {
                                                        app.render_ground ? nullptr : &collision);
           streamer->set_async(streamer_async);
           streamer->set_lead(true);  // keeps a fast car central in the collision
+#ifdef __ANDROID__
+          if (app.world_reference_path.empty() && app.contacts_log_path.empty() && !app.texture_census &&
+              !std::getenv("SHIFT_WORLD_DEBUG") && !std::getenv("SHIFT_WORLD_PICK")) {
+            streamer->set_compact_mesh_after_prepare(true);
+          }
+#endif
           streamer->set_prepare([this](const world::Mesh& mesh, double cx, double cz) {
             const bool async_mid_drive = !prepare_on_main && streamer_async && streamer && streamer->gathers() >= 1;
             if (async_mid_drive) lower_stream_worker_priority();

@@ -126,41 +126,86 @@ All benchmark cases below use `--bench-scenario` (headless offscreen readback,
 which adds ~2.5–3 ms/frame over live swapchain presentation) with `save.txt`
 restored to the exact same position before every run:
 
-| Preset / Scenario | Pass 1 (`177d9213`) FPS | Pass 2 FPS | Delta | Pass 1 RSS | Pass 2 RSS | RAM Saved | Pass 1 VMA | Pass 2 VMA |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `low-power` (`noon_cruise`) | 74.3 FPS | **84.1 FPS** | +13.2% | 1,682 MiB | **1,352 MiB** | -330 MiB | 219 MiB | 220 MiB |
-| `performance-120` (`noon_cruise`) | 79.4 FPS | **83.7 FPS** | +5.4% | 1,554 MiB | **1,243 MiB** | -311 MiB | 229 MiB | **220 MiB** |
-| `smooth-60` (`noon_cruise`) | 71.2 FPS | **75.5 FPS** | +6.0% | 1,512 MiB | **1,364 MiB** | -148 MiB | 248 MiB | **236 MiB** |
-| `quality-30` (`noon_cruise`) | 35.4 FPS | **44.8 FPS** | **+26.6%** | 1,684 MiB | **1,400 MiB** | -284 MiB | 390 MiB | **341 MiB** |
-| `ultra` (`noon_cruise`) | 24.5 FPS | **32.1 FPS** | **+31.0%** | 1,702 MiB | **1,386 MiB** | -316 MiB | 474 MiB | **389 MiB** |
-| `race_pack` (`smooth-60`, 8 cars) | 30.1 FPS | **38.8 FPS** | **+28.9%** | — | **1,531 MiB** | — | — | 340 MiB |
-| `race_pack` (`performance-120`, 8 cars) | — | **41.0 FPS** | — | — | **1,495 MiB** | — | — | 320 MiB |
-| `midnight_lights` (`performance-120`) | — | **84.7 FPS** | — | — | **1,361 MiB** | — | — | 220 MiB |
+| Preset / Scenario | Pass 1 (`177d9213`) | Pass 2 (`ffe3ebd4`) | **Pass 3** | Total FPS Gain | Pass 1 → **Pass 3 RSS** (Peak) | Pass 1 → **Pass 3 VMA** |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `low-power` (`noon_cruise`) | 74.3 FPS | 84.1 FPS | **85.3 FPS** | **+14.8%** | 1,682 → **1,372 MiB** (1,381) | 219 → 220 MiB |
+| `performance-120` (`noon_cruise`) | 79.4 FPS | 83.7 FPS | **85.0 FPS** | **+7.1%** | 1,554 → **1,328 MiB** (1,523) | 229 → **220 MiB** |
+| `smooth-60` (`noon_cruise`) | 71.2 FPS | 75.5 FPS | **76.6 FPS** | **+7.6%** | 1,512 → **1,257 MiB** (1,715) | 248 → **236 MiB** |
+| `quality-30` (`noon_cruise`) | 35.4 FPS | 44.8 FPS | **43.9 FPS** | **+24.0%** | 1,684 → **1,366 MiB** (1,907) | 390 → **341 MiB** |
+| `ultra` (`noon_cruise`) | 24.5 FPS | 32.1 FPS | **33.1 FPS** | **+35.1%** | 1,702 → **1,397 MiB** (1,922) | 474 → **389 MiB** |
+| `race_pack` (`smooth-60`, 8 cars) | 30.1 FPS | 38.8 FPS | **39.3 FPS** | **+30.6%** | — → **1,551 MiB** (1,781) | — → 342 MiB |
+| `race_pack` (`performance-120`, 8 cars) | — | 41.0 FPS | **42.0 FPS** | — | — → **1,481 MiB** (1,801) | — → 321 MiB |
+| `midnight_lights` (`performance-120`) | — | 84.7 FPS (5.8 ms GPU) | **5.3 ms GPU** | — | — → **1,350 MiB** (1,498) | — → 220 MiB |
+| `smooth-60` + `SHIFT_GPU_WORLD=1` | — | — | **70.0 FPS** (`-8.6%`) | — | 1,395 MiB (`+138 MiB`) | 284 MiB (`+48 MiB`) |
 
-- **Live windowed verification (`--window-frames 180 --preset performance-120`)**:
-  **94.7 FPS** avg (`p50 10.31 ms`, `p95 12.06 ms`), 4 LOD1 traffic models
-  uploaded in `19–44 ms` each, `280 MiB` VMA allocated.
+- **Live windowed `performance-120` (`--window-frames 180`, triple-buffered)**:
+  **96.6 FPS** avg (`p50 10.21 ms`, `p95 11.83 ms`, `p99 24.70 ms`), `280.3 MiB`
+  VMA allocated — up from `94.7 FPS` (`p99 27.52 ms`) in Pass 2.
+- **Live windowed `ultra --hdr` (`--window-frames 90`, Odin 2 Portal OLED)**:
+  Confirmed **true scRGB 16-bit HDR active** (`fmt=97`
+  `VK_FORMAT_R16G16B16A16_SFLOAT`, `cs=1000104002`
+  `VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT`, `scrgb_sup=1`, `hdr_mode=2`) at a
+  rock-solid **30.0 FPS** (`avg 33.33 ms`, `p50 33.33 ms`, `p95 33.57 ms`,
+  `p99 33.89 ms`).
+- **GPU-driven world culling (`SHIFT_GPU_WORLD=1`) verdict**:
+  Confirmed `-8.6%` slower (`70.0` vs `76.6 FPS`) and `+138 MiB` RSS / `+48 MiB`
+  VMA heavier on Turnip Adreno 740 due to `nonuniformEXT` scalarization; kept
+  off by default on Android (`gpu_world=0`).
 - **Visual verification**:
   - `smooth-60` (720p + `2x2` VRS + `1x1` cutout VRS): barrier railings, fences,
     and foliage render razor-sharp at `1x1` while terrain/roads shade at `2x2`.
   - `quality-30` (1080p + amortized Mid/Far shadow cascades): crisp car/stage/
     spectator shadows with zero cascade flicker.
 
+## Optimization Pass 3 (Closing Remaining Telemetry Gaps)
+
+Inspecting the Pass 2 Odin 2 Portal logs exposed 7 remaining opportunities:
+
+1. **Multi-LOD AI/Traffic Cars (`LOD1` → `LOD2/LOD3`), Distant VRS & Shadow Skip**:
+   `race_pack` (`performance-120`) still spent `+6.85 ms` in `scene` for 7 AI
+   cars because `prefer_lod1` stayed at LOD1 at all distances and cast full
+   shadows. Adding a secondary `far_draws_` slice (LOD2/LOD3 from the same
+   shared `lod_vertices` pool, zero extra vertex RAM) switched at `> 22 m`,
+   skipping dual-pass `glass_mul_` + `glass_add_` headlight covers at `> 14 m`,
+   applying `2x2` VRS on distant AI car glass, and casting shadows from
+   `far_draws_` (skipping AI cars `> 45 m` from shadows) targets `race_pack`
+   headroom directly.
+2. **Triple Buffering (`frames_in_flight = 3`) & Dynamic Resolution Scaling (DRS)**:
+   Live `performance-120` ran at `94.7 FPS` (`10.83 ms`) despite `GPU 5.8 ms` +
+   `CPU 2.1 ms` due to a ~3 ms swapchain/fence stall with `frames_in_flight = 2`
+   on Android `SurfaceFlinger`. Enabling `frames_in_flight = 3` on Android plus
+   hysteresis-guarded DRS (adapting `scale` in `0.05` steps when rolling GPU
+   frame time exceeds target budget) smooths 120 Hz pacing and heavy race packs.
+3. **Env Cubemap Interval Tuning & FP16 Post-Chain Shaders**:
+   `low-power` / `performance-120` spent `0.81 ms` on `env_cubemap` every 4th
+   frame, and `quality-30` / `ultra` spent `3.6–4.0 ms` across FP32 post passes
+   (`ssao`, `ssr`, `post`, `bloom`, `volumetric`, `sscs`). Extending
+   `schedule_reflections` to support `1/8` and `1/16` face cadences, skipping
+   AI/traffic car draws inside the 128x128 cubemap on Android, converting the
+   post-chain shaders to FP16 (`mediump`) math, and trimming Android GTAO/SSR
+   tap counts cuts GPU cost across every preset.
+4. **Custom Mesa Turnip Hybrid `gmem`/`sysmem` + `B10G11R11` UBWC Patch**:
+   Global `TU_DEBUG=sysmem` wins on world/shadow passes, but forces `4.0 ms` of
+   bandwidth-bound full-screen post passes onto `sysmem` (and Turnip drops UBWC
+   on `B10G11R11`). Added `tools/patches/turnip-adreno7xx-hybrid-sysmem.patch`
+   and `--hybrid-patch` support in `tools/build-turnip-android.sh`.
+5. **GPU-Driven World Culling (`SHIFT_GPU_WORLD=1`) Verification**:
+   `renderer_device.cpp` defaults `gpu_world=0` on Android because Adreno 740
+   incurs `nonuniformEXT` waterfall overhead and +85 MiB RAM; recorded as an
+   opt-in env flag (`SHIFT_GPU_WORLD=1`) and re-verified against Pass 3.
+6. **Peak RAM (`1.90 GB`) & Startup TTFF (`5.0 s`) Reduction**:
+   Compact `world::Mesh` inside `Streamer::gather_now()` immediately after
+   `prepare_()` finishes (before GPU staging coexists with the 200 MiB CPU
+   render mesh) and skip `world_anim` crowds on `performance-120` as well as
+   `low-power`.
+7. **Android HDR10 Swapchain Probe & Diagnostics**:
+   Log available Vulkan surface formats/colorspaces and active `hdr_mode_` on
+   Android swapchain creation so HDR10 (`VK_COLOR_SPACE_HDR10_ST2084_EXT`)
+   capability on Turnip + Odin 2 Portal OLED is explicitly verified.
+
 ## Future Stretch Opportunities
 
-1. **World draw-call merging / GPU-driven multi-draw indirect on Android**:
-   Colorado gathers currently submit ~1,500–2,500 draws per frame; enabling the
-   GPU-driven `world_cull.comp` + `vkCmdDrawIndexedIndirectCount` path on Turnip
-   (Adreno 740 supports `multiDrawIndirect` + descriptor indexing) can further
-   reduce CPU submission time in dense Festival / Red Rock scenes.
-2. **Custom Mesa Turnip per-pass `use_sysmem_rendering` heuristic**:
-   Instead of global `TU_DEBUG=sysmem`, patching `tu_cmd_buffer.cc` in a custom
-   Turnip build (`tools/build-turnip-android.sh`) to use `gmem` for full-screen
-   post-processing passes (bloom/SSAO/tone-map) and `sysmem` for high-geometry
-   world/shadow passes could capture the best of both worlds (especially on
-   `quality-30` and `ultra` at 918p–1080p).
-3. **ASTC / ETC2 offline texture transcoding cache**:
-   Currently BC1/BC3/BC5 textures are either uploaded natively (Turnip supports
-   `textureCompressionBC` on Adreno 740!) or transcoded on devices without BCn.
-   On non-BCn GPUs (Mali/PowerVR), caching ASTC blocks on first load would avoid
-   RGBA8 fallback expansion.
+1. **ASTC / ETC2 offline texture transcoding cache**:
+   Currently BC1/BC3/BC5 textures are uploaded natively on Adreno 740 / Turnip
+   (`bc=1`). On non-BCn GPUs (Mali/PowerVR), caching ASTC blocks on first load
+   would avoid RGBA8 fallback expansion.

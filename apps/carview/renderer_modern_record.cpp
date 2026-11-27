@@ -33,11 +33,22 @@ void Renderer::record_ssao(VkCommandBuffer cmd) {
     vkCmdSetScissor(cmd, 0, 1, &sc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssao_pipe_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssao_layout_, 0, 1, &set, 0, nullptr);
+    const float ao_slices =
+#ifdef __ANDROID__
+        float(std::min(modern::gtao_slices(graphics_.ssao), 2));
+#else
+        float(modern::gtao_slices(graphics_.ssao));
+#endif
+    const float ao_steps =
+#ifdef __ANDROID__
+        float(std::min(modern::gtao_steps(graphics_.ssao), 3));
+#else
+        float(modern::gtao_steps(graphics_.ssao));
+#endif
     struct {
       float proj_params[4], ao_params[4], texel_step[4];
     } pc = {{cam_proj00_, cam_proj11_, cam_near_, cam_far_},
-            {modern::ssao_radius_m(graphics_.ssao), float(modern::gtao_slices(graphics_.ssao)),
-             float(modern::gtao_steps(graphics_.ssao)), mode},
+            {modern::ssao_radius_m(graphics_.ssao), ao_slices, ao_steps, mode},
             {1.0f / float(std::max(1u, ao_width_)), 1.0f / float(std::max(1u, ao_height_)),
              options_.reverse_z ? 1.0f : 0.0f, frame_jitter}};
     vkCmdPushConstants(cmd, ssao_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
@@ -105,7 +116,12 @@ void Renderer::record_ssr(VkCommandBuffer cmd) {
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   const float frame_jitter = float(frames_submitted_ & 63u) / 64.0f;
   const float strength = (graphics_.ssr == modern::SsrQuality::kFull) ? 0.90f : 0.80f;
-  const float max_steps = float(modern::ssr_steps(graphics_.ssr));
+  const float max_steps =
+#ifdef __ANDROID__
+      float(std::min(modern::ssr_steps(graphics_.ssr), graphics_.ssr == modern::SsrQuality::kFull ? 20 : 14));
+#else
+      float(modern::ssr_steps(graphics_.ssr));
+#endif
   const bool hiz_ready =
       (hiz_preview_view_ != VK_NULL_HANDLE) && (hiz_width_ > 0) && (hiz_height_ > 0) && (hiz_mips_ > 0);
   const float has_hiz = hiz_ready ? 1.0f : 0.0f;

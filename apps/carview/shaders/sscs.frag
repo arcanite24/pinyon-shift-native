@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision highp float;
 // carview: Screen-Space Contact Shadows (SSCS).
 // Short-range perspective-correct depth ray march along view-space sun direction
 // (8..12 IGN-jittered taps with distance-adaptive thickness, bias, and screen-edge fade).

@@ -662,13 +662,16 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
     // beyond 145 m (80 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
 #ifdef __ANDROID__
     const float mid_dist = low_memory_mode_ ? 14.0f : 25.0f;
-    const float far_dist = low_memory_mode_ ? 80.0f : 120.0f;
+    const float far_dist = low_memory_mode_ ? 65.0f : 100.0f;
+    const bool use_far_lod = !g->far_draws_.empty() && min_inst_d2 > 22.0f * 22.0f;
 #else
     const float mid_dist = low_memory_mode_ ? 35.0f : 55.0f;
     const float far_dist = low_memory_mode_ ? 95.0f : 145.0f;
+    const bool use_far_lod = false;
 #endif
     const bool lod_mid = min_inst_d2 > mid_dist * mid_dist;
     const bool lod_far = min_inst_d2 > far_dist * far_dist;
+    const auto& inst_draws = use_far_lod ? g->far_draws_ : g->draws_;
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -678,7 +681,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
         uint32_t bound_desc = UINT32_MAX;
         const int sub_end = (pass == 0 && op_cutout_pipe != op_pipe) ? 2 : 1;
         for (int sub = 0; sub < sub_end; ++sub) {
-          for (const auto& d : g->draws_) {
+          for (const auto& d : inst_draws) {
             if (d.detached) continue;
             if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
             if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
@@ -702,7 +705,12 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
               vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                                       &g->material_sets_[d.descriptor], 0, nullptr);
             }
-            if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
+            const bool dual_cover =
+#ifdef __ANDROID__
+                !lod_mid &&
+#endif
+                (pass == 1 && d.is_cover && glass_mul_ && glass_add_);
+            if (dual_cover) {
               if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
               push.params[2] = 7.0f;
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -717,7 +725,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
               VkPipeline want = pass ? g->glass_ : (needs_discard ? op_cutout_pipe : op_pipe);
               if (bound_p != want) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
-                if (!pass) r_.apply_vrs(cmd);
+                if (!pass || lod_mid) r_.apply_vrs(cmd);
               }
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);

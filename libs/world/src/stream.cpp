@@ -317,6 +317,39 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
     g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
   }
   if (prepare_) g->prepared = prepare_(g->mesh, x, z);
+  g->raw_triangles = g->mesh.triangles();
+  g->raw_materials = g->mesh.materials.size();
+  if (compact_after_prepare_ && prepare_) {
+    const size_t tris = g->mesh.triangles();
+    size_t road_tris = 0;
+    for (size_t t = 0; t < tris; ++t) {
+      if (g->mesh.surface[t] == Surface::kRoad) ++road_tris;
+    }
+    std::vector<std::array<float, 3>> road_pos;
+    std::vector<Surface> road_surf;
+    road_pos.reserve(road_tris * 3);
+    road_surf.reserve(road_tris);
+    for (size_t t = 0; t < tris; ++t) {
+      if (g->mesh.surface[t] != Surface::kRoad) continue;
+      road_pos.push_back(g->mesh.positions[t * 3]);
+      road_pos.push_back(g->mesh.positions[t * 3 + 1]);
+      road_pos.push_back(g->mesh.positions[t * 3 + 2]);
+      road_surf.push_back(Surface::kRoad);
+    }
+    g->mesh.positions.swap(road_pos);
+    g->mesh.surface.swap(road_surf);
+    std::vector<uint32_t>().swap(g->mesh.model);
+    std::vector<uint8_t>().swap(g->mesh.ground);
+    std::vector<std::array<float, 3>>().swap(g->mesh.normals);
+    std::vector<std::array<float, 2>>().swap(g->mesh.uv0);
+    std::vector<std::array<float, 2>>().swap(g->mesh.uv1);
+    std::vector<std::array<float, 2>>().swap(g->mesh.uv2);
+    std::vector<std::array<uint8_t, 4>>().swap(g->mesh.colours);
+    std::vector<uint32_t>().swap(g->mesh.material);
+    std::vector<std::array<float, 3>>().swap(g->mesh.instance);
+    std::vector<MeshMaterial>().swap(g->mesh.materials);
+    std::vector<WorldGlow>().swap(g->mesh.world_glows);
+  }
   g->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   g->ok = true;
   return g;
@@ -355,8 +388,8 @@ void Streamer::take(Gathered&& g) {
   std::swap(ground_, g.ground);
   std::swap(composite_ground_, g.composite_ground);
   std::swap(mesh_, g.mesh);
-  last_mesh_triangles_ = mesh_.triangles();
-  last_mesh_materials_ = mesh_.materials.size();
+  last_mesh_triangles_ = g.raw_triangles ? g.raw_triangles : mesh_.triangles();
+  last_mesh_materials_ = g.raw_materials ? g.raw_materials : mesh_.materials.size();
   stats_ = std::move(g.stats);
   std::swap(collision_mesh_, g.collision);
   std::swap(ground_source_, g.ground_source);

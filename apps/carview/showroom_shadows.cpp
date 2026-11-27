@@ -617,17 +617,37 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &cascade_set, 0, nullptr);
         for (Showroom* g : groups) {
           uint32_t solid_count = 0, fade_count = 0;
-          for (const auto& in : instances_)
-            if (in.car == g && in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+          float min_d2 = 1e18f;
+          for (const auto& in : instances_) {
+            if (in.car != g) continue;
+            const float dx = in.model[12] - frame_.eye[0];
+            const float dy = in.model[13] - frame_.eye[1];
+            const float dz = in.model[14] - frame_.eye[2];
+            const float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < min_d2) min_d2 = d2;
+            if (in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
+          }
           for (const auto& in : instances_)
             if (in.car == g && in.fade_alpha < 0.99f && offset + solid_count + fade_count < kMaxCarInstances)
               ++fade_count;
-          if (solid_count > 0 && !g->draws_.empty()) {
+#ifdef __ANDROID__
+          const float max_shadow_car_d = low_memory_mode_ ? 35.0f : 50.0f;
+          const bool skip_far_shadow = min_d2 > max_shadow_car_d * max_shadow_car_d;
+          const auto& shadow_draws = !g->far_draws_.empty() ? g->far_draws_ : g->draws_;
+#else
+          const bool skip_far_shadow = false;
+          const auto& shadow_draws = g->draws_;
+#endif
+          if (!skip_far_shadow && solid_count > 0 && !shadow_draws.empty()) {
             const VkDeviceSize zero = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
             vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
-            for (const auto& d : g->draws_) {
+            for (const auto& d : shadow_draws) {
               if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
+#ifdef __ANDROID__
+              const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+              if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
+#endif
               ShowroomPush push = d.push;
               push.params[1] = float(uint32_t(std::lround(push.params[1])) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

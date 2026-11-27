@@ -27,11 +27,14 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     if (t.name == "livery_mask") livery = texture_index("livery_mask", car_, true);
   for (const auto& part : model.parts) {
     if (std::find(parts.begin(), parts.end(), part.name) == parts.end()) continue;
-    const int32_t best = best_lod(part, options_.prefer_lod1);
+    const int32_t min_lod = options_.prefer_lod1 ? std::max(options_.prefer_min_lod, 1) : 0;
+    const int32_t best = best_lod(part, min_lod);
     if (best < 0) continue;
+    const int32_t far_lod = options_.prefer_lod1 ? far_lod_for(part, best) : -1;
     const auto& pool = best == 0 ? part.lod0_vertices : part.lod_vertices;
     const int32_t vertex_offset = int32_t(vertices_.size());
     vertices_.insert(vertices_.end(), pool.begin(), pool.end());
+    const size_t draws_before = draws_.size();
     bool drawn = false;
     // CARVIEW_SECTIONS=1 lists every section and each drawn one's car-space
     // bounds (debugging which part draws where).
@@ -44,7 +47,8 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
                     s.uv_transform[0], s.uv_transform[1], s.uv_transform[2], s.uv_transform[3], s.uv_transform[4],
                     s.uv_transform[5], s.uv_transform[6], s.uv_transform[7]);
     for (const auto& s : part.subsections) {
-      if (s.lod != best || s.indices.empty()) continue;
+      const bool is_far_sub = (far_lod > best && s.lod == far_lod);
+      if ((s.lod != best && !is_far_sub) || s.indices.empty()) continue;
       const cars::BlurRimKind blur_kind = cars::classify_blur_rim(s.technique);
       if (s.material == MaterialClass::kHidden && blur_kind == cars::BlurRimKind::kNone) continue;
       // `liveryBadge` (not in FORMAT-CARS's technique tables) is the
@@ -497,8 +501,20 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
           d.anim_part = 12;
         }
       }
-      draws_.push_back(d);
-      drawn = true;
+      if (is_far_sub) {
+        if (klass != MaterialClass::kInterior && klass != MaterialClass::kGauge && klass != MaterialClass::kCaliper) {
+          far_draws_.push_back(d);
+        }
+      } else {
+        draws_.push_back(d);
+        drawn = true;
+      }
+    }
+    if (options_.prefer_lod1 && far_lod < 0) {
+      for (size_t di = draws_before; di < draws_.size(); ++di) {
+        const uint32_t kl = uint32_t(draws_[di].push.params[0] + 0.5f);
+        if (kl != 4u && kl != 5u && kl != 8u) far_draws_.push_back(draws_[di]);
+      }
     }
     if (drawn) drawn_parts_.push_back(model.name + "/" + part.name);
   }
@@ -1303,6 +1319,10 @@ bool Showroom::reload_car(const std::filesystem::path& bake_dir, const std::stri
         }
       }
     }
+  }
+  for (auto& d : far_draws_) {
+    auto [it, inserted] = descriptor_by_textures_.emplace(d.textures, uint32_t(descriptor_by_textures_.size()));
+    d.descriptor = it->second;
   }
   const uint32_t sets = uint32_t(descriptor_by_textures_.size());
   const VkDescriptorPoolSize mat_sizes[1] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(1u, sets) * 5}};

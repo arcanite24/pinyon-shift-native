@@ -603,16 +603,22 @@ bool stub_pool(const std::vector<bake::Vertex>& pool) {
 }
 
 // The part's best drawable LOD: the lowest whose pool is not a stand-in,
-// or -1. When prefer_lod1 is set, picks the lowest lod >= 1 first.
-int32_t best_lod(const bake::Part& part, bool prefer_lod1) {
+// or -1. When min_lod > 0, picks the lowest lod >= min_lod (falling back to
+// highest available lod >= 1 before LOD0).
+int32_t best_lod(const bake::Part& part, int32_t min_lod) {
   std::set<int32_t> lods;
   for (const auto& s : part.subsections)
     if ((s.material != MaterialClass::kHidden || cars::is_blur_rim_technique(s.technique)) && !s.indices.empty())
       lods.insert(s.lod);
-  if (prefer_lod1) {
+  if (min_lod > 0 && !stub_pool(part.lod_vertices)) {
     for (int32_t lod : lods) {
-      if (lod >= 1 && !stub_pool(part.lod_vertices)) return lod;
+      if (lod >= min_lod) return lod;
     }
+    int32_t highest_ext = -1;
+    for (int32_t lod : lods) {
+      if (lod >= 1) highest_ext = lod;
+    }
+    if (highest_ext >= 1) return highest_ext;
   }
   // A LOD0 pool with under a quarter of the LOD1-5 pool's vertices is a
   // stand-in too (some rims: 74 against about 2,300).
@@ -623,6 +629,19 @@ int32_t best_lod(const bake::Part& part, bool prefer_lod1) {
     if (!stub_pool(lod == 0 ? part.lod0_vertices : part.lod_vertices)) return lod;
   }
   return -1;
+}
+
+int32_t far_lod_for(const bake::Part& part, int32_t near_lod) {
+  if (near_lod < 1 || stub_pool(part.lod_vertices)) return -1;
+  std::set<int32_t> lods;
+  for (const auto& s : part.subsections)
+    if (s.material != MaterialClass::kHidden && !s.indices.empty() && s.lod > near_lod)
+      lods.insert(s.lod);
+  // Prefer LOD2 or LOD3 for distant AI/shadow silhouettes without collapsing to ultra-blocky LOD5.
+  for (int32_t lod : lods) {
+    if (lod >= 2 && lod <= 3) return lod;
+  }
+  return lods.empty() ? -1 : *lods.begin();
 }
 
 bool placeholder(const bake::Part& part) { return best_lod(part) < 0; }
@@ -777,6 +796,7 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   vertices_.clear();
   indices_.clear();
   draws_.clear();
+  far_draws_.clear();
   textures_.clear();
   texture_by_key_.clear();
   descriptor_by_textures_.clear();

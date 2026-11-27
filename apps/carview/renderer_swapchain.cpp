@@ -257,6 +257,10 @@ bool Renderer::create_swapchain(std::string& error) {
     }
     color_format_ = wanted_fmt;
     swapchain_colorspace_ = wanted_cs;
+    std::fprintf(stderr,
+                 "[vulkan] swapchain: %zu surface formats, fmt=%d cs=%d hdr10_sup=%d scrgb_sup=%d hdr_mode=%d\n",
+                 formats.size(), int(color_format_), int(swapchain_colorspace_), hdr10_supported_ ? 1 : 0,
+                 scrgb_supported_ ? 1 : 0, int(hdr_mode_));
   }
   VkExtent2D extent = caps.currentExtent;
   if (extent.width == UINT32_MAX) {

@@ -398,8 +398,14 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
   const modern::Extent re = options_.post.enabled
                                 ? modern::scene_extent({width, height}, graphics_.scale, graphics_.base_540p)
                                 : modern::Extent{width, height};
-  const uint32_t rw = re.w ? re.w : width;
-  const uint32_t rh = re.h ? re.h : height;
+  const uint32_t base_rw = re.w ? re.w : width;
+  const uint32_t base_rh = re.h ? re.h : height;
+  const uint32_t rw = (drs_scale_ < 0.995f)
+                          ? std::max<uint32_t>(320u, uint32_t(std::lround(double(base_rw) * drs_scale_)) & ~1u)
+                          : base_rw;
+  const uint32_t rh = (drs_scale_ < 0.995f)
+                          ? std::max<uint32_t>(180u, uint32_t(std::lround(double(base_rh) * drs_scale_)) & ~1u)
+                          : base_rh;
   const bool gmem_msaa = (samples_ != VK_SAMPLE_COUNT_1_BIT) && depth_resolve_supported_;
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
       !create_image(rw, rh, 1, scene_format(), samples_,

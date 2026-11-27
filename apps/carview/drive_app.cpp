@@ -1241,7 +1241,9 @@ void DriveApp::start_world_assets_async(bool init_anim) {
   }
   if (!groot.empty()) {
 #ifdef __ANDROID__
-    const bool skip_anim = (preset_name == "low-power" || preset_name == "low_power" || preset_name == "ultra-low-30");
+    const bool skip_anim = (preset_name == "low-power" || preset_name == "low_power" ||
+                            preset_name == "ultra-low-30" || preset_name == "performance-120" ||
+                            preset_name == "performance_120" || preset_name == "odin-120");
 #else
     const bool skip_anim = false;
 #endif

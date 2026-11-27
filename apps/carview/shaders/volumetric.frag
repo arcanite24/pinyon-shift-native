@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision highp float;
 // carview: Phase B Volumetric Sun Shafts, Aerial Perspective & Night Headlight Cones.
 // Quarter-res (High) or Half-res (Ultra) IGN-jittered 3D ray march sampling the
 // 3-cascade D32 sun CSM shadow map + up to 8 active vehicle headlight cones with
@@ -59,9 +61,9 @@ float ign(vec2 px) {
 }
 
 // Henyey-Greenstein scattering phase function (g in [-1, 1]).
-float hg_phase(float cos_theta, float g) {
-  float g2 = g * g;
-  float denom = max(1.0 + g2 - 2.0 * g * cos_theta, 0.02);
+mediump float hg_phase(mediump float cos_theta, mediump float g) {
+  mediump float g2 = g * g;
+  mediump float denom = max(1.0 + g2 - 2.0 * g * cos_theta, 0.02);
   return (1.0 - g2) / (4.0 * 3.14159265 * pow(denom, 1.5));
 }
 

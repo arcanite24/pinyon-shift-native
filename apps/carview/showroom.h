@@ -698,6 +698,8 @@ struct ShowroomOptions {
   cars::VisualSetup visual;
   // Prefer LOD1-5 exterior meshes and omit interior/cockpit meshes (mobile traffic & AI opponents).
   bool prefer_lod1 = false;
+  // Minimum LOD index when prefer_lod1 is set (0/1 = LOD1 with LOD2/3 far_draws_, 2 = LOD2 directly).
+  int32_t prefer_min_lod = 0;
 };
 
 class Showroom {
@@ -1344,6 +1346,7 @@ class Showroom {
   std::vector<cars::bake::Vertex> vertices_;
   std::vector<uint32_t> indices_;
   std::vector<Draw> draws_;
+  std::vector<Draw> far_draws_;  // optional coarser LOD2/3 index slices (shared vertex pool) for distant AI/shadows
   std::vector<TextureRef> textures_;  // 0 white, 1 black, then by first use
   std::map<std::string, uint32_t> texture_by_key_;
   std::map<std::array<uint32_t, 5>, uint32_t> descriptor_by_textures_;

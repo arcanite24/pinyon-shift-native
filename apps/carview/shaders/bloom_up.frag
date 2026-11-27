@@ -1,4 +1,6 @@
 #version 450
+precision highp int;
+precision mediump float;
 // carview: Physically-Based Jimenez / Dual-Kawase 3x3 Tent-Filter Bloom Upsample.
 // Descriptor layout matches post_set_layout_ (binding 0 = finer mip `src`, binding 1 = coarser mip `aux`).
 // Push constants match Post (128 bytes):
@@ -21,10 +23,10 @@ layout(push_constant) uniform Post {
   vec4 exp_ev;
 } p;
 
-layout(location = 0) in vec2 v_uv;
+layout(location = 0) in highp vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-vec3 sample_aux(vec2 uv) {
+vec3 sample_aux(highp vec2 uv) {
   vec3 c = texture(aux, clamp(uv, vec2(0.0005), vec2(0.9995))).rgb;
   c = mix(c, vec3(0.0), isnan(c));
   c = mix(c, vec3(0.0), isinf(c));
@@ -32,7 +34,7 @@ vec3 sample_aux(vec2 uv) {
 }
 
 void main() {
-  vec2 d = p.mode.yz;
+  highp vec2 d = p.mode.yz;
 
   // 9-tap 3x3 tent filter (1, 2, 1 / 2, 4, 2 / 1, 2, 1) / 16:
   // yields wide, silky, artifact-free HDR halation on headlights, taillights & sun glints.

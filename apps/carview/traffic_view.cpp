@@ -278,6 +278,7 @@ void TrafficView::update_guests() {
           opt.game_root = root;
 #ifdef __ANDROID__
           opt.prefer_lod1 = true;
+          opt.prefer_min_lod = 2;
 #endif
           if (!s->load(bake, media, opt, e)) {
             std::fprintf(stderr, "carview: traffic model %s: %s\n", media.c_str(), e.c_str());
