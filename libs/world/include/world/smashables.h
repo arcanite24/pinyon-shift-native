@@ -4,6 +4,7 @@
 // Spec: FORMAT-PHYSICS-DEFINITIONS (horizon1-recomp docs/formats/PHYSICS_DEFINITIONS.md).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>

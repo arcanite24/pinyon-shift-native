@@ -16,6 +16,7 @@
 // at once.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <functional>

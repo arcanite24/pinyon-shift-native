@@ -9,6 +9,7 @@
 // Cleanly supports per-stage skip & fast-forward for players and tests.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>

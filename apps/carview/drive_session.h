@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>

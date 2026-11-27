@@ -5,6 +5,7 @@
 // transitions, animated post-race reward tally, and career save round-trip.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>

@@ -15,6 +15,7 @@
 // sizes are the game's units, scaled here by our own factors.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>

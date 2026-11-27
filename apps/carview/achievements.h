@@ -4,6 +4,7 @@
 // own Xbox 360 spa.bin packages via fh1::SpaDatabase.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
