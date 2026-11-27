@@ -176,6 +176,7 @@ void bind_menu_rows(SceneScreen& sc, ui::List& l, const SceneFrame& f, const std
       if (std::string_view(name) != "Dirt_Tile") sc.at(t).visible_width = tw + 64.0f;
     }
     if (const int clip = child(sd, body, "Clipon"); clip >= 0 && sel) sc.show(clip);
+    sc.hide(child(sd, body, "New"));
     if (sel) {
       sc.at(btn).scale = race_layout::kMenuFocusScale;
       sc.at(btn).dy = race_layout::kMenuFocusDy;
@@ -196,7 +197,7 @@ namespace {
 // its intro start, x -895); the black tape behind the pink is the intro's.
 // Measured on the same capture: FINISHED sits 45 px lower than its rest,
 // the place 20 px lower and turned ~0.9 degrees less.
-constexpr float kPlaceDx = 990.0f, kPlaceDy = 20.0f, kPlaceTurn = -0.016f, kFinishedDy = 45.0f;
+constexpr float kPlaceDx = 990.0f, kPlaceDy = -16.0f, kPlaceTurn = -0.016f, kFinishedDy = 18.0f;
 
 bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacity, bool rally = false) {
   SceneScreen sc(kFinishedScene);
@@ -208,7 +209,10 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
   const int title = sc.node("TEXT_TITLE"), pos = sc.node("TEXT_POSITION");
   const std::string fin = text_of(race_text::kFinished);
   sc.text(title, fin);
-  if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, fin) + kTitleTapePad, kTapeBlack);
+  if (title >= 0) {
+    sc.at(title).dy = 7.0f;
+    fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, fin) + kTitleTapePad, kTapeBlack);
+  }
   if (const int st = sc.node("ScreenTitle"); st >= 0) sc.at(st).dy = kFinishedDy;
   const std::string place = upper(format1(text_of(race_text::kPlace), ordinal(std::max(1, r.place))));
   sc.text(pos, place);
@@ -217,7 +221,29 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
     sc.at(pos).extra_angle = kPlaceTurn;
     sc.at(pos).alpha = 1.0f;
   }
-  fit_tapes(sc, sc.node("Tape2"), 0.0f, kTapePink);
+  const int tape2 = sc.node("Tape2");
+  if (tape2 >= 0) {
+    const float text_left = pos >= 0 ? (sd.at(pos)[0] + kPlaceDx) : 85.0f;
+    const float place_w = pos >= 0 ? sd.measure(pos, place) : 360.0f;
+    const float tape_end = std::max(text_left + 320.0f, text_left + place_w + 56.0f);
+    for (int c : sd.children_of(tape2)) {
+      std::string low(sd.object_name(c));
+      for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      const bool tape = low.find("crisp") != std::string::npos || low.find("smudge") != std::string::npos;
+      const bool dirt = low.find("dirt") != std::string::npos;
+      if (tape) {
+        const auto rr = sd.rect(c);
+        if (tape_end <= rr[0]) {
+          sc.hide(c);
+        } else {
+          sc.at(c).tint = kTapePink;
+          sc.at(c).visible_width = std::clamp(tape_end - rr[0], 1.0f, rr[2] - rr[0]);
+        }
+      } else if (dirt) {
+        sc.at(c).tint = kTapePink;
+      }
+    }
+  }
   sc.draw(l, SceneScreen::frame(w, h));
   // A head-to-head's win (race_encounters.xml PlayWinCutScene): no restart,
   // results or replay in free roam.
@@ -248,19 +274,19 @@ bool draw_finished(ui::List& l, const RaceHud& r, float w, float h, float opacit
 // value on the pink brush from x 515, centred ~30 px above TOTAL's middle; BALANCE: in its panel at 165,492. The
 // scene's groups rest at their intro starts (the stackers are not run).
 constexpr float kCashTitleX = 112.0f, kCashTitleY = 192.0f, kCashTitlePad = 24.0f;
-constexpr float kCashLineX = 148.0f, kCashLineY = 262.0f, kCashLinePitch = 28.0f, kCashLinePad = 6.0f;
+constexpr float kCashLineX = 148.0f, kCashLineY = 262.0f, kCashLinePitch = 28.0f, kCashLinePad = 12.0f;
 // Each breakdown label sits on its tilted dark brushstroke tape (r10_h00303 / r10_h00306).
 // Breakdown item tapes use a 0.65 vertical UV crop inside their 68 px quad, so
 // lifting the tape by kCashLineTapeDy centres the brushstroke behind each line.
 constexpr uint32_t kCashLabelTape = kTapeBlack;
-constexpr float kCashLineTapeDy = -11.0f;
-constexpr float kCashValuePad = 14.0f;
-constexpr float kCashValueGap = 10.0f;
+constexpr float kCashLineTapeDy = -30.0f;
+constexpr float kCashValuePad = 18.0f;
+constexpr float kCashValueGap = 14.0f;
 // The values sit ~7 px above their labels' middles (0 Cr against FINISHED 5TH).
 constexpr float kCashValueDy = -7.0f;
-constexpr float kTotalX = 140.0f, kTotalY = 450.0f, kTotalPad = 28.0f;
-constexpr float kTotalValueX = 515.0f, kTotalValueY = 418.0f;
-constexpr float kBalanceX = 165.0f, kBalanceY = 500.0f, kBalancePad = 8.0f;
+constexpr float kTotalX = 140.0f, kTotalY = 414.0f, kTotalPad = 28.0f;
+constexpr float kTotalValueX = 515.0f, kTotalValueY = 382.0f;
+constexpr float kBalanceX = 165.0f, kBalanceY = 516.0f, kBalancePad = 8.0f;
 
 // Puts a tape model (cropped from its left) behind a text whose anchor is at
 // (x, y), `tw` wide at font size `size`: the tapes' rest positions belong to
@@ -366,10 +392,11 @@ bool draw_cash(ui::List& l, const RaceHud& r, float w, float h) {
     sc.hide(balance);
   } else {
     const int ttl = sc.node("Total/Title"), vg = sc.node("Total/Value/Value");
+    // TEXT_WINNING is top-aligned (valign=0), so offset its tape down +38 px to center on the 66 px glyphs.
     tape_text(sc, late, ttl, child(sd, ttl, "TEXT_WINNING"), text_of(race_text::kTotal), kTotalX, kTotalY, 66.0f,
-              kTotalPad, kTapeBlack);
+              kTotalPad, kTapeBlack, kWhite, 38.0f);
     tape_text(sc, late, vg, child(sd, vg, "TEXT_WINNING"), credits_text(r.credits), kTotalValueX, kTotalValueY, 66.0f,
-              kTotalPad, kTapePink);
+              kTotalPad, kTapePink, kWhite, 38.0f);
     const int bt = sc.node("TEXT_BALANCE_TITLE"), bv = sc.node("TEXT_BALANCE");
     if (t >= balance_t && r.balance >= 0 && bt >= 0 && bv >= 0) {
       const std::string btxt = text_of(race_text::kBalance), bval = credits_text(r.balance);
@@ -625,11 +652,44 @@ bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_vi
   }
   const int earned = std::max(0, r.band_after - std::max(0, r.band_before));
   const int main = sc.node("MainTape");
-  sc.text(child(sd, main, "TEXT_TITLE"), "+" + std::to_string(earned));
+  const int main_title = child(sd, main, "TEXT_TITLE");
+  const std::string earned_str = "+" + std::to_string(earned);
+  sc.text(main_title, earned_str);
   sc.text(child(sd, main, "TEXT_MAIN"), upper(format1(text_of(race_text::kPointsN), std::to_string(earned))));
-  fit_tapes(sc, main, 0.0f, kTapePink);
+  if (main >= 0 && main_title >= 0) {
+    const float tape_end = sd.at(main_title)[0] + sd.measure(main_title, earned_str) + 48.0f;
+    for (int c : sd.children_of(main)) {
+      std::string low(sd.object_name(c));
+      for (char& ch : low) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      const bool tape = low.find("crisp") != std::string::npos || low.find("smudge") != std::string::npos;
+      const bool dirt = low.find("dirt") != std::string::npos;
+      if (tape) {
+        const auto rr = sd.rect(c);
+        sc.at(c).tint = kTapePink;
+        sc.at(c).visible_width = std::clamp(tape_end - rr[0], 1.0f, rr[2] - rr[0]);
+      } else if (dirt) {
+        sc.at(c).tint = kTapePink;
+      }
+    }
+  }
   for (const char* n : {"TEXT_MAIN", "CrispTapeBig02", "SmudgeTapeBig02", "dirt2"}) sc.hide(child(sd, main, n));
   show_tree(sc, sc.node("LevelBar"));
+  // Close the 72 px rest gap between BackgroundBar/Left (end x=331) and Middle (start x=403).
+  if (const int bg_bar = sc.node("LevelBar/BackgroundBar"); bg_bar >= 0) {
+    const int left_cap = child(sd, bg_bar, "Left");
+    const int mid_bar = child(sd, bg_bar, "Middle");
+    const int mid_sh = child(sd, bg_bar, "MiddleSHADOW");
+    if (left_cap >= 0 && mid_bar >= 0) {
+      const float dx_mid = sd.rect(left_cap)[2] - sd.rect(mid_bar)[0];
+      const float dy_mid = -dx_mid * 0.052f;
+      sc.at(mid_bar).dx = dx_mid;
+      sc.at(mid_bar).dy = dy_mid;
+      if (mid_sh >= 0) {
+        sc.at(mid_sh).dx = dx_mid;
+        sc.at(mid_sh).dy = dy_mid;
+      }
+    }
+  }
   // Animate wristband FillBar smoothly from previous points to new points over r.screen_t.
   constexpr double kPointsFillDelay = 0.35;
   constexpr double kPointsFillDuration = 1.25;
@@ -638,13 +698,28 @@ bool draw_points(ui::List& l, const RaceHud& r, float w, float h, std::string_vi
   const double anim_pts =
       r.band_before >= 0 ? (double(r.band_before) + double(std::max(0, r.band_after) - r.band_before) * double(fill_u))
                          : double(std::max(0, r.band_after));
-  if (r.band_hi > 0) {
+  std::string rem_str;
+  if (to_next) {
+    rem_str = *to_next;
+  } else if (r.band_hi > 0) {
     const int left = std::max(0, r.band_hi - int(std::lround(anim_pts)));
-    sc.text(sc.node("TEXT_POINTS_TO_NEXT"),
-            format1(text_of(left == 1 ? race_text::kPointToNext : race_text::kPointsToNext), std::to_string(left)));
+    rem_str = format1(text_of(left == 1 ? race_text::kPointToNext : race_text::kPointsToNext), std::to_string(left));
   }
+  if (!rem_str.empty()) sc.text(sc.node("TEXT_POINTS_TO_NEXT"), rem_str);
   if (r.band_up && !to_next) return draw_points_collect(l, sc, r, w, h);
-  if (to_next) sc.text(sc.node("TEXT_POINTS_TO_NEXT"), *to_next);
+  // Move XPRemainingText cleanly below BackgroundBar so it is never occluded by the bar.
+  // TEXT_POINTS_TO_NEXT is right-aligned (align=2), so align Pill left to (anchor_x - tw - 16).
+  if (const int xp_rem = sc.node("LevelBar/XPRemainingText"); xp_rem >= 0 && !rem_str.empty()) {
+    sc.at(xp_rem).dy = 56.0f;
+    const int rem_txt = child(sd, xp_rem, "TEXT_POINTS_TO_NEXT");
+    const int rem_pill = child(sd, xp_rem, "Pill");
+    if (rem_txt >= 0 && rem_pill >= 0) {
+      const float tw = sd.measure(rem_txt, rem_str);
+      const float left_x = sd.at(rem_txt)[0] - tw - 16.0f;
+      sc.at(rem_pill).dx = left_x - sd.rect(rem_pill)[0];
+      sc.at(rem_pill).visible_width = std::max(140.0f, tw + 32.0f);
+    }
+  }
   if (!r.band_name.empty())
     if (const int wc = sc.node("WristbandCurrent/Rectangle"); wc >= 0)
       sc.at(wc).texture = "WRISTBANDS/" + upper(r.band_name.substr(0, r.band_name.find(' ')));
@@ -681,7 +756,10 @@ bool draw_won_car(ui::List& l, const RaceHud& r, float w, float h) {
   const int title = sc.node("ScreenTitle/TEXT_TITLE"), pos = sc.node("TEXT_POSITION");
   const std::string won = text_of(race_text::kYouWonACar);
   sc.text(title, won);
-  if (title >= 0) fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, won) + kTitleTapePad, kTapeBlack);
+  if (title >= 0) {
+    sc.at(title).dy = 7.0f;
+    fit_tapes(sc, sc.node("ScreenTitle"), sd.measure(title, won) + kTitleTapePad, kTapeBlack);
+  }
   const std::string car_upper = upper(r.won_car_name);
   sc.text(pos, car_upper);
   float fitted_w = 0.0f;
@@ -739,8 +817,8 @@ bool draw_won_car(ui::List& l, const RaceHud& r, float w, float h) {
 constexpr float kPopupDim = 0.45f;
 constexpr float kPopupMessageWidth = 390.0f;
 constexpr float kPopupTitleDy = 12.0f, kPopupMessageDy = 8.0f, kPopupLinePitch = 35.0f;
-// The panel's mask shows its model only from 332 px down at rest.
-constexpr float kPopupPanelTop = 318.0f, kPopupPanelShown = 332.0f;
+// The panel's mask shows the top 35% (179.2 px) of its 512 px quad at rest.
+constexpr float kPopupPanelTop = 318.0f, kPopupPanelShownFrac = 0.35f;
 constexpr float kPopupPanelTwoLines = 110.0f;
 
 }  // namespace
@@ -774,15 +852,15 @@ bool draw_message_popup(ui::List& l, const std::string& title_text, const std::s
     lines.push_back(wrapped.substr(from));
     sc.at(msg).dy = kPopupMessageDy;
   }
-  // The panel's shown part (from kPopupPanelShown down) squeezed about the
+  // The panel's shown part (top 35% of the quad) squeezed about the
   // model's middle to the lines, its top at kPopupPanelTop.
   if (const int panel = sc.node("DescriptionBox/Panel"); panel >= 0) {
     const auto rc = sd.rect(panel);
-    const float tall = rc[3] - rc[1], shown = tall - kPopupPanelShown;
+    const float tall = rc[3] - rc[1], shown = tall * kPopupPanelShownFrac;
     const float want = kPopupPanelTwoLines + kPopupLinePitch * (float(std::max<size_t>(lines.size(), 1)) - 2.0f);
     const float s = shown > 1.0f ? std::clamp(want / shown, 0.1f, 1.0f) : 1.0f;
     sc.at(panel).stretch_y = s;
-    sc.at(panel).dy = kPopupPanelTop - (0.5f * (rc[1] + rc[3]) - 0.5f * s * tall + s * kPopupPanelShown);
+    sc.at(panel).dy = kPopupPanelTop - (0.5f * (rc[1] + rc[3]) - 0.5f * s * tall);
   }
   const SceneFrame f = SceneScreen::frame(w, h);
   sc.draw(l, f);

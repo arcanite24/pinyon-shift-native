@@ -163,8 +163,12 @@ bool draw_stats_screen(ui::List& l, const DriveHud& st, const StatsHud& s, float
     const bool used = k < int(s.rows.size());
     // The rows past the tab's stay as empty pills (the original's GENERAL
     // has four).
-    sc.text(sc.node("TEXT_LABEL", stat), used ? s.rows[size_t(k)].label : std::string());
-    sc.text(sc.node("TEXT_VALUE", stat), used ? s.rows[size_t(k)].value : std::string());
+    const int lbl_nd = sc.node("TEXT_LABEL", stat);
+    const int val_nd = sc.node("TEXT_VALUE", stat);
+    sc.text(lbl_nd, used ? s.rows[size_t(k)].label : std::string());
+    sc.text(val_nd, used ? s.rows[size_t(k)].value : std::string());
+    if (lbl_nd >= 0) sc.at(lbl_nd).dy = 3.0f;
+    if (val_nd >= 0) sc.at(val_nd).dy = 3.0f;
     if (!used || s.rows[size_t(k)].progress < 0) {
       sc.hide(bar);
       continue;

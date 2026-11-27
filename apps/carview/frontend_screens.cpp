@@ -376,7 +376,7 @@ bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
       const auto a = sd.at(b);
       const bool next = name[13] == 'N';
       const bool end = next ? (fill >= 1.0f) : (fill <= 0.0f);
-      arrows_at.push_back({a[0], a[1], next, end ? 0.5f : 1.0f});
+      arrows_at.push_back({a[0], a[1] - 6.5f, next, end ? 0.5f : 1.0f});
       if (arrow_key.empty()) arrow_key = sd.texture_key_of(sc.node("Front_Body", b));
     }
     if (!timeline) {
@@ -411,7 +411,7 @@ bool draw_video_screen(ui::List& l, const TitleMenu& m, float w, float h) {
       if (b < 0) continue;
       const auto a = sd.at(b);
       const bool next = name[13] == 'N';
-      arrows_at.push_back({a[0], a[1], next, 1.0f});
+      arrows_at.push_back({a[0], a[1] - 6.5f, next, 1.0f});
       if (arrow_key.empty()) arrow_key = sd.texture_key_of(sc.node("Front_Body", b));
     }
     if (!timeline) {

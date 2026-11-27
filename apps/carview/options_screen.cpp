@@ -527,7 +527,8 @@ bool draw_options_list(ui::List& l, const OptionsHud& o, float w, float h) {
       const bool next = name[13] == 'N';
       // A slider's arrow dims at its end (837's PREV is a0.5 at 0%).
       const bool end = slider && (next ? fill >= 1.0f : fill <= 0.0f);
-      arrows_at.push_back({a[0] + odx, a[1] + ody, next, end ? 0.5f : 1.0f});
+      // Center arrows vertically within the row pill (BUTTON_ARROW_* anchor sits at baseline).
+      arrows_at.push_back({a[0] + odx, a[1] + ody - 6.5f, next, end ? 0.5f : 1.0f});
       if (arrow_key.empty()) arrow_key = sd.texture_key_of(sc.node("Front_Body", b));
     }
     if (k == o.selected)

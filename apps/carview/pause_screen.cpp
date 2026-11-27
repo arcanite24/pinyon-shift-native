@@ -122,7 +122,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
           sc.at(next).dx = kObjectiveRight - sd.measure(next, objective) - sd.at(next)[0];
         } else if (top_pill >= 0) {
           const auto pr = sd.rect(top_pill);
-          const float right = sd.at(next)[0] + 0.9f * sd.measure(next, objective) + kPillPad;
+          const float right = sd.at(next)[0] + sd.measure(next, objective) + kPillPad;
           sc.at(top_pill).visible_width = std::max(120.0f, right - pr[0]);
           sc.at(top_pill).tint = ui::rgba(14, 14, 16, 240);
         }
@@ -140,9 +140,9 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
       if (left_bar && top_pill >= 0) {
         const auto pr = sd.rect(top_pill);
         float right = pr[0] + 180.0f;
-        if (next >= 0) right = std::max(right, sd.at(next)[0] + 0.9f * sd.measure(next, "Nxt Lvl") + kPillPad);
+        if (next >= 0) right = std::max(right, sd.at(next)[0] + sd.measure(next, "Nxt Lvl") + kPillPad);
         if (points >= 0 && !pts_str.empty())
-          right = std::max(right, sd.at(points)[0] + 0.9f * sd.measure(points, pts_str) + kPillPad);
+          right = std::max(right, sd.at(points)[0] + sd.measure(points, pts_str) + kPillPad);
         sc.at(top_pill).visible_width = std::max(140.0f, right - pr[0]);
         sc.at(top_pill).tint = ui::rgba(14, 14, 16, 240);
       }
@@ -165,7 +165,7 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
   if (left_bar) {
     if (const int mp = sc.node("MiddleRow/pill_middle", bar); mp >= 0) {
       const auto pr = sd.rect(mp);
-      const float right = sd.at(car)[0] + 0.9f * sd.measure(car, name) + kPillPad;
+      const float right = sd.at(car)[0] + sd.measure(car, name) + kPillPad;
       sc.at(mp).visible_width = std::max(120.0f, right - pr[0]);
       sc.at(mp).tint = ui::rgba(14, 14, 16, 244);
     }

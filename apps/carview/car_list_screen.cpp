@@ -72,6 +72,23 @@ void draw_notice(ui::List& l, const std::string& notice, float w, float h) {
 constexpr float kInfoTextWidth = 440.0f;
 constexpr int kInfoTextLines = 7;
 
+// Widens TitleTape's Crisp/Smudge tapes to cover `title` text with clean right margin.
+void fit_title_tape(SceneScreen& sc, int title_node, const std::string& title) {
+  if (title_node < 0 || title.empty()) return;
+  const SceneDraw& sd = sc.scene();
+  const int grp = sc.node("TitleTape/Group");
+  if (grp < 0) return;
+  const float tw = sd.measure(title_node, title);
+  const float want_right = sd.at(title_node)[0] + tw + 36.0f;
+  for (const char* name : {"Crisp_Tape", "Smudge_Tape"}) {
+    if (const int t = child(sd, grp, name); t >= 0) {
+      const auto rr = sd.rect(t);
+      sc.at(t).visible_width = std::clamp(want_right - rr[0], 120.0f, rr[2] - rr[0]);
+    }
+  }
+  sc.hide(child(sd, grp, "Clipon"));
+}
+
 // The player bar's class follows the car's name (19_autoshow_orig.png,
 // outpost-a1.png), its dark pill cut after it: the garage, the autoshow's
 // lists and its makes.
@@ -82,7 +99,7 @@ void place_bar_class(SceneScreen& sc, const DriveHud& st) {
   const int pill = sc.node("MiddleRow/pill_middle", bar);
   if (pill >= 0) sc.at(pill).tint = ui::rgba(14, 14, 16, 244);
   if (car < 0) return;
-  const float name_end = sd.at(car)[0] + 0.9f * sd.measure(car, st.car_name);
+  const float name_end = sd.at(car)[0] + sd.measure(car, st.car_name);
   if (cls < 0 || st.car_class.empty()) {
     if (pill >= 0) {
       const auto pr = sd.rect(pill);
@@ -175,6 +192,7 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
   // Title.
   const int title = sc.node("TitleTape/Group/TitleTapeText");
   sc.text(title, c.title);
+  fit_title_tape(sc, title, c.title);
 
   // The strip: slot k holds tile selected + k - 3.
   const int n = int(c.tiles.size());
@@ -265,8 +283,6 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     sc.hide(stats);
   } else {
     const CarListDetails& d = c.details;
-    // The dirt panel behind the card and its stats.
-    sc.at(sc.node("CAR_STATS/BG/HUDPanel01", stats)).wrap = true;
     // Retail outpost-a1.png: dark ink car name on the white tilted TitleBar strip.
     const int car_name_nd = sc.node("CAR_STATS/TitleBar/TEXT_CAR_NAME", stats);
     sc.text(car_name_nd, d.model);
@@ -420,7 +436,9 @@ bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float
   // decoded).
   sc.hide(sc.node("Back_Pane"));
   sc.hide(sc.node("MANUFACTURER_LIST/HIGHLIGHT/BigPane01"));
-  sc.text(sc.node("TitleTape/Group/TitleTapeText"), m.title);
+  const int mtitle = sc.node("TitleTape/Group/TitleTapeText");
+  sc.text(mtitle, m.title);
+  fit_title_tape(sc, mtitle, m.title);
 
   // The strip: slot k holds tile selected + k - 3.
   const int n = int(m.tiles.size());
@@ -487,7 +505,6 @@ bool draw_make_list(ui::List& l, const DriveHud& st, const MakeListHud& m, float
   if (m.info_text.empty()) {
     sc.hide(info);
   } else {
-    sc.at(sc.node("BG/HUDPanel01", info)).wrap = true;
     const int title = sc.node("TitleBar/TEXT_TITLE", info);
     sc.text(title, m.info_title);
     if (title >= 0) sc.at(title).tint = kInk;  // on the title bar's light pill

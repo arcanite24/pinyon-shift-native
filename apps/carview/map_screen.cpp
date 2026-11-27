@@ -43,10 +43,6 @@ constexpr uint32_t kThumb = ui::rgba(214, 214, 214, 250);
 constexpr float kFilterTitleDy = -28.0f;
 constexpr float kFilterBarDy = 14.0f;
 constexpr uint32_t kFilterBar = ui::rgba(226, 226, 226);
-constexpr float kDialogDy = 16.0f;
-constexpr float kPanelShown = 0.30f;  // of PANEL01's height
-constexpr float kPanelWide = 0.88f;   // and width (to x 875)
-constexpr uint32_t kPanel = ui::rgba(15, 15, 15, 245);
 
 int child(const SceneDraw& sd, int parent, std::string_view name) {
   if (parent < 0) return -1;
@@ -147,7 +143,10 @@ void bind_popup(SceneScreen& sc, const MapPopupHud& p) {
       // the game stacks them into (two rows ending above the pin).
       sc.at(top).dy = 281.0f - 435.0f;
       sc.at(middle).dy = 306.0f - 456.0f;
-      sc.at(child(sd, group, "Pin")).dy = -42.0f;
+      if (const int pin = child(sd, group, "Pin"); pin >= 0) {
+        sc.at(pin).dy = -42.0f;
+        sc.at(pin).extra_angle = 3.14159265f;
+      }
       sc.hide(bottom);
       name_row(top);
       const int warn = child(sd, top, "Pill_warning");
@@ -436,38 +435,6 @@ void draw_filter(ui::List& l, const MapScreenHud& ms, const SceneFrame& f) {
   l.line(f.x(track_x(y0)), f.y(y0 + 3.0f), f.x(track_x(y1)), f.y(y1 - 3.0f), 6.0f * k, kThumb);
 }
 
-// --- The fast travel dialogs (H_MESSAGE_POPUP) ---------------------------------
-
-void draw_dialog(ui::List& l, const MapScreenHud& ms, const SceneFrame& f) {
-  SceneScreen sc(kMapDialogScene);
-  if (!sc.ok()) return;
-  sc.bindings().fit_text = false;
-  sc.hide(sc.node("ButtonBar"));
-  sc.hide(sc.node("SpinnerBox"));
-  sc.hide(sc.node("Panel_bottom"));
-  // The box sits lower than the scene lays it out (the title at y 307 in
-  // map_fasttravel_confirm_orig.png).
-  if (const int g = sc.node("MessageBox/Group"); g >= 0) sc.at(g).dy = kDialogDy;
-  sc.text(sc.node("Title"), text_of(map_text::kFastTravelTitle));
-  const int msg = sc.node("Message");
-  sc.text(msg, sc.wrap(msg, ms.dialog_body, 410.0f));
-  // The panel's mask is cropped down to the message's height by its second
-  // texture's offset, which the scene drawing does not apply to y: the top
-  // of PANEL01 (map_fasttravel_confirm_orig.png: the panel ends at y 440).
-  if (const int panel = sc.node("DescriptionBox/Panel"); panel >= 0) {
-    sc.hide(panel);
-    std::array<float, 4> uv{};
-    const auto r = sc.scene().rect(panel);
-    if (ui_texture("DIRTMASKS/PANEL01", uv)) {
-      const float y0 = r[1] + kDialogDy, y1 = y0 + kPanelShown * (r[3] - r[1]);
-      const float x1 = r[0] + kPanelWide * (r[2] - r[0]);
-      l.image(f.x(r[0]), f.y(y0), f.x(x1), f.y(y1),
-              {uv[0], uv[1], uv[0] + kPanelWide * (uv[2] - uv[0]), uv[1] + kPanelShown * (uv[3] - uv[1])}, kPanel);
-    }
-  }
-  sc.draw(l, f);
-}
-
 }  // namespace
 
 SceneFrame map_screen_frame(float w, float h) { return SceneScreen::frame(w, h); }
@@ -494,11 +461,12 @@ bool draw_map_screen(ui::List& l, const DriveHud& st, const MapScreenHud& ms, fl
     draw_filter(l, ms, f);
     ui4::button_bar(l, {{"A", text_of(map_text::kToggle)}, {"B", text_of(map_text::kBack)}}, w, h);
   } else if (ms.dialog != MapDialog::kNone) {
-    draw_dialog(l, ms, f);
+    std::vector<ui4::Prompt> prompts;
     if (ms.dialog == MapDialog::kConfirm)
-      ui4::button_bar(l, {{"A", text_of(map_text::kOk)}, {"B", text_of(map_text::kCancel)}}, w, h);
+      prompts = {{"A", text_of(map_text::kOk)}, {"B", text_of(map_text::kCancel)}};
     else
-      ui4::button_bar(l, {{"A", text_of(map_text::kOk)}}, w, h);
+      prompts = {{"A", text_of(map_text::kOk)}};
+    draw_message_popup(l, text_of(map_text::kFastTravelTitle), ms.dialog_body, prompts, w, h);
   } else if (!overlay && ms.please_wait) {
     draw_please_wait_corner(l, w, h, ms.age);
     ui4::draw_info_tip(l, ms.tip, w, h);

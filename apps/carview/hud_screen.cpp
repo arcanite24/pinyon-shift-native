@@ -362,7 +362,7 @@ constexpr float kPromptLineScale = 1.07f;
 // The type icon sits lower and larger than laid out.
 constexpr float kPromptIconDx = 3.0f, kPromptIconDy = 7.0f, kPromptIconScale = 1.15f;
 constexpr float kPromptCtaDx = 101.0f, kPromptCtaDy = 57.0f;
-constexpr float kPromptTapePad = 10.0f, kPromptPillLead = 4.0f, kPromptPillTail = 30.0f;
+constexpr float kPromptTapePad = 10.0f, kPromptPillLead = 4.0f, kPromptPillTail = 36.0f;
 
 void bind_end_condition(SceneScreen& sc, const RaceHud& r) {
   const SceneDraw& sd = sc.scene();
