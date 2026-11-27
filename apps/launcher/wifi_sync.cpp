@@ -28,6 +28,7 @@ inline void close_sock(sock_t s) { closesocket(s); }
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <cctype>
@@ -116,12 +117,34 @@ void collect_dir_files(const std::filesystem::path& src_root, const std::string&
 bool send_all(sock_t s, const void* data, size_t len) {
   const char* p = static_cast<const char*>(data);
   size_t sent = 0;
+#ifdef MSG_NOSIGNAL
+  constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+  constexpr int kSendFlags = 0;
+#endif
   while (sent < len) {
-    const int n = int(send(s, p + sent, int(std::min<size_t>(len - sent, 1 << 16)), 0));
+    const int n = int(send(s, p + sent, int(std::min<size_t>(len - sent, 1 << 16)), kSendFlags));
     if (n <= 0) return false;
     sent += size_t(n);
   }
   return true;
+}
+
+bool wait_readable(sock_t s, int timeout_ms) {
+#ifdef _WIN32
+  fd_set rfds;
+  FD_ZERO(&rfds);
+  FD_SET(s, &rfds);
+  timeval tv{};
+  tv.tv_sec = timeout_ms / 1000;
+  tv.tv_usec = (timeout_ms % 1000) * 1000;
+  return select(0, &rfds, nullptr, nullptr, &tv) > 0;
+#else
+  pollfd pfd{};
+  pfd.fd = s;
+  pfd.events = POLLIN;
+  return poll(&pfd, 1, timeout_ms) > 0 && (pfd.revents & POLLIN) != 0;
+#endif
 }
 
 void send_text_response(sock_t s, int code, const char* reason, const char* content_type,
@@ -547,6 +570,22 @@ bool WifiSyncServer::start(const WifiSyncManifest& manifest, const std::string& 
 void WifiSyncServer::stop() {
   if (!running_.exchange(false)) return;
   if (listen_sock_ != -1) {
+#ifdef _WIN32
+    shutdown(sock_t(listen_sock_), SD_BOTH);
+#else
+    shutdown(sock_t(listen_sock_), SHUT_RDWR);
+#endif
+  }
+  if (udp_sock_ != -1) {
+#ifdef _WIN32
+    shutdown(sock_t(udp_sock_), SD_BOTH);
+#else
+    shutdown(sock_t(udp_sock_), SHUT_RDWR);
+#endif
+  }
+  if (accept_thread_.joinable()) accept_thread_.join();
+  if (discovery_thread_.joinable()) discovery_thread_.join();
+  if (listen_sock_ != -1) {
     close_sock(sock_t(listen_sock_));
     listen_sock_ = -1;
   }
@@ -554,8 +593,6 @@ void WifiSyncServer::stop() {
     close_sock(sock_t(udp_sock_));
     udp_sock_ = -1;
   }
-  if (accept_thread_.joinable()) accept_thread_.join();
-  if (discovery_thread_.joinable()) discovery_thread_.join();
   log_activity("Wi-Fi Sync stopped.");
 }
 
@@ -580,6 +617,7 @@ void WifiSyncServer::discovery_loop() {
   const std::string reply = "SHIFT-ENGINE-HERE 1 " + std::to_string(port_.load()) + " " + manifest_.host_name;
   char buf[256];
   while (running_.load()) {
+    if (!wait_readable(sock_t(udp_sock_), 50)) continue;
     sockaddr_in from{};
     socklen_t flen = sizeof from;
     const int n = int(recvfrom(sock_t(udp_sock_), buf, sizeof(buf) - 1, 0,
@@ -590,7 +628,12 @@ void WifiSyncServer::discovery_loop() {
     std::string req(buf);
     while (!req.empty() && (req.back() == '\r' || req.back() == '\n' || req.back() == ' ')) req.pop_back();
     if (req == "SHIFT-ENGINE-DISCOVER 1" || req == "PINYON-SHIFT-DISCOVER 1") {
-      sendto(sock_t(udp_sock_), reply.data(), int(reply.size()), 0,
+#ifdef MSG_NOSIGNAL
+      constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+      constexpr int kSendFlags = 0;
+#endif
+      sendto(sock_t(udp_sock_), reply.data(), int(reply.size()), kSendFlags,
              reinterpret_cast<sockaddr*>(&from), flen);
     }
   }
@@ -598,10 +641,15 @@ void WifiSyncServer::discovery_loop() {
 
 void WifiSyncServer::accept_loop() {
   while (running_.load()) {
+    if (!wait_readable(sock_t(listen_sock_), 50)) continue;
     sockaddr_in from{};
     socklen_t flen = sizeof from;
     sock_t client = accept(sock_t(listen_sock_), reinterpret_cast<sockaddr*>(&from), &flen);
     if (client == kInvalidSock) break;
+#ifdef SO_NOSIGPIPE
+    int nosig = 1;
+    setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosig, sizeof nosig);
+#endif
     char ip_str[INET_ADDRSTRLEN]{};
     inet_ntop(AF_INET, &from.sin_addr, ip_str, sizeof ip_str);
     if (!is_private_ipv4(ntohl(from.sin_addr.s_addr))) {

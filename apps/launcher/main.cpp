@@ -29,6 +29,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <csignal>
 #include <unistd.h>
 #endif
 
@@ -415,6 +416,9 @@ void cycle_focus(launcher::LauncherUiState& st, const std::vector<launcher::HitB
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
   bool force_portable = false;
   bool demo_mode = false;
   std::filesystem::path screenshot_out;

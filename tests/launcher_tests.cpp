@@ -283,7 +283,12 @@ std::string http_get_local(uint16_t port, const std::string& path, const std::st
   inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
   assert(connect(s, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == 0);
   std::string req = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n" + extra_hdr + "Connection: close\r\n\r\n";
-  send(s, req.data(), int(req.size()), 0);
+#ifdef MSG_NOSIGNAL
+  constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+  constexpr int kSendFlags = 0;
+#endif
+  send(s, req.data(), int(req.size()), kSendFlags);
   std::string resp;
   char buf[2048];
   for (;;) {
@@ -1428,6 +1433,7 @@ void test_save_management_and_pinyon_import() {
 }  // namespace
 
 int main() {
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
   std::printf("launcher_tests:\n");
   test_sha256_and_crc32();
   test_portable_paths();
