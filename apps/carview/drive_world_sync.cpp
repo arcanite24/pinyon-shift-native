@@ -781,14 +781,24 @@ void DriveSession::place_world() {
               float(std::max(0.0, vehicle.engine_torque(cur_rpm, vehicle.engine_throttle()) * cur_rpm * kRpmToRadS));
           float max_power_w = 0.0f;
           {
+            static const drive::Vehicle* s_pw_veh = nullptr;
+            static double s_pw_idle = -1.0, s_pw_red = -1.0;
+            static float s_pw_cached = 0.0f;
             const double r_min = std::max(500.0, vehicle.params().idle_rpm);
             const double r_max = std::max(r_min + 500.0, double(redline));
-            constexpr int kSteps = 24;
-            for (int s = 0; s <= kSteps; ++s) {
-              const double r = r_min + (r_max - r_min) * (double(s) / double(kSteps));
-              const double p = vehicle.engine_torque(r, 1.0) * r * kRpmToRadS;
-              if (p > double(max_power_w)) max_power_w = float(p);
+            if (&vehicle != s_pw_veh || r_min != s_pw_idle || r_max != s_pw_red) {
+              s_pw_veh = &vehicle;
+              s_pw_idle = r_min;
+              s_pw_red = r_max;
+              s_pw_cached = 0.0f;
+              constexpr int kSteps = 24;
+              for (int s = 0; s <= kSteps; ++s) {
+                const double r = r_min + (r_max - r_min) * (double(s) / double(kSteps));
+                const double p = vehicle.engine_torque(r, 1.0) * r * kRpmToRadS;
+                if (p > double(s_pw_cached)) s_pw_cached = float(p);
+              }
             }
+            max_power_w = s_pw_cached;
           }
           cockpit_anim.update_gauges(spd, cockpit_dial_max_speed, float(cur_rpm), redline, boost_gauge,
                                      cockpit_dial_max_boost, car_damage.fuel_fraction,
@@ -877,8 +887,20 @@ void DriveSession::place_world() {
               ps.luminance[k] = cs.desat_luminosity[k] * tod.desat_luminosity_mult[k];
               ps.balance[k] = cs.desat_post_mod[k] * tod.desat_post_mod_mult[k];
             }
-            if (const char* b = std::getenv("SHIFT_BALANCE"))
-              std::sscanf(b, "%f,%f,%f", &ps.balance[0], &ps.balance[1], &ps.balance[2]);
+            static const struct ShiftBalanceOverride {
+              bool active = false;
+              float rgb[3] = {1.0f, 1.0f, 1.0f};
+              ShiftBalanceOverride() {
+                if (const char* b = std::getenv("SHIFT_BALANCE")) {
+                  active = (std::sscanf(b, "%f,%f,%f", &rgb[0], &rgb[1], &rgb[2]) == 3);
+                }
+              }
+            } s_balance_override;
+            if (s_balance_override.active) {
+              ps.balance[0] = s_balance_override.rgb[0];
+              ps.balance[1] = s_balance_override.rgb[1];
+              ps.balance[2] = s_balance_override.rgb[2];
+            }
             ps.bloom = (app.bloom_flag >= 0 ? app.bloom_flag == 1 : !app.low_preset) && slice12.trainer.config.debug_bloom;
             ps.bloom_cutoff = std::max(0.05f, bt.cutoff * tod.bloom_cutoff_mult);
             ps.bloom_scale = std::max(0.0f, bt.scale * tod.bloom_scale_mult);

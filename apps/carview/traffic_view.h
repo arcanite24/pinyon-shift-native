@@ -135,6 +135,11 @@ class TrafficView {
   std::map<uint32_t, TrafficPose> before_;
   std::map<uint32_t, drive::CarLampState> lamps_;
   std::map<uint32_t, float> wheel_spin_;
+  struct TunnelProbeCache {
+    double x = 0.0, y = 0.0, z = 0.0;
+    bool under_roof = false;
+  };
+  std::map<uint32_t, TunnelProbeCache> tunnel_cache_;
   // Per-car locked render model ID: once a spawned traffic car is first rendered
   // with a resident model, it stays locked to that model for its visible lifetime
   // so async uploads never visibly morph a car mid-road.

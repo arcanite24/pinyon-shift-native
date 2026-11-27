@@ -753,8 +753,8 @@ void RtPipeline::record(VkCommandBuffer cmd, const Showroom& host, const RtScene
 
   if (mode == rt::RtMode::kHybrid) {
     // Tier 1: Inline VK_KHR_ray_query RT Reflections + Soft Sun/Headlight Shadows + RTAO.
+    // rt_refl writes refl_img_ while rt_shad writes shad_ao_img_, so they overlap freely.
     dispatch(refl_pipe_, 0);
-    compute_barrier(cmd);
     r_.mark(cmd, "rt_refl");
 
     dispatch(shad_pipe_, 0);

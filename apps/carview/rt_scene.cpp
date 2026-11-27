@@ -440,6 +440,11 @@ void RtScene::invalidate_world() {
   world_blases_.clear();
   world_lru_.clear();
   active_world_keys_.clear();
+  last_world_blas_gen_ = ~0ull;
+  last_world_draw_count_ = 0;
+  last_world_vb_ = VK_NULL_HANDLE;
+  last_world_ib_ = VK_NULL_HANDLE;
+  last_world_blases_complete_ = false;
   pending_compactions_.clear();
   destroy_blas(tree_blas_, true);
   tree_world_gen_ = ~0ull;
@@ -763,6 +768,26 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
   VkBuffer ib = arena ? host.gpu_world_->index_buffer() : host.world_indices_.buffer;
   if (!vb || !ib || host.world_draws_.empty()) return;
 
+  // Steady-state O(1) fast path: when world geometry generation, draw count, and
+  // backing buffers haven't changed and all cells are built, skip regrouping/hashing
+  // thousands of draws every frame and keep existing active_world_keys_ live.
+  if (last_world_blases_complete_ && host.world_generation_ == last_world_blas_gen_ &&
+      host.world_draws_.size() == last_world_draw_count_ && vb == last_world_vb_ && ib == last_world_ib_) {
+    for (uint64_t k : active_world_keys_) {
+      auto it = world_blases_.find(k);
+      if (it != world_blases_.end()) it->second.last_frame = frame_counter_;
+    }
+    const auto evicted = world_lru_.evict(r_.frames_done(), false);
+    for (uint64_t ek : evicted) {
+      auto it = world_blases_.find(ek);
+      if (it != world_blases_.end()) {
+        destroy_blas(it->second.blas, true);
+        world_blases_.erase(it);
+      }
+    }
+    return;
+  }
+
   const VkDeviceAddress vb_bda = r_.buffer_device_address(vb);
   const VkDeviceAddress ib_bda = r_.buffer_device_address(ib);
   if (!vb_bda || !ib_bda) return;
@@ -846,6 +871,7 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
   // during steady-state driving, throttle new BLAS builds per frame for hitch-free streaming.
   const uint32_t build_budget = (frame_counter_ < 4u) ? 512u : 8u;
   uint32_t built_this_frame = 0;
+  bool any_skipped_for_budget = false;
 
   for (auto& [gk, cg] : groups) {
     const uint64_t bkey = rt::make_world_cell_key(cg.cell_x, cg.cell_z, cg.opacity_class, cg.content_hash);
@@ -857,7 +883,10 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
       }
       continue;
     }
-    if (built_this_frame >= build_budget) continue;
+    if (built_this_frame >= build_budget) {
+      any_skipped_for_budget = true;
+      continue;
+    }
 
     std::vector<VkAccelerationStructureGeometryKHR> vk_geoms;
     std::vector<uint32_t> prims;
@@ -959,6 +988,11 @@ void RtScene::update_world_blases(VkCommandBuffer cmd, const Showroom& host) {
       world_blases_.erase(it);
     }
   }
+  last_world_blas_gen_ = host.world_generation_;
+  last_world_draw_count_ = host.world_draws_.size();
+  last_world_vb_ = vb;
+  last_world_ib_ = ib;
+  last_world_blases_complete_ = !any_skipped_for_budget;
 }
 
 void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {

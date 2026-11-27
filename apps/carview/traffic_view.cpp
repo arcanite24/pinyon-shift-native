@@ -400,6 +400,8 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     it = alive_ids.count(it->first) ? std::next(it) : lamps_.erase(it);
   for (auto it = wheel_spin_.begin(); it != wheel_spin_.end();)
     it = alive_ids.count(it->first) ? std::next(it) : wheel_spin_.erase(it);
+  for (auto it = tunnel_cache_.begin(); it != tunnel_cache_.end();)
+    it = alive_ids.count(it->first) ? std::next(it) : tunnel_cache_.erase(it);
 
   // Collect all currently resident traffic models (sorted deterministically by model ID).
   // Once a spawned car is first rendered with any resident model, locked_model_[car_id]
@@ -500,8 +502,21 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
     lin.tod_sec = tod_sec;
     lin.dt = lamp_dt;
     lin.indicator_mode = c.hazard_on ? 3 : (c.turn_left ? 1 : (c.turn_right ? 2 : 0));
-    const bool car_in_tunnel =
-        !tod_lamps && d2 < 220.0 * 220.0 && ground_ && *ground_ && is_under_tunnel_roof(*ground_, at);
+    bool car_in_tunnel = false;
+    if (!tod_lamps && d2 < 220.0 * 220.0 && ground_ && *ground_) {
+      auto tit = tunnel_cache_.find(c.id);
+      const bool moved_far =
+          (tit == tunnel_cache_.end()) ||
+          ((at.x - tit->second.x) * (at.x - tit->second.x) + (at.y - tit->second.y) * (at.y - tit->second.y) +
+               (at.z - tit->second.z) * (at.z - tit->second.z) >
+           16.0);
+      if (moved_far) {
+        car_in_tunnel = is_under_tunnel_roof(*ground_, at);
+        tunnel_cache_[c.id] = {at.x, at.y, at.z, car_in_tunnel};
+      } else {
+        car_in_tunnel = tit->second.under_roof;
+      }
+    }
     lin.light_override = c.flash_headlamps ? 2 : (car_in_tunnel ? 1 : 0);
     lin.is_ai = true;
     lin.snap_headlamps = is_new;

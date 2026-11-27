@@ -1544,6 +1544,7 @@ class Showroom {
   size_t gpu_table_white_ = 0, gpu_table_layer_fallback_ = 0;
   std::vector<uint32_t> active_gpu_table_records_;
   std::unordered_set<uint32_t> gpu_table_missing_textures_;
+  bool gpu_table_refresh_pending_ = false;
   WorldDrawStats world_stats_;
   bool world_cull_ = true;
   float world_transform_[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

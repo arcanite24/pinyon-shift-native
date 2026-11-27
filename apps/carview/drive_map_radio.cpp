@@ -397,7 +397,9 @@ void DriveSession::set_minimap(int height, bool force) {
         // and halves 2D UI atlas re-uploads at 120 Hz.
         constexpr double kMinimapInterval = 1.0 / 25.0;
 #else
-        constexpr double kMinimapInterval = 1.0 / 60.0;
+        // 30 Hz software minimap cadence on desktop eliminates redundant 320px CPU rasterization
+        // and 400 KiB atlas re-uploads at 120-240+ FPS with no perceptual loss.
+        constexpr double kMinimapInterval = 1.0 / 30.0;
 #endif
         if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < kMinimapInterval) return;
         const drive::Vec3 cur_pos = vehicle.position();
@@ -406,14 +408,12 @@ void DriveSession::set_minimap(int height, bool force) {
         static double s_mm_x = 1e18, s_mm_z = 1e18, s_mm_h = 0.0;
         static double s_mm_markers_t = -1e9;
         static bool s_mm_was_race = false;
-#ifdef __ANDROID__
         if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 0.20) {
           const double dx = cur_pos.x - s_mm_x;
           const double dz = cur_pos.z - s_mm_z;
           const double dh = std::fabs(cur_hdg - s_mm_h);
-          if (dx * dx + dz * dz < 0.16 && dh < 0.02 && !app.race) return;
+          if (dx * dx + dz * dz < 0.16 && dh < 0.015 && !app.race) return;
         }
-#endif
         minimap_at = t;
         s_mm_x = cur_pos.x;
         s_mm_z = cur_pos.z;
@@ -428,21 +428,22 @@ void DriveSession::set_minimap(int height, bool force) {
           carview::TouchControls::hud_safe_rects(float(app.width), float(height), mm_safe, tach_safe);
           display_px = std::max(96, int(std::lround(std::min(mm_safe.w() * float(app.width), mm_safe.h() * float(height)))));
         }
-        // Cap minimap CPU raster size (180 px on Android, 320 px on desktop 4K); GPU bilinearly
+        // Cap minimap CPU raster size (180 px on Android, 240 px on desktop); GPU bilinearly
         // scales cleanly to `display_px`.
 #ifdef __ANDROID__
         const int req_px = std::clamp(display_px, 96, 180);
 #else
-        const int req_px = std::clamp(display_px, 96, 320);
+        const int req_px = std::clamp(display_px, 96, 240);
 #endif
         // Reuse cached career/outpost/speedtrap markers instead of rebuilding 80+ localized
         // strings via map_scene() on every minimap tick (refresh every 2.0 s or on race change).
         MapScene ms;
         const bool is_race = bool(app.race);
-        if (is_race || force || cached_map_markers.empty() || is_race != s_mm_was_race ||
-            t < s_mm_markers_t || (t - s_mm_markers_t) >= 2.0) {
+        const double marker_refresh_s = is_race ? 1.0 : 2.0;
+        if (force || cached_map_markers.empty() || is_race != s_mm_was_race ||
+            t < s_mm_markers_t || (t - s_mm_markers_t) >= marker_refresh_s) {
           ms = map_scene();
-          if (!is_race) cached_map_markers = ms.markers;
+          cached_map_markers = ms.markers;
           s_mm_markers_t = t;
           s_mm_was_race = is_race;
         } else {
@@ -455,6 +456,13 @@ void DriveSession::set_minimap(int height, bool force) {
           ms.progress = app.progress_loaded ? &app.progress : nullptr;
           ms.road_discovery = app.road_discovery.ready() ? &app.road_discovery : nullptr;
           ms.reveal = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
+          if (is_race && app.race) {
+            app.race->opponent_positions(ms.opponents);
+            app.race->route_near(ms.route);
+            ms.has_next_checkpoint = app.race->next_checkpoint_pos(ms.next_checkpoint);
+            ms.has_finish = app.race->finish_pos(ms.finish_pos);
+            ms.has_race_leader = app.race->leader_opponent_pos(ms.race_leader);
+          }
           if (traffic && traffic->cars()) {
             ms.traffic.reserve(traffic->cars()->size());
             for (const auto& tc : *traffic->cars()) ms.traffic.push_back({tc.position.x, tc.position.z});

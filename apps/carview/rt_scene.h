@@ -256,6 +256,11 @@ class RtScene {
   rt::BlasCacheLru world_lru_{144ull << 20};
   std::unordered_map<uint64_t, WorldCellEntry> world_blases_;
   std::vector<uint64_t> active_world_keys_;
+  uint64_t last_world_blas_gen_ = ~0ull;
+  size_t last_world_draw_count_ = 0;
+  VkBuffer last_world_vb_ = VK_NULL_HANDLE;
+  VkBuffer last_world_ib_ = VK_NULL_HANDLE;
+  bool last_world_blases_complete_ = false;
 
   // Dynamic Colorado tree cross-quad BLAS (rebuilt when world_trees_ generation changes
   // or when pending tree atlas textures finish uploading to WorldGpu).

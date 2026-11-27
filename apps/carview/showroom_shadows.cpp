@@ -147,8 +147,10 @@ void Showroom::place_shadow() {
     shadow_update_far_ = ((world_frame_ & 1ull) == 0ull);
   }
 #else
+  // Desktop keeps Near and Mid refreshed every frame for crisp nearby shadows while
+  // amortizing the 200m+ Far cascade every 2nd frame (~30% less shadow CPU/GPU work).
   shadow_update_mid_ = true;
-  shadow_update_far_ = true;
+  shadow_update_far_ = atlas_reset || ((world_frame_ & 1ull) == 0ull);
 #endif
   if (three_cascades) {
     if (shadow_update_mid_) {
@@ -470,6 +472,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     VkPipeline bound = VK_NULL_HANDLE;
     VkDescriptorSet bound_set = VK_NULL_HANDLE;
     const float prop_reach = effective_near_prop_reach();
+    std::vector<uint32_t> touched_textures;
     for (const auto& d : world_draws_) {
       if (!d.cull || d.blend >= 2) continue;
       const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
@@ -502,10 +505,8 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
       if (d.blend == 1) {
         VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
         if (set) {
-          std::lock_guard<std::mutex> lock(world_textures_mutex_);
-          world_lru_.touch(d.texture, world_frame_);
-        }
-        if (!set) {
+          touched_textures.push_back(d.texture);
+        } else {
           set = world_white_set_;
           push.params[1] = 0;
         }
@@ -520,6 +521,10 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
       vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(ShowroomPush), &push);
       vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+    }
+    if (!touched_textures.empty()) {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      for (uint32_t rec : touched_textures) world_lru_.touch(rec, world_frame_);
     }
     // Dynamic shadow casters: GPU-instanced trees, smashable debris / animated world props (balloons,
     // windmills, banners), festival crowds, and airborne showcase aircraft/balloons.
@@ -635,8 +640,9 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
           const bool skip_far_shadow = min_d2 > max_shadow_car_d * max_shadow_car_d;
           const auto& shadow_draws = !g->far_draws_.empty() ? g->far_draws_ : g->draws_;
 #else
-          const bool skip_far_shadow = false;
-          const auto& shadow_draws = g->draws_;
+          const bool skip_far_shadow = min_d2 > 140.0f * 140.0f;
+          const auto& shadow_draws =
+              (!g->far_draws_.empty() && min_d2 > 25.0f * 25.0f) ? g->far_draws_ : g->draws_;
 #endif
           if (!skip_far_shadow && solid_count > 0 && !shadow_draws.empty()) {
             const VkDeviceSize zero = 0;
@@ -644,10 +650,8 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
             vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
             for (const auto& d : shadow_draws) {
               if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
-#ifdef __ANDROID__
               const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
               if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
-#endif
               ShowroomPush push = d.push;
               push.params[1] = float(uint32_t(std::lround(push.params[1])) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -683,7 +687,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     }
     if (shadow_update_far_) {
       clear_cascade_tile(size * 2u);
-      draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
+      draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, false);
     }
   } else if (shadow_set_far_ && atlas_w >= size * 2u) {
     if (shadow_update_far_) {
@@ -714,6 +718,8 @@ void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m, VkDescript
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &set, 0, nullptr);
   for (const auto& d : draws_) {
     if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;  // skip glass, detached, blur_rim, cockpit-only parts
+    const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+    if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
     ShowroomPush push = d.push;
     if (m) multiply(m, d.push.model, push.model);
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

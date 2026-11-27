@@ -130,6 +130,13 @@ void enable_audio_thread_rt_mode() {
 #ifdef _WIN32
   // Keep audio synthesis ahead of background world texture/mesh decoding bursts
   // so 200 m streaming rings cannot starve WASAPI and trigger crackling underruns.
+  if (HMODULE avrt = LoadLibraryW(L"avrt.dll")) {
+    using AvSetFn = HANDLE(WINAPI*)(LPCWSTR, LPDWORD);
+    if (auto fn = reinterpret_cast<AvSetFn>(GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW"))) {
+      DWORD task_idx = 0;
+      fn(L"Pro Audio", &task_idx);
+    }
+  }
   if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   }
@@ -1883,11 +1890,12 @@ void AudioEngine::publish_telemetry(double block_ms, double budget_ms) {
   if (recent_block_count_ < recent_block_ms_.size()) ++recent_block_count_;
   double p95_ms = block_ms;
   if (recent_block_count_ > 0) {
-    std::array<double, 256> sorted{};
-    std::copy_n(recent_block_ms_.begin(), recent_block_count_, sorted.begin());
-    std::sort(sorted.begin(), sorted.begin() + ptrdiff_t(recent_block_count_));
+    std::array<double, 256> scratch{};
+    std::copy_n(recent_block_ms_.begin(), recent_block_count_, scratch.begin());
     const size_t idx = std::min(recent_block_count_ - 1, size_t(0.95 * double(recent_block_count_ - 1) + 0.5));
-    p95_ms = sorted[idx];
+    std::nth_element(scratch.begin(), scratch.begin() + ptrdiff_t(idx),
+                     scratch.begin() + ptrdiff_t(recent_block_count_));
+    p95_ms = scratch[idx];
   }
 
   AudioTelemetry t{};

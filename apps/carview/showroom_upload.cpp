@@ -242,8 +242,8 @@ bool Showroom::upload(std::string& error) {
     has_car_dirt_mask_ = (car_dm_tex != nullptr && car_dirt_mask_.view != VK_NULL_HANDLE);
     sync_paint_shader_uniforms();
   }
-#ifdef __ANDROID__
   // Free CPU-side geometry and decoded texture pixels once resident on GPU.
+  // Keep vertices_/indices_ when hardware RT is supported so BLAS builds still work.
   if (!r_.rt_supported()) {
     std::vector<bake::Vertex>().swap(vertices_);
     std::vector<uint32_t>().swap(indices_);
@@ -256,7 +256,6 @@ bool Showroom::upload(std::string& error) {
   if (guest_) {
     std::vector<bake::Texture>().swap(car_.textures);
   }
-#endif
   if (!guest_ && !upload_environment(error)) return false;
   if (!guest_ && !init_dynamic_reflections(error)) return false;
 
@@ -948,8 +947,13 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
     }
     ring.capacity = kDefaultRingBytes;
   }
-  constexpr VkDeviceSize kMaxFrameBytes = 2ull << 20;  // 2 MiB/frame GPU transfer cap to prevent queue spikes
+#ifdef __ANDROID__
+  constexpr VkDeviceSize kMaxFrameBytes = 2ull << 20;  // 2 MiB/frame GPU transfer cap on mobile
   constexpr uint32_t kMaxTexturesPerFrame = 12;
+#else
+  constexpr VkDeviceSize kMaxFrameBytes = 16ull << 20;  // 16 MiB/frame on desktop PCIe
+  constexpr uint32_t kMaxTexturesPerFrame = 48;
+#endif
   const auto budget_t0 = std::chrono::steady_clock::now();
   VkDeviceSize cursor = 0;
   uint32_t uploaded_count = 0;
@@ -1034,7 +1038,7 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
     cursor = write_at;
   }
   if (uploaded_count > 0 && arena_on()) {
-    bool needs_table_refresh = (gpu_table_white_ > 0 || gpu_table_layer_fallback_ > 0);
+    bool needs_table_refresh = gpu_table_refresh_pending_ || (gpu_table_white_ > 0 || gpu_table_layer_fallback_ > 0);
     if (!needs_table_refresh && !gpu_table_missing_textures_.empty()) {
       for (uint32_t rec : uploaded_records) {
         if (gpu_table_missing_textures_.count(rec)) {
@@ -1044,9 +1048,23 @@ void Showroom::pump_deferred_uploads(VkCommandBuffer cmd) {
       }
     }
     if (needs_table_refresh) {
-      std::string table_err;
-      (void)build_gpu_table(table_err);
+      bool queue_empty = false;
+      {
+        std::lock_guard<std::mutex> lock(deferred_uploads_mutex_);
+        queue_empty = deferred_world_textures_.empty();
+      }
+      if (queue_empty || (world_frame_ & 3ull) == 0ull) {
+        gpu_table_refresh_pending_ = false;
+        std::string table_err;
+        (void)build_gpu_table(table_err);
+      } else {
+        gpu_table_refresh_pending_ = true;
+      }
     }
+  } else if (gpu_table_refresh_pending_ && arena_on()) {
+    gpu_table_refresh_pending_ = false;
+    std::string table_err;
+    (void)build_gpu_table(table_err);
   }
 }
 

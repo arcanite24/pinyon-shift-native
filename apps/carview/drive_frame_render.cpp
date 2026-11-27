@@ -1764,7 +1764,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               host.renderer.vsync_active() == carview::modern::VSync::kFifo &&
               (host.active_graphics.fps_cap == 0 || host.active_graphics.fps_cap >= std::max(60, host.display_hz));
           const double wait_s = host.frame_pacer.wait_for(now_s);
-          if (!fifo_paces_native && wait_s > 0.0005) SDL_DelayNS(Uint64(wait_s * 1e9));
+          if (!fifo_paces_native && wait_s > 0.0002) SDL_DelayPrecise(Uint64(wait_s * 1e9));
           app.frame_stats.frame(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
           if (host.renderer.active_frame_gen() != carview::modern::FrameGen::kOff) app.frame_stats.generated(1);
           if (app.window_frames_limit && app.frame_stats.frames() >= app.window_frames_limit) {

@@ -958,7 +958,6 @@ void Showroom::record_player_mirror_rear(VkCommandBuffer cmd, VkPipeline car_opa
 
 void Showroom::set_world_transform(const float transform[16]) {
   std::memcpy(world_transform_, transform, sizeof world_transform_);
-  for (auto& d : world_draws_) std::memcpy(d.push.model, transform, sizeof d.push.model);
 }
 
 void Showroom::set_world_light(const float sun[3], const float up[3], float exposure) {

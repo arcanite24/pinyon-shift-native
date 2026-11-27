@@ -13,6 +13,18 @@
 #include <sched.h>
 #include <sys/resource.h>
 #include <unistd.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+#if !defined(__ANDROID__) && (defined(__SSE__) || defined(_M_X64) || defined(_M_IX86))
+#include <xmmintrin.h>
+#include <pmmintrin.h>
 #endif
 
 namespace carview {
@@ -338,8 +350,59 @@ void AndroidPerfHintSession::update_target_fps(int) {}
 void AndroidPerfHintSession::report_frame_ns(int64_t) {}
 void AndroidPerfHintSession::close() {}
 void trim_android_memory() {}
-void enable_arm64_fp_flush_to_zero() {}
-void configure_android_render_thread_qos() {}
+void enable_arm64_fp_flush_to_zero() {
+#if defined(__SSE__) || defined(_M_X64) || defined(_M_IX86)
+  // Enable SSE Flush-To-Zero (bit 15) and Denormals-Are-Zero (bit 6) on x86/x64
+  // so physics/audio/lighting loops never suffer 100-cycle subnormal traps.
+  _mm_setcsr(_mm_getcsr() | 0x8040u);
+#endif
+}
+void configure_android_render_thread_qos() {
+#ifdef _WIN32
+  static bool s_win_qos_configured = false;
+  if (s_win_qos_configured) return;
+  s_win_qos_configured = true;
+
+  // 1. Disable Windows 11 EcoQoS / Efficiency Mode throttling for the game process.
+  struct WinProcessPowerThrottlingState {
+    ULONG Version;
+    ULONG ControlMask;
+    ULONG StateMask;
+  };
+  constexpr ULONG kPowerThrottlingCurrentVersion = 1;
+  constexpr ULONG kPowerThrottlingExecutionSpeed = 0x1;
+  constexpr ULONG kPowerThrottlingIgnoreTimerResolution = 0x4;
+  WinProcessPowerThrottlingState throttle{};
+  throttle.Version = kPowerThrottlingCurrentVersion;
+  throttle.ControlMask = kPowerThrottlingExecutionSpeed | kPowerThrottlingIgnoreTimerResolution;
+  throttle.StateMask = 0;  // Disable execution throttling and preserve 1 ms timer resolution.
+  SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttle, sizeof(throttle));
+
+  // 2. Request 1 ms system timer resolution for sub-millisecond sleep/pacing precision.
+  if (HMODULE winmm = LoadLibraryW(L"winmm.dll")) {
+    using TimeBeginPeriodFn = UINT(WINAPI*)(UINT);
+    if (auto fn = reinterpret_cast<TimeBeginPeriodFn>(GetProcAddress(winmm, "timeBeginPeriod"))) {
+      fn(1);
+    }
+  }
+
+  // 3. Register the render thread with MMCSS "Games" profile so Windows prioritizes it
+  //    above background streaming/decompression threads and boosts priority cleanly.
+  if (HMODULE avrt = LoadLibraryW(L"avrt.dll")) {
+    using AvSetMmThreadCharacteristicsWFn = HANDLE(WINAPI*)(LPCWSTR, LPDWORD);
+    using AvSetMmThreadPriorityFn = BOOL(WINAPI*)(HANDLE, int);
+    if (auto set_char =
+            reinterpret_cast<AvSetMmThreadCharacteristicsWFn>(GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW"))) {
+      DWORD task_idx = 0;
+      if (HANDLE h = set_char(L"Games", &task_idx)) {
+        if (auto set_prio = reinterpret_cast<AvSetMmThreadPriorityFn>(GetProcAddress(avrt, "AvSetMmThreadPriority"))) {
+          set_prio(h, 1);  // AVRT_PRIORITY_HIGH
+        }
+      }
+    }
+  }
+#endif
+}
 void set_android_refresh_rate_hz(int) {}
 #endif
 

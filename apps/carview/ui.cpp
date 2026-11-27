@@ -1529,6 +1529,10 @@ std::string List::strip_style_tags(std::string_view text) {
 }
 
 float List::measure(std::string_view text, const TextStyle& s) {
+  if (text.empty()) return 0.0f;
+  if (text.find_first_of("<\n") == std::string_view::npos) {
+    return measure_run_single_line(text, s);
+  }
   const auto lines = parse_styled_lines(text, s);
   float max_w = 0.0f;
   for (const auto& ln : lines) {
@@ -1545,27 +1549,38 @@ float List::measure(std::string_view text, const TextStyle& s) {
 }
 
 float List::measure_height(std::string_view text, const TextStyle& s) {
+  if (text.empty()) return 0.0f;
+  if (text.find_first_of("<\n") == std::string_view::npos) return s.size;
   const auto lines = parse_styled_lines(text, s);
   if (lines.empty()) return 0.0f;
   return s.size + float(lines.size() - 1) * (s.size * 1.35f);
 }
 
 float List::text(float x, float y, std::string_view text, const TextStyle& s) {
-  const auto lines = parse_styled_lines(text, s);
+  if (text.empty()) return 0.0f;
   const float line_step = s.size * 1.35f;
   const bool have_cjk = vf().cjk && vf().cjk->valid();
   const int cjk_px = have_cjk ? cjk_cached_px(s.size) : 0;
   const float inv = 1.0f / float(vf().atlas_size);
   float max_w = 0.0f;
 
-  for (size_t li = 0; li < lines.size(); ++li) {
-    const auto& ln = lines[li];
+  // Fast path: plain single-line text (no '<' style tags or '\n') avoids all
+  // parse_styled_lines() vector/string heap allocations on HUD calls.
+  const bool plain_single = (text.find_first_of("<\n") == std::string_view::npos);
+  std::vector<StyledLine> parsed_lines;
+  const size_t line_count = plain_single ? 1u : (parsed_lines = parse_styled_lines(text, s), parsed_lines.size());
+
+  for (size_t li = 0; li < line_count; ++li) {
     float lw = 0.0f;
-    for (const auto& run : ln.runs) {
-      TextStyle rs = s;
-      rs.font = run.font;
-      rs.color = run.color;
-      lw += measure_run_single_line(run.text, rs);
+    if (plain_single) {
+      lw = measure_run_single_line(text, s);
+    } else {
+      for (const auto& run : parsed_lines[li].runs) {
+        TextStyle rs = s;
+        rs.font = run.font;
+        rs.color = run.color;
+        lw += measure_run_single_line(run.text, rs);
+      }
     }
     max_w = std::max(max_w, lw);
 
@@ -1575,15 +1590,37 @@ float List::text(float x, float y, std::string_view text, const TextStyle& s) {
     const float ly = y + float(li) * line_step;
     const float base = ly + s.size;
 
-    for (const auto& run : ln.runs) {
+    const size_t run_count = plain_single ? 1u : parsed_lines[li].runs.size();
+    for (size_t ri = 0; ri < run_count; ++ri) {
       TextStyle rs = s;
-      rs.font = run.font;
-      rs.color = run.color;
+      std::string_view raw_run = text;
+      if (!plain_single) {
+        const auto& run = parsed_lines[li].runs[ri];
+        rs.font = run.font;
+        rs.color = run.color;
+        raw_run = run.text;
+      }
+      char ascii_buf[256];
       std::string folded_storage;
-      std::string_view run_src = run.text;
+      std::string_view run_src = raw_run;
       if (!rs.keep_case) {
-        folded_storage = ui::unicode_uppercase_utf8(run.text);
-        run_src = folded_storage;
+        bool all_ascii = raw_run.size() <= sizeof(ascii_buf);
+        if (all_ascii) {
+          for (size_t k = 0; k < raw_run.size(); ++k) {
+            const unsigned char c = static_cast<unsigned char>(raw_run[k]);
+            if (c >= 0x80u) {
+              all_ascii = false;
+              break;
+            }
+            ascii_buf[k] = (c >= 'a' && c <= 'z') ? char(c - 'a' + 'A') : char(c);
+          }
+        }
+        if (all_ascii) {
+          run_src = std::string_view(ascii_buf, raw_run.size());
+        } else {
+          folded_storage = ui::unicode_uppercase_utf8(raw_run);
+          run_src = folded_storage;
+        }
       }
       const int f = font_of(rs);
       if (f >= 0) {
