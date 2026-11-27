@@ -627,6 +627,49 @@ double AiField::plan_point(size_t i, size_t j0, double* friction) const {
   }
 }
 
+void AiField::plan_point_pair(size_t i, size_t j0, double& v0, double& v1, double* friction1) const {
+  const RacingLine& L = line_;
+  if (friction1) *friction1 = 1.0;
+  if (L.size() < 2) {
+    v0 = v1 = 0.0;
+    return;
+  }
+  const size_t last = L.size() - 1;
+  j0 = std::min(j0, last);
+  const size_t j1 = std::min(j0 + 1, last);
+  if (!capacity_[i] || L.curvature.size() != L.size()) {
+    v0 = planned_speed(i, L.dist[j0]);
+    v1 = planned_speed(i, L.dist[j1]);
+    return;
+  }
+  size_t jmax = j1;
+  while (jmax + 1 < L.size() && L.dist[jmax + 1] - L.dist[j1] <= 420.0f) ++jmax;
+  const AiCapacity& c = *capacity_[i];
+  const double B = plan_b_[i] * c.braking_k;
+  double carry = 1000.0;
+  v0 = v1 = 0.0;
+  for (size_t j = jmax;; --j) {
+    const double vc = corner_at(i, j);
+    const double mean = (corner_at(i, j > 0 ? j - 1 : j) + vc + corner_at(i, std::min(j + 1, last))) / 3.0;
+    const double vlim = std::max(0.001, std::min(carry, mean));
+    if (j == j1) {
+      v1 = vlim;
+      if (friction1) *friction1 = ai_braking_left(1.0, vlim, vc);
+    }
+    if (j == j0 || j == 0) {
+      v0 = vlim;
+      if (j0 == j1) {
+        v1 = vlim;
+        if (friction1) *friction1 = ai_braking_left(1.0, vlim, vc);
+      }
+      return;
+    }
+    const double grip = double(L.grip_at(j));
+    const double a = -ai_braking_left(B * c.braking[size_t(AiCapacity::index(vlim))] * grip, vlim, vc) - 9.81 * L.grade[j];
+    carry = ai_brake_carry(vlim, a, L.dist[j] - L.dist[j - 1]);
+  }
+}
+
 double AiField::planned_speed(size_t i, double p) const {
   const RacingLine& L = line_;
   if (L.size() < 2) return 0;
@@ -816,8 +859,8 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       const double t = std::clamp(double(f), 0.0, 1.0);
       const size_t j = std::min<size_t>(t >= 0.33 ? s + 1 : s, L.size() - 2);
       const double fr = t >= 0.33 ? t - 0.33 : t + 0.67;
-      double fric = 1;
-      const double v0 = plan_point(i, j, nullptr), v1 = plan_point(i, j + 1, &fric);
+      double fric = 1.0, v0 = 0.0, v1 = 0.0;
+      plan_point_pair(i, j, v0, v1, &fric);
       double target = progress_[i] >= L.length() - 1 ? 0.0 : (1 - fr) * v0 + fr * v1;
       // The heading (its cosine with the line's direction).
       const double sx = L.x[s + 1] - L.x[s], sz = L.z[s + 1] - L.z[s];

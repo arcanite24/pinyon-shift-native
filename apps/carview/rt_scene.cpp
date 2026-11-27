@@ -350,6 +350,11 @@ void RtScene::shutdown() {
   destroy_blas(tree_blas_, false);
   r_.destroy_buffer(tree_vb_);
   r_.destroy_buffer(tree_ib_);
+  destroy_blas(spectator_blas_, false);
+  if (spec_vb_mapped_) vmaUnmapMemory(r_.allocator_, spec_vb_.allocation);
+  spec_vb_mapped_ = nullptr;
+  spec_vb_cap_ = 0;
+  r_.destroy_buffer(spec_vb_);
   r_.destroy_buffer(seq_ib_);
   seq_ib_bda_ = 0;
   registered_spectator_view_ = VK_NULL_HANDLE;
@@ -633,9 +638,11 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
   destroy_blas(out.glass, true);
   out.body_draw = -1;
   out.glass_draw = -1;
+  out.use_far = car.guest_ && !car.far_draws_.empty();
   for (auto& wp : out.wheel_parts) destroy_blas(wp.blas, true);
   out.wheel_parts.clear();
 
+  const auto& src_draws = out.use_far ? car.far_draws_ : car.draws_;
   const VkDeviceAddress vb_bda = r_.buffer_device_address(car.vertex_buffer_.buffer);
   const VkDeviceAddress ib_bda = r_.buffer_device_address(car.index_buffer_.buffer);
   if (!vb_bda || !ib_bda) return false;
@@ -657,7 +664,7 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
     lamps.reserve(draw_indices.size());
 
     for (int idx : draw_indices) {
-      const Showroom::Draw& d = car.draws_[size_t(idx)];
+      const Showroom::Draw& d = src_draws[size_t(idx)];
       if (d.index_count < 3 || d.vertex_offset < 0 || uint32_t(d.vertex_offset) >= total_verts) continue;
       const uint32_t prim_count = d.index_count / 3u;
       const VkDeviceAddress g_vb = vb_bda + uint64_t(d.vertex_offset) * sizeof(cars::bake::Vertex);
@@ -705,11 +712,13 @@ bool RtScene::ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasS
   };
   std::vector<WheelGroup> wheel_groups;
 
-  for (int i = 0; i < int(car.draws_.size()); ++i) {
-    const Showroom::Draw& d = car.draws_[size_t(i)];
+  for (int i = 0; i < int(src_draws.size()); ++i) {
+    const Showroom::Draw& d = src_draws[size_t(i)];
     if (d.index_count < 3) continue;
-    const uint32_t klass = uint32_t(std::lround(d.push.params[0]));
+    const uint32_t klass = uint32_t(d.push.params[0] + 0.5f);
     if (klass == 11u) continue;  // kHidden
+    // Guest/opponent cars skip interior, gauge, and caliper geometry in RT BLASes.
+    if (car.guest_ && (klass == 4u || klass == 5u || klass == 8u)) continue;
     if (d.wheel >= 0 && d.wheel < 4) {
       // Group wheel draws that share the exact same (wheel, spins, local matrix):
       // rim, tyre, rotor, and caliper each have their own distinct `d.local`.
@@ -1151,64 +1160,137 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
           ? (std::min(host.driver_count_, kMaxDynActorVerts) / 3u) * 3u
           : 0u;
 
-  // 2. Collect animated Spectators.zip festival crowd vertices (scenery space, grounded via active Ground).
-  std::vector<WorldVertex> spec_verts;
-  uint32_t spec_tex_slot = 0u;
+  // 2. Throttled Spectators.zip festival crowd BLAS (rebuilt every 6 frames or when world origin/eye shifts > 4 m).
   if (host.vfx_ready_ && host.spectator_anim_.catalog().has_3d_spectators()) {
     const auto eye = host.eye_in_scenery(host.world_transform_);
     const double eye_gx = host.world_origin_[0] + double(eye[0]);
     const double eye_gy = double(eye[1]);
     const double eye_gz = host.world_origin_[1] + double(eye[2]);
-    const drive::Ground* active_ground =
-        host.world_ground_ ? host.world_ground_ : world::AnimatedWorldSystem::last_ground();
-    std::vector<world::SpectatorVertex> cpu_spec;
-    host.spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, host.tod_real_time_, active_ground, cpu_spec);
-    const uint32_t sn = (uint32_t(std::min(cpu_spec.size(), size_t(kMaxDynActorVerts))) / 3u) * 3u;
-    if (sn >= 3u) {
-      constexpr uint32_t kSpectatorTexRecord = 0xFFFFFFF0u;
-      if (host.gpu_world_ && host.spectator_atlas_.view) {
-        if (registered_spectator_view_ != host.spectator_atlas_.view ||
-            !host.gpu_world_->has_texture(kSpectatorTexRecord)) {
-          spec_tex_slot = host.gpu_world_->add_texture(kSpectatorTexRecord, host.spectator_atlas_.view);
-          registered_spectator_view_ = host.spectator_atlas_.view;
-        } else {
-          spec_tex_slot = host.gpu_world_->texture_slot(kSpectatorTexRecord);
+    const bool origin_changed = (host.world_origin_[0] != spectator_last_origin_x_ ||
+                                 host.world_origin_[1] != spectator_last_origin_z_);
+    const double ed2 = (eye_gx - spectator_last_eye_x_) * (eye_gx - spectator_last_eye_x_) +
+                       (eye_gz - spectator_last_eye_z_) * (eye_gz - spectator_last_eye_z_);
+    const bool need_spec_rebuild = !spectator_blas_.handle || origin_changed || ed2 > 16.0 ||
+                                   (frame_counter_ - spectator_last_frame_) >= 6ull;
+    if (need_spec_rebuild) {
+      spectator_last_frame_ = frame_counter_;
+      spectator_last_origin_x_ = host.world_origin_[0];
+      spectator_last_origin_z_ = host.world_origin_[1];
+      spectator_last_eye_x_ = eye_gx;
+      spectator_last_eye_z_ = eye_gz;
+      const drive::Ground* active_ground =
+          host.world_ground_ ? host.world_ground_ : world::AnimatedWorldSystem::last_ground();
+      thread_local std::vector<world::SpectatorVertex> cpu_spec;
+      cpu_spec.clear();
+      host.spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, host.tod_real_time_, active_ground, cpu_spec);
+      const uint32_t sn = (uint32_t(std::min(cpu_spec.size(), size_t(kMaxDynActorVerts))) / 3u) * 3u;
+      destroy_blas(spectator_blas_, true);
+      if (sn >= 3u) {
+        uint32_t spec_tex_slot = 0u;
+        constexpr uint32_t kSpectatorTexRecord = 0xFFFFFFF0u;
+        if (host.gpu_world_ && host.spectator_atlas_.view) {
+          if (registered_spectator_view_ != host.spectator_atlas_.view ||
+              !host.gpu_world_->has_texture(kSpectatorTexRecord)) {
+            spec_tex_slot = host.gpu_world_->add_texture(kSpectatorTexRecord, host.spectator_atlas_.view);
+            registered_spectator_view_ = host.spectator_atlas_.view;
+          } else {
+            spec_tex_slot = host.gpu_world_->texture_slot(kSpectatorTexRecord);
+          }
         }
-      }
-      const auto& cat = host.spectator_anim_.catalog();
-      const uint32_t asz = world::SpectatorCatalog::kAtlasSize;
-      auto snorm8 = [](float x) -> int8_t {
-        return int8_t(std::clamp(std::lround(double(x) * 127.0), -127l, 127l));
-      };
-      spec_verts.resize(sn);
-      for (uint32_t i = 0; i < sn; ++i) {
-        const auto& v = cpu_spec[i];
-        WorldVertex& o = spec_verts[i];
-        o = WorldVertex{};
-        o.position[0] = float(double(v.pos[0]) - host.world_origin_[0]);
-        o.position[1] = v.pos[1];
-        o.position[2] = float(double(v.pos[2]) - host.world_origin_[1]);
-        o.normal[0] = snorm8(v.normal[0]);
-        o.normal[1] = snorm8(v.normal[1]);
-        o.normal[2] = snorm8(v.normal[2]);
-        o.uv0[0] = v.uv[0];
-        o.uv0[1] = v.uv[1];
-        // Populate crisp per-vertex atlas color fallback in case bindless texture is absent.
-        if (cat.atlas_rgba.size() >= size_t(asz) * asz * 4u) {
-          const uint32_t tx = uint32_t(std::clamp(v.uv[0], 0.0f, 0.9999f) * float(asz));
-          const uint32_t ty = uint32_t(std::clamp(v.uv[1], 0.0f, 0.9999f) * float(asz));
-          const uint8_t* px = cat.atlas_rgba.data() + (size_t(ty) * asz + tx) * 4u;
-          o.colour[0] = px[0];
-          o.colour[1] = px[1];
-          o.colour[2] = px[2];
-          o.colour[3] = 255;
-        } else {
-          for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+        if (!spec_vb_.buffer || spec_vb_cap_ < sn) {
+          const uint32_t alloc_n = std::max(sn, std::max(spec_vb_cap_ * 2u, 8192u));
+          if (spec_vb_mapped_) {
+            vmaUnmapMemory(r_.allocator_, spec_vb_.allocation);
+            spec_vb_mapped_ = nullptr;
+          }
+          if (spec_vb_.buffer) {
+            Renderer::Buffer old_vb = spec_vb_;
+            spec_vb_ = {};
+            if (retire_fn_) {
+              Renderer* rp = &r_;
+              retire_fn_([rp, old_vb]() mutable { rp->destroy_buffer(old_vb); });
+            } else {
+              r_.destroy_buffer(old_vb);
+            }
+          }
+          const VkBufferUsageFlags usage =
+              VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+              VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+          if (r_.create_buffer(VkDeviceSize(alloc_n) * sizeof(WorldVertex), usage,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, spec_vb_) &&
+              vmaMapMemory(r_.allocator_, spec_vb_.allocation, &spec_vb_mapped_) == VK_SUCCESS) {
+            spec_vb_cap_ = alloc_n;
+          } else {
+            r_.destroy_buffer(spec_vb_);
+            spec_vb_cap_ = 0;
+            spec_vb_mapped_ = nullptr;
+          }
+        }
+        if (spec_vb_.buffer && spec_vb_mapped_) {
+          const auto& cat = host.spectator_anim_.catalog();
+          const uint32_t asz = world::SpectatorCatalog::kAtlasSize;
+          auto snorm8 = [](float x) -> int8_t {
+            return int8_t(std::clamp(int(x * 127.0f + (x >= 0.0f ? 0.5f : -0.5f)), -127, 127));
+          };
+          auto* sdst = static_cast<WorldVertex*>(spec_vb_mapped_);
+          const bool has_atlas = cat.atlas_rgba.size() >= size_t(asz) * asz * 4u;
+          for (uint32_t i = 0; i < sn; ++i) {
+            const auto& v = cpu_spec[i];
+            WorldVertex& o = sdst[i];
+            o = WorldVertex{};
+            o.position[0] = float(double(v.pos[0]) - host.world_origin_[0]);
+            o.position[1] = v.pos[1];
+            o.position[2] = float(double(v.pos[2]) - host.world_origin_[1]);
+            o.normal[0] = snorm8(v.normal[0]);
+            o.normal[1] = snorm8(v.normal[1]);
+            o.normal[2] = snorm8(v.normal[2]);
+            o.uv0[0] = v.uv[0];
+            o.uv0[1] = v.uv[1];
+            if (has_atlas) {
+              const uint32_t tx = uint32_t(std::clamp(v.uv[0], 0.0f, 0.9999f) * float(asz));
+              const uint32_t ty = uint32_t(std::clamp(v.uv[1], 0.0f, 0.9999f) * float(asz));
+              const uint8_t* px = cat.atlas_rgba.data() + (size_t(ty) * asz + tx) * 4u;
+              o.colour[0] = px[0];
+              o.colour[1] = px[1];
+              o.colour[2] = px[2];
+              o.colour[3] = 255;
+            } else {
+              for (int c = 0; c < 4; ++c) o.colour[c] = v.rgba[c];
+            }
+          }
+          const uint32_t prim_count = sn / 3u;
+          VkAccelerationStructureGeometryKHR ag{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+          ag.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+          ag.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+          auto& tri = ag.geometry.triangles;
+          tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+          tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+          tri.vertexData.deviceAddress = r_.buffer_device_address(spec_vb_.buffer);
+          tri.vertexStride = sizeof(WorldVertex);
+          tri.maxVertex = sn - 1u;
+          tri.indexType = VK_INDEX_TYPE_UINT32;
+          tri.indexData.deviceAddress = seq_ib_bda_;
+          if (build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, spectator_blas_, nullptr)) {
+            RtGeomInfoGpu gm{};
+            gm.vb_off = 0u;
+            gm.ib_off = 0u;
+            gm.material_class = 100u;
+            gm.flags = (spec_tex_slot >= 3u) ? kRtGeomFlagBindlessTex : 0u;
+            gm.tex_albedo = spec_tex_slot;
+            gm.tint[0] = gm.tint[1] = gm.tint[2] = 1.0f;
+            gm.tint[3] = 0.78f;
+            gm.uv0_xform[0] = gm.uv0_xform[1] = gm.uv0_xform[2] = gm.uv0_xform[3] = 1.0f;
+            spectator_blas_.geoms = {gm};
+            spectator_blas_.vb_buf = spec_vb_.buffer;
+            spectator_blas_.ib_buf = seq_ib_.buffer;
+          }
         }
       }
     }
+  } else if (spectator_blas_.handle) {
+    destroy_blas(spectator_blas_, true);
   }
-  const uint32_t spec_n = uint32_t(spec_verts.size());
 
   // 3. Collect Airborne Showcase aircraft vertices (scenery space).
   const uint32_t show_n =
@@ -1226,7 +1308,7 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
     }
   }
 
-  const uint32_t total_v = drv_n + spec_n + show_n;
+  const uint32_t total_v = drv_n + show_n;
   if (total_v == 0u) return;
 
   // Ensure persistent per-frame-slot host-visible vertex buffer capacity.
@@ -1298,9 +1380,6 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
   if (drv_n >= 3u) {
     build_dyn(reinterpret_cast<const WorldVertex*>(host.driver_buf_.cpu.data()), drv_n, 4u, 0u, 0.65f,
               slot.driver_blas);
-  }
-  if (spec_n >= 3u) {
-    build_dyn(spec_verts.data(), spec_n, 100u, spec_tex_slot, 0.78f, slot.spectator_blas);
   }
   if (show_n >= 3u) {
     build_dyn(reinterpret_cast<const WorldVertex*>(host.showcase_buf_.cpu.data()), show_n, 100u, show_tex_slot, 0.32f,
@@ -1498,8 +1577,8 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
 
   // 4b-2. Dynamic actors: Spectators.zip festival crowds & Airborne Showcase aircraft.
   const FrameSlot& cur_slot = slots_[active_slot_];
-  if (cur_slot.spectator_blas.handle) {
-    push_instance(cur_slot.spectator_blas, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
+  if (spectator_blas_.handle) {
+    push_instance(spectator_blas_, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
   }
   if (cur_slot.showcase_blas.handle) {
     push_instance(cur_slot.showcase_blas, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
@@ -1507,10 +1586,11 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
 
   // 4c. Player car (body + glass + 4 spinning wheels + 4 calipers + live lamp emission + seated driver).
   auto emit_car = [&](const Showroom& car, const float* parent_model, const drive::LampShaderVectors& active_lamps,
-                      uint8_t body_mask, rt::InstanceKind kind, uint32_t car_id) {
+                      uint8_t body_mask, rt::InstanceKind kind, uint32_t car_id, bool emit_detail) {
     auto it = car_blases_.find(&car);
     if (it == car_blases_.end()) return;
     const CarBlasSet& cs = it->second;
+    const auto& src_draws = cs.use_far ? car.far_draws_ : car.draws_;
     auto combine = [&](const float local[16], float out[16]) {
       if (parent_model) mat4_mul(parent_model, local, out);
       else std::memcpy(out, local, 16 * sizeof(float));
@@ -1518,11 +1598,11 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
     float m[16];
     const float kIdent[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     const float* body_local =
-        (cs.body_draw >= 0 && size_t(cs.body_draw) < car.draws_.size()) ? car.draws_[size_t(cs.body_draw)].push.model
-                                                                        : kIdent;
+        (cs.body_draw >= 0 && size_t(cs.body_draw) < src_draws.size()) ? src_draws[size_t(cs.body_draw)].push.model
+                                                                       : kIdent;
     const float* glass_local =
-        (cs.glass_draw >= 0 && size_t(cs.glass_draw) < car.draws_.size()) ? car.draws_[size_t(cs.glass_draw)].push.model
-                                                                          : body_local;
+        (cs.glass_draw >= 0 && size_t(cs.glass_draw) < src_draws.size()) ? src_draws[size_t(cs.glass_draw)].push.model
+                                                                         : body_local;
     combine(body_local, m);
     const size_t body_g_start = geom_infos.size();
     push_instance(cs.body, m, body_mask, kind, car_id, true);
@@ -1551,37 +1631,42 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
         }
       }
     }
-    if (cs.glass.handle) {
-      combine(glass_local, m);
-      push_instance(cs.glass, m, rt::kMaskGlass, rt::InstanceKind::kGlass, car_id, false);
-    }
-    for (const auto& wp : cs.wheel_parts) {
-      if (wp.blas.handle && wp.draw_idx >= 0 && size_t(wp.draw_idx) < car.draws_.size()) {
-        combine(car.draws_[size_t(wp.draw_idx)].push.model, m);
-        push_instance(wp.blas, m, body_mask, kind, car_id, true);
+    if (emit_detail) {
+      if (cs.glass.handle) {
+        combine(glass_local, m);
+        push_instance(cs.glass, m, rt::kMaskGlass, rt::InstanceKind::kGlass, car_id, false);
+      }
+      for (const auto& wp : cs.wheel_parts) {
+        if (wp.blas.handle && wp.draw_idx >= 0 && size_t(wp.draw_idx) < src_draws.size()) {
+          combine(src_draws[size_t(wp.draw_idx)].push.model, m);
+          push_instance(wp.blas, m, body_mask, kind, car_id, true);
+        }
       }
     }
   };
 
   const float kIdentMat[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   if (host.draw_car_) {
-    emit_car(host, nullptr, host.lamp_vectors_, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u);
+    emit_car(host, nullptr, host.lamp_vectors_, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u, true);
     if (!host.cockpit_camera_active_ && cur_slot.driver_blas.handle) {
       push_instance(cur_slot.driver_blas, kIdentMat, rt::kMaskPlayerCar, rt::InstanceKind::kPlayerCar, 0u, true);
     }
   }
 
-  // 4d. Traffic / AI guest cars (+ seated drivers inside nearby cars).
+  // 4d. Traffic / AI guest cars (+ seated drivers inside nearby cars), distance-culled past 140 m
+  // and skipping glass/wheel sub-BLAS instances past 45 m to keep TLAS builds lean in races.
   uint32_t traffic_id = 1u;
   for (const Showroom::Instance& inst : host.instances_) {
     if (!inst.car) continue;
-    const drive::LampShaderVectors& glamps = inst.has_lamps ? inst.lamps : inst.car->lamp_vectors_;
-    emit_car(*inst.car, inst.model, glamps, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id);
-    if (cur_slot.driver_blas.handle && inst.fade_alpha >= 0.5f) {
-      const float dx = inst.model[12] - host.frame_.eye[0];
-      const float dy = inst.model[13] - host.frame_.eye[1];
-      const float dz = inst.model[14] - host.frame_.eye[2];
-      if (dx * dx + dy * dy + dz * dz <= 95.0f * 95.0f) {
+    const float dx = inst.model[12] - host.frame_.eye[0];
+    const float dy = inst.model[13] - host.frame_.eye[1];
+    const float dz = inst.model[14] - host.frame_.eye[2];
+    const float d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 <= 140.0f * 140.0f) {
+      const bool detail = d2 <= 45.0f * 45.0f;
+      const drive::LampShaderVectors& glamps = inst.has_lamps ? inst.lamps : inst.car->lamp_vectors_;
+      emit_car(*inst.car, inst.model, glamps, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id, detail);
+      if (detail && cur_slot.driver_blas.handle && inst.fade_alpha >= 0.5f) {
         push_instance(cur_slot.driver_blas, inst.model, rt::kMaskTrafficCar, rt::InstanceKind::kTrafficCar, traffic_id,
                       true);
       }

@@ -1,6 +1,6 @@
 # Windows x64 Optimization Summary
 
-This document records the Windows desktop performance, memory, startup, and binary-size optimizations implemented across Waves 1–3, together with measured results on the test workstation.
+This document records the Windows desktop performance, memory, startup, multi-car race, and binary-size optimizations implemented across Waves 1–4, together with measured results on the test workstation.
 
 ## Test Hardware & Methodology
 
@@ -84,3 +84,48 @@ This document records the Windows desktop performance, memory, startup, and bina
 - **Executable Size (`carview.exe`)**: `16.0 MiB` → **`15.5 MiB`** (-500 KiB).
 - **Database Open Time**: `114–173 ms` → **`83.5–97.6 ms`** (~25–45% faster).
 - **Audio Engine Startup**: `345–607 ms` → **`242–353 ms`** (~30–40% faster, 0 stalls on `high_4k_noon`, `high_1440p_noon`, and `ultra_1440p_rt`).
+
+---
+
+## Wave 4 — Multi-Car Race Hyper-Optimization
+
+Profiling active 8-car races (`FR22`, `--render-scale 0` native resolution, `--seconds 15 --bench-warmup 6` after the 4 s launch countdown) revealed severe multi-opponent CPU, HUD, GPU overdraw, shadow/mirror, and RT BVH bottlenecks that did not appear in solo cruising or countdown-only runs.
+
+### Summary of Changes
+
+- **Opponent Car LOD, Frustum Culling & Draw Pipeline (`apps/carview/race_view.cpp`, `showroom_car_state.cpp`, `showroom_draw.cpp`, `showroom_upload.cpp`)**:
+  - Enabled `options.prefer_lod1 = true` for race opponent cars on desktop (retail LOD1 exterior + LOD2/3 `far_draws_`), skipping invisible opponent cockpit steering-wheel and gauge-needle parts at load time.
+  - Built `far_draws_` for all `guest_` cars and updated `set_wheel_poses()` to precompute per-wheel steer/spin matrices once and animate both `draws_` and `far_draws_`.
+  - Added 5-plane camera frustum culling per instance group in `record_all_instances()`, enabled desktop distance switching to `far_draws_` past `20 m`, skipped guest gauges unconditionally and interior/caliper draws past `16–18 m`, disabled 2-pass `dual_cover` lamp-cover overdraw past `mid_dist` on desktop, and eliminated per-pass heap allocations.
+  - Fixed `car_opaque` GPU timestamp placement in `showroom_upload.cpp` to occur after `record_all_instances(..., 1)` so opponent car opaque cost is attributed to `car_opaque` instead of `sky`, and counted instanced draws in `car_draws_`.
+  - Hoisted the player `world_to_player` affine inverse once outside the opponent loop in `RaceView::instances()`, blended opponent poses directly without double `Vehicle::set_pose()`, and skipped wheel pose updates past `120 m`.
+- **Shadow Cascades, Env Cubemap, Cockpit Mirrors & RT BLAS (`apps/carview/showroom_shadows.cpp`, `showroom_env.cpp`, `showroom_draw.cpp`, `rt_scene.h`, `rt_scene.cpp`)**:
+  - Added ortho-box frustum culling per shadow cascade in `showroom_shadows.cpp`, switched all opponent shadow casters to `far_draws_`, and capped desktop shadow caster distance to `85 m` (matching the Mid cascade).
+  - Switched `record_instance_offscreen()` to `far_draws_` (skipping interior/gauge/caliper and cover glass), and added 5-plane frustum culling, `160 m` range cap, and 6-car limit for cockpit/virtual rearview mirrors in `showroom_env.cpp` (preventing cars ahead of the player from rendering into rearview mirrors).
+  - Built guest/opponent RT BLASes from `far_draws_` (skipping interior/gauge/caliper geometry), culled opponent cars past `140 m` from the RT TLAS, omitted distant (`> 45 m`) opponent glass/wheel/driver sub-instances, and throttled `spectator_blas_` rebuilds to every 6 frames or `> 4 m` eye/origin shift.
+- **UI4 Scene Timeline & 120 Hz Race AI/Physics (`apps/carview/scene_timeline.h`, `scene_timeline.cpp`, `hud_screen.cpp`, `libs/drive/include/drive/ai_driver.h`, `libs/drive/src/ai_driver.cpp`, `apps/carview/race_view.cpp`, `drive_simulation.cpp`, `drive_frame_render.cpp`, `drive_hud_sync.cpp`)**:
+  - Added flat per-item touched-attribute bitmasks (`item_mask_`), flat `member_of_`/`in_child_slide_` vectors, `apply_subtree()`, and lazy component initialization (`bind(scene, /*init_all_components=*/false)`) to `SceneTimeline`, eliminating the `5–6 ms` per-frame and first-activation HUD hitches when skill chains animate in `947_HUD`.
+  - Added single-pass `AiField::plan_point_pair()` to halve 420 m backward braking integrations per AI car at 120 Hz, widened `update_car_planner()` quantization tolerance to `0.005f` to stop continuous `corner_speed_` cache wipes during boost/rubberband ramps, throttled aerodynamic drafting to 30 Hz in a single pairwise pass, replaced O(N) `line_.line.segment()` with O(log N) `line_segment_fast()`, staggered per-car tunnel probes, enabled SSE FTZ+DAZ with a zero-allocation callback trampoline in `PhysicsStepPool`, cached `classify_other_archetype()`, and reused `thread_local` `OpponentTag` scratch vectors.
+
+### Measured Active Multi-Car Race Results (Ryzen 7 5800X + RTX 4080, `FR22` 8 Cars)
+
+Active racing window: `--seconds 15 --bench-warmup 6 --render-scale 0` (native resolution, MSAA 4x on raster Ultra).
+
+| Scenario | Metric | Before (Wave 3) | After (Wave 4) | Delta |
+|---|---|---:|---:|---:|
+| **Native 4K Ultra Chase** | Avg / 1% Low / Min FPS | 64.8 / 35.0 / 27.1 | **79.3 / 66.4 / 59.7** | **+22.4% / +89.7% / +120.3%** |
+| | Hitch-free (`>16.7ms` / `>33.3ms`) | 91.7% (153 / 1) | **100.0% (1 / 0)** | **-152 hitches** |
+| | Frame ms (avg / p99 / max) | 15.43 / 25.55 / 36.92 | **12.61 / 14.52 / 16.75** | **-18% / -43% / -55%** |
+| | CPU ms (avg / p99 / max) | 5.40 / 12.58 / 27.38 | **3.68 / 5.22 / 7.08** | **-32% / -59% / -74%** |
+| | `ui_build_ms` (avg / p99) | 1.90 / 6.06 | **0.71 / 1.24** | **-63% / -80%** |
+| | `ai_traffic_ms` (avg / p99 / max) | 0.73 / 1.50 / 22.73 | **0.59 / 0.96 / 1.15** | **-19% / -36% / -95%** |
+| | GPU ms (avg / p99 / max) | 9.65 / 17.22 / 20.22 | **8.68 / 10.29 / 10.60** | **-10% / -40% / -48%** |
+| | `gpu_shadows` / `gpu_car_glass` (p99) | 0.37 / 1.33 ms | **0.27 / 0.06 ms** | **-27% / -95%** |
+| **Native 4K Ultra Cockpit** | Avg / 1% Low / Min FPS | 65.9 / 39.5 / 36.5 | **81.3 / 67.0 / 61.9** | **+23.4% / +69.6% / +69.6%** |
+| | CPU ms (avg / p99 / max) | 6.20 / 15.32 / 19.30 | **4.10 / 5.37 / 7.66** | **-34% / -65% / -60%** |
+| | `cockpit_mirrors` GPU (p50) | 0.35 ms | **0.15 ms** | **-57%** |
+| **Native 1440p RT Hybrid** | Avg / 1% Low / Min FPS | 80.5 / 63.7 / 56.0 | **92.0 / 74.3 / 70.9** | **+14.3% / +16.6% / +26.6%** |
+| | CPU ms (`rec` ms) / CPU util | 5.44 (2.05) / 19.61 ms/f | **3.98 (1.48) / 6.84 ms/f** | **-27% (`-28%`) / -65% CPU burn** |
+| | Device-local VRAM | 2,284.0 MiB | **2,140.5 MiB** | **-143.5 MiB** |
+| **720p-scaled Race Cockpit** | Avg FPS (`cockpit_mirrors` GPU) | 173.9 (0.35 ms) | **193.1 (0.14 ms)** | **+11.0% (-60% mirrors)** |
+| **720p-scaled RT Hybrid** | Avg FPS (`rec` ms) | 139.0 (2.21 ms) | **162.1 (1.44 ms)** | **+16.6% (-35% rec)** |

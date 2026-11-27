@@ -14,6 +14,7 @@
 #include <numbers>
 #include <thread>
 
+#include "drive/from_bake.h"
 #include "drive/from_physics.h"
 #include "drive/replay.h"
 #include "drive/rewind.h"
@@ -121,12 +122,18 @@ bool flagged_participant(const std::string& event, int64_t car) {
 
 }  // namespace
 
+#if defined(_M_X64) || defined(__x86_64__)
+#include <xmmintrin.h>
+#include <pmmintrin.h>
+#endif
+
 struct RaceView::PhysicsStepPool {
   std::vector<std::thread> workers;
   std::mutex mu;
   std::condition_variable cv_work;
   std::condition_variable cv_done;
-  std::function<void(size_t)> fn;
+  void (*fn)(void*, size_t) = nullptr;
+  void* ctx = nullptr;
   size_t count = 0;
   std::atomic<size_t> next{0};
   size_t active = 0;
@@ -137,6 +144,10 @@ struct RaceView::PhysicsStepPool {
     workers.reserve(num_workers);
     for (size_t i = 0; i < num_workers; ++i) {
       workers.emplace_back([this]() {
+#if defined(_M_X64) || defined(__x86_64__)
+        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+        _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
+#endif
         uint64_t seen = 0;
         for (;;) {
           {
@@ -145,10 +156,12 @@ struct RaceView::PhysicsStepPool {
             if (stop) return;
             seen = generation;
           }
+          auto* local_fn = fn;
+          void* local_ctx = ctx;
           for (;;) {
             const size_t k = next.fetch_add(1, std::memory_order_relaxed);
             if (k >= count) break;
-            fn(k);
+            local_fn(local_ctx, k);
           }
           {
             std::lock_guard<std::mutex> lock(mu);
@@ -169,14 +182,17 @@ struct RaceView::PhysicsStepPool {
       if (w.joinable()) w.join();
   }
 
-  void run(size_t n, std::function<void(size_t)> task) {
+  template <typename Fn>
+  void run(size_t n, Fn&& task) {
     if (n <= 1 || workers.empty()) {
       for (size_t k = 0; k < n; ++k) task(k);
       return;
     }
+    auto trampoline = [](void* p, size_t idx) { (*static_cast<std::remove_reference_t<Fn>*>(p))(idx); };
     {
       std::lock_guard<std::mutex> lock(mu);
-      fn = std::move(task);
+      fn = trampoline;
+      ctx = &task;
       count = n;
       next.store(0, std::memory_order_relaxed);
       active = workers.size();
@@ -187,11 +203,12 @@ struct RaceView::PhysicsStepPool {
     for (;;) {
       const size_t k = next.fetch_add(1, std::memory_order_relaxed);
       if (k >= count) break;
-      fn(k);
+      task(k);
     }
     std::unique_lock<std::mutex> lock(mu);
     cv_done.wait(lock, [&]() { return active == 0; });
     fn = nullptr;
+    ctx = nullptr;
   }
 };
 
@@ -754,9 +771,9 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       m->set_guest();
       ShowroomOptions options;
       if (specs[i].color_seq > 0) options.match_sequence = specs[i].color_seq;
-#ifdef __ANDROID__
+      // Opponent cars are never viewed from inside their cockpit: use retail LOD1 exterior
+      // + LOD2/3 far_draws_ on all platforms (slashing race VRAM, load time, and draw calls).
       options.prefer_lod1 = true;
-#endif
       std::string e;
       if (!m->load(bake_dir_, specs[i].media, options, e)) {
         loaded[i].err = specs[i].media + ": " + e;
@@ -1093,7 +1110,9 @@ drive::Input RaceView::player_input(const drive::Vehicle& player, const drive::I
     last_planner_b_.assign(n + 1, -1.0f);
   }
   auto update_car_planner = [&](size_t idx, const drive::AiCapacity* cap, float C, float B) {
-    if (std::fabs(C - last_planner_c_[idx]) <= 1e-4f && std::fabs(B - last_planner_b_[idx]) <= 1e-4f) return;
+    // Quantize planner updates to 0.005 (~0.5% grip/brake delta) so smooth start-boost
+    // and rubberband ramps do not wipe AiField's full-track corner_speed_ cache at 120 Hz.
+    if (std::fabs(C - last_planner_c_[idx]) <= 0.005f && std::fabs(B - last_planner_b_[idx]) <= 0.005f) return;
     last_planner_c_[idx] = C;
     last_planner_b_[idx] = B;
     if (planner_fit_) field_->set_limits(idx, float(race::corner_accel(C)), float(race::brake_decel(B)));
@@ -1269,68 +1288,68 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     player.set_ai_dirt_grip(player_ai);
   }
   // SPEC-CAR-PHYSICS, Aerodynamic drafting: evaluate pairwise follower & leader
-  // slipstream multipliers across player, AI opponents, and nearby traffic.
+  // slipstream multipliers at 30 Hz (every 4th 120 Hz physics step) in a single
+  // pairwise pass without redundant compute_follower_draft calls.
   if (session_->started()) {
-    auto to_draft_car = [](const drive::Vehicle& v) {
-      drive::DraftCar dc;
-      dc.position = v.position();
-      dc.forward = drive::rotate(v.orientation(), {0, 0, 1});
-      dc.speed = v.speed();
-      dc.width = v.params().size.x > 0.5 ? v.params().size.x : 1.9;
-      dc.front_df_coeff = v.params().aero_df_front + v.params().aero_part_df_front;
-      dc.rear_df_coeff = v.params().aero_df_rear + v.params().aero_part_df_rear;
-      return dc;
-    };
-    auto& pool = draft_pool_scratch_;
-    pool.clear();
-    pool.reserve(n + 1 + (traffic && traffic->cars() ? traffic->cars()->size() : 0));
-    for (size_t k = 0; k < n; ++k) pool.push_back(to_draft_car(*cars_[k].body));
-    pool.push_back(to_draft_car(player));
-    if (traffic && traffic->cars()) {
-      for (const auto& tc : *traffic->cars()) {
-        if (tc.speed < 8.0) continue;
+    const uint64_t draft_tick = uint64_t(std::max(0.0, clock * 120.0 + 0.5));
+    if ((draft_tick & 3ull) == 0ull) {
+      auto to_draft_car = [](const drive::Vehicle& v) {
         drive::DraftCar dc;
-        dc.position = {tc.position.x, tc.position.y, tc.position.z};
-        dc.forward = {std::sin(tc.heading), 0.0, std::cos(tc.heading)};
-        dc.speed = tc.speed;
-        dc.width = 1.9;
-        pool.push_back(dc);
-      }
-    }
-    auto& leaders = draft_leaders_scratch_;
-    leaders.reserve(pool.size());
-    auto& leader_strength = draft_leader_strength_scratch_;
-    leader_strength.assign(n + 1, 0.0);
-    auto& follower_states = draft_follower_states_scratch_;
-    follower_states.resize(n + 1);
-    for (size_t i = 0; i <= n; ++i) {
-      leaders.clear();
-      for (size_t j = 0; j < pool.size(); ++j) {
-        if (j == i) continue;
-        leaders.push_back(pool[j]);
-        if (j <= n) {
-          const double d_pair = drive::compute_follower_draft(pool[i], &pool[j], 1).strength;
-          if (d_pair > leader_strength[j]) leader_strength[j] = d_pair;
+        dc.position = v.position();
+        dc.forward = drive::rotate(v.orientation(), {0, 0, 1});
+        dc.speed = v.speed();
+        dc.width = v.params().size.x > 0.5 ? v.params().size.x : 1.9;
+        dc.front_df_coeff = v.params().aero_df_front + v.params().aero_part_df_front;
+        dc.rear_df_coeff = v.params().aero_df_rear + v.params().aero_part_df_rear;
+        return dc;
+      };
+      auto& pool = draft_pool_scratch_;
+      pool.clear();
+      pool.reserve(n + 1 + (traffic && traffic->cars() ? traffic->cars()->size() : 0));
+      for (size_t k = 0; k < n; ++k) pool.push_back(to_draft_car(*cars_[k].body));
+      pool.push_back(to_draft_car(player));
+      if (traffic && traffic->cars()) {
+        for (const auto& tc : *traffic->cars()) {
+          if (tc.speed < 8.0) continue;
+          drive::DraftCar dc;
+          dc.position = {tc.position.x, tc.position.y, tc.position.z};
+          dc.forward = {std::sin(tc.heading), 0.0, std::cos(tc.heading)};
+          dc.speed = tc.speed;
+          dc.width = 1.9;
+          pool.push_back(dc);
         }
       }
-      follower_states[i] = drive::compute_follower_draft(pool[i], leaders.data(), leaders.size());
+      auto& leader_strength = draft_leader_strength_scratch_;
+      leader_strength.assign(n + 1, 0.0);
+      auto& follower_states = draft_follower_states_scratch_;
+      follower_states.assign(n + 1, drive::DraftState{});
+      for (size_t i = 0; i <= n; ++i) {
+        drive::DraftState best_f{};
+        for (size_t j = 0; j < pool.size(); ++j) {
+          if (j == i) continue;
+          const drive::DraftState pair = drive::compute_follower_draft(pool[i], &pool[j], 1);
+          if (pair.strength > best_f.strength) best_f = pair;
+          if (j <= n && pair.strength > leader_strength[j]) leader_strength[j] = pair.strength;
+        }
+        follower_states[i] = best_f;
+      }
+      auto combine_draft = [](const drive::DraftState& f, const drive::DraftState& l) {
+        drive::DraftState out = f;
+        out.strength = std::max(f.strength, l.strength);
+        out.body_drag = f.body_drag * l.body_drag;
+        out.front_drag = f.front_drag * l.front_drag;
+        out.rear_drag = f.rear_drag * l.rear_drag;
+        out.front_df = f.front_df * l.front_df;
+        out.rear_df = f.rear_df * l.rear_df;
+        return out;
+      };
+      for (size_t k = 0; k < n; ++k) {
+        const auto ld = drive::compute_leader_draft(leader_strength[k], pool[k].speed);
+        cars_[k].body->set_draft(combine_draft(follower_states[k], ld));
+      }
+      const auto pld = drive::compute_leader_draft(leader_strength[n], pool[n].speed);
+      player.set_draft(combine_draft(follower_states[n], pld));
     }
-    auto combine_draft = [](const drive::DraftState& f, const drive::DraftState& l) {
-      drive::DraftState out = f;
-      out.strength = std::max(f.strength, l.strength);
-      out.body_drag = f.body_drag * l.body_drag;
-      out.front_drag = f.front_drag * l.front_drag;
-      out.rear_drag = f.rear_drag * l.rear_drag;
-      out.front_df = f.front_df * l.front_df;
-      out.rear_df = f.rear_df * l.rear_df;
-      return out;
-    };
-    for (size_t k = 0; k < n; ++k) {
-      const auto ld = drive::compute_leader_draft(leader_strength[k], pool[k].speed);
-      cars_[k].body->set_draft(combine_draft(follower_states[k], ld));
-    }
-    const auto pld = drive::compute_leader_draft(leader_strength[n], pool[n].speed);
-    player.set_draft(combine_draft(follower_states[n], pld));
   } else {
     player.set_draft(drive::DraftState{});
     for (size_t k = 0; k < n; ++k) cars_[k].body->set_draft(drive::DraftState{});
@@ -1406,13 +1425,14 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       if (!cars_[k].far && !tod_lamps) {
         if (cars_[k].tunnel_probe_tick == 0) {
           cars_[k].in_tunnel = is_under_tunnel_roof(&near, cars_[k].body->position());
-          cars_[k].tunnel_probe_tick = 12;
+          // Stagger tunnel probes across opponents so BVH raycasts never burst on the same tick.
+          cars_[k].tunnel_probe_tick = 12 + int(k % 12);
         } else {
           --cars_[k].tunnel_probe_tick;
         }
       } else {
         cars_[k].in_tunnel = false;
-        cars_[k].tunnel_probe_tick = 0;
+        cars_[k].tunnel_probe_tick = int(k % 12);
       }
       drive::LampInputs lin;
       const float brk = (k < inputs_.size()) ? float(inputs_[k].brake) : 0.0f;
@@ -1507,7 +1527,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     s.up_y = v.up_y();
     s.y = p.y;
     // The AI reset rules count line points as the AI's waypoints (interim).
-    s.waypoint = line_.line.size() > 1 ? double(line_.line.segment(s.progress, 0)) : -1.0;
+    s.waypoint = line_.line.size() > 1 ? double(line_segment_fast(line_.line, s.progress)) : -1.0;
   };
   for (size_t k = 0; k < n; ++k) sample(k, *cars_[k].body, cars_[k].px, cars_[k].pz);
   sample(n, player, ppx_, ppz_);
@@ -1773,21 +1793,67 @@ bool RaceView::build_rivals_ghost(double target_time_s, std::string_view rival_n
 void RaceView::instances(const cars::bake::CarInfo& player_info, const drive::Vehicle& player,
                          std::vector<Showroom::Instance>& out) const {
   std::unordered_set<Showroom*> posed_models;
-  if (!rivals_solo_) {
+  if (!rivals_solo_ && !cars_.empty()) {
+    // Hoist world_to_player affine inverse ONCE for the entire field instead of per opponent.
+    float pm[16];
+    drive::model_to_world(player_info, player, pm);
+    double pmd[16], world_to_player[16];
+    for (int i = 0; i < 16; ++i) pmd[i] = double(pm[i]);
+    const double a00 = pmd[0], a01 = pmd[4], a02 = pmd[8];
+    const double a10 = pmd[1], a11 = pmd[5], a12 = pmd[9];
+    const double a20 = pmd[2], a21 = pmd[6], a22 = pmd[10];
+    const double det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
+    const double inv_det = std::fabs(det) > 1e-12 ? (1.0 / det) : 1.0;
+    world_to_player[0] = (a11 * a22 - a12 * a21) * inv_det;
+    world_to_player[4] = (a02 * a21 - a01 * a22) * inv_det;
+    world_to_player[8] = (a01 * a12 - a02 * a11) * inv_det;
+    world_to_player[1] = (a12 * a20 - a10 * a22) * inv_det;
+    world_to_player[5] = (a00 * a22 - a02 * a20) * inv_det;
+    world_to_player[9] = (a02 * a10 - a00 * a12) * inv_det;
+    world_to_player[2] = (a10 * a21 - a11 * a20) * inv_det;
+    world_to_player[6] = (a01 * a20 - a00 * a21) * inv_det;
+    world_to_player[10] = (a00 * a11 - a01 * a10) * inv_det;
+    world_to_player[3] = world_to_player[7] = world_to_player[11] = 0.0;
+    world_to_player[15] = 1.0;
+    const double tx = pmd[12], ty = pmd[13], tz = pmd[14];
+    world_to_player[12] = -(world_to_player[0] * tx + world_to_player[4] * ty + world_to_player[8] * tz);
+    world_to_player[13] = -(world_to_player[1] * tx + world_to_player[5] * ty + world_to_player[9] * tz);
+    world_to_player[14] = -(world_to_player[2] * tx + world_to_player[6] * ty + world_to_player[10] * tz);
+
+    const drive::Vec3 pp = player.position();
     for (size_t k = 0; k < cars_.size(); ++k) {
       const auto& c = cars_[k];
       if (!c.model || !c.body) continue;
-      Showroom::Instance in;
-      if (blend_ >= 1) {
-        in = guest_instance(player_info, player, *c.model, *c.body);
+      drive::Vec3 wpos;
+      drive::Quat wrot;
+      if (blend_ >= 1.0) {
+        wpos = c.body->position();
+        wrot = c.body->orientation();
       } else {
-        const drive::Vehicle::Pose now = c.body->pose();
-        c.body->set_pose(drive::Vehicle::blend(c.before, now, blend_));
-        in = guest_instance(player_info, player, *c.model, *c.body);
-        c.body->set_pose(now);
+        const drive::Vehicle::Pose bl = drive::Vehicle::blend(c.before, c.body->pose(), blend_);
+        wpos = bl.pos;
+        wrot = bl.rot;
       }
-      // Drive each opponent's dedicated Showroom wheel spin, steer, and suspension pose.
-      if (posed_models.insert(c.model).second) {
+      float gm[16];
+      drive::model_to_world(c.model->car(), wrot, {0, 0, 0}, gm);
+      double gmd[16];
+      for (int i = 0; i < 16; ++i) gmd[i] = double(gm[i]);
+      gmd[12] += wpos.x;
+      gmd[13] += wpos.y;
+      gmd[14] += wpos.z;
+      Showroom::Instance in;
+      in.car = c.model;
+      for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+          in.model[col * 4 + row] =
+              float(world_to_player[0 * 4 + row] * gmd[col * 4 + 0] + world_to_player[1 * 4 + row] * gmd[col * 4 + 1] +
+                    world_to_player[2 * 4 + row] * gmd[col * 4 + 2] + world_to_player[3 * 4 + row] * gmd[col * 4 + 3]);
+        }
+      }
+      // Drive each opponent's dedicated Showroom wheel spin, steer, and suspension pose
+      // (skip distant opponents > 120 m away where wheel rotation is sub-pixel).
+      const double dpx = wpos.x - pp.x, dpz = wpos.z - pp.z;
+      if (dpx * dpx + dpz * dpz <= 120.0 * 120.0 && posed_models.insert(c.model).second) {
         WheelPose wposes[4]{};
         for (int wi = 0; wi < 4; ++wi) {
           const auto& w = c.body->wheels()[size_t(wi)];

@@ -179,6 +179,7 @@ class RtScene {
     // Representative draw indices to fetch live body/glass transforms each frame.
     int body_draw = -1;
     int glass_draw = -1;
+    bool use_far = false;
   };
 
   struct FrameSlot {
@@ -280,6 +281,14 @@ class RtScene {
   VkDeviceAddress seq_ib_bda_ = 0;
   VkImageView registered_spectator_view_ = VK_NULL_HANDLE;
   VkImageView registered_showcase_view_ = VK_NULL_HANDLE;
+  // Throttled spectator crowd BLAS (rebuilt every 6 frames or on world origin/eye shift > 4 m).
+  Renderer::Buffer spec_vb_;
+  void* spec_vb_mapped_ = nullptr;
+  uint32_t spec_vb_cap_ = 0;
+  BlasHandle spectator_blas_;
+  uint64_t spectator_last_frame_ = 0;
+  double spectator_last_origin_x_ = 0.0, spectator_last_origin_z_ = 0.0;
+  double spectator_last_eye_x_ = 1e18, spectator_last_eye_z_ = 1e18;
 
   FrameSlot slots_[Renderer::kFramesInFlight];
   RtSceneStats stats_{};

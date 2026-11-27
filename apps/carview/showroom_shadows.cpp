@@ -612,7 +612,34 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     if (draw_cars) {
       if (draw_car_) record_shadow_car(cmd, nullptr, cascade_set);
       if (!instances_.empty() && car_inst_buf_.ready() && shadow_car_) {
-        std::vector<Showroom*> groups;
+        // Extract ortho clip planes directly from this cascade's car-space view_projection
+        // so cars outside the Near (~25 m) or Mid (~70 m) ortho box are never rasterized into it.
+        float cplanes[4][4];
+        for (int c = 0; c < 4; ++c) {
+          const float x = vp[c * 4 + 0];
+          const float y = vp[c * 4 + 1];
+          const float wv = vp[c * 4 + 3];
+          cplanes[0][c] = wv + x;
+          cplanes[1][c] = wv - x;
+          cplanes[2][c] = wv + y;
+          cplanes[3][c] = wv - y;
+        }
+        float crad[4];
+        for (int p = 0; p < 4; ++p) {
+          crad[p] = std::sqrt(cplanes[p][0] * cplanes[p][0] + cplanes[p][1] * cplanes[p][1] +
+                              cplanes[p][2] * cplanes[p][2]) * 4.0f;
+        }
+        auto in_cascade_box = [&](const float m[16]) -> bool {
+          const float px = m[12], py = m[13] + 0.7f, pz = m[14];
+          for (int p = 0; p < 4; ++p) {
+            if (cplanes[p][0] * px + cplanes[p][1] * py + cplanes[p][2] * pz + cplanes[p][3] + crad[p] < 0.0f) {
+              return false;
+            }
+          }
+          return true;
+        };
+        thread_local std::vector<Showroom*> groups;
+        groups.clear();
         for (const auto& in : instances_) {
           if (in.car && std::find(groups.begin(), groups.end(), in.car) == groups.end()) groups.push_back(in.car);
         }
@@ -623,13 +650,17 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
         for (Showroom* g : groups) {
           uint32_t solid_count = 0, fade_count = 0;
           float min_d2 = 1e18f;
+          bool any_in_box = false;
           for (const auto& in : instances_) {
             if (in.car != g) continue;
-            const float dx = in.model[12] - frame_.eye[0];
-            const float dy = in.model[13] - frame_.eye[1];
-            const float dz = in.model[14] - frame_.eye[2];
-            const float d2 = dx * dx + dy * dy + dz * dz;
-            if (d2 < min_d2) min_d2 = d2;
+            if (in_cascade_box(in.model)) {
+              any_in_box = true;
+              const float dx = in.model[12] - frame_.eye[0];
+              const float dy = in.model[13] - frame_.eye[1];
+              const float dz = in.model[14] - frame_.eye[2];
+              const float d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < min_d2) min_d2 = d2;
+            }
             if (in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
           }
           for (const auto& in : instances_)
@@ -637,12 +668,12 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
               ++fade_count;
 #ifdef __ANDROID__
           const float max_shadow_car_d = low_memory_mode_ ? 35.0f : 50.0f;
-          const bool skip_far_shadow = min_d2 > max_shadow_car_d * max_shadow_car_d;
+          const bool skip_far_shadow = !any_in_box || min_d2 > max_shadow_car_d * max_shadow_car_d;
           const auto& shadow_draws = !g->far_draws_.empty() ? g->far_draws_ : g->draws_;
 #else
-          const bool skip_far_shadow = min_d2 > 140.0f * 140.0f;
-          const auto& shadow_draws =
-              (!g->far_draws_.empty() && min_d2 > 25.0f * 25.0f) ? g->far_draws_ : g->draws_;
+          const bool skip_far_shadow = !any_in_box || min_d2 > 85.0f * 85.0f;
+          // Shadow maps only need exterior silhouettes: far_draws_ cuts shadow geometry by 3-5x.
+          const auto& shadow_draws = !g->far_draws_.empty() ? g->far_draws_ : g->draws_;
 #endif
           if (!skip_far_shadow && solid_count > 0 && !shadow_draws.empty()) {
             const VkDeviceSize zero = 0;
@@ -653,7 +684,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
               const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
               if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
               ShowroomPush push = d.push;
-              push.params[1] = float(uint32_t(std::lround(push.params[1])) | 8192u);
+              push.params[1] = float(uint32_t(push.params[1]) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
               vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);

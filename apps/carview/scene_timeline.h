@@ -29,13 +29,14 @@ bool scene_timelines_enabled();
 class SceneTimeline {
  public:
   // Binds the scene. Another scene (or the same one reloaded) resets the
-  // state: every component goes to its first slide after the Master Slide
-  // at time 0, as the runtime does when a scene loads.
-  void bind(const fh1::UiScene* scene);
+  // state: when `init_all_components` is true, every component goes to its
+  // first slide after the Master Slide at time 0; when false, components are
+  // entered lazily on `go_to()` (avoids first-use hitches on huge HUD scenes).
+  void bind(const fh1::UiScene* scene, bool init_all_components = true);
   const fh1::UiScene* scene() const { return sc_; }
   bool ok() const { return sc_ && sc_->has_bgf && sc_->bgf.has_timeline; }
   // Back to the scene's load state.
-  void reset();
+  void reset(bool init_all_components = true);
 
   // The BGF item of a node (by its FBF object), or -1.
   int item_of_node(int node) const;
@@ -72,6 +73,9 @@ class SceneTimeline {
   // visibility in its slide, opacity, position and scale (relative to the
   // scene's base values), rotation, and material and text colours.
   void apply(SceneBindings& b) const;
+  // Writes only the nodes in `root`'s subtree into `b.anim` (avoids scanning
+  // unrelated HUD components in large scenes like 947_HUD).
+  void apply_subtree(SceneBindings& b, const SceneDraw& sd, int root) const;
 
  private:
   struct Comp {
@@ -81,6 +85,9 @@ class SceneTimeline {
     bool done = false;
   };
   static uint64_t key(uint32_t item, uint32_t attr) { return uint64_t(item) << 32 | attr; }
+  static uint16_t attr_bit(uint32_t attr);
+  void mark_touched(uint32_t item, uint32_t attr);
+  void apply_node(SceneBindings& b, size_t n) const;
   bool enter(uint32_t component, int slide);
   void bake(uint32_t component);
   void run(const fh1::UiBgfAction& a);
@@ -96,15 +103,17 @@ class SceneTimeline {
   // The curves of the current slides (copies: dynamic ones are restarted).
   std::unordered_map<uint64_t, fh1::UiBgfCurve> curves_;
   std::unordered_map<uint64_t, uint32_t> curve_comp_;  // whose slide time drives it
-  // Per item: its component (from the Master Slides) and node.
-  std::unordered_map<uint32_t, uint32_t> member_of_;
+  // Flat per-item bitmask of touched attribute groups (turns 20+ hash probes into 1 bit test).
+  std::vector<uint16_t> item_mask_;
+  // Per item: its component (from the Master Slides, -1 if none) and node.
+  std::vector<int32_t> member_of_;
   std::vector<int> item_node_, node_item_;
   // Per node: its material's item (a model's colour), or -1.
   std::vector<int> node_material_;
   // Per slide: its tracks by item.
   std::vector<std::unordered_map<uint32_t, int>> slide_track_;
   // Items some non-master slide of their component lists (slide elements).
-  std::unordered_map<uint32_t, bool> in_child_slide_;
+  std::vector<uint8_t> in_child_slide_;
   // Per action: the slides that enable it.
   std::vector<std::vector<int>> action_slides_;
 };

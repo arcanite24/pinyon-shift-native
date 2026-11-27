@@ -35,19 +35,20 @@ bool g_enabled = true;
 void set_scene_timelines_enabled(bool on) { g_enabled = on; }
 bool scene_timelines_enabled() { return g_enabled; }
 
-void SceneTimeline::bind(const fh1::UiScene* scene) {
+void SceneTimeline::bind(const fh1::UiScene* scene, bool init_all_components) {
   const bool same = scene == sc_ && scene && sig_slides_ == scene->bgf.slides.size() &&
                     sig_items_ == scene->bgf.items.size() && sig_nodes_ == scene->nodes.size();
   if (same) return;
   sc_ = scene;
-  reset();
+  reset(init_all_components);
 }
 
-void SceneTimeline::reset() {
+void SceneTimeline::reset(bool init_all_components) {
   comps_.clear();
   set_.clear();
   curves_.clear();
   curve_comp_.clear();
+  item_mask_.clear();
   member_of_.clear();
   item_node_.clear();
   node_item_.clear();
@@ -62,9 +63,13 @@ void SceneTimeline::reset() {
   sig_nodes_ = sc_->nodes.size();
   if (!ok()) return;
   const auto& d = sc_->bgf;
+  item_mask_.assign(d.items.size(), 0u);
+  member_of_.assign(d.items.size(), -1);
+  in_child_slide_.assign(d.items.size(), 0u);
 
   // Items and nodes: an element item's value is its FBF object.
   std::unordered_map<uint32_t, int> obj_item;
+  obj_item.reserve(d.items.size());
   for (size_t i = 0; i < d.items.size(); ++i)
     if (d.items[i].kind >= 1 && d.items[i].kind <= 7) obj_item.emplace(d.items[i].value, int(i));
   item_node_.assign(d.items.size(), -1);
@@ -93,9 +98,12 @@ void SceneTimeline::reset() {
     for (size_t t = 0; t < sl.tracks.size(); ++t) {
       const auto& tr = sl.tracks[t];
       slide_track_[s].emplace(tr.item, int(t));
-      if (tr.item != sl.component) {
-        if (sl.master()) member_of_.emplace(tr.item, sl.component);
-        else in_child_slide_[tr.item] = true;
+      if (tr.item != sl.component && tr.item < d.items.size()) {
+        if (sl.master()) {
+          if (member_of_[tr.item] < 0) member_of_[tr.item] = int32_t(sl.component);
+        } else {
+          in_child_slide_[tr.item] = 1u;
+        }
       }
       for (const auto& ref : tr.refs)
         if (ref.action && ref.enabled && ref.index < action_slides_.size())
@@ -105,6 +113,7 @@ void SceneTimeline::reset() {
 
   // Every component starts on its first slide after the Master Slide; the
   // scene's root first, so nested components start after their parents.
+  if (!init_all_components) return;
   std::vector<uint32_t> comps;
   for (const auto& sl : d.slides)
     if (std::find(comps.begin(), comps.end(), sl.component) == comps.end()) comps.push_back(sl.component);
@@ -140,7 +149,27 @@ float SceneTimeline::base(uint32_t item, uint32_t a, float fallback) const {
   return fallback;
 }
 
+uint16_t SceneTimeline::attr_bit(uint32_t a) {
+  if (a == attr::kOpacity) return 1u << 0;
+  if (a == attr::kPositionX || a == attr::kPositionY) return 1u << 1;
+  if (a == attr::kScaleX || a == attr::kScaleY) return 1u << 2;
+  if (a == attr::kRotationZ) return 1u << 3;
+  if (a == attr::kTextColorR || a == attr::kTextColorG || a == attr::kTextColorB || a == attr::kTextColorA)
+    return 1u << 4;
+  if (a == attr::kDiffuseR || a == attr::kDiffuseG || a == attr::kDiffuseB || a == attr::kDiffuseA) return 1u << 5;
+  if (a == attr::kStartTime || a == attr::kEndTime) return 1u << 6;
+  return 0u;
+}
+
+void SceneTimeline::mark_touched(uint32_t item, uint32_t a) {
+  if (item < item_mask_.size()) item_mask_[item] |= attr_bit(a);
+}
+
 bool SceneTimeline::touched(uint32_t item, uint32_t a) const {
+  if (item < item_mask_.size()) {
+    const uint16_t bit = attr_bit(a);
+    if (bit != 0u && (item_mask_[item] & bit) == 0u) return false;
+  }
   const uint64_t k = key(item, a);
   return curves_.count(k) != 0 || set_.count(k) != 0;
 }
@@ -190,7 +219,10 @@ bool SceneTimeline::enter(uint32_t component, int slide) {
   // The Master Slide's values, then the slide's own.
   auto apply_values = [&](const UiBgfSlide& s) {
     for (const auto& tr : s.tracks)
-      for (const auto& v : tr.values) set_[key(tr.item, v.attr)] = v.number();
+      for (const auto& v : tr.values) {
+        set_[key(tr.item, v.attr)] = v.number();
+        mark_touched(tr.item, v.attr);
+      }
   };
   const auto list = d.slides_of(component);
   if (!list.empty() && d.slides[size_t(list.front())].master() && list.front() != slide)
@@ -198,6 +230,7 @@ bool SceneTimeline::enter(uint32_t component, int slide) {
   apply_values(sl);
 
   for (auto& [k, c] : start) {
+    mark_touched(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
     curve_comp_[k] = component;
     curves_[k] = std::move(c);
   }
@@ -224,12 +257,14 @@ void SceneTimeline::run(const fh1::UiBgfAction& a) {
         return;
       }
   } else if (a.handler == fh1::ui_handler::kSetProperty) {
-    const uint64_t k = key(a.target, a.arg_tag & 0x07FFFFFFu);
+    const uint32_t attr_id = a.arg_tag & 0x07FFFFFFu;
+    const uint64_t k = key(a.target, attr_id);
     if (((a.arg_tag >> 27) & 7u) == 5u) return;  // a string (a text's content)
     // A set ends a curve on the property.
     curves_.erase(k);
     curve_comp_.erase(k);
     set_[k] = fh1::ui_bgf_number(a.arg_tag, a.arg);
+    mark_touched(a.target, attr_id);
   } else if (a.handler == fh1::ui_handler::kGotoTime) {
     set_time(a.target, float(a.arg_tag));
   } else if (a.handler == fh1::ui_handler::kPause) {
@@ -317,10 +352,10 @@ bool SceneTimeline::done(uint32_t component) const {
 }
 
 bool SceneTimeline::active(uint32_t item, int depth) const {
-  if (depth > 16) return true;
-  const auto m = member_of_.find(item);
-  if (m == member_of_.end()) return true;  // no component's element: always on
-  const uint32_t comp = m->second;
+  if (depth > 16 || item >= member_of_.size()) return true;
+  const int32_t comp_i = member_of_[item];
+  if (comp_i < 0) return true;  // no component's element: always on
+  const uint32_t comp = uint32_t(comp_i);
   const auto st = comps_.find(comp);
   if (st == comps_.end() || st->second.slide < 0) return true;
   const int s = st->second.slide;
@@ -329,80 +364,103 @@ bool SceneTimeline::active(uint32_t item, int depth) const {
   if (t == tracks.end()) {
     // A Master Slide element is on every slide; one that belongs to other
     // slides is off here.
-    if (in_child_slide_.count(item)) return false;
+    if (in_child_slide_[item]) return false;
   } else if (!sc_->bgf.slides[size_t(s)].tracks[size_t(t->second)].active) {
     return false;
   }
-  const float now = st->second.t;
-  if (touched(item, attr::kStartTime) && now < value(item, attr::kStartTime)) return false;
-  if (touched(item, attr::kEndTime) && now > value(item, attr::kEndTime)) return false;
+  if ((item_mask_[item] & (1u << 6)) != 0u) {
+    const float now = st->second.t;
+    if (touched(item, attr::kStartTime) && now < value(item, attr::kStartTime)) return false;
+    if (touched(item, attr::kEndTime) && now > value(item, attr::kEndTime)) return false;
+  }
   return comp == item || active(comp, depth + 1);
+}
+
+void SceneTimeline::apply_node(SceneBindings& b, size_t n) const {
+  const auto& nodes = sc_->nodes;
+  if (n >= nodes.size()) return;
+  const int item_i = node_item_[n];
+  if (item_i < 0) return;
+  const uint32_t item = uint32_t(item_i);
+  const uint16_t mask = item < item_mask_.size() ? item_mask_[item] : 0xFFFFu;
+  NodeAnim an;
+  bool any = false;
+  if (!active(item)) {
+    an.inactive = true;
+    any = true;
+  }
+  if ((mask & (1u << 0)) != 0u && touched(item, attr::kOpacity)) {
+    an.opacity = std::clamp(value(item, attr::kOpacity, 100.0f) / 100.0f, 0.0f, 1.0f);
+    any = true;
+  }
+  if ((mask & (1u << 1)) != 0u && (touched(item, attr::kPositionX) || touched(item, attr::kPositionY))) {
+    const float ux0 = value(item, attr::kPositionX) - base(item, attr::kPositionX, 0.0f);
+    const float uy0 = value(item, attr::kPositionY) - base(item, attr::kPositionY, 0.0f);
+    // In the parent's frame: its world scale and angle (the BSG resolve).
+    float psx = 1.0f, psy = 1.0f, pang = 0.0f;
+    if (const int p = nodes[n].parent; p >= 0 && size_t(p) < n) {
+      psx = nodes[size_t(p)].sx, psy = nodes[size_t(p)].sy, pang = nodes[size_t(p)].angle;
+    }
+    const float ux = ux0 * psx, uy = uy0 * psy;
+    const float c = std::cos(pang), s = std::sin(pang);
+    an.dx = c * ux - s * uy;
+    an.dy = -(s * ux + c * uy);  // canvas y is down
+    any = any || an.dx != 0.0f || an.dy != 0.0f;
+  }
+  if ((mask & (1u << 2)) != 0u && (touched(item, attr::kScaleX) || touched(item, attr::kScaleY))) {
+    const float bx = base(item, attr::kScaleX, 1.0f), by = base(item, attr::kScaleY, 1.0f);
+    an.sx = bx != 0.0f ? value(item, attr::kScaleX, 1.0f) / bx : 1.0f;
+    an.sy = by != 0.0f ? value(item, attr::kScaleY, 1.0f) / by : 1.0f;
+    any = any || an.sx != 1.0f || an.sy != 1.0f;
+  }
+  if ((mask & (1u << 3)) != 0u && touched(item, attr::kRotationZ)) {
+    an.turn = value(item, attr::kRotationZ) - base(item, attr::kRotationZ, 0.0f);
+    any = any || an.turn != 0.0f;
+  }
+  // Colour: a text's own, a model's material's (0..255).
+  const int oi = nodes[n].object_index;
+  const bool is_text = oi >= 0 && sc_->objects[size_t(oi)].kind == fh1::UiObjectKind::kText;
+  if (is_text && (mask & (1u << 4)) != 0u &&
+      (touched(item, attr::kTextColorR) || touched(item, attr::kTextColorG) ||
+       touched(item, attr::kTextColorB) || touched(item, attr::kTextColorA))) {
+    an.colour = std::array<float, 4>{value(item, attr::kTextColorR, 255.0f) / 255.0f,
+                                     value(item, attr::kTextColorG, 255.0f) / 255.0f,
+                                     value(item, attr::kTextColorB, 255.0f) / 255.0f,
+                                     value(item, attr::kTextColorA, 255.0f) / 255.0f};
+    any = true;
+  } else if (const int mi = node_material_[n]; mi >= 0) {
+    const uint32_t mat = uint32_t(mi);
+    const uint16_t mmask = mat < item_mask_.size() ? item_mask_[mat] : 0xFFFFu;
+    if ((mmask & (1u << 5)) != 0u &&
+        (touched(mat, attr::kDiffuseR) || touched(mat, attr::kDiffuseG) || touched(mat, attr::kDiffuseB) ||
+         touched(mat, attr::kDiffuseA))) {
+      const auto& mc = sc_->objects[size_t(oi) + 1].colour;
+      an.colour = std::array<float, 4>{value(mat, attr::kDiffuseR, mc[0] * 255.0f) / 255.0f,
+                                       value(mat, attr::kDiffuseG, mc[1] * 255.0f) / 255.0f,
+                                       value(mat, attr::kDiffuseB, mc[2] * 255.0f) / 255.0f,
+                                       value(mat, attr::kDiffuseA, mc[3] * 255.0f) / 255.0f};
+      any = true;
+    }
+  }
+  if (any) b.anim[int(n)] = an;
 }
 
 void SceneTimeline::apply(SceneBindings& b) const {
   if (!ok()) return;
-  const auto& nodes = sc_->nodes;
-  for (size_t n = 0; n < nodes.size(); ++n) {
-    const int item_i = node_item_[n];
-    if (item_i < 0) continue;
-    const uint32_t item = uint32_t(item_i);
-    NodeAnim an;
-    bool any = false;
-    if (!active(item)) {
-      an.inactive = true;
-      any = true;
-    }
-    if (touched(item, attr::kOpacity)) {
-      an.opacity = std::clamp(value(item, attr::kOpacity, 100.0f) / 100.0f, 0.0f, 1.0f);
-      any = true;
-    }
-    if (touched(item, attr::kPositionX) || touched(item, attr::kPositionY)) {
-      const float ux0 = value(item, attr::kPositionX) - base(item, attr::kPositionX, 0.0f);
-      const float uy0 = value(item, attr::kPositionY) - base(item, attr::kPositionY, 0.0f);
-      // In the parent's frame: its world scale and angle (the BSG resolve).
-      float psx = 1.0f, psy = 1.0f, pang = 0.0f;
-      if (const int p = nodes[n].parent; p >= 0 && size_t(p) < n) {
-        psx = nodes[size_t(p)].sx, psy = nodes[size_t(p)].sy, pang = nodes[size_t(p)].angle;
-      }
-      const float ux = ux0 * psx, uy = uy0 * psy;
-      const float c = std::cos(pang), s = std::sin(pang);
-      an.dx = c * ux - s * uy;
-      an.dy = -(s * ux + c * uy);  // canvas y is down
-      any = any || an.dx != 0.0f || an.dy != 0.0f;
-    }
-    if (touched(item, attr::kScaleX) || touched(item, attr::kScaleY)) {
-      const float bx = base(item, attr::kScaleX, 1.0f), by = base(item, attr::kScaleY, 1.0f);
-      an.sx = bx != 0.0f ? value(item, attr::kScaleX, 1.0f) / bx : 1.0f;
-      an.sy = by != 0.0f ? value(item, attr::kScaleY, 1.0f) / by : 1.0f;
-      any = any || an.sx != 1.0f || an.sy != 1.0f;
-    }
-    if (touched(item, attr::kRotationZ)) {
-      an.turn = value(item, attr::kRotationZ) - base(item, attr::kRotationZ, 0.0f);
-      any = any || an.turn != 0.0f;
-    }
-    // Colour: a text's own, a model's material's (0..255).
-    const int oi = nodes[n].object_index;
-    const bool is_text = oi >= 0 && sc_->objects[size_t(oi)].kind == fh1::UiObjectKind::kText;
-    if (is_text && (touched(item, attr::kTextColorR) || touched(item, attr::kTextColorG) ||
-                    touched(item, attr::kTextColorB) || touched(item, attr::kTextColorA))) {
-      an.colour = std::array<float, 4>{value(item, attr::kTextColorR, 255.0f) / 255.0f,
-                                       value(item, attr::kTextColorG, 255.0f) / 255.0f,
-                                       value(item, attr::kTextColorB, 255.0f) / 255.0f,
-                                       value(item, attr::kTextColorA, 255.0f) / 255.0f};
-      any = true;
-    } else if (const int mi = node_material_[n]; mi >= 0) {
-      const uint32_t mat = uint32_t(mi);
-      if (touched(mat, attr::kDiffuseR) || touched(mat, attr::kDiffuseG) || touched(mat, attr::kDiffuseB) ||
-          touched(mat, attr::kDiffuseA)) {
-        const auto& mc = sc_->objects[size_t(oi) + 1].colour;
-        an.colour = std::array<float, 4>{value(mat, attr::kDiffuseR, mc[0] * 255.0f) / 255.0f,
-                                         value(mat, attr::kDiffuseG, mc[1] * 255.0f) / 255.0f,
-                                         value(mat, attr::kDiffuseB, mc[2] * 255.0f) / 255.0f,
-                                         value(mat, attr::kDiffuseA, mc[3] * 255.0f) / 255.0f};
-        any = true;
-      }
-    }
-    if (any) b.anim[int(n)] = an;
+  const size_t n_nodes = sc_->nodes.size();
+  for (size_t n = 0; n < n_nodes; ++n) apply_node(b, n);
+}
+
+void SceneTimeline::apply_subtree(SceneBindings& b, const SceneDraw& sd, int root) const {
+  if (!ok() || root < 0) return;
+  thread_local std::vector<int> stack;
+  stack.clear();
+  stack.push_back(root);
+  while (!stack.empty()) {
+    const int n = stack.back();
+    stack.pop_back();
+    apply_node(b, size_t(n));
+    for (int c : sd.children_of(n)) stack.push_back(c);
   }
 }
 

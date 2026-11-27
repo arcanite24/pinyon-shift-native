@@ -1494,7 +1494,8 @@ bool DriveSession::step(const drive::Input& user_in) {
             for (const auto& fc : festival_mgr->cars()) check_other(fc.position.x, fc.position.z, fc.speed);
           si.draft_factor = std::max(si.draft_factor, vehicle.draft().strength);
           if (app.race) {
-            std::vector<carview::RaceView::OpponentTag> otags;
+            thread_local std::vector<carview::RaceView::OpponentTag> otags;
+            otags.clear();
             app.race->opponent_tags(otags);
             for (const auto& ot : otags) check_other(ot.x, ot.z, ot.speed);
             const int cur_place = app.race->player_place();

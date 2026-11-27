@@ -606,7 +606,8 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           };
           const drive::Vec3 at = vehicle.position();
           if (app.race) {
-            std::vector<carview::RaceView::OpponentTag> otags;
+            thread_local std::vector<carview::RaceView::OpponentTag> otags;
+            otags.clear();
             app.race->opponent_tags(otags);
             carview::RaceView::OpponentTag stag;
             const bool has_stag = app.race->showcase_tag(stag);

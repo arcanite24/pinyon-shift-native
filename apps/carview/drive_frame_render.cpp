@@ -288,49 +288,51 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                                                uint32_t seed) -> uint8_t {
               if (is_traffic) return 6;  // Traffic
               if (!media_or_name.empty()) {
+                thread_local std::unordered_map<std::string, uint8_t> cache;
+                if (auto it = cache.find(media_or_name); it != cache.end()) return it->second;
                 const std::string s = lower_ascii(media_or_name);
+                uint8_t arch = 255u;
                 if (s.find("leaf") != std::string::npos || s.find("tesla") != std::string::npos ||
                     s.find("electric") != std::string::npos || s.find("prius") != std::string::npos) {
-                  return 5;  // EV
+                  arch = 5;  // EV
+                } else if (s.find("lambo") != std::string::npos || s.find("ferrari") != std::string::npos ||
+                           s.find("enzo") != std::string::npos || s.find("aventador") != std::string::npos ||
+                           s.find("murcielago") != std::string::npos || s.find("gallardo") != std::string::npos ||
+                           s.find("viper") != std::string::npos || s.find("lfa") != std::string::npos ||
+                           s.find("zonda") != std::string::npos || s.find("huayra") != std::string::npos ||
+                           s.find("bugatti") != std::string::npos || s.find("veyron") != std::string::npos ||
+                           s.find("agera") != std::string::npos || s.find("mclaren") != std::string::npos ||
+                           s.find("aston") != std::string::npos || s.find("v10") != std::string::npos ||
+                           s.find("v12") != std::string::npos || s.find("_r8") != std::string::npos) {
+                  arch = 3;  // V10/V12
+                } else if (s.find("skyline") != std::string::npos || s.find("gtr") != std::string::npos ||
+                           s.find("supra") != std::string::npos || s.find("evo") != std::string::npos ||
+                           s.find("impreza") != std::string::npos || s.find("wrx") != std::string::npos ||
+                           s.find("rx7") != std::string::npos || s.find("silvia") != std::string::npos ||
+                           s.find("cosworth") != std::string::npos || s.find("quattro") != std::string::npos ||
+                           s.find("turbo") != std::string::npos || s.find("rs200") != std::string::npos) {
+                  arch = 4;  // Turbo
+                } else if (s.find("mustang") != std::string::npos || s.find("camaro") != std::string::npos ||
+                           s.find("corvette") != std::string::npos || s.find("challenger") != std::string::npos ||
+                           s.find("charger") != std::string::npos || s.find("shelby") != std::string::npos ||
+                           s.find("chevelle") != std::string::npos || s.find("amg") != std::string::npos ||
+                           s.find("sls") != std::string::npos || s.find("ford_gt") != std::string::npos ||
+                           s.find("raptor") != std::string::npos || s.find("v8") != std::string::npos) {
+                  arch = 2;  // V8
+                } else if (s.find("350z") != std::string::npos || s.find("370z") != std::string::npos ||
+                           s.find("porsche") != std::string::npos || s.find("911") != std::string::npos ||
+                           s.find("nsx") != std::string::npos || s.find("vr6") != std::string::npos ||
+                           s.find("v6") != std::string::npos || s.find("m3") != std::string::npos) {
+                  arch = 1;  // V6 / I6
+                } else if (s.find("civic") != std::string::npos || s.find("miata") != std::string::npos ||
+                           s.find("golf") != std::string::npos || s.find("mini") != std::string::npos ||
+                           s.find("focus") != std::string::npos || s.find("elise") != std::string::npos ||
+                           s.find("abarth") != std::string::npos || s.find("s2000") != std::string::npos) {
+                  arch = 0;  // I4
                 }
-                if (s.find("lambo") != std::string::npos || s.find("ferrari") != std::string::npos ||
-                    s.find("enzo") != std::string::npos || s.find("aventador") != std::string::npos ||
-                    s.find("murcielago") != std::string::npos || s.find("gallardo") != std::string::npos ||
-                    s.find("viper") != std::string::npos || s.find("lfa") != std::string::npos ||
-                    s.find("zonda") != std::string::npos || s.find("huayra") != std::string::npos ||
-                    s.find("bugatti") != std::string::npos || s.find("veyron") != std::string::npos ||
-                    s.find("agera") != std::string::npos || s.find("mclaren") != std::string::npos ||
-                    s.find("aston") != std::string::npos || s.find("v10") != std::string::npos ||
-                    s.find("v12") != std::string::npos || s.find("_r8") != std::string::npos) {
-                  return 3;  // V10/V12
-                }
-                if (s.find("skyline") != std::string::npos || s.find("gtr") != std::string::npos ||
-                    s.find("supra") != std::string::npos || s.find("evo") != std::string::npos ||
-                    s.find("impreza") != std::string::npos || s.find("wrx") != std::string::npos ||
-                    s.find("rx7") != std::string::npos || s.find("silvia") != std::string::npos ||
-                    s.find("cosworth") != std::string::npos || s.find("quattro") != std::string::npos ||
-                    s.find("turbo") != std::string::npos || s.find("rs200") != std::string::npos) {
-                  return 4;  // Turbo
-                }
-                if (s.find("mustang") != std::string::npos || s.find("camaro") != std::string::npos ||
-                    s.find("corvette") != std::string::npos || s.find("challenger") != std::string::npos ||
-                    s.find("charger") != std::string::npos || s.find("shelby") != std::string::npos ||
-                    s.find("chevelle") != std::string::npos || s.find("amg") != std::string::npos ||
-                    s.find("sls") != std::string::npos || s.find("ford_gt") != std::string::npos ||
-                    s.find("raptor") != std::string::npos || s.find("v8") != std::string::npos) {
-                  return 2;  // V8
-                }
-                if (s.find("350z") != std::string::npos || s.find("370z") != std::string::npos ||
-                    s.find("porsche") != std::string::npos || s.find("911") != std::string::npos ||
-                    s.find("nsx") != std::string::npos || s.find("vr6") != std::string::npos ||
-                    s.find("v6") != std::string::npos || s.find("m3") != std::string::npos) {
-                  return 1;  // V6 / I6
-                }
-                if (s.find("civic") != std::string::npos || s.find("miata") != std::string::npos ||
-                    s.find("golf") != std::string::npos || s.find("mini") != std::string::npos ||
-                    s.find("focus") != std::string::npos || s.find("elise") != std::string::npos ||
-                    s.find("abarth") != std::string::npos || s.find("s2000") != std::string::npos) {
-                  return 0;  // I4
+                if (arch != 255u) {
+                  cache.emplace(media_or_name, arch);
+                  return arch;
                 }
               }
               return uint8_t(seed % 5u);
@@ -377,7 +379,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               }
             } else if (!rewind_audio_frozen) {
               if (app.race) {
-                std::vector<carview::RaceView::OpponentTag> otags;
+                thread_local std::vector<carview::RaceView::OpponentTag> otags;
+                otags.clear();
                 app.race->opponent_tags(otags);
                 for (size_t oi = 0; oi < otags.size(); ++oi) {
                   const auto& ot = otags[oi];
@@ -1483,7 +1486,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           };
           std::vector<ProjectedTag> projected_tags;
           if (app.race && !grid_menu_open && !app.race->player_finished() && w > 0 && h > 0) {
-            std::vector<carview::RaceView::OpponentTag> otags;
+            thread_local std::vector<carview::RaceView::OpponentTag> otags;
+            otags.clear();
             app.race->opponent_tags(otags);
             const drive::Vec3 at = vehicle.position();
             // The original's race tags read the driver's surname (MALONE; Q361).

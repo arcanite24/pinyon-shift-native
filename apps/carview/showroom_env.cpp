@@ -1157,18 +1157,58 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         const auto& in = instances_[nearby[k].idx];
         in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,
                                           in.has_lamps ? &in.lamps : nullptr);
-        if (draw_counter) *draw_counter += uint32_t(in.car->draw_count());
+        if (draw_counter)
+          *draw_counter += uint32_t(!in.car->far_draws_.empty() ? in.car->far_draws_.size() : in.car->draw_count());
       }
     } else {
-      for (const auto& in : instances_) {
-        if (!in.car) continue;
-        const float dx = in.model[12] - view_frame.eye[0];
-        const float dy = in.model[13] - view_frame.eye[1];
-        const float dz = in.model[14] - view_frame.eye[2];
-        if (dx * dx + dy * dy + dz * dz > 220.0f * 220.0f) continue;
+      // Frustum-cull & distance-cap opponent/traffic cars in rearview mirrors so cars IN FRONT
+      // of the player (behind the mirror camera) are never rasterized into the mirror atlas.
+      float clip_m[5][4];
+      for (int c = 0; c < 4; ++c) {
+        const float x = view_frame.view_projection[c * 4 + 0];
+        const float y = view_frame.view_projection[c * 4 + 1];
+        const float z = view_frame.view_projection[c * 4 + 2];
+        const float wv = view_frame.view_projection[c * 4 + 3];
+        clip_m[0][c] = wv + x;
+        clip_m[1][c] = wv - x;
+        clip_m[2][c] = wv + y;
+        clip_m[3][c] = wv - y;
+        clip_m[4][c] = z;  // standard-Z near plane (mirror atlas uses standard Z [0..1])
+      }
+      struct MirrorCand {
+        float d2;
+        size_t idx;
+      };
+      thread_local std::vector<MirrorCand> mvis;
+      mvis.clear();
+      const float max_mirror_d2 = 160.0f * 160.0f;
+      for (size_t i = 0; i < instances_.size(); ++i) {
+        const auto& in = instances_[i];
+        if (!in.car || in.fade_alpha < 0.2f) continue;
+        const float px = in.model[12], py = in.model[13] + 0.7f, pz = in.model[14];
+        const float dx = px - view_frame.eye[0];
+        const float dy = py - view_frame.eye[1];
+        const float dz = pz - view_frame.eye[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 > max_mirror_d2) continue;
+        bool vis = true;
+        for (const auto& pl : clip_m) {
+          const float r = (std::fabs(pl[0]) + std::fabs(pl[1]) + std::fabs(pl[2])) * 3.5f;
+          if (pl[0] * px + pl[1] * py + pl[2] * pz + pl[3] + r < 0.0f) {
+            vis = false;
+            break;
+          }
+        }
+        if (vis) mvis.push_back({d2, i});
+      }
+      std::sort(mvis.begin(), mvis.end(), [](const MirrorCand& a, const MirrorCand& b) { return a.d2 < b.d2; });
+      const size_t max_mirror_cars = low_memory_mode_ ? 3u : 6u;
+      for (size_t k = 0; k < mvis.size() && k < max_mirror_cars; ++k) {
+        const auto& in = instances_[mvis[k].idx];
         in.car->record_instance_offscreen(cmd, env_car_opaque_, env_frame_set_, in.model,
                                           in.has_lamps ? &in.lamps : nullptr, extra_pipes.car_glass);
-        if (draw_counter) *draw_counter += uint32_t(in.car->draw_count());
+        if (draw_counter)
+          *draw_counter += uint32_t(!in.car->far_draws_.empty() ? in.car->far_draws_.size() : in.car->draw_count());
       }
     }
   }

@@ -77,28 +77,16 @@ void raise_all(SceneScreen& sc, int n) {
 // component or the slide.
 bool play_slide(SceneScreen& sc, SceneTimeline& tl, int root, std::string_view slide, double ms,
                 bool subtree_only = false) {
+  (void)subtree_only;
   const SceneDraw& sd = sc.scene();
-  tl.bind(sd.scene());
+  tl.bind(sd.scene(), /*init_all_components=*/false);
   if (!tl.ok() || !scene_timelines_enabled() || root < 0 || slide.empty()) return false;
   const int comp = tl.item_of_node(root);
   if (comp < 0 || sd.scene()->bgf.find_slide(uint32_t(comp), slide) < 0) return false;
   if (tl.slide(uint32_t(comp)) != slide) tl.go_to(uint32_t(comp), slide);
   tl.set_time(uint32_t(comp), float(ms));
-  SceneBindings all;
-  tl.apply(all);
-  if (!subtree_only) {
-    for (const auto& [n, a] : all.anim) sc.bindings().anim[n] = a;
-    return true;
-  }
-  // Only `root`'s subtree: a second timeline on the same screen would
-  // otherwise write its resting look over the nodes the first one moves.
-  std::vector<int> stack{root};
-  while (!stack.empty()) {
-    const int n = stack.back();
-    stack.pop_back();
-    if (auto it = all.anim.find(n); it != all.anim.end()) sc.bindings().anim[n] = it->second;
-    for (int c : sd.children_of(n)) stack.push_back(c);
-  }
+  // Only apply the animated component's subtree rather than scanning all 1,500+ HUD nodes.
+  tl.apply_subtree(sc.bindings(), sd, root);
   return true;
 }
 

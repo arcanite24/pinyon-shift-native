@@ -395,6 +395,7 @@ class AiField {
   // The plan at line point j (m/s) and, with the planner, the friction
   // circle's share left there for braking (1 without it).
   double plan_point(size_t i, size_t j, double* friction) const;
+  void plan_point_pair(size_t i, size_t j, double& v0, double& v1, double* friction1) const;
 };
 
 }  // namespace drive

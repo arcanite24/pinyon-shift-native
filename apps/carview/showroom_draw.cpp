@@ -464,7 +464,6 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
       }
     }
     if (opaque == glass) return;
-    if (!guest_) r_.mark(cmd, "car_opaque");
     if (pass_mode == 1) return;
   } else if (opaque == glass) {
     return;
@@ -675,10 +674,42 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
       if (in.car) in.car->record_instance(cmd, in.model, in.has_lamps ? &in.lamps : nullptr);
     return;
   }
-  std::vector<Showroom*> groups;
+  thread_local std::vector<Showroom*> groups;
+  groups.clear();
   for (const auto& in : instances_) {
     if (in.car && std::find(groups.begin(), groups.end(), in.car) == groups.end()) groups.push_back(in.car);
   }
+  // Extract 5 camera clip planes (L/R/T/B + near) from view_projection to skip offscreen/behind-camera car groups.
+  float clip_planes[5][4];
+  const float* vp = frame_.view_projection;
+  const bool rev_z = r_.reverse_z();
+  for (int c = 0; c < 4; ++c) {
+    const float x = vp[c * 4 + 0];
+    const float y = vp[c * 4 + 1];
+    const float z = vp[c * 4 + 2];
+    const float wv = vp[c * 4 + 3];
+    clip_planes[0][c] = wv + x;
+    clip_planes[1][c] = wv - x;
+    clip_planes[2][c] = wv + y;
+    clip_planes[3][c] = wv - y;
+    clip_planes[4][c] = rev_z ? (wv - z) : z;  // near plane: z <= w (revZ) or z >= 0 (stdZ)
+  }
+  float clip_rad[5];
+  for (int p = 0; p < 5; ++p) {
+    // Generous 3.5 m bounding-sphere margin around car center so long spoilers/nose never pop.
+    clip_rad[p] = std::sqrt(clip_planes[p][0] * clip_planes[p][0] + clip_planes[p][1] * clip_planes[p][1] +
+                            clip_planes[p][2] * clip_planes[p][2]) * 3.5f;
+  }
+  auto sphere_visible = [&](const float m[16]) -> bool {
+    const float px = m[12], py = m[13] + 0.7f, pz = m[14];
+    for (int p = 0; p < 5; ++p) {
+      if (clip_planes[p][0] * px + clip_planes[p][1] * py + clip_planes[p][2] * pz + clip_planes[p][3] + clip_rad[p] <
+          0.0f) {
+        return false;
+      }
+    }
+    return true;
+  };
   const uint32_t slot_base = r_.frame_slot() * kMaxCarInstances;
   uint32_t offset = 0;
   const VkPipeline op_pipe = (depth_equal && opaque_after_z_) ? opaque_after_z_ : opaque_;
@@ -687,38 +718,49 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
   const int pass_begin = (pass_mode == 2) ? 1 : 0;
   const int pass_end = (pass_mode == 1) ? 1 : 2;
+  thread_local std::vector<float> fade_alphas;
   for (Showroom* g : groups) {
     uint32_t solid_count = 0;
     float min_inst_d2 = 1e18f;
-    std::vector<float> fade_alphas;
+    bool any_visible = false;
+    fade_alphas.clear();
     for (const auto& in : instances_) {
       if (in.car != g) continue;
-      const float dx = in.model[12] - frame_.eye[0];
-      const float dy = in.model[13] - frame_.eye[1];
-      const float dz = in.model[14] - frame_.eye[2];
-      const float d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < min_inst_d2) min_inst_d2 = d2;
+      if (sphere_visible(in.model)) {
+        any_visible = true;
+        const float dx = in.model[12] - frame_.eye[0];
+        const float dy = in.model[13] - frame_.eye[1];
+        const float dz = in.model[14] - frame_.eye[2];
+        const float d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < min_inst_d2) min_inst_d2 = d2;
+      }
       if (in.fade_alpha >= 0.99f && offset + solid_count < kMaxCarInstances) ++solid_count;
     }
     for (const auto& in : instances_)
       if (in.car == g && in.fade_alpha < 0.99f && offset + solid_count + uint32_t(fade_alphas.size()) < kMaxCarInstances)
         fade_alphas.push_back(std::clamp(in.fade_alpha, 0.0f, 1.0f));
     const uint32_t total_count = solid_count + uint32_t(fade_alphas.size());
-    if (total_count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
+    if (total_count == 0) continue;
+    if (!any_visible || g->draws_.empty() || g->material_sets_.empty()) {
+      offset += total_count;
+      continue;
+    }
     // Distance-based runtime LOD detail culling for distant AI/traffic cars:
-    // beyond 55 m (14 m mobile low-mem / 25 m mobile) skip interior, gauges, calipers, and cockpit-only parts;
-    // beyond 145 m (80 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
+    // switch to baked LOD2/3 far_draws_ past 28 m (18 m mobile), skip interior/gauges/calipers
+    // and 2-pass dual_cover lamp overdraw past mid_dist, and drop cover glass past far_dist.
 #ifdef __ANDROID__
     const float mid_dist = low_memory_mode_ ? 12.0f : 22.0f;
     const float far_dist = low_memory_mode_ ? 55.0f : 90.0f;
     const bool use_far_lod = !g->far_draws_.empty() && min_inst_d2 > (low_memory_mode_ ? 12.0f * 12.0f : 18.0f * 18.0f);
 #else
-    const float mid_dist = low_memory_mode_ ? 35.0f : 55.0f;
-    const float far_dist = low_memory_mode_ ? 95.0f : 145.0f;
-    const bool use_far_lod = false;
+    const float mid_dist = low_memory_mode_ ? 18.0f : 24.0f;
+    const float far_dist = low_memory_mode_ ? 75.0f : 100.0f;
+    const bool use_far_lod = !g->far_draws_.empty() && min_inst_d2 > (low_memory_mode_ ? 16.0f * 16.0f : 20.0f * 20.0f);
 #endif
     const bool lod_mid = min_inst_d2 > mid_dist * mid_dist;
     const bool lod_far = min_inst_d2 > far_dist * far_dist;
+    const bool skip_guest_interior = g->guest_ && min_inst_d2 > (16.0f * 16.0f);
+    const bool skip_guest_caliper = g->guest_ && min_inst_d2 > (18.0f * 18.0f);
     const auto& inst_draws = use_far_lod ? g->far_draws_ : g->draws_;
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
@@ -735,12 +777,12 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
             if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
             if (d.glass != (pass == 1)) continue;
             if (d.cockpit_role >= 0) continue;
-            if (lod_mid) {
-              const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
-              if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
-              if (lod_far && d.glass && d.is_cover) continue;
-            }
-            const uint32_t base_fl = uint32_t(std::lround(d.push.params[1]));
+            const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+            if (g->guest_ && kl == 5u) continue;  // kGauge never legible on opponent/traffic cars
+            if ((lod_mid || skip_guest_interior) && kl == 4u) continue;  // kInterior
+            if ((lod_mid || skip_guest_caliper) && kl == 8u) continue;   // kCaliper
+            if (lod_far && d.glass && d.is_cover) continue;
+            const uint32_t base_fl = uint32_t(d.push.params[1]);
             const bool needs_discard = (pass == 0) && (((base_fl & kFlagCutout) != 0u) ||
                                                        (d.is_static_spoke && d.push.params[3] > 0.45f));
             if (pass == 0 && sub_end == 2 && (needs_discard != (sub == 1))) continue;
@@ -753,11 +795,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
               vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
                                       &g->material_sets_[d.descriptor], 0, nullptr);
             }
-            const bool dual_cover =
-#ifdef __ANDROID__
-                !lod_mid &&
-#endif
-                (pass == 1 && d.is_cover && glass_mul_ && glass_add_);
+            const bool dual_cover = !lod_mid && (pass == 1 && d.is_cover && glass_mul_ && glass_add_);
             if (dual_cover) {
               if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
               push.params[2] = 7.0f;
@@ -769,6 +807,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
               vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+              car_draws_ += 2u;
             } else {
               VkPipeline want = pass ? glass_ : (needs_discard ? op_cutout_pipe : op_pipe);
               if (bound_p != want) {
@@ -779,6 +818,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                  sizeof(ShowroomPush), &push);
               vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+              ++car_draws_;
             }
           }
         }
@@ -794,11 +834,11 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
         const float bc[4] = {a, a, a, a};
         vkCmdSetBlendConstants(cmd, bc);
         const uint32_t inst_slot = slot_base + offset + solid_count + fi;
-        for (const auto& d : g->draws_) {
+        for (const auto& d : inst_draws) {
           if (d.detached || d.is_blur_rim) continue;
           if (d.glass && d.is_cover) continue;
           ShowroomPush push = d.push;
-          uint32_t flags = uint32_t(std::lround(push.params[1])) | kFlagInstanced;
+          uint32_t flags = uint32_t(push.params[1]) | kFlagInstanced;
           flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
           push.params[1] = float(flags);
           if (d.descriptor != bound_desc) {
@@ -809,6 +849,7 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
           vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                              sizeof(ShowroomPush), &push);
           vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, inst_slot);
+          ++car_draws_;
         }
       }
     }
@@ -874,7 +915,8 @@ void Showroom::record_instance(VkCommandBuffer cmd, const float m[16], const dri
 void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opaque, VkDescriptorSet view_frame_set,
                                          const float m[16], const drive::LampShaderVectors* lamps,
                                          VkPipeline car_glass) {
-  if (draws_.empty() || material_sets_.empty() || !car_opaque || !view_frame_set) return;
+  const auto& src_draws = !far_draws_.empty() ? far_draws_ : draws_;
+  if (src_draws.empty() || material_sets_.empty() || !car_opaque || !view_frame_set) return;
   const drive::LampShaderVectors& active_lamps = lamps ? *lamps : lamp_vectors_;
   VkDeviceSize zero = 0;
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
@@ -884,10 +926,13 @@ void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opa
   for (int pass = 0; pass < passes; ++pass) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pass == 0 ? car_opaque : car_glass);
     uint32_t bound_desc = UINT32_MAX;
-    for (const auto& d : draws_) {
+    for (const auto& d : src_draws) {
       if (d.detached || d.is_blur_rim) continue;
       if (d.glass != (pass == 1)) continue;
       if (d.cockpit_role >= 0) continue;
+      if (pass == 1 && d.is_cover) continue;
+      const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+      if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
       ShowroomPush push = d.push;
       multiply(m, d.push.model, push.model);
       if (d.lamp_channel != drive::LampChannel::kNone) {
@@ -896,7 +941,7 @@ void Showroom::record_instance_offscreen(VkCommandBuffer cmd, VkPipeline car_opa
           push.tint[0] = rgb[0];
           push.tint[1] = rgb[1];
           push.tint[2] = rgb[2];
-          push.params[1] = float(uint32_t(std::lround(push.params[1])) | kFlagLampEmissive);
+          push.params[1] = float(uint32_t(push.params[1]) | kFlagLampEmissive);
         }
       }
       if (d.descriptor != bound_desc) {

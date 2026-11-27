@@ -27,10 +27,20 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     if (t.name == "livery_mask") livery = texture_index("livery_mask", car_, true);
   for (const auto& part : model.parts) {
     if (std::find(parts.begin(), parts.end(), part.name) == parts.end()) continue;
+    // Guest/opponent cars are never driven from inside their cockpit: skip steering-wheel
+    // and gauge-needle parts so they never bloat opponent vertex/draw lists or RT BLASes.
+    if (options_.prefer_lod1 && guest_) {
+      const std::string p_low = lower(part.name);
+      if (p_low == "steering_wheel" || p_low == "speed_min" || p_low == "tach_min" || p_low == "fuel_min" ||
+          p_low == "boost_min" || p_low == "power_min") {
+        continue;
+      }
+    }
     const int32_t min_lod = options_.prefer_lod1 ? std::max(options_.prefer_min_lod, 1) : 0;
     const int32_t best = best_lod(part, min_lod);
     if (best < 0) continue;
-    const int32_t far_lod = options_.prefer_lod1 ? far_lod_for(part, best) : -1;
+    const bool build_far = options_.prefer_lod1 || guest_;
+    const int32_t far_lod = build_far ? far_lod_for(part, best) : -1;
     const auto& pool = best == 0 ? part.lod0_vertices : part.lod_vertices;
     const int32_t vertex_offset = int32_t(vertices_.size());
     vertices_.insert(vertices_.end(), pool.begin(), pool.end());
@@ -510,7 +520,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
         drawn = true;
       }
     }
-    if (options_.prefer_lod1 && far_lod < 0) {
+    if (build_far && far_lod < 0) {
       for (size_t di = draws_before; di < draws_.size(); ++di) {
         const uint32_t kl = uint32_t(draws_[di].push.params[0] + 0.5f);
         if (kl != 4u && kl != 5u && kl != 8u) far_draws_.push_back(draws_[di]);
@@ -903,44 +913,45 @@ void Showroom::set_cockpit_anim(const drive::CockpitAnimState& anim, bool cockpi
 void Showroom::set_wheel_poses(const WheelPose poses[4]) {
   for (int i = 0; i < 4; ++i) wheel_poses_[i] = poses[i];
   have_wheel_poses_ = true;
-  for (Draw& d : draws_) {
-    if (d.wheel < 0) continue;
-    const WheelPose& p = poses[d.wheel];
-    // Body frame: centre, steer about y, spin about x (outside the right
-    // wheels' half turn, so every wheel rolls forward), then the draw's own
-    // local matrix; then the inverse pose to the model frame.
+  // Precompute per-wheel steer-only and steer*spin matrices in model frame once
+  // instead of re-evaluating sin/cos and 3x 4x4 multiplies per sub-draw.
+  float steer_mat[4][16];
+  float spin_mat[4][16];
+  float blur_factors[4];
+  int blur_tiers[4];
+  for (int wi = 0; wi < 4; ++wi) {
+    const WheelPose& p = poses[wi];
     const float cs = std::cos(p.steer), ss = std::sin(p.steer);
     const float steer[16] = {cs, 0, -ss, 0, 0, 1, 0, 0, ss, 0, cs, 0, p.centre[0], p.centre[1], p.centre[2], 1};
-    float spin[16];
-    identity(spin);
-    if (d.spins) {
-      const float cr = std::cos(p.spin), sr = std::sin(p.spin);
-      spin[5] = cr;
-      spin[6] = sr;
-      spin[9] = -sr;
-      spin[10] = cr;
-    }
-    float a[16], b[16];
-    multiply(steer, spin, a);
-    multiply(a, d.local, b);
-    multiply(body_to_model_, b, d.push.model);
-    if (d.spins) {
-      const int klass = int(d.push.params[0] + 0.5f);
-      if (klass == 7 || klass == 9) {  // kRim or kChrome: blur_rim / chrome_blur_rim blend
-        const float bf = world::wheel_blur_factor(p.omega);
-        d.push.params[3] = bf;
-        if (d.is_blur_rim) {
-          const int tier = std::clamp(int(bf * 3.99f), 0, 3);
-          for (int t = tier; t >= 0; --t) {
-            if (d.blur_descriptors[size_t(t)] != UINT32_MAX) {
-              d.descriptor = d.blur_descriptors[size_t(t)];
-              break;
+    multiply(body_to_model_, steer, steer_mat[wi]);
+    const float cr = std::cos(p.spin), sr = std::sin(p.spin);
+    const float spin[16] = {1, 0, 0, 0, 0, cr, sr, 0, 0, -sr, cr, 0, 0, 0, 0, 1};
+    multiply(steer_mat[wi], spin, spin_mat[wi]);
+    blur_factors[wi] = world::wheel_blur_factor(p.omega);
+    blur_tiers[wi] = std::clamp(int(blur_factors[wi] * 3.99f), 0, 3);
+  }
+  auto update_list = [&](std::vector<Draw>& list) {
+    for (Draw& d : list) {
+      if (d.wheel < 0 || d.wheel >= 4) continue;
+      multiply(d.spins ? spin_mat[d.wheel] : steer_mat[d.wheel], d.local, d.push.model);
+      if (d.spins) {
+        const int klass = int(d.push.params[0] + 0.5f);
+        if (klass == 7 || klass == 9) {  // kRim or kChrome: blur_rim / chrome_blur_rim blend
+          d.push.params[3] = blur_factors[d.wheel];
+          if (d.is_blur_rim) {
+            for (int t = blur_tiers[d.wheel]; t >= 0; --t) {
+              if (d.blur_descriptors[size_t(t)] != UINT32_MAX) {
+                d.descriptor = d.blur_descriptors[size_t(t)];
+                break;
+              }
             }
           }
         }
       }
     }
-  }
+  };
+  update_list(draws_);
+  if (!far_draws_.empty()) update_list(far_draws_);
 }
 
 void Showroom::preview_colour(size_t index) {
