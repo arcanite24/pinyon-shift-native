@@ -76,6 +76,7 @@ struct NodeAnim {
   float sx = 1.0f, sy = 1.0f;    // scale about the node's own position; the subtree follows
   float turn = 0.0f;             // radians (scene y up) about the node's position; the subtree orbits
   std::optional<std::array<float, 4>> colour;  // a model's material or a text's colour, 0..1 rgba
+  std::optional<float> tex0_u, tex0_v, tex0_rot;  // texture 0 animated UV offset / rotation (radians)
 };
 
 // Binding table passed to SceneDraw::draw_subtree().
@@ -142,7 +143,8 @@ class SceneDraw {
   bool model(ui::List& l, const SceneFrame& f, int node, float opacity = 1, float dx = 0, float dy = 0,
              float visible = 0, uint32_t tint = 0, std::string_view tex_override = {},
              float extra_angle = 0.0f, float scale_x = 1.0f, float scale_y = 1.0f, float k = 1.0f, float kbx = 0.0f,
-             float kby = 0.0f, float kt = 0.0f, bool wrap = false, const AnimMap& am = {}) const;
+             float kby = 0.0f, float kt = 0.0f, bool wrap = false, const AnimMap& am = {},
+             const NodeAnim* uv_anim = nullptr) const;
   // A text node's style (font resolved via fontmap.xml, size; the colour given).
   ui::TextStyle style(int node, const SceneFrame& f, uint32_t colour) const;
   // Draws `text` in a text node's box; returns the width drawn, canvas pixels.

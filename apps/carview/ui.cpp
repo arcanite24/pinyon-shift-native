@@ -256,10 +256,12 @@ void List::arc(float cx, float cy, float radius, float width, float a0, float a1
                     {a0, a1, square ? 1.0f : 0.0f, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}, color, color, kArc, 0});
 }
 
-void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint, float radius) {
-  if (turn_a_ != 0) return image_rotated(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0, uv, tint);
+void List::image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint, float radius,
+                 uint32_t flags) {
+  if (turn_a_ != 0)
+    return image_rotated(0.5f * (x0 + x1), 0.5f * (y0 + y1), 0.5f * (x1 - x0), 0.5f * (y1 - y0), 0, uv, tint, flags);
   items_.push_back({{x0, y0, x1, y1}, {radius, 0, 0, 0}, {uv[0], uv[1], uv[2], uv[3]}, {0, 0, 0, 0}, {0, 0, 0, 0},
-                    tint, tint, kImage, 0});
+                    tint, tint, kImage, flags});
 }
 
 void List::fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t color) {
@@ -285,13 +287,47 @@ void List::fullscreen_cover_image(float x0, float y0, float x1, float y1, std::a
                     kUiFlagFullscreenCover});
 }
 
-void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint) {
+void List::image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv, uint32_t tint,
+                         uint32_t flags) {
   if (hw <= 0 || hh <= 0) return;
   if (turn_a_ != 0) turned(cx, cy), angle += turn_a_;
   const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
   const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
   items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey}, {0, hw, hh, angle}, {uv[0], uv[1], uv[2], uv[3]},
-                    {0, 0, 0, 0}, {0, 0, 0, 0}, tint, tint, kImage, 0});
+                    {0, 0, 0, 0}, {0, 0, 0, 0}, tint, tint, kImage, flags});
+}
+
+void List::image_uv(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint,
+                    std::array<float, 4> uv_mat, std::array<float, 2> uv_off, uint32_t flags) {
+  const uint32_t f = flags | kUiFlagUvXform;
+  if (turn_a_ != 0) {
+    float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
+    const float hw = 0.5f * (x1 - x0), hh = 0.5f * (y1 - y0);
+    if (hw <= 0 || hh <= 0) return;
+    turned(cx, cy);
+    const float angle = turn_a_;
+    const float c = std::fabs(std::cos(angle)), s = std::fabs(std::sin(angle));
+    const float ex = c * hw + s * hh + 1, ey = s * hw + c * hh + 1;
+    items_.push_back({{cx - ex, cy - ey, cx + ex, cy + ey},
+                      {0, hw, hh, angle},
+                      {uv[0], uv[1], uv[2], uv[3]},
+                      {uv_off[0], uv_off[1], 0, 0},
+                      {uv_mat[0], uv_mat[1], uv_mat[2], uv_mat[3]},
+                      tint,
+                      tint,
+                      kImage,
+                      f});
+    return;
+  }
+  items_.push_back({{x0, y0, x1, y1},
+                    {0, 0, 0, 0},
+                    {uv[0], uv[1], uv[2], uv[3]},
+                    {uv_off[0], uv_off[1], 0, 0},
+                    {uv_mat[0], uv_mat[1], uv_mat[2], uv_mat[3]},
+                    tint,
+                    tint,
+                    kImage,
+                    f});
 }
 
 void List::image_masked(float x0, float y0, float x1, float y1, std::array<float, 4> uv0, std::array<float, 4> uv1,
@@ -1892,6 +1928,30 @@ void image_masked_rgba(const Instance& it, float px, float py, float c[4], float
   for (int ch = 0; ch < 4; ++ch) c[ch] *= s0[ch] * s1[ch];
 }
 
+void image_uv_rgba(const Instance& it, float px, float py, float c[4], float& edge) {
+  float tx = 0.0f, ty = 0.0f;
+  image_t(it, px, py, tx, ty, edge);
+  if (edge <= 0.0f) {
+    c[3] = 0.0f;
+    return;
+  }
+  float tu = it.m[0] * tx + it.m[1] * ty + it.r[0];
+  float tv = it.m[2] * tx + it.m[3] * ty + it.r[1];
+  float s[4] = {0, 0, 0, 0};
+  if ((it.flags & kMaskRepeat) != 0u) {
+    tu = tu - std::floor(tu);
+    tv = tv - std::floor(tv);
+    sample_atlas_rect(it.q, tu, tv, s);
+  } else if ((it.flags & kMaskBorderTransparent) != 0u) {
+    if (tu >= 0.0f && tu <= 1.0f && tv >= 0.0f && tv <= 1.0f) {
+      sample_atlas_rect(it.q, tu, tv, s);
+    }
+  } else {
+    sample_atlas_rect(it.q, std::clamp(tu, 0.0f, 1.0f), std::clamp(tv, 0.0f, 1.0f), s);
+  }
+  for (int ch = 0; ch < 4; ++ch) c[ch] *= s[ch];
+}
+
 // An image quad's texel colour (bilinear, clamped to the image's atlas rect), times the tint in `c`.
 void image_rgb(const Instance& it, float px, float py, float c[4]) {
   float tx, ty, edge;
@@ -1908,6 +1968,7 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
   for (const Instance& it : items) {
     const int x0 = std::max(0, int(std::floor(it.rect[0]))), x1 = std::min(int(width), int(std::ceil(it.rect[2])));
     const int y0 = std::max(0, int(std::floor(it.rect[1]))), y1 = std::min(int(height), int(std::ceil(it.rect[3])));
+    const bool additive = (it.flags & kUiFlagAdditive) != 0u;
     for (int y = y0; y < y1; ++y)
       for (int x = x0; x < x1; ++x) {
         const float px = float(x) + 0.5f, py = float(y) + 0.5f;
@@ -1922,6 +1983,15 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
           image_masked_rgba(it, px, py, c, edge);
           a = c[3] * edge;
           if (a <= 0.0f) continue;
+        } else if (it.kind == kImage && (it.flags & kUiFlagUvXform) != 0u) {
+          for (int ch = 0; ch < 4; ++ch) {
+            const int shift = ch == 3 ? 24 : 16 - 8 * ch;
+            c[ch] = to_linear_unit(it.color, shift);
+          }
+          float edge = 1.0f;
+          image_uv_rgba(it, px, py, c, edge);
+          a = c[3] * edge;
+          if (a <= 0.0f) continue;
         } else {
           float mix;
           const float cov = coverage(it, px, py, mix);
@@ -1934,8 +2004,13 @@ void rasterize(std::span<const Instance> items, std::vector<uint8_t>& out, uint3
           a = c[3] * cov;
         }
         uint8_t* p = &out[(size_t(y) * width + size_t(x)) * 4];
-        for (int ch = 0; ch < 3; ++ch) p[ch] = uint8_t(std::lround(c[ch] * 255 * a + p[ch] * (1 - a)));
-        p[3] = uint8_t(std::lround(255 * a + p[3] * (1 - a)));
+        if (additive) {
+          for (int ch = 0; ch < 3; ++ch)
+            p[ch] = uint8_t(std::min(255, int(p[ch]) + int(std::lround(c[ch] * 255 * a))));
+        } else {
+          for (int ch = 0; ch < 3; ++ch) p[ch] = uint8_t(std::lround(c[ch] * 255 * a + p[ch] * (1 - a)));
+          p[3] = uint8_t(std::lround(255 * a + p[3] * (1 - a)));
+        }
       }
   }
 }

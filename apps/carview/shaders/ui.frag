@@ -75,19 +75,37 @@ void main() {
     uint first = uint(q.x), count = uint(q.y);
     for (uint i = first; i < first + count; ++i) best = min(best, seg_dist(u, segments[i]));
     cov = clamp(0.5 - (best - p.w) * p.z, 0.0, 1.0);
-  } else if (kind == 4u && p.y > 0.0) {
-    // Rotated: centre the rect's, half size p.yz, p.w radians clockwise.
-    vec2 d = pix - 0.5 * (rect.xy + rect.zw);
-    float cs = cos(p.w), sn = sin(p.w);
-    vec2 lp = vec2(cs * d.x + sn * d.y, -sn * d.x + cs * d.y);
-    vec2 t = lp / (2.0 * p.yz) + 0.5;
-    color = texture(atlas, mix(q.xy, q.zw, clamp(t, 0.0, 1.0))) * c0;
-    vec2 e = abs(lp) - p.yz;
-    cov = clamp(0.5 - max(e.x, e.y), 0.0, 1.0);
   } else if (kind == 4u) {
-    vec2 t = (pix - rect.xy) / max(rect.zw - rect.xy, vec2(1.0));
-    color = texture(atlas, mix(q.xy, q.zw, t)) * c0;
-    cov = clamp(0.5 - round_rect(pix, rect, p.x, 0.0), 0.0, 1.0);
+    vec2 t;
+    if (p.y > 0.0) {
+      // Rotated: centre the rect's, half size p.yz, p.w radians clockwise.
+      vec2 d = pix - 0.5 * (rect.xy + rect.zw);
+      float cs = cos(p.w), sn = sin(p.w);
+      vec2 lp = vec2(cs * d.x + sn * d.y, -sn * d.x + cs * d.y);
+      t = lp / (2.0 * p.yz) + 0.5;
+      vec2 e = abs(lp) - p.yz;
+      cov = clamp(0.5 - max(e.x, e.y), 0.0, 1.0);
+    } else {
+      t = (pix - rect.xy) / max(rect.zw - rect.xy, vec2(1.0));
+      cov = clamp(0.5 - round_rect(pix, rect, p.x, 0.0), 0.0, 1.0);
+    }
+    uint flags = cw.w;
+    if ((flags & 64u) != 0u) {
+      vec2 tuv = vec2(m.x * t.x + m.y * t.y + r.x, m.z * t.x + m.w * t.y + r.y);
+      if ((flags & 2u) != 0u) {
+        color = texture(atlas, mix(q.xy, q.zw, fract(tuv))) * c0;
+      } else if ((flags & 1u) != 0u) {
+        if (tuv.x < 0.0 || tuv.x > 1.0 || tuv.y < 0.0 || tuv.y > 1.0) {
+          color = vec4(0.0);
+        } else {
+          color = texture(atlas, mix(q.xy, q.zw, tuv)) * c0;
+        }
+      } else {
+        color = texture(atlas, mix(q.xy, q.zw, clamp(tuv, 0.0, 1.0))) * c0;
+      }
+    } else {
+      color = texture(atlas, mix(q.xy, q.zw, clamp(t, 0.0, 1.0))) * c0;
+    }
   } else if (kind == 5u) {
     // Two-texture masked / crop multiply mode (FH1 UI4 2,455 two-texture materials):
     // color = material_rgba * tex0(uv0_transformed) * tex1(uv1).
@@ -121,5 +139,6 @@ void main() {
     color = c0 * s0 * s1;
   }
   float a = color.a * cov;
-  out_color = vec4(color.rgb * a, a);
+  bool additive = (cw.w & 32u) != 0u;
+  out_color = vec4(color.rgb * a, additive ? 0.0 : a);
 }

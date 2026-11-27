@@ -117,10 +117,14 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
       case UiObjectKind::kCamera: r.skip(64); break;
       case UiObjectKind::kLayer: r.skip(24); break;
       case UiObjectKind::kModel: o.geometry = r.u32(), r.f32(); break;
-      case UiObjectKind::kMaterial:
+      case UiObjectKind::kMaterial: {
         for (auto& c : o.colour) c = r.f32();
-        r.skip(104 - 16);
+        r.skip(76);
+        const uint32_t blend_dst = r.u32();
+        o.additive = (blend_dst == 1u);
+        r.skip(8);
         break;
+      }
       case UiObjectKind::kLight: r.skip(104); break;
       case UiObjectKind::kTexture:
         o.owner = r.u32();

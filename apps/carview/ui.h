@@ -52,6 +52,8 @@ inline constexpr uint32_t kMaskRepeat = 1u << 1;             // tiled pattern: f
 inline constexpr uint32_t kUiFlagFullscreen = 1u << 2;       // expand to full physical viewport (ignores HUD 16:9 lock/safe-zone)
 inline constexpr uint32_t kUiFlagFullscreenCover = 1u << 3;  // full physical viewport cover-fill (m = full uv, r[0] = aspect)
 inline constexpr uint32_t kUiFlagFullscreenX = 1u << 4;      // expand X to full physical viewport width while preserving Y
+inline constexpr uint32_t kUiFlagAdditive = 1u << 5;         // additive blend (out.a = 0 in premultiplied pipeline)
+inline constexpr uint32_t kUiFlagUvXform = 1u << 6;          // kImage 2D affine UV matrix: m=(a,b,c,d), r=(ou,ov,0,0)
 
 enum Kind : uint32_t {
   kRoundRect = 0,    // p: radius, stroke (0 fills), inset, -; q: softness; colour top to color2 bottom
@@ -213,7 +215,7 @@ class List {
   // `square`: flat radial ends (else round caps).
   void arc(float cx, float cy, float radius, float width, float a0, float a1, uint32_t color, bool square = false);
   void image(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint = rgba(255, 255, 255),
-             float radius = 0);
+             float radius = 0, uint32_t flags = 0);
   // Full-viewport backdrop / cover-fill video quad: fills the physical screen
   // edge-to-edge even when HUD 16:9 aspect lock or safe-zone margins are active.
   void fullscreen_backdrop(float x0, float y0, float x1, float y1, uint32_t color);
@@ -224,7 +226,11 @@ class List {
   // An image quad centred at (cx, cy), half size hw x hh, turned `angle`
   // radians clockwise (y down).
   void image_rotated(float cx, float cy, float hw, float hh, float angle, std::array<float, 4> uv,
-                     uint32_t tint = rgba(255, 255, 255));
+                     uint32_t tint = rgba(255, 255, 255), uint32_t flags = 0);
+  // Single-texture quad with 2D affine UV transform:
+  // u = uv_mat[0]*t.x + uv_mat[1]*t.y + uv_off[0], v = uv_mat[2]*t.x + uv_mat[3]*t.y + uv_off[1].
+  void image_uv(float x0, float y0, float x1, float y1, std::array<float, 4> uv, uint32_t tint,
+                std::array<float, 4> uv_mat, std::array<float, 2> uv_off, uint32_t flags = 0);
   // Two-texture masked / crop multiply image: color = tint * tex0(t*su+ou, t*sv+ov) * tex1(t).
   void image_masked(float x0, float y0, float x1, float y1, std::array<float, 4> uv0, std::array<float, 4> uv1,
                     uint32_t tint = rgba(255, 255, 255), std::array<float, 4> uv0_xform = {1, 1, 0, 0},

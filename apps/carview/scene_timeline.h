@@ -108,8 +108,9 @@ class SceneTimeline {
   // Per item: its component (from the Master Slides, -1 if none) and node.
   std::vector<int32_t> member_of_;
   std::vector<int> item_node_, node_item_;
-  // Per node: its material's item (a model's colour), or -1.
+  // Per node: its material's item (a model's colour) and first texture item (UV curves), or -1.
   std::vector<int> node_material_;
+  std::vector<int> node_tex0_;
   // Per slide: its tracks by item.
   std::vector<std::unordered_map<uint32_t, int>> slide_track_;
   // Items some non-master slide of their component lists (slide elements).

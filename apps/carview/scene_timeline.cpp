@@ -53,6 +53,7 @@ void SceneTimeline::reset(bool init_all_components) {
   item_node_.clear();
   node_item_.clear();
   node_material_.clear();
+  node_tex0_.clear();
   slide_track_.clear();
   in_child_slide_.clear();
   action_slides_.clear();
@@ -75,19 +76,27 @@ void SceneTimeline::reset(bool init_all_components) {
   item_node_.assign(d.items.size(), -1);
   node_item_.assign(sc_->nodes.size(), -1);
   node_material_.assign(sc_->nodes.size(), -1);
+  node_tex0_.assign(sc_->nodes.size(), -1);
   for (size_t n = 0; n < sc_->nodes.size(); ++n) {
     const fh1::UiNode& node = sc_->nodes[n];
     if (auto it = obj_item.find(node.object); it != obj_item.end()) {
       node_item_[n] = it->second;
       if (item_node_[size_t(it->second)] < 0) item_node_[size_t(it->second)] = int(n);
     }
-    // A model's material follows its object in the FBF.
+    // A model's material and textures follow its object in the FBF.
     const int oi = node.object_index;
     if (oi >= 0 && sc_->objects[size_t(oi)].kind == fh1::UiObjectKind::kModel &&
         size_t(oi) + 1 < sc_->objects.size() &&
         sc_->objects[size_t(oi) + 1].kind == fh1::UiObjectKind::kMaterial) {
-      if (auto it = obj_item.find(sc_->objects[size_t(oi) + 1].id); it != obj_item.end())
+      const uint32_t mat_id = sc_->objects[size_t(oi) + 1].id;
+      if (auto it = obj_item.find(mat_id); it != obj_item.end())
         node_material_[n] = it->second;
+      if (size_t(oi) + 2 < sc_->objects.size() &&
+          sc_->objects[size_t(oi) + 2].kind == fh1::UiObjectKind::kTexture &&
+          sc_->objects[size_t(oi) + 2].owner == mat_id) {
+        if (auto it = obj_item.find(sc_->objects[size_t(oi) + 2].id); it != obj_item.end())
+          node_tex0_[n] = it->second;
+      }
     }
   }
 
@@ -158,6 +167,7 @@ uint16_t SceneTimeline::attr_bit(uint32_t a) {
     return 1u << 4;
   if (a == attr::kDiffuseR || a == attr::kDiffuseG || a == attr::kDiffuseB || a == attr::kDiffuseA) return 1u << 5;
   if (a == attr::kStartTime || a == attr::kEndTime) return 1u << 6;
+  if (a == attr::kPositionU || a == attr::kPositionV || a == attr::kRotationUV) return 1u << 7;
   return 0u;
 }
 
@@ -440,6 +450,24 @@ void SceneTimeline::apply_node(SceneBindings& b, size_t n) const {
                                        value(mat, attr::kDiffuseB, mc[2] * 255.0f) / 255.0f,
                                        value(mat, attr::kDiffuseA, mc[3] * 255.0f) / 255.0f};
       any = true;
+    }
+  }
+  if (const int ti = node_tex0_[n]; ti >= 0) {
+    const uint32_t tex = uint32_t(ti);
+    const uint16_t tmask = tex < item_mask_.size() ? item_mask_[tex] : 0xFFFFu;
+    if ((tmask & (1u << 7)) != 0u) {
+      if (touched(tex, attr::kPositionU)) {
+        an.tex0_u = value(tex, attr::kPositionU, 0.0f);
+        any = true;
+      }
+      if (touched(tex, attr::kPositionV)) {
+        an.tex0_v = value(tex, attr::kPositionV, 0.0f);
+        any = true;
+      }
+      if (touched(tex, attr::kRotationUV)) {
+        an.tex0_rot = value(tex, attr::kRotationUV, 0.0f);
+        any = true;
+      }
     }
   }
   if (any) b.anim[int(n)] = an;

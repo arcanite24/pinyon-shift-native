@@ -44,8 +44,9 @@ struct UiObject {
   std::array<float, 4> text_colour{1.0f, 1.0f, 1.0f, 1.0f};
   // kModel.
   uint32_t geometry = 0;
-  // kMaterial: the colour (probable).
+  // kMaterial: the colour (probable) and additive blend flag (dst blend == 1).
   std::array<float, 4> colour{1, 1, 1, 1};
+  bool additive = false;
   // kTexture: the owning material's id, the path, the texture matrix
   // (16 floats as stored), and the 52-byte sampler tail (13 words).
   uint32_t owner = 0;
@@ -150,6 +151,7 @@ inline constexpr uint32_t kTextColorB = ui_attr_hash("textcolor.b");
 inline constexpr uint32_t kTextColorA = ui_attr_hash("textcolor.a");
 inline constexpr uint32_t kPositionU = ui_attr_hash("positionu");  // texture offset
 inline constexpr uint32_t kPositionV = ui_attr_hash("positionv");
+inline constexpr uint32_t kRotationUV = ui_attr_hash("rotationuv");  // texture UV rotation (radians)
 }  // namespace ui_attr
 
 // A tagged property value: the attribute (27 bits), its type (the tag's top 5

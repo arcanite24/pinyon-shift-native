@@ -3009,7 +3009,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 12728,
+      "spirv_bytes": 14484,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
