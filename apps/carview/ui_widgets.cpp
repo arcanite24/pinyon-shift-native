@@ -16,6 +16,7 @@
 #include "frontend_screens.h"
 #include "game_hud.h"
 #include "race/screen_fade.h"
+#include "scene_screen.h"
 #include "settings_page.h"
 #include "ui4_chrome.h"
 
@@ -127,15 +128,107 @@ void draw_radio_popup_gpu(ui::List& l, const RadioPopupGpuState& st, float scree
     }
   }
 
-  std::array<float, 4> logo_uv{};
-  const std::string tex = radio_logo_texture_path(st.station_name, st.off);
-  const bool have_logo = ui_texture(tex, logo_uv);
-  const float logo_w = 168.0f * s;
-  const float logo_h = 80.0f * s;
-
   const std::string title = st.off ? (st.station_label.empty() ? std::string("RADIO OFF") : st.station_label)
                                    : st.title;
   const std::string artist = st.off ? std::string{} : st.artist;
+  const std::string tex = radio_logo_texture_path(st.station_name, st.off);
+
+  // Bind authentic H_RADIO_ONLY/RadioStation scene when loaded.
+  {
+    SceneScreen sc("H_RADIO_ONLY");
+    const int rs = sc.ok() ? sc.node("RadioStation") : -1;
+    if (sc.ok() && rs >= 0) {
+      const SceneDraw& sd = sc.scene();
+      const SceneFrame f = SceneScreen::frame(screen_w, screen_h);
+      sc.bindings().fit_text = false;
+      sc.bindings().opacity = a;
+      sc.hide(sc.node("HUDInstruction"));
+      const int content = sc.node("CompleteElement/Content", rs);
+      if (content >= 0) sc.show(content);
+      const int logos = sc.node("RSLogos", content);
+      const int off_grp = sc.node("RadioOffIcon", logos);
+      if (st.off) {
+        if (logos >= 0) {
+          for (int c : sd.children_of(logos))
+            if (c != off_grp) sc.hide(c);
+        }
+        if (off_grp >= 0) {
+          sc.show(off_grp);
+          const int ot = sc.node("Text", off_grp);
+          const int ob = sc.node("Bar", off_grp);
+          sc.text(ot, title);
+          if (ob >= 0 && ot >= 0) {
+            const float tw = sd.measure(ot, title);
+            const auto br = sd.rect(ob);
+            const float want_l = sd.at(ot)[0] - tw - 18.0f;
+            sc.at(ob).dx = want_l - br[0];
+            sc.at(ob).visible_width = std::clamp(tw + 32.0f, 80.0f, br[2] - br[0]);
+            sc.at(ob).tint = ui4::kPillGrey;
+          }
+        }
+        sc.hide(sc.node("Track", content));
+        sc.hide(sc.node("Artist", content));
+      } else {
+        sc.hide(off_grp);
+        if (logos >= 0) {
+          bool set_logo = false;
+          for (int c : sd.children_of(logos)) {
+            if (c == off_grp) continue;
+            if (!set_logo) {
+              sc.show(c);
+              if (!tex.empty()) sc.at(c).texture = tex;
+              set_logo = true;
+            } else {
+              sc.hide(c);
+            }
+          }
+        }
+        const int track = sc.node("Track", content);
+        if (track >= 0) {
+          if (!title.empty()) {
+            const int tt = sc.node("Text", track);
+            const int tb = sc.node("Bar", track);
+            sc.text(tt, title);
+            if (tb >= 0 && tt >= 0) {
+              const float tw = sd.measure(tt, title);
+              const auto br = sd.rect(tb);
+              const float want_l = sd.at(tt)[0] - tw - 18.0f;
+              sc.at(tb).dx = want_l - br[0];
+              sc.at(tb).visible_width = std::clamp(tw + 32.0f, 80.0f, br[2] - br[0]);
+              sc.at(tb).tint = ui4::kPillGrey;
+            }
+          } else {
+            sc.hide(track);
+          }
+        }
+        const int art = sc.node("Artist", content);
+        if (art >= 0) {
+          if (!artist.empty()) {
+            const int at = sc.node("Text", art);
+            const int ab = sc.node("Bar", art);
+            sc.text(at, artist);
+            if (ab >= 0 && at >= 0) {
+              const float aw = sd.measure(at, artist);
+              const auto br = sd.rect(ab);
+              const float want_l = sd.at(at)[0] - aw - 18.0f;
+              sc.at(ab).dx = want_l - br[0];
+              sc.at(ab).visible_width = std::clamp(aw + 32.0f, 80.0f, br[2] - br[0]);
+              sc.at(ab).tint = kPink;
+            }
+          } else {
+            sc.hide(art);
+          }
+        }
+      }
+      sc.draw(l, f, rs);
+      return;
+    }
+  }
+
+  std::array<float, 4> logo_uv{};
+  const bool have_logo = ui_texture(tex, logo_uv);
+  const float logo_w = 168.0f * s;
+  const float logo_h = 80.0f * s;
 
   ui::TextStyle title_ts = ui4::style(ui::Font::kB, 15.0f * s, ui::fade(kWhite, a), ui::Align::kRight, true);
   ui::TextStyle artist_ts = ui4::style(ui::Font::kB, 15.0f * s, ui::fade(kWhite, a), ui::Align::kRight, true);

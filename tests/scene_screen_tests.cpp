@@ -232,6 +232,29 @@ int main() {
       check(o && o->text_has_shadow && o->text_shadow_colour[3] > 0.1f,
             std::string("947_HUD: FBF drop shadow parsed on ") + p);
     }
+    // FBF material additive blend (w[23] == 1) decoded on CircleFlash.
+    {
+      const int cf = sd.find_path("PopularityBar/CircleFlash");
+      bool found_add = false;
+      if (cf >= 0) {
+        for (int c : sd.children_of(cf)) {
+          const int oi = sd.scene()->nodes[size_t(c)].object_index;
+          if (oi >= 0 && size_t(oi) + 1 < sd.scene()->objects.size() &&
+              sd.scene()->objects[size_t(oi) + 1].kind == fh1::UiObjectKind::kMaterial &&
+              sd.scene()->objects[size_t(oi) + 1].additive) {
+            found_add = true;
+            break;
+          }
+        }
+        const int cf_oi = sd.scene()->nodes[size_t(cf)].object_index;
+        if (!found_add && cf_oi >= 0 && size_t(cf_oi) + 1 < sd.scene()->objects.size() &&
+            sd.scene()->objects[size_t(cf_oi) + 1].kind == fh1::UiObjectKind::kMaterial &&
+            sd.scene()->objects[size_t(cf_oi) + 1].additive) {
+          found_add = true;
+        }
+      }
+      check(found_add, "947_HUD: CircleFlash material parsed as additive blend");
+    }
   }
   // BGF base textcolor defaults decoded on H_EVENT_SUMMARY via UiOverlay::load_scene.
   {
@@ -1006,6 +1029,26 @@ int main() {
     }
   }
 
+  // P2 disc scenes ported to SceneScreen: verify every scene loads cleanly and
+  // exposes the nodes bound by the engine.
+  {
+    const auto check_node = [&](const char* scene, const char* node) {
+      const SceneDraw sd(carview::ui_scene(scene));
+      check(sd.ok() && sd.find_path(node) >= 0, std::string("p2 scene ") + scene + " has " + node);
+    };
+    check_node("H_POST_RACE_RESULTS", "TitleTape/Group/TitleTapeText");
+    check_node("H_POST_RACE_RESULTS", "DRIVER_LIST/Group/I_LIST_ITEM/TEXT_PLAYER");
+    check_node("947_HUD", "Missions/MissionCountdown/Group/TEXT_TIME");
+    check_node("947_HUD", "Missions/MissionsScoring/MISSIONS_SCORING/Target/TARGET_NAME");
+    check_node("H_RADIO_ONLY", "RadioStation/Track");
+    check_node("H_RADIO_ONLY", "RadioStation/RSLogos");
+    check_node("709_PHOTO_MODE", "Photo_Reticle");
+    check_node("926_REPLAY_HUD", "CURRENT_PLAYER/TEXT_CURRENT_PLAYER_NAME");
+    check_node("527_C_UPG_UPGRADES", "TitleTape/Group/TitleTapeText");
+    check_node("501_C_LIV_COLOR", "Group_BLADE/Group_BG/TitleTape/Group/TitleTapeText");
+    check_node("506_C_LIV_LAYER_SELECT", "CLIPBOARD");
+  }
+
   // 5. Optional renders.
   if (const char* shot_env = std::getenv("SHIFT_SCENE_SCREEN_SHOT_DIR"); shot_env && *shot_env) {
     const std::filesystem::path out_dir = shot_env;
@@ -1264,6 +1307,22 @@ int main() {
       hud_shot("hud_speed_trap.png", "05_roam_hud_day_drive_orig.png", trap_d);
     }
 
+    // PR Stunt Mission HUD (947_HUD Missions/MissionCountdown + MissionsScoring).
+    {
+      carview::PrStuntHud pr;
+      pr.active = true;
+      pr.kind_badge = "SPEED STUNT";
+      pr.title = "RED ROCK SPEED TRAP";
+      pr.instruction = "Hit 120 MPH through the speed trap";
+      pr.status_line = "112 / 120 MPH";
+      pr.time_remaining_s = 34.5;
+      pr.progress = 0.72;
+      pr.in_zone = true;
+      carview::DriveHud pr_d = roam;
+      pr_d.pr_stunt = &pr;
+      hud_shot("hud_mission_pr.png", "05_roam_hud_day_drive_orig.png", pr_d);
+    }
+
     // A sprint (16_race_hud_orig.png) and a circuit (the oracle's
     // race-hud-notification.png, by absolute path in SHIFT_SCENE_SCREEN_ORACLE).
     carview::RaceHud sprint;
@@ -1274,6 +1333,7 @@ int main() {
     for (int i = 0; i < 8; ++i) {
       carview::RaceHudRow row;
       row.name = names[i], row.place = i + 1, row.player = i == 7;
+      row.gap = i == 0 ? 0.0 : 0.45 * double(i) + 0.12 * double(i * i);
       sprint.rows.push_back(row);
     }
     carview::DriveHud race_d = roam;
@@ -1337,6 +1397,7 @@ int main() {
     for (int i = 0; i < 8; ++i) {
       carview::RaceHudRow row;
       row.name = cnames[i], row.place = i + 1, row.player = i == 3;
+      row.gap = i == 0 ? 0.0 : 0.62 * double(i) + 0.08 * double(i * i);
       circuit.rows.push_back(row);
     }
     carview::DriveHud circuit_d = r34;
@@ -1483,6 +1544,27 @@ int main() {
       rr.screen = S::kStayInCar, rr.stay_car = "Nissan GT-R R34";
       hud_shot("race_stay_in_car.png", "18_post_race_stay_in_car_orig.png", rd);
 
+      // Post-race results leaderboard (H_POST_RACE_RESULTS via SceneScreen).
+      {
+        carview::RaceHud res = sprint;
+        res.phase = carview::RaceHud::kFinished;
+        res.screen = S::kNone;
+        res.results_table = true;
+        res.event = "GLADSTONE CANYON RUN";
+        res.event_type = "FESTIVAL RACE";
+        for (size_t i = 0; i < res.rows.size(); ++i) {
+          res.rows[i].finished = true;
+          res.rows[i].time = 132.450 + double(i) * 1.375;
+          res.rows[i].best_lap = 43.120 + double(i) * 0.42;
+          res.rows[i].car = "2012 Nissan GT-R";
+          res.rows[i].car_class = "A";
+          res.rows[i].pi = 590 - int(i) * 4;
+        }
+        carview::DriveHud res_d = roam;
+        res_d.race = &res;
+        hud_shot("race_results.png", "17_results_cash_reward_orig.png", res_d);
+      }
+
       // A free-roam head-to-head (race_encounters.xml): the intro on
       // H_RACE_ENCOUNTER, then a win's banner with A CONTINUE alone.
       carview::RaceHud hh;
@@ -1565,9 +1647,10 @@ int main() {
     {
       carview::TitleScreenHud ts;
       ts.active = true;
+      ts.menu.update(1.5);
       carview::DriveHud td;
       td.title_screen = &ts;
-      td.time = 1.0;
+      td.time = 1.5;
       hud_shot("title_pressstart.png", "01_title_pressstart_orig.png", td);
       ts.menu.show_menu();
       ts.menu.update(0.8);  // the Menu slide's fade in (0..0.507 s) done, before the Focused pulse
@@ -1802,6 +1885,8 @@ int main() {
       cl.details.car_id = 1105;
       cl.details.model = "DB5 Vantage";
       cl.details.year_make = "1964 Aston Martin";
+      cl.details.flag =
+          carview::ui_texture_key(R"(GAME:\Media\UI\Textures\UI4\Logos\Country_Flags\L_FLA_UnitedKingdom_flag.tga)");
       cl.details.car_class = "C";
       cl.details.pi = 446;
       cl.details.drive_type = 2;

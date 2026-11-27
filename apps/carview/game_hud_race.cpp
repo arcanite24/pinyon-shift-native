@@ -1,6 +1,7 @@
 #include "game_hud_internal.h"
 #include "hud_screen.h"
 #include "race/campaign_flow.h"
+#include "scene_screen.h"
 
 #include <cstdlib>
 
@@ -625,7 +626,7 @@ void race_hud(ui::List& l, const RaceHud& r, const Layout& g, const HudToggles& 
 // node turned by its own rotation; the rows' text from the session. The
 // scene's opacities are its intro's start (0): drawn at full.
 void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
-  const SceneDraw sc = resolve_scene_draw("H_POST_RACE_RESULTS", true);
+  SceneScreen sc("H_POST_RACE_RESULTS");
   const float s = g.s;
   const std::string event_title = resolve_hud_event_title(r);
   ui4::button_bar(l, {{"B", str("HelpButtons", "IDS_Back", "BACK")}}, g.w, g.h);
@@ -687,32 +688,33 @@ void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
     }
     return;
   }
-  const SceneFrame f{0.5f * g.w - 640 * s, 0.5f * g.h - 360 * s, s};
-  {
-    SceneBindings bgb;
-    bgb.ignore_zero_alpha = true;
-    bgb.opacity = 0.5f;
-    sc.draw_subtree(l, f, "BG_Noise", bgb);
-  }
-  // The title on its tape: the tapes cropped to the text (ours: a 40 px
-  // margin past the text, as the frame shows).
-  const int tape = sc.find("TitleTape");
-  {
-    const int tt = sc.find("TitleTapeText", tape);
-    const std::string title = str("ScreenTitles", "IDS_PostRace_RaceResults", "RACE RESULTS");
-    const float tw = ui::List::measure(title, sc.style(tt, f, kText)) / s;
-    const float tx = sc.at(tt)[0];
-    sc.model(l, f, sc.find("Clipon_2", tape));
-    for (const char* name : {"Smudge_Tape", "Crisp_Tape"}) {
-      const int n = sc.find(name, tape);
-      sc.model(l, f, n, 1, 0, 0, tx + tw + 40 - sc.rect(n)[0]);
+  const SceneDraw& sd = sc.scene();
+  const SceneFrame f = SceneScreen::frame(g.w, g.h);
+  sc.bindings().ignore_zero_alpha = true;
+  sc.bindings().fit_text = true;
+  sc.hide(sc.node("ButtonBar"));
+  sc.hide(sc.node("Timer"));
+  if (const int bg = sc.node("BG_Noise"); bg >= 0) sc.at(bg).alpha = 0.5f;
+
+  // Title tape cropped cleanly past the localized RACE RESULTS text.
+  const int tape = sc.node("TitleTape");
+  const int tt = sc.node("TitleTapeText", tape);
+  const std::string title = str("ScreenTitles", "IDS_PostRace_RaceResults", "RACE RESULTS");
+  sc.text(tt, title);
+  if (tape >= 0 && tt >= 0) {
+    const float tw = sd.measure(tt, title);
+    const float tx = sd.at(tt)[0];
+    sc.hide(sc.node("Clipon", tape));
+    for (const char* name : {"Dirt_Tile", "Smudge_Tape", "Crisp_Tape"}) {
+      if (const int n = sc.node(name, tape); n >= 0) {
+        const auto rr = sd.rect(n);
+        sc.at(n).visible_width = std::clamp(tx + tw + 40.0f - rr[0], 80.0f, rr[2] - rr[0]);
+      }
     }
-    sc.text(l, f, tt, title, kText);
   }
-  // The heading strip.
-  const int head = sc.find("Heading");
-  sc.model(l, f, sc.find("Pill_left", head));
-  sc.model(l, f, sc.find("Pill_right", head));
+
+  // Heading strip column titles in dark ink on light pill.
+  const int head = sc.node("Heading");
   const std::pair<const char*, std::string> heads[] = {
       {"TEXT_POSITION", str("Scoreboard", "IDS_Pos", "POS")},
       {"TEXT_PLAYER", str("Scoreboard", "IDS_Driver", "DRIVER")},
@@ -721,41 +723,49 @@ void results_table(ui::List& l, const RaceHud& r, const Layout& g) {
       {"TEXT_BEST_LAP", str("InGame", "IDS_Header_Best_Lap", "BEST LAP")},
       {"TEXT_TOTAL_TIME", str("InGame", "IDS_Header_Total", "TOTAL")}};
   for (const auto& [node, text] : heads) {
-    const int n = sc.find(node, head);
-    // Upper case, as the frame shows.
+    const int n = sc.node(node, head);
     std::string up = text;
     for (char& c : up) c = char(std::toupper(static_cast<unsigned char>(c)));
-    sc.text(l, f, n, up, kDark);
+    sc.text(n, up);
+    if (n >= 0) sc.at(n).tint = kDark;
   }
-  // The rows: I_LIST_ITEM, I_LIST_ITEM2 ... I_LIST_ITEM8, by place.
-  for (size_t i = 0; i < r.rows.size() && i < 8; ++i) {
+
+  // Rows I_LIST_ITEM .. I_LIST_ITEM8 bound through SceneScreen.
+  for (size_t i = 0; i < 8; ++i) {
+    const int item = sc.node(i == 0 ? std::string("I_LIST_ITEM") : "I_LIST_ITEM" + std::to_string(i + 1));
+    if (item < 0) continue;
+    if (i >= r.rows.size()) {
+      sc.hide(item);
+      continue;
+    }
     const RaceHudRow& row = r.rows[i];
-    const int item = sc.find(i == 0 ? std::string("I_LIST_ITEM") : "I_LIST_ITEM" + std::to_string(i + 1));
-    if (item < 0) break;
-    // The player's row on a lighter grey (measured, about 0.24).
-    const uint32_t tint = row.player ? rgba(61, 61, 61) : 0;
-    const int pill = sc.find("Pill", item);
-    sc.model(l, f, sc.find("Pill_left", pill), 1, 0, 0, 0, tint);
-    sc.model(l, f, sc.find("Pill_right", pill), 1, 0, 0, 0, tint);
-    sc.text(l, f, sc.find("TEXT_POSITION", item), std::to_string(row.place), kText);
-    sc.text(l, f, sc.find("TEXT_PLAYER", item), row.name, kText);
-    sc.text(l, f, sc.find("TEXT_CAR", item), row.car, kText);
-    sc.text(l, f, sc.find("TEXT_BEST_LAP", item), row.best_lap > 0 ? clock_ms(row.best_lap) : "--:--.---", kText);
-    sc.text(l, f, sc.find("TEXT_TOTAL_TIME", item), row.finished ? clock_ms(row.time) : "--:--.---", kText);
-    // The class badge: PICLASS/CLASS_<class> at CLASS_A's place, scaled by
-    // its CLASS_SM group (0.75); the index on its white part.
-    const int badge = sc.find("CLASS_A", item);
-    std::array<float, 4> uv;
-    if (!row.car_class.empty() && badge >= 0 && ui_texture("PICLASS/CLASS_" + row.car_class, uv)) {
-      const auto b = sc.rect(badge);
-      const float cx = 0.5f * (b[0] + b[2]), cy = 0.5f * (b[1] + b[3]);
-      // (The frame's badge is CLASS_A's full rect, about 52 px of ink.)
-      const float hw = 0.5f * (b[2] - b[0]), hh = 0.5f * (b[3] - b[1]);
-      const float angle = -sc.angle(badge);
-      l.image_rotated(f.x(cx), f.y(cy), hw * s, hh * s, angle, uv);
-      if (row.pi >= 0) sc.text(l, f, sc.find("TEXT_PI", item), std::to_string(row.pi), kDark);
+    sc.hide(sc.node("TeamColor", item));
+    if (row.player) {
+      const uint32_t tint = rgba(61, 61, 61);
+      const int pill = sc.node("Pill", item);
+      if (const int pl = sc.node("Pill_left", pill); pl >= 0) sc.at(pl).tint = tint;
+      if (const int pr = sc.node("Pill_right", pill); pr >= 0) sc.at(pr).tint = tint;
+    }
+    sc.text(sc.node("TEXT_POSITION", item), std::to_string(row.place));
+    sc.text(sc.node("TEXT_PLAYER", item), row.name);
+    sc.text(sc.node("TEXT_CAR", item), row.car);
+    sc.text(sc.node("TEXT_BEST_LAP", item), row.best_lap > 0 ? clock_ms(row.best_lap) : "--:--.---");
+    sc.text(sc.node("TEXT_TOTAL_TIME", item),
+            row.finished ? clock_ms(row.time) : (row.gap > 0.05 ? gap_ms(row.gap) : std::string("--:--.---")));
+    const int cls_grp = sc.node("CLASS_SM", item);
+    if (!row.car_class.empty()) {
+      if (const int badge = sc.node("CLASS_A", item); badge >= 0)
+        sc.at(badge).texture = "PICLASS/CLASS_" + row.car_class;
+      if (row.pi >= 0) {
+        const int pi = sc.node("TEXT_PI", item);
+        sc.text(pi, std::to_string(row.pi));
+        if (pi >= 0) sc.at(pi).tint = kDark;
+      }
+    } else {
+      sc.hide(cls_grp);
     }
   }
+  sc.draw(l, f);
 }
 
 namespace {

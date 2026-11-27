@@ -2319,6 +2319,16 @@ void draw_upgrade_shop_hud(ui::List& list, float w, float h, const UpgradeShop& 
         }
       }
       sc.text(title_text, cat_title);
+      const SceneDraw& sd = sc.scene();
+      const float tw = sd.measure(title_text, cat_title);
+      const float want_right = sd.at(title_text)[0] + tw + 40.0f;
+      const int tg = sc.node("Group", title_tape);
+      for (const char* tname : {"Crisp_Tape", "Smudge_Tape"}) {
+        if (const int tn = sc.node(tname, tg >= 0 ? tg : title_tape); tn >= 0) {
+          const auto rr = sd.rect(tn);
+          sc.at(tn).visible_width = std::clamp(want_right - rr[0], 120.0f, rr[2] - rr[0]);
+        }
+      }
       sc.draw(list, f);
       drew_scene_header = true;
     }

@@ -9,6 +9,7 @@
 #include "fh1data/stringtables.h"
 #include "game_hud.h"
 #include "hud_scene.h"
+#include "scene_screen.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -1368,11 +1369,24 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   // Top-right 506_C_LIV_LAYER_SELECT LIV_CLIPBOARD ([1040,55..1184,177]) when in Vinyl Editor!
   if (vinyl_tab) {
     const float cb_x0 = w - 252.0f * s, cb_y0 = 66.0f * s, cb_x1 = w - 56.0f * s, cb_y1 = 186.0f * s;
-    std::array<float, 4> clip_uv{};
-    if (ui4::texture("LIVERY/LIV_CLIPBOARD", clip_uv)) {
-      list.image(cb_x0, cb_y0, cb_x1, cb_y1, clip_uv, ui::rgba(255, 255, 255, 235));
-    } else {
-      ui4::panel01(list, cb_x0, cb_y0, cb_x1, cb_y1, s, ui4::kCharcoalDark, ui4::kPink);
+    bool drew_scene_clip = false;
+    {
+      SceneScreen sc("506_C_LIV_LAYER_SELECT");
+      const int cb = sc.ok() ? sc.node("CLIPBOARD") : -1;
+      if (sc.ok() && cb >= 0) {
+        sc.hide(sc.node("ICON_LOCK", cb));
+        sc.hide(sc.node("LAYER_GROUP", cb));
+        sc.draw(list, SceneScreen::frame(w, h), cb);
+        drew_scene_clip = true;
+      }
+    }
+    if (!drew_scene_clip) {
+      std::array<float, 4> clip_uv{};
+      if (ui4::texture("LIVERY/LIV_CLIPBOARD", clip_uv)) {
+        list.image(cb_x0, cb_y0, cb_x1, cb_y1, clip_uv, ui::rgba(255, 255, 255, 235));
+      } else {
+        ui4::panel01(list, cb_x0, cb_y0, cb_x1, cb_y1, s, ui4::kCharcoalDark, ui4::kPink);
+      }
     }
     list.text(cb_x0 + 14.0f * s, cb_y0 + 10.0f * s,
               editor.has_clipboard() ? "CLIPBOARD: COPIED" : "LIV CLIPBOARD",
@@ -1475,8 +1489,34 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
       const uint32_t cur_col =
           ui::rgba(uint8_t((cur_rgb >> 16) & 0xFF), uint8_t((cur_rgb >> 8) & 0xFF), uint8_t(cur_rgb & 0xFF), 255);
 
-      ui4::title_tape(list, s, 86.0f * s, 456.0f * s,
-                      std::string("PAINT  //  ") + paint_region_name(editor.region()), ui4::kBrushBlack, 30.0f, 440.0f);
+      const std::string paint_title = std::string("PAINT  //  ") + paint_region_name(editor.region());
+      bool drew_paint_tape = false;
+      {
+        SceneScreen sc("501_C_LIV_COLOR");
+        const int tt_grp = sc.ok() ? sc.node("Group_BLADE/Group_BG/TitleTape") : -1;
+        const int tt_txt = sc.ok() ? sc.node("TitleTapeText", tt_grp) : -1;
+        if (sc.ok() && tt_grp >= 0 && tt_txt >= 0) {
+          const SceneDraw& sd = sc.scene();
+          sc.bindings().fit_text = false;
+          sc.text(tt_txt, paint_title);
+          const float want_r = sd.at(tt_txt)[0] + sd.measure(tt_txt, paint_title) + 36.0f;
+          for (const char* tname : {"Crisp_Tape", "Smudge_Tape"}) {
+            if (const int tn = sc.node(tname, tt_grp); tn >= 0) {
+              const auto rr = sd.rect(tn);
+              sc.at(tn).visible_width = std::clamp(want_r - rr[0], 120.0f, rr[2] - rr[0]);
+            }
+          }
+          sc.hide(sc.node("Clipon", tt_grp));
+          // Unturn temporarily because SceneScreen applies 501_C_LIV_COLOR's native tilt.
+          list.unturn();
+          sc.draw(list, SceneScreen::frame(w, h), tt_grp);
+          list.turn(0.5f * w, 0.5f * h, tilt_rad);
+          drew_paint_tape = true;
+        }
+      }
+      if (!drew_paint_tape) {
+        ui4::title_tape(list, s, 86.0f * s, 456.0f * s, paint_title, ui4::kBrushBlack, 30.0f, 440.0f);
+      }
 
       // Finish selector pill with authentic OPT_BAR_ARROW + live CAR_PAINT_CURRENT_FRAME swatch right of title tape!
       const float fx0 = w - 456.0f * s, fy0 = 468.0f * s, fx1 = right_x;

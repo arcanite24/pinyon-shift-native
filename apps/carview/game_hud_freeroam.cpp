@@ -1,5 +1,6 @@
 #include "game_hud_internal.h"
 #include "hud_screen.h"
+#include "scene_screen.h"
 
 namespace carview {
 
@@ -1318,13 +1319,100 @@ void gps_turn_hud(ui::List& l, const GpsHud& gps, const Layout& g, bool metric_u
 void pr_stunt_hud(ui::List& l, const PrStuntHud& ps, const Layout& g) {
   if (!ps.active) return;
   const float s = g.s;
+  const uint32_t accent = ps.in_zone ? ui4::kGreen : ui4::kPink;
+  const std::string badge = ps.kind_badge.empty() ? std::string("PR STUNT") : ps.kind_badge;
+
+  // Bind retail 947_HUD Missions (MissionCountdown + MissionsScoring) when loaded.
+  {
+    SceneScreen sc("947_HUD");
+    const int missions = sc.ok() ? sc.node("Missions") : -1;
+    if (sc.ok() && missions >= 0) {
+      const SceneDraw& sd = sc.scene();
+      const SceneFrame f = SceneScreen::frame(g.w, g.h);
+      sc.bindings().fit_text = false;
+      sc.hide(sc.node("MissionsDamage", missions));
+
+      // Draw the three backing Bar models first (same Z=0 as text in 947_HUD,
+      // but appearing after TEXT_TIME / TARGET_NAME / SCORE_NAME in tree order),
+      // then hide them before drawing the Missions text layer on top.
+      auto prep_and_draw_bar = [&](int bar_node, float want_l, float dy_off, uint32_t tint) {
+        if (bar_node < 0) return;
+        const auto br = sd.rect(bar_node);
+        sc.at(bar_node).dx = want_l - br[0];
+        sc.at(bar_node).dy = dy_off;
+        sc.at(bar_node).visible_width = std::clamp(1224.0f - want_l, 180.0f, br[2] - br[0]);
+        sc.at(bar_node).tint = tint;
+        sc.draw(l, f, bar_node);
+        sc.hide(bar_node);
+      };
+
+      const int mc = sc.node("MissionCountdown/Group", missions);
+      if (mc >= 0) {
+        sc.show(mc);
+        const int lbl = sc.node("Text", mc);
+        const int tm = sc.node("TEXT_TIME", mc);
+        const int bar = sc.node("Bar", mc);
+        sc.text(lbl, badge);
+        if (lbl >= 0) sc.at(lbl).tint = ui4::kWhite;
+        if (ps.time_remaining_s > 0.0) {
+          sc.text(tm, race_clock(ps.time_remaining_s));
+          if (tm >= 0) sc.at(tm).tint = ps.time_remaining_s < 15.0 ? ui4::kYellow : ui4::kWhite;
+        } else {
+          sc.hide(tm);
+        }
+        const float want_l = std::min(lbl >= 0 ? sd.at(lbl)[0] - 110.0f : 940.0f, 940.0f);
+        prep_and_draw_bar(bar, want_l, 0.0f, accent);
+      }
+
+      const int scoring = sc.node("MissionsScoring/MISSIONS_SCORING", missions);
+      if (scoring >= 0) {
+        const int tgt = sc.node("Target", scoring);
+        if (tgt >= 0) {
+          sc.show(tgt);
+          const int tname = sc.node("TARGET_NAME", tgt);
+          const int tval = sc.node("TARGET_VALUE", tgt);
+          const int tbar = sc.node("Bar", tgt);
+          sc.text(tname, ps.title);
+          if (tname >= 0) sc.at(tname).tint = ui4::kWhite;
+          if (ps.progress > 0.0) {
+            char pb[16];
+            std::snprintf(pb, sizeof pb, "%d%%", int(std::lround(std::clamp(ps.progress, 0.0, 1.0) * 100.0)));
+            sc.text(tval, pb);
+            if (tval >= 0) sc.at(tval).tint = ps.in_zone ? ui4::kGreen : ui4::kYellow;
+          } else {
+            sc.hide(tval);
+          }
+          const float tw = tname >= 0 ? sd.measure(tname, ps.title) : 180.0f;
+          const float want_l = std::min(tname >= 0 ? (sd.at(tname)[0] - tw - 18.0f) : 940.0f, 940.0f);
+          prep_and_draw_bar(tbar, want_l, 0.0f, ui4::kPillGrey);
+        }
+        const int score = sc.node("Score", scoring);
+        if (score >= 0) {
+          if (!ps.status_line.empty()) {
+            sc.show(score);
+            const int sname = sc.node("SCORE_NAME", score);
+            const int sbar = sc.node("Bar", score);
+            sc.text(sname, ps.status_line);
+            if (sname >= 0) sc.at(sname).tint = ps.in_zone ? ui4::kGreen : ui4::kYellow;
+            sc.hide(sc.node("SCORE_VALUE", score));
+            const float sw = sname >= 0 ? sd.measure(sname, ps.status_line) : 180.0f;
+            const float want_l = std::min(sname >= 0 ? (sd.at(sname)[0] - sw - 18.0f) : 940.0f, 940.0f);
+            prep_and_draw_bar(sbar, want_l, 30.0f, ui4::kPillGrey);
+          } else {
+            sc.hide(score);
+          }
+        }
+      }
+      sc.draw(l, f, missions);
+      return;
+    }
+  }
+
   const float x0 = g.R(948), x1 = g.R(1214);
   float ry = g.T(32);
-  const uint32_t accent = ps.in_zone ? ui4::kGreen : ui4::kPink;
 
   // Row 1: #F90064 / #46DC6E slim HUDPILL01 header + countdown timer.
   ui4::pill(l, x0, ry, x1, ry + 26 * s, accent, ui4::PillKind::kHud01);
-  const std::string badge = ps.kind_badge.empty() ? std::string("PR STUNT") : ps.kind_badge;
   l.text(x0 + 12 * s, ry + 6 * s, badge, font(ui::Font::kE, 13.5f * s, ui4::kWhite));
   if (ps.time_remaining_s > 0.0) {
     l.text(x1 - 12 * s, ry + 5 * s, race_clock(ps.time_remaining_s),

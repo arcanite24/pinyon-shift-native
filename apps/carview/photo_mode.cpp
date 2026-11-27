@@ -16,6 +16,7 @@
 #include <stb_image_write.h>
 
 #include "fh1data/stringtables.h"
+#include "scene_screen.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -1158,18 +1159,48 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
   out.line(w - mx - bl, h - my, w - mx, h - my, 2.0f * s, kBracket);
   out.line(w - mx, h - my - bl, w - mx, h - my, 2.0f * s, kBracket);
 
-  // 516_I_EFFECTSMODE FOCUS_RETICLE [576,296..704,424] subtle alpha=0.20 (NEVER obscures the car!)
   const float cx = 0.5f * w, cy = 0.5f * h;
-  std::array<float, 4> ret_uv{};
-  if (ui4::texture("HUD/PHOTOMODEFOCUSRETICLE", ret_uv)) {
-    const float rr = 64.0f * s;
-    out.image(cx - rr, cy - rr, cx + rr, cy + rr, ret_uv, rgba(255, 255, 255, 52));
-  } else {
-    const float rr = 14.0f * s;
-    out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, rgba(255, 255, 255, 80));
-    out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, rgba(255, 255, 255, 80));
-    out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, rgba(255, 255, 255, 80));
-    out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, rgba(255, 255, 255, 80));
+  // Bind authentic 709_PHOTO_MODE focus reticle & shutter flash when disc scene is loaded.
+  bool drew_photo_scene = false;
+  {
+    SceneScreen sc("709_PHOTO_MODE");
+    if (sc.ok()) {
+      const SceneFrame f = SceneScreen::frame(w, h);
+      const SceneDraw& sd = sc.scene();
+      sc.hide(sc.node("PHOTOMODE_TUTORIAL"));
+      if (const int ret = sc.node("Photo_Reticle"); ret >= 0) {
+        const int grp = sd.scene()->nodes[size_t(ret)].parent;
+        if (grp >= 0) {
+          sc.show(grp);
+          sc.hide(sc.node("PHOTO_HELP", grp));
+          sc.hide(sc.node("HOVER_PROGRESS", grp));
+        }
+        sc.show(ret, 0.24f);
+      }
+      if (const int fg = sc.node("Group_FLASH"); fg >= 0) {
+        if (flash_timer_ > 0.0) {
+          const float fa = float(std::clamp(flash_timer_ / 0.35, 0.0, 1.0)) * 0.55f;
+          sc.show(fg, fa);
+        } else {
+          sc.hide(fg);
+        }
+      }
+      sc.draw(out, f);
+      drew_photo_scene = true;
+    }
+  }
+  if (!drew_photo_scene) {
+    std::array<float, 4> ret_uv{};
+    if (ui4::texture("HUD/PHOTOMODEFOCUSRETICLE", ret_uv)) {
+      const float rr = 64.0f * s;
+      out.image(cx - rr, cy - rr, cx + rr, cy + rr, ret_uv, rgba(255, 255, 255, 52));
+    } else {
+      const float rr = 14.0f * s;
+      out.line(cx - rr, cy, cx - 5.0f * s, cy, 1.5f * s, rgba(255, 255, 255, 80));
+      out.line(cx + 5.0f * s, cy, cx + rr, cy, 1.5f * s, rgba(255, 255, 255, 80));
+      out.line(cx, cy - rr, cx, cy - 5.0f * s, 1.5f * s, rgba(255, 255, 255, 80));
+      out.line(cx, cy + 5.0f * s, cx, cy + rr, 1.5f * s, rgba(255, 255, 255, 80));
+    }
   }
 
   // Compact top-left HUDPILL01 Horizon Promo + Camera Telemetry strip (NO top-center or top-right dark boxes!).
@@ -1338,8 +1369,8 @@ void PhotoModeController::build_hud(ui::List& out, float w, float h) const {
     out.text(cx, by0 + 11.0f * s, msg, ui4::style(Font::kE, 13.0f * s, ui4::kYellow, Align::kCenter));
   }
 
-  // Shutter flash feedback.
-  if (flash_timer_ > 0.0) {
+  // Shutter flash feedback (fallback when 709_PHOTO_MODE scene is not loaded).
+  if (!drew_photo_scene && flash_timer_ > 0.0) {
     const float alpha = float(std::clamp(flash_timer_ / 0.35, 0.0, 1.0)) * 0.55f;
     out.rect(0, 0, w, h, rgba(255, 255, 255, uint8_t(alpha * 255.0f)));
   }

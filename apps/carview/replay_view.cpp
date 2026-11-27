@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "fh1data/stringtables.h"
+#include "scene_screen.h"
 #include "ui4_chrome.h"
 
 namespace carview {
@@ -755,8 +756,8 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
   const auto* focus = focused_car();
   const auto* finfo = rec_.find_car_info(focus ? focus->slot : 0);
 
-  // 1. 926_REPLAY_HUD CURRENT_PLAYER@(640,32): slim top-center driver/camera HUDPILL01
-  //    (replaces the raw top-left dark box!).
+  // 1. 926_REPLAY_HUD CURRENT_PLAYER@(640,32): bind disc scene header when loaded,
+  //    keeping a dark backing pill behind the driver/camera name for bright-sky contrast.
   {
     std::string drv = finfo && !finfo->driver_name.empty()
                           ? finfo->driver_name
@@ -770,7 +771,30 @@ void ReplayViewer::build_hud(ui::List& out, float w, float h) const {
     const float py0 = fy(22.0f), py1 = py0 + 28.0f * s;
     ui4::pill(out, cx - 0.5f * pw, py0, cx + 0.5f * pw, py1, ui4::kPillGrey, ui4::PillKind::kHud01);
     out.rect(cx - 0.5f * pw, py0, cx - 0.5f * pw + 4.0f * s, py1, ui4::kPink);
-    out.text(cx, py0 + 7.0f * s, hdr, pts);
+
+    bool drew_replay_header = false;
+    {
+      SceneScreen sc("926_REPLAY_HUD");
+      if (sc.ok()) {
+        const SceneFrame f = SceneScreen::frame(w, h);
+        sc.bindings().fit_text = true;
+        sc.hide(sc.node("PLAYER_MESSAGE"));
+        sc.hide(sc.node("HELP_BUTTON_BAR"));
+        sc.hide(sc.node("HUD"));
+        sc.hide(sc.node("Group_FOOTER"));
+        const int cur = sc.node("CURRENT_PLAYER");
+        const int cname = sc.node("TEXT_CURRENT_PLAYER_NAME", cur);
+        if (cur >= 0 && cname >= 0) {
+          sc.text(cname, hdr);
+          sc.at(cname).dy = -18.0f;
+          sc.draw(out, f, cur);
+          drew_replay_header = true;
+        }
+      }
+    }
+    if (!drew_replay_header) {
+      out.text(cx, py0 + 7.0f * s, hdr, pts);
+    }
   }
 
   // 2. Slim 926_REPLAY_HUD / 968_TELEMETRY right-hand HUDPILL01 strips + I_HUD_DAMAGE_* icon
