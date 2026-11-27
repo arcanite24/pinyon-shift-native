@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "fh1data/stringtables.h"
+#include "scene_screen.h"
 #include "ui4_chrome.h"
 
 namespace carview::campaign_ui {
@@ -299,83 +300,35 @@ void draw_dialog_and_subtitles(ui::List& l, const race::DialogQueue& dialogs, co
   if (slide <= 0.01f) return;
 
   const auto& cue = dialogs.current();
+  if (ctx.suppress_subtitle || cue.subtitle.empty()) return;
+
   const auto& prof = race::character_profile(cue.speaker);
   const std::string speaker = cue.speaker_override.empty() ? std::string(prof.display_name) : cue.speaker_override;
-  const std::string role = cue.role_override.empty() ? std::string(prof.role_tag) : cue.role_override;
   const uint32_t accent = prof.accent_rgba;
   const float s = ctx.screen_h / 720.0f;
 
-  // 1. Top-Right Non-Blocking FH1 Character Call-In Banner (speaker + role + live animated audio waveform).
-  if (!ctx.suppress_callin) {
-    const float bw = 348.0f * s;
-    const float bh = 74.0f * s;
-    const float slide_offset = (1.0f - slide) * (bw + 48.0f * s);
-    const float bx1 = ctx.screen_w - 48.0f * s + slide_offset;
-    const float bx0 = bx1 - bw;
-    const float by0 = 76.0f * s;
+  // Retail FH1 plays VO dialogue cleanly without a radio-link waveform panel;
+  // render localized subtitles only when subtitles are enabled.
+  const float max_box_w = std::min(ctx.screen_w - 460.0f * s, 720.0f * s);
+  ui::TextStyle sub_ts = ui4::style(ui::Font::kA, 15.5f * s, with_alpha(ui4::kWhite, slide), ui::Align::kLeft, true);
+  const std::string wrapped = wrap_lines(cue.subtitle, sub_ts, std::max(240.0f * s, max_box_w - 36.0f * s));
+  const float th = ui::List::measure_height(wrapped, sub_ts);
+  const float box_h = std::max(46.0f * s, th + 20.0f * s);
+  const float cx0 = 0.5f * (ctx.screen_w - max_box_w);
+  const float cy0 = ctx.screen_h - 62.0f * s - box_h + (1.0f - slide) * 20.0f * s;
 
-    ui4::TiltScope tilt(l, bx0 + 0.5f * bw, by0 + 0.5f * bh, ui4::kTiltRad * 0.45f);
-    // Distressed dark charcoal body + speaker accent edge.
-    ui4::pill(l, bx0, by0, bx1, by0 + bh, with_alpha(ui4::kCharcoalDark, slide), ui4::PillKind::kHud01);
-    l.rect(bx0, by0, bx0 + 5.0f * s, by0 + bh, with_alpha(accent, slide));
-    // Speaker name on FH1 brush header strip.
-    ui::TextStyle name_ts = ui4::style(ui::Font::kE, 15.5f * s, with_alpha(ui4::kWhite, slide));
-    const float nw = std::clamp(ui::List::measure(speaker, name_ts) + 30.0f * s, 160.0f * s, bw - 92.0f * s);
-    ui4::brush(l, bx0 + 10.0f * s, by0 - 12.0f * s, bx0 + 10.0f * s + nw, by0 + 16.0f * s,
-               with_alpha(accent, slide), false);
-    // High-contrast ink on bright yellow/gold accents, white on pink/blue/purple accents.
-    name_ts.color = is_bright_accent(accent) ? with_alpha(ui4::kInk, slide) : with_alpha(ui4::kWhite, slide);
-    l.text(bx0 + 22.0f * s, by0 - 6.0f * s, speaker, name_ts);
+  // Speaker tag pill perched on top-left of subtitle bar.
+  ui::TextStyle sp_ts = ui4::style(ui::Font::kE, 12.5f * s,
+                                   is_bright_accent(accent) ? with_alpha(ui4::kInk, slide)
+                                                            : with_alpha(ui4::kWhite, slide));
+  const float spw = ui::List::measure(speaker, sp_ts) + 26.0f * s;
+  ui4::brush(l, cx0 - 4.0f * s, cy0 - 22.0f * s, cx0 + spw, cy0 + 2.0f * s, with_alpha(accent, slide), false);
+  l.text(cx0 + 10.0f * s, cy0 - 17.0f * s, speaker, sp_ts);
 
-    // Role tag + live signal indicator.
-    ui::TextStyle role_ts = ui4::style(ui::Font::kB, 11.5f * s, with_alpha(ui4::kDim, slide));
-    l.text(bx0 + 16.0f * s, by0 + 24.0f * s, role, role_ts);
-    const std::string radio_line =
-        ctx.skip_vo_with_a
-            ? ("HORIZON RADIO LINK  •  [" + ui4::glyph_label_for("A") + "] " + loc_str("HelpButtons", "IDS_Skip", "SKIP"))
-            : "HORIZON RADIO LINK  •  LIVE";
-    l.text(bx0 + 16.0f * s, by0 + 44.0f * s, radio_line,
-           ui4::style(ui::Font::kB, 10.5f * s, with_alpha(ui4::kYellow, slide * 0.9f)));
-
-    // Animated 10-bar audio waveform spectrum on right side of call-in banner.
-    const auto bars = dialogs.waveform_bars(10);
-    const float wx0 = bx1 - 86.0f * s;
-    const float wy_base = by0 + bh - 14.0f * s;
-    const float max_bh = 36.0f * s;
-    const float bar_w = 4.5f * s;
-    const float bar_gap = 2.5f * s;
-    for (size_t i = 0; i < bars.size(); ++i) {
-      const float h_i = std::max(4.0f * s, bars[i] * max_bh);
-      const float x_i = wx0 + float(i) * (bar_w + bar_gap);
-      const uint32_t bcol = (i % 3 == 0) ? with_alpha(ui4::kYellow, slide) : with_alpha(accent, slide);
-      l.rect(x_i, wy_base - h_i, x_i + bar_w, wy_base, bcol);
-    }
-  }
-
-  // 2. Crisp Bottom-Center Localized Subtitle Strip (cleanly clear of minimap & tach;
-  //    suppressed during full-card ceremonies so it never duplicates ceremony card text).
-  if (!ctx.suppress_subtitle && !cue.subtitle.empty()) {
-    const float max_box_w = std::min(ctx.screen_w - 460.0f * s, 720.0f * s);
-    ui::TextStyle sub_ts = ui4::style(ui::Font::kA, 15.5f * s, with_alpha(ui4::kWhite, slide), ui::Align::kLeft, true);
-    const std::string wrapped = wrap_lines(cue.subtitle, sub_ts, std::max(240.0f * s, max_box_w - 36.0f * s));
-    const float th = ui::List::measure_height(wrapped, sub_ts);
-    const float box_h = std::max(46.0f * s, th + 20.0f * s);
-    const float cx0 = 0.5f * (ctx.screen_w - max_box_w);
-    const float cy0 = ctx.screen_h - 62.0f * s - box_h + (1.0f - slide) * 20.0f * s;
-
-    // Speaker tag pill perched on top-left of subtitle bar.
-    ui::TextStyle sp_ts = ui4::style(ui::Font::kE, 12.5f * s,
-                                     is_bright_accent(accent) ? with_alpha(ui4::kInk, slide)
-                                                              : with_alpha(ui4::kWhite, slide));
-    const float spw = ui::List::measure(speaker, sp_ts) + 26.0f * s;
-    ui4::brush(l, cx0 - 4.0f * s, cy0 - 22.0f * s, cx0 + spw, cy0 + 2.0f * s, with_alpha(accent, slide), false);
-    l.text(cx0 + 10.0f * s, cy0 - 17.0f * s, speaker, sp_ts);
-
-    ui4::pill(l, cx0, cy0, cx0 + max_box_w, cy0 + box_h, with_alpha(ui4::kCharcoalDark, slide * 0.96f),
-              ui4::PillKind::kHud01);
-    l.rect(cx0, cy0, cx0 + 4.5f * s, cy0 + box_h, with_alpha(accent, slide));
-    l.text(cx0 + 18.0f * s, cy0 + 10.0f * s, wrapped, sub_ts);
-  }
+  ui4::pill(l, cx0, cy0, cx0 + max_box_w, cy0 + box_h, with_alpha(ui4::kCharcoalDark, slide * 0.96f),
+            ui4::PillKind::kHud01);
+  l.rect(cx0, cy0, cx0 + 4.5f * s, cy0 + box_h, with_alpha(accent, slide));
+  l.text(cx0 + 18.0f * s, cy0 + 10.0f * s, wrapped, sub_ts);
 }
 
 void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const DrawContext& ctx) {
@@ -481,7 +434,7 @@ void draw_cinematic_overlay(ui::List& l, const race::CampaignFlow& flow, const D
         l.text(card_x0 + 22.0f * s, gy0 + 12.0f * s, "WELCOME TO THE AUTOSHOW  •  ALICE HART & DAK STEWART",
                ui4::style(ui::Font::kE, 14.5f * s, ui4::kPinkHi));
         const std::string guide =
-            "Your entry Yellow Wristband is official and your 1995 VW Corrado VR6 is parked in your garage alongside a 15,000 Cr starter bonus. Next up: browse curated affordable starter cars in the Horizon Autoshow, or press B there anytime to hit Colorado Free Roam and chase your Green Wristband!";
+            "Your entry Yellow Wristband is official and your 1995 VW Corrado VR6 is parked in your garage alongside 40,000 Cr. Next up: pick your first festival car at the Horizon Autoshow, then head out into Colorado to earn your Green Wristband!";
         ui::TextStyle gts = ui4::style(ui::Font::kA, 13.2f * s, ui4::kOffWhite, ui::Align::kLeft, true);
         l.text(card_x0 + 22.0f * s, gy0 + 36.0f * s, wrap_lines(guide, gts, card_w - 44.0f * s), gts);
       }
@@ -837,36 +790,78 @@ void draw_reward_tally(ui::List& l, const race::RewardTallyState& tally, float s
 }
 
 void draw_credits_roll(ui::List& l, const race::CampaignFlow& flow, float screen_w, float screen_h) {
+  struct CreditEntry {
+    const char* header;
+    const char* subheader;
+    const char* text;
+  };
+  static constexpr CreditEntry kCredits[] = {
+      {"FORZA HORIZON", "PLAYGROUND GAMES", "TURN 10 STUDIOS  •  MICROSOFT STUDIOS"},
+      {"CREATIVE DIRECTION", "PLAYGROUND GAMES", "RALPH FULTON  •  GAVIN RAEBURN  •  TREVOR WILLIAMS"},
+      {"FESTIVAL DIRECTOR", "HORIZON FESTIVAL", "ALICE HART"},
+      {"CHIEF MECHANIC", "DAK'S GARAGE", "DAK STEWART"},
+      {"HORIZON PULSE", "FESTIVAL RADIO", "HOLLY CRUZ"},
+      {"HORIZON BASS ARENA", "FESTIVAL RADIO", "SCOTT TYLER"},
+      {"HORIZON ROCKS", "FESTIVAL RADIO", "ROB DA BANK"},
+      {"STAR SHOWDOWN RIVALS", "COLORADO", "RAMONA CRAVACHE  •  ALI HOWARD  •  DUKE MAGUIRE"},
+      {"STAR SHOWDOWN RIVALS", "COLORADO", "MARKO BARAN  •  ZAKI MALIK  •  HAILEY HARPER"},
+      {"HORIZON CHAMPION", "FINALE", "DARIUS FLYNT  •  2010 FERRARI 599XX"},
+      {"SPECIAL THANKS", "TURN 10 & PLAYGROUND GAMES", "FORZA HORIZON COMMUNITY"},
+      {"FORZA HORIZON", "COLORADO", "THANK YOU FOR PLAYING"},
+  };
+
+  // Bind retail 834_CREDITS scene (COVER_LOADING/Credits_Image + Group/Line1..Line12) when available.
+  SceneScreen sc("834_CREDITS");
+  if (sc.ok()) {
+    const SceneFrame f = SceneScreen::frame(screen_w, screen_h);
+    sc.bindings().fit_text = false;
+    sc.hide(sc.node("Group_FOOTER"));
+    const int grp = sc.node("Group");
+    const float scroll_y = 680.0f - float(flow.stage_time()) * 58.0f;
+    for (int i = 0; i < 12; ++i) {
+      const int line = sc.node("Line" + std::to_string(i + 1), grp);
+      if (line < 0) continue;
+      const float base_y = sc.scene().at(line)[1];
+      const float target_y = scroll_y + float(i) * 145.0f;
+      if (target_y < -120.0f || target_y > 820.0f) {
+        sc.hide(line);
+        continue;
+      }
+      sc.at(line).dy = target_y - base_y;
+      const CreditEntry& ce = kCredits[size_t(i) % std::size(kCredits)];
+      const int h_nd = sc.node("Header", line);
+      const int sh_nd = sc.node("SubHeader", line);
+      const int tx_nd = sc.node("Text", line);
+      sc.text(h_nd, ce.header);
+      sc.text(sh_nd, ce.subheader);
+      sc.text(tx_nd, ce.text);
+      if (h_nd >= 0) sc.at(h_nd).tint = ui4::kPinkHi;
+      if (sh_nd >= 0) sc.at(sh_nd).tint = ui4::kYellow;
+      if (tx_nd >= 0) sc.at(tx_nd).tint = ui4::kWhite;
+    }
+    sc.draw(l, f);
+    ui4::button_bar(l, {{"A", loc_str("HelpButtons", "IDS_Continue", "CONTINUE")}}, screen_w, screen_h, 70.0f);
+    return;
+  }
+
   const float s = screen_h / 720.0f;
-  // Subtle dark theater wash so sunset Colorado still shines behind credits.
-  l.rect(0, 0, screen_w, screen_h, ui::rgba(8, 8, 12, 168));
+  l.rect(0, 0, screen_w, screen_h, ui::rgba(8, 8, 12, 192));
   const float bar_h = 46.0f * s;
   l.rect(0, 0, screen_w, bar_h, ui::rgba(0, 0, 0, 240));
   l.rect(0, screen_h - bar_h, screen_w, screen_h, ui::rgba(0, 0, 0, 240));
 
-  static const std::pair<const char*, const char*> kCredits[] = {
-      {"FORZA HORIZON  •  COLORADO", "HORIZON FESTIVAL CHAMPION"},
-      {"FESTIVAL DIRECTOR", "ALICE HART"},
-      {"CHIEF MECHANIC", "DAK STEWART"},
-      {"EVENT COORDINATOR", "HOLLY CRUZ"},
-      {"HORIZON BASS ARENA", "SCOTT TYLER"},
-      {"STAR SHOWDOWN RIVALS", "RAMONA CRAVACHE  •  ALI HOWARD  •  DUKE MAGUIRE"},
-      {"STAR SHOWDOWN RIVALS", "MARKO BARAN  •  ZAKI MALIK  •  HAILEY HARPER"},
-      {"HORIZON FINALE CHAMPION", "DARIUS FLYNT  •  2010 FERRARI 599XX"},
-      {"SHIFT ENGINE", "NATIVE C++20 / VULKAN CAMPAIGN & SIMULATION"},
-      {"THANK YOU FOR DRIVING", "ENDLESS COLORADO FREE ROAM CONTINUES AFTER CREDITS"},
-  };
-
   const float cx = 0.5f * screen_w;
   const float scroll_y = screen_h - float(flow.stage_time()) * 58.0f * s;
   for (size_t i = 0; i < std::size(kCredits); ++i) {
-    const float y = scroll_y + float(i) * 92.0f * s;
-    if (y < bar_h - 40.0f * s || y > screen_h - bar_h + 20.0f * s) continue;
-    l.text(cx, y, kCredits[i].first, ui4::style(ui::Font::kB, 14.0f * s, ui4::kPinkHi, ui::Align::kCenter));
-    l.text(cx, y + 22.0f * s, kCredits[i].second, ui4::style(ui::Font::kE, 22.0f * s, ui4::kWhite, ui::Align::kCenter));
+    const float y = scroll_y + float(i) * 108.0f * s;
+    if (y < bar_h - 60.0f * s || y > screen_h - bar_h + 20.0f * s) continue;
+    l.text(cx, y, kCredits[i].header, ui4::style(ui::Font::kE, 16.0f * s, ui4::kPinkHi, ui::Align::kCenter));
+    l.text(cx, y + 22.0f * s, kCredits[i].subheader,
+           ui4::style(ui::Font::kB, 13.0f * s, ui4::kYellow, ui::Align::kCenter));
+    l.text(cx, y + 42.0f * s, kCredits[i].text, ui4::style(ui::Font::kE, 19.0f * s, ui4::kWhite, ui::Align::kCenter));
   }
 
-  ui4::button_bar(l, {{"A", "RETURN TO COLORADO FREE ROAM"}}, screen_w, screen_h, 70.0f);
+  ui4::button_bar(l, {{"A", loc_str("HelpButtons", "IDS_Continue", "CONTINUE")}}, screen_w, screen_h, 70.0f);
 }
 
 void draw_transition(ui::List& l, const race::TransitionState& trans, float screen_w, float screen_h) {

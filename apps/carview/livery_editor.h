@@ -1,5 +1,5 @@
 // carview: Paint Shop (Normal/Metallic/Matte/Special 102 two-tone paints,
-// Chrome/Carbon/Wood/Camo finishes, HSV colour grid, per-region painting) and
+// Chrome/Carbon finishes, HSV colour grid, per-region painting) and
 // Vinyl/Livery Editor (Livery.zip 1,372 shapes, 1024x1024 compositor, .liv I/O).
 #pragma once
 
@@ -24,9 +24,8 @@ enum class PaintRegion : int {
   kWing = 2,
   kMirrors = 3,
   kRims = 4,
-  kCalipers = 5,
-  kWindowTint = 6,
-  kCount = 7,
+  kWindowTint = 5,
+  kCount = 6,
 };
 
 const char* paint_region_name(PaintRegion r);

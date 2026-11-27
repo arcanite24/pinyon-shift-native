@@ -191,7 +191,7 @@ void test_hub_stage_and_camera() {
       shot = carview::hub_camera_shot(HubRoom::kWorkshop, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, true);
-      CHECK(shot.sequence_member.empty() && shot.preset.empty());
+      CHECK(shot.sequence_member.empty() && shot.preset == "CarColorSel");
       shot = carview::hub_camera_shot(HubRoom::kAutoshow, -1, false, 0, false);
       CHECK(shot.sequence_member == "HomeSpaceCams.xml");
       shot = carview::hub_camera_shot(HubRoom::kGarage, -1, false, 0, false);
@@ -202,7 +202,7 @@ void test_hub_stage_and_camera() {
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, 14, false, false) == "Upgrades_Engine_Front");
     CHECK(carview::hub_camera_preset_name(HubRoom::kWorkshop, -1, false, false) == "Upgrades_Main");
     CHECK(carview::hub_camera_preset_name(HubRoom::kPaintShop, -1, true, false) == "LiveryPaintMenu_Body");
-    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true).empty());
+    CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, true) == "CarColorSel");
     CHECK(carview::hub_camera_preset_name(HubRoom::kAutoshow, -1, false, false).empty());
     CHECK(carview::hub_camera_preset_name(HubRoom::kGarage, -1, false, false).empty());
     // Negative-posy presets (like CarColorSel) lift above ground_y instead of going underground.
@@ -798,14 +798,14 @@ void test_disc_hub_shops_and_garage() {
   carview::draw_upgrade_shop_hud(l2_tune, 1280.0f, 720.0f, shop, bands, 20, credits, "VW Corrado VR6");
   carview::draw_garage_hud(l3, 1280.0f, 720.0f, gb, bands, credits);
 
-  // Verify Phase 3 authentic texture lookups across Autoshow, Upgrades, Tuning, and Garage.
+  // Verify Phase 3 authentic texture lookups across Autoshow, Upgrades, and Garage.
   auto has_prefix = [&](const std::string& pfx) {
     for (const auto& t : requested_textures)
       if (t.rfind(pfx, 0) == 0) return true;
     return false;
   };
   CHECK(has_prefix("T:UI4/Upgrades/"));
-  CHECK(has_prefix("T:UI4/Tuning/"));
+  CHECK(!has_prefix("T:UI4/Tuning/"));
   CHECK(requested_textures.count("DIRTTEXTURES/STATBARFILL") > 0);
   CHECK(requested_textures.count("DIRTTEXTURES/STATBAREMPTY") > 0);
   CHECK(requested_textures.count("OPTIONS/OPT_BAR_ARROW") > 0);
@@ -919,14 +919,16 @@ void test_disc_hub_shops_and_garage() {
       CHECK(autoshow.step() == carview::AutoshowStep::kColorSelect);
       CHECK(autoshow.breadcrumb_text().find("SELECT PAINT") != std::string::npos);
 
+      // Retail Autoshow Color Select keeps factory paint finish and stock calipers only.
       autoshow.cycle_paint_finish(1);
-      CHECK(autoshow.paint_finish() == carview::AutoshowPaintFinish::kGloss);
+      CHECK(autoshow.paint_finish() == carview::AutoshowPaintFinish::kFactory);
       autoshow.set_paint_finish(carview::AutoshowPaintFinish::kMatte);
+      CHECK(autoshow.paint_finish() == carview::AutoshowPaintFinish::kFactory);
       autoshow.cycle_caliper_option(1);
-      CHECK(autoshow.selected_caliper().active);
+      CHECK(!autoshow.selected_caliper().active);
       const cars::CarPaintSpec pspec = autoshow.preview_paint_spec();
-      CHECK(pspec.body.active && pspec.body.finish == cars::PaintFinish::kMatte);
-      CHECK(pspec.calipers.active && pspec.calipers.rgb == autoshow.selected_caliper().rgb);
+      CHECK(pspec.body.active);
+      CHECK(!pspec.calipers.active);
     }
 
     // Affordable / unaffordable purchase guards.

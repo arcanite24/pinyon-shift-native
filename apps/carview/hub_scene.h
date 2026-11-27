@@ -82,7 +82,7 @@ struct HubCameraShot {
   std::string_view sequence;         // the sequence's name in it ("" for a <Cams> root)
   std::string_view preset;           // a preset's name, empty for none
 };
-// `paint_region`: the editor's PaintRegion (0 body .. 6 window tint);
+// `paint_region`: the editor's PaintRegion (0 body .. 5 window tint);
 // `part_enum`: the upgrade shop's selected part, -1 off its part lists.
 HubCameraShot hub_camera_shot(HubRoom room, int part_enum, bool editor_open, int paint_region, bool colour_select);
 // The WorkshopCams.xml sequence for an upgrade part (the body parts and the
@@ -136,6 +136,9 @@ struct HubCamera {
   float ground_y = 0.0f;     // the ground point's height in the car model's frame
 
   void set_focus(HubCameraFocus focus);
+  // Outdoor Car Select (Outpost / My Garage Change Car) close flank orbit
+  // matching retail measured framing (dist ~ 2.10 m, eye dy ~ 0.48 m, fov 48.14 deg).
+  void set_outdoor_car_select();
   // Aims at the preset: its eye and direction (the car's frame mirrored
   // into the engine's, -Z forward) as yaw, pitch and distance about the
   // ray's nearest point to the car's origin, and its field of view. Blends

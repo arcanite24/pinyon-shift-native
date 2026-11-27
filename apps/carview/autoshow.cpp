@@ -757,46 +757,38 @@ int64_t Autoshow::selected_colour_sequence() const {
   return 0;
 }
 
-void Autoshow::cycle_paint_finish(int by) {
-  const int n = int(AutoshowPaintFinish::kCount);
-  paint_finish_ = AutoshowPaintFinish(((int(paint_finish_) + by) % n + n) % n);
+void Autoshow::cycle_paint_finish(int /*by*/) {
+  // Retail FH1 Autoshow offers factory manufacturer colors only (no finish cycling).
+  paint_finish_ = AutoshowPaintFinish::kFactory;
   buy_confirm_open_ = false;
 }
 
-void Autoshow::set_paint_finish(AutoshowPaintFinish f) {
-  const int v = std::clamp(int(f), 0, int(AutoshowPaintFinish::kCount) - 1);
-  paint_finish_ = AutoshowPaintFinish(v);
+void Autoshow::set_paint_finish(AutoshowPaintFinish /*f*/) {
+  paint_finish_ = AutoshowPaintFinish::kFactory;
   buy_confirm_open_ = false;
 }
 
 const std::vector<AutoshowCaliperOption>& Autoshow::caliper_options() {
   static const std::vector<AutoshowCaliperOption> kOpts = {
       {"STOCK", false, 0x000000u},
-      {"CRIMSON", true, 0xCC1820u},
-      {"YELLOW", true, 0xF2C618u},
-      {"COBALT", true, 0x1A6ED8u},
-      {"GOLD", true, 0xC89828u},
-      {"SILVER", true, 0xC8CDD6u},
-      {"OBSIDIAN", true, 0x181A1Eu},
   };
   return kOpts;
 }
 
-void Autoshow::cycle_caliper_option(int by) {
-  const int n = int(caliper_options().size());
-  caliper_index_ = size_t(((int(caliper_index_) + by) % n + n) % n);
+void Autoshow::cycle_caliper_option(int /*by*/) {
+  // Retail FH1 Autoshow has no brake caliper painting.
+  caliper_index_ = 0;
   buy_confirm_open_ = false;
 }
 
-void Autoshow::set_caliper_index(size_t idx) {
-  const auto& opts = caliper_options();
-  if (!opts.empty()) caliper_index_ = std::min(idx, opts.size() - 1);
+void Autoshow::set_caliper_index(size_t /*idx*/) {
+  caliper_index_ = 0;
   buy_confirm_open_ = false;
 }
 
 const AutoshowCaliperOption& Autoshow::selected_caliper() const {
   const auto& opts = caliper_options();
-  return opts[std::min(caliper_index_, opts.size() - 1)];
+  return opts[0];
 }
 
 cars::CarPaintSpec Autoshow::preview_paint_spec() const {
@@ -804,27 +796,7 @@ cars::CarPaintSpec Autoshow::preview_paint_spec() const {
   if (const AutoshowSwatch* sw = selected_swatch()) {
     spec.body.active = true;
     spec.body.rgb = sw->rgb;
-    switch (paint_finish_) {
-      case AutoshowPaintFinish::kGloss: spec.body.finish = cars::PaintFinish::kNormal; break;
-      case AutoshowPaintFinish::kMetallic: spec.body.finish = cars::PaintFinish::kMetallic; break;
-      case AutoshowPaintFinish::kMatte: spec.body.finish = cars::PaintFinish::kMatte; break;
-      case AutoshowPaintFinish::kTwoTone:
-        spec.body.finish = cars::PaintFinish::kTwoTone;
-        spec.body.sec_rgb = sw->has_stripe && sw->stripe_rgb != 0 ? sw->stripe_rgb : 0xDCE4F2u;
-        break;
-      case AutoshowPaintFinish::kChrome: spec.body.finish = cars::PaintFinish::kChrome; break;
-      case AutoshowPaintFinish::kCarbon: spec.body.finish = cars::PaintFinish::kCarbon; break;
-      case AutoshowPaintFinish::kFactory:
-      default:
-        spec.body.finish = sw->metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
-        break;
-    }
-  }
-  const auto& cal = selected_caliper();
-  if (cal.active) {
-    spec.calipers.active = true;
-    spec.calipers.rgb = cal.rgb;
-    spec.calipers.finish = cars::PaintFinish::kMetallic;
+    spec.body.finish = sw->metallic ? cars::PaintFinish::kMetallic : cars::PaintFinish::kNormal;
   }
   return spec;
 }

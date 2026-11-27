@@ -36,9 +36,11 @@ inline constexpr StringRef kHandling{"carflow", "IDS_Stat_Handling", 0, "HANDLIN
 inline constexpr StringRef kAcceleration{"carflow", "IDS_Stat_Accel", 0, "ACCELERATION"};
 inline constexpr StringRef kLaunch{"carflow", "IDS_Stat_Launch", 0, "LAUNCH"};
 inline constexpr StringRef kBraking{"carflow", "IDS_Stat_Braking", 0, "BRAKING"};
-// Help bar (19_autoshow_orig.png: A SELECT, B BACK, Y TOGGLE, SEARCH).
+// Help bar (19_autoshow_orig.png: A SELECT, B BACK, Y TOGGLE, SEARCH;
+// outpost-a1.png: A SELECT, B BACK, X CAR LIST, Y TOGGLE, SEARCH).
 inline constexpr StringRef kSelect{"HelpButtons", "IDS_Select", 0, "SELECT"};
 inline constexpr StringRef kBack{"HelpButtons", "IDS_Back", 0, "BACK"};
+inline constexpr StringRef kCarList{"HelpButtons", "IDS_CarList", 0, "CAR LIST"};
 inline constexpr StringRef kToggle{"HelpButtons", "IDS_Toggle", 0, "TOGGLE"};
 inline constexpr StringRef kSearch{"HelpButtons", "IDS_Search", 0, "SEARCH"};
 inline constexpr StringRef kSellCar{"carflow", "IDS_Sell_Car_Action", 0, "SELL CAR"};
@@ -122,6 +124,8 @@ const std::vector<const char*>& car_list_nodes();
 std::string car_list_credits(int64_t cr);
 // The drivetrain icon (UI4/Common/Drivetrain_<FWD|RWD|AWD>_<Front|Mid|Rear>); empty: none.
 std::string drivetrain_texture(int drive_type, int engine_placement);
+// Short retail drivetrain code ("FR", "FF", "AWD", "MR", "RR"); empty when unknown.
+const char* drivetrain_code(int drive_type, int engine_placement);
 // A game texture path (GAME:\Media\UI\Textures\...\X.tga) as the scenes'
 // texture key ("T:UI4/..." or a Horizon.zip member); empty in, empty out.
 std::string ui_texture_key(const std::string& game_path);

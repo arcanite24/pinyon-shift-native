@@ -97,7 +97,7 @@ std::vector<StoryBeat> StoryIntro::beats_for(StoryStage s) {
          "You made it! Here is your official Yellow Wristband — welcome to the Horizon Festival!",
          -1.0, 0.2, 5.0},
         {"DAK", "", "1040BarnFindAtWorkshop",
-         "I'm Dak — your 1995 VW Corrado VR6 is parked in your garage with a 15,000 Cr bonus. Bring it by anytime for upgrades or barn finds!",
+         "I'm Dak — your 1995 VW Corrado VR6 is parked in your garage and you have 40,000 Cr to spend. Bring your car by anytime for upgrades or barn finds!",
          -1.0, 5.5, 5.5},
         {"ALICE HART", "AliceOpeningInterview1", "",
          "Step into the Horizon Autoshow to check out curated affordable starter rides, or keep your Corrado VR6 and chase your Green Wristband!",
@@ -187,7 +187,7 @@ StoryAction StoryIntro::enter_stage(StoryStage next) {
       act.open_autoshow = true;
       act.intro_finished = true;
       act.onboarding_banner =
-          "WELCOME TO HORIZON AUTOSHOW — 1995 VW CORRADO VR6 IN GARAGE + 15,000 CR STARTER BONUS";
+          "WELCOME TO HORIZON AUTOSHOW — 1995 VW CORRADO VR6 IN GARAGE + 40,000 CR";
       stage_ = StoryStage::kCompleted;
       break;
 

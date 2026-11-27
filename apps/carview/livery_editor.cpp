@@ -59,7 +59,6 @@ const char* paint_region_name(PaintRegion r) {
     case PaintRegion::kWing: return "REAR WING";
     case PaintRegion::kMirrors: return "MIRRORS";
     case PaintRegion::kRims: return "RIMS";
-    case PaintRegion::kCalipers: return "BRAKE CALIPERS";
     case PaintRegion::kWindowTint: return "WINDOW TINT";
     default: return "BODY";
   }
@@ -86,8 +85,6 @@ const char* paint_finish_display_name(cars::PaintFinish finish) {
     case cars::PaintFinish::kTwoTone: return "TWO-TONE";
     case cars::PaintFinish::kChrome: return "CHROME";
     case cars::PaintFinish::kCarbon: return "CARBON FIBER";
-    case cars::PaintFinish::kWood: return "WOOD";
-    case cars::PaintFinish::kCamo: return "CAMOUFLAGE";
     default: return "FACTORY";
   }
 }
@@ -148,8 +145,7 @@ std::string special_color_display_name(const cars::SpecialColorRow& sc) {
   }
   const auto fin = static_cast<cars::PaintFinish>(sc.finish);
   const std::string pri = paint_hue_name(sc.pri_rgb);
-  if (fin == cars::PaintFinish::kCarbon || fin == cars::PaintFinish::kWood ||
-      fin == cars::PaintFinish::kCamo) {
+  if (fin == cars::PaintFinish::kCarbon) {
     return std::string(paint_finish_display_name(fin));
   }
   if (fin == cars::PaintFinish::kChrome) {
@@ -241,7 +237,6 @@ cars::PaintRegionSpec& LiveryEditor::active_region_spec() {
     case PaintRegion::kWing: return doc_.paint.wing;
     case PaintRegion::kMirrors: return doc_.paint.mirrors;
     case PaintRegion::kRims: return doc_.paint.rims;
-    case PaintRegion::kCalipers: return doc_.paint.calipers;
     default: return doc_.paint.body;
   }
 }
@@ -252,7 +247,6 @@ const cars::PaintRegionSpec& LiveryEditor::active_region_spec() const {
     case PaintRegion::kWing: return doc_.paint.wing;
     case PaintRegion::kMirrors: return doc_.paint.mirrors;
     case PaintRegion::kRims: return doc_.paint.rims;
-    case PaintRegion::kCalipers: return doc_.paint.calipers;
     default: return doc_.paint.body;
   }
 }
@@ -321,8 +315,22 @@ void LiveryEditor::move_finish(int by) {
   if (region_ == PaintRegion::kRims && rims_paint_blocked()) return;
   push_undo();
   auto& spec = active_region_spec();
-  const int n = int(cars::PaintFinish::kCount);
-  spec.finish = cars::PaintFinish(((int(spec.finish) + by) % n + n) % n);
+  // Retail 501_C_LIV_COLOR paint finishes: Normal (Gloss/Factory), Metallic, Matte.
+  // Special finishes (Two-Tone/Pearl/Chrome/Carbon) are selected from Special Colors.
+  static constexpr cars::PaintFinish kRetailFinishes[] = {
+      cars::PaintFinish::kNormal,
+      cars::PaintFinish::kMetallic,
+      cars::PaintFinish::kMatte,
+  };
+  constexpr int n = int(sizeof(kRetailFinishes) / sizeof(kRetailFinishes[0]));
+  int cur = 0;
+  for (int i = 0; i < n; ++i) {
+    if (kRetailFinishes[i] == spec.finish) {
+      cur = i;
+      break;
+    }
+  }
+  spec.finish = kRetailFinishes[((cur + by) % n + n) % n];
   spec.active = true;
   record_previous_color(spec.rgb, spec.finish);
   dirty_ = true;
@@ -1400,16 +1408,15 @@ void draw_livery_editor_hud(ui::List& list, float w, float h, const LiveryEditor
   } else if (editor.tab() == EditorTab::kPaint || editor.tab() == EditorTab::kManufacturerColors ||
              editor.tab() == EditorTab::kPreviousColors) {
     // Slim top-left region pill strip with authentic T:C_Map/C_LIV_Map/C_LIV_PaintCar_* icons (never blocks car!).
-    static const char* kRegionIcons[7] = {
-        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",    "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Hood",
-        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Wing",    "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Mirror",
-        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Rim",     "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Caliper",
-        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",
+    static const char* kRegionIcons[6] = {
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",   "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Hood",
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Wing",   "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Mirror",
+        "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Rim",    "T:C_Map/C_LIV_Map/C_LIV_PaintCar_Body",
     };
     ui4::TiltScope reg_rot(list, 310.0f * s, 88.0f * s, tilt_rad * 0.6f);
     float rx = 56.0f * s;
     const float ry = 74.0f * s;
-    // Measure each region tab width dynamically so long labels (REAR WING, BRAKE CALIPERS, WINDOW TINT) never clip.
+    // Measure each region tab width dynamically so long labels (REAR WING, WINDOW TINT) never clip.
     std::array<float, int(PaintRegion::kCount)> rwidths{};
     std::array<bool, int(PaintRegion::kCount)> rhas_icon{};
     std::array<std::array<float, 4>, int(PaintRegion::kCount)> ruvs{};

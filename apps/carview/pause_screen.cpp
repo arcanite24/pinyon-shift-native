@@ -94,11 +94,19 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
   // Every node under the PlayerBar: a screen sharing the bar has its own
   // Points, Wristband, TEXT_PI, Pill01 ... (H_EVENT_SUMMARY, the car lists).
   const int bar = sc.node("PlayerBar");
+  const int car = sc.node("MiddleRow/TEXT_CAR", bar);
+  // Left-aligned PlayerBar (108_C_BUY_CARSELECT, 115_C_BUY_MFRSELECT,
+  // 527_C_UPG_UPGRADES) sits top-left with left-aligned texts and pills that
+  // crop on the right; right-aligned PlayerBar (925_PAUSE_MENU, H_MAP,
+  // H_EVENT_SUMMARY) sits top-right with right-aligned texts.
+  const bool left_bar = (car >= 0) && (sd.at(car)[0] < 640.0f);
   // Top row: the wristband objective and the wristband.
   const int next = sc.node("TopRow/SP/Next_Level", bar), points = sc.node("TopRow/SP/Points", bar);
   const int band = sc.node("TopRow/SP/Wristband", bar);
+  const int top_pill = sc.node("TopRow/SP/Pill01", bar);
   // A band waiting to be collected shows that band, its objective in its
-  // colour with no tape behind (07_pause_menu_orig.png).
+  // colour with no tape behind on the right-aligned pause bar, or on its dark
+  // pill next to the wristband on the left-aligned car-select bar (outpost-a1.png).
   const bool collect = !st.band_next.empty() && st.band_collect_ready;
   const bool no_top = band_texture == kNoPlayerBarTopRow;
   if (no_top) {
@@ -110,18 +118,39 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
       sc.text(next, objective);
       if (next >= 0) {
         sc.at(next).tint = ui4::wristband_colour(st.band_next);
-        sc.at(next).dx = kObjectiveRight - sd.measure(next, objective) - sd.at(next)[0];
+        if (!left_bar) {
+          sc.at(next).dx = kObjectiveRight - sd.measure(next, objective) - sd.at(next)[0];
+        } else if (top_pill >= 0) {
+          const auto pr = sd.rect(top_pill);
+          const float right = sd.at(next)[0] + 0.9f * sd.measure(next, objective) + kPillPad;
+          sc.at(top_pill).visible_width = std::max(120.0f, right - pr[0]);
+          sc.at(top_pill).tint = ui::rgba(14, 14, 16, 240);
+        }
       }
       sc.hide(points);
-      const int sp = sc.node("TopRow/SP", bar);
-      for (const char* tape : {"Smudge_Tape", "Crisp_Tape", "Dirt_Tile", "top_pill"}) sc.hide(child(sd, sp, tape));
+      if (!left_bar) {
+        const int sp = sc.node("TopRow/SP", bar);
+        for (const char* tape : {"Smudge_Tape", "Crisp_Tape", "Dirt_Tile", "top_pill"}) sc.hide(child(sd, sp, tape));
+      }
     } else {
       sc.text(next, "Nxt Lvl");
-      if (st.band_hi > 0) sc.text(points, thousands(std::max(0, st.band_hi - st.band_points)) + " PTS");
+      const std::string pts_str =
+          st.band_hi > 0 ? (thousands(std::max(0, st.band_hi - st.band_points)) + " PTS") : std::string{};
+      if (!pts_str.empty()) sc.text(points, pts_str);
+      if (left_bar && top_pill >= 0) {
+        const auto pr = sd.rect(top_pill);
+        float right = pr[0] + 180.0f;
+        if (next >= 0) right = std::max(right, sd.at(next)[0] + 0.9f * sd.measure(next, "Nxt Lvl") + kPillPad);
+        if (points >= 0 && !pts_str.empty())
+          right = std::max(right, sd.at(points)[0] + 0.9f * sd.measure(points, pts_str) + kPillPad);
+        sc.at(top_pill).visible_width = std::max(140.0f, right - pr[0]);
+        sc.at(top_pill).tint = ui::rgba(14, 14, 16, 240);
+      }
     }
   } else {
     sc.hide(next);
     sc.hide(points);
+    if (left_bar && top_pill >= 0) sc.hide(top_pill);
   }
   const std::string shown_band = collect ? st.band_next : st.band_name;
   const std::string band_tex = !band_texture.empty() ? band_texture
@@ -129,23 +158,43 @@ void bind_player_bar(SceneScreen& sc, const DriveHud& st, const std::string& ban
                                                          : "WRISTBANDS/" + upper(shown_band.substr(0, shown_band.find(' ')));
   if (band >= 0 && !band_tex.empty() && !no_top) sc.at(band).texture = band_tex;
   // Middle row: the car and its class / PI.
-  const int car = sc.node("TEXT_CAR", bar), pi = sc.node("TEXT_PI", bar), cls = sc.node("CLASS_A", bar);
+  const int pi = sc.node("MiddleRow/CLASS_SM/Group/TEXT_PI", bar);
+  const int cls = sc.node("MiddleRow/CLASS_SM/Group/CLASS_A", bar);
   std::string name = st.club_tag.empty() ? st.car_name : "[" + st.club_tag + "] " + st.car_name;
   sc.text(car, name);
-  fit_pill(sc, sc.node("middle_Pill", bar), car, name);
+  if (left_bar) {
+    if (const int mp = sc.node("MiddleRow/pill_middle", bar); mp >= 0) {
+      const auto pr = sd.rect(mp);
+      const float right = sd.at(car)[0] + 0.9f * sd.measure(car, name) + kPillPad;
+      sc.at(mp).visible_width = std::max(120.0f, right - pr[0]);
+      sc.at(mp).tint = ui::rgba(14, 14, 16, 244);
+    }
+  } else {
+    fit_pill(sc, sc.node("middle_Pill", bar), car, name);
+  }
   if (!st.car_class.empty()) {
     sc.text(pi, std::to_string(st.car_pi));
     if (pi >= 0) sc.at(pi).tint = kInk;
     if (cls >= 0) sc.at(cls).texture = "PICLASS/CLASS_" + upper(st.car_class);
   } else {
-    sc.hide(sc.node("CLASS_SM", bar));
+    sc.hide(sc.node("MiddleRow/CLASS_SM", bar));
   }
   // Bottom row: credits.
   if (st.credits >= 0) {
-    const int cr = sc.node("TEXT_CR", bar);
+    const int cr = sc.node("BottomRow/TEXT_CR", bar);
+    const int cr_pill = sc.node("BottomRow/Pill01", bar);
     const std::string credits = format1(text_of(pause_text::kCredits), thousands(st.credits));
     sc.text(cr, credits);
-    fit_pill(sc, sc.node("Pill01", bar), cr, credits);
+    if (left_bar) {
+      if (cr_pill >= 0 && cr >= 0) {
+        const auto pr = sd.rect(cr_pill);
+        const float right = sd.at(cr)[0] + sd.measure(cr, credits) + kPillPad + 4.0f;
+        sc.at(cr_pill).visible_width = std::max(96.0f, right - pr[0]);
+        sc.at(cr_pill).tint = ui::rgba(236, 236, 236, 248);
+      }
+    } else {
+      fit_pill(sc, cr_pill, cr, credits);
+    }
     if (cr >= 0) sc.at(cr).tint = kInk;
   } else {
     sc.hide(sc.node("BottomRow", bar));
@@ -434,35 +483,8 @@ void draw_sponsors(ui::List& l, const DriveHud& st, const PauseScreenHud& ps, fl
   help_bar(l, {{"B", text_of(pause_text::kBack)}}, w, h);
 }
 
-// --- 802_MESSAGE_CENTER (offline: no messages) ----------------------------
-
-// INTERIM: offline, the original answers MESSAGE CENTER with a "NO NETWORK
-// ACCESS" popup (29_message_center_offline_orig.png). The engine opens the
-// message centre's scene with its title and an empty inbox instead; the
-// scene's list, tabs, images and description pane draw out of place (their
-// stackers and crops are not decoded), so they are hidden and a plain pane
-// is drawn behind the message, about TEXT_MESSAGE_TITLE.
-constexpr Pane kMessagePane{-24.0f, -22.0f, 520.0f, 96.0f};
-
-void draw_messages(ui::List& l, const PauseScreenHud&, float w, float h) {
-  SceneScreen sc(kMessageScene);
-  if (!sc.ok()) return;
-  const SceneDraw& sd = sc.scene();
-  const SceneFrame f = SceneScreen::frame(w, h);
-  for (const char* hidden : {"HELP_BUTTON_BAR", "MESSAGE_MENU", "LOADING_ICON", "NAV_POSITION_INDICATOR",
-                             "TAB_CONTROL", "DescriptionBox", "MessageCenter_Image", "MessageCenter_ImageCar",
-                             "MessageCenter_ImageError"})
-    sc.hide(sc.node(hidden));
-  const int title = sc.node("TEXT_MESSAGE_TITLE");
-  pane(l, f, sd, title, kMessagePane, kSponsorPane);
-  sc.text(sc.node("TitleTapeText"), text_of(pause_text::kMessageTitle));
-  sc.text(sc.node("TEXT_MESSAGE_TITLE"), text_of(pause_text::kNoMessages));
-  sc.text(sc.node("TEXT_MESSAGE"),
-          text_of(pause_text::kYouHaveNoMessages) + "\n\n" + text_of(pause_text::kCheckBackLater));
-  sc.bindings().fit_text = false;
-  sc.draw(l, f);
-  help_bar(l, {{"B", text_of(pause_text::kBack)}}, w, h);
-}
+// Offline MESSAGE CENTER shows the retail NO NETWORK ACCESS H_MESSAGE_POPUP
+// over the pause menu rows (29_message_center_offline_orig.png).
 
 }  // namespace
 
@@ -531,7 +553,7 @@ void fill_pause_screen(const PauseMenu& menu, double now, PauseScreenHud& out) {
 
 bool pause_popup_text(const PauseScreenHud& ps, std::string& title, std::string& message,
                       std::vector<std::pair<std::string, std::string>>& prompts) {
-  if (ps.screen == Screen::kOffline) {
+  if (ps.screen == Screen::kOffline || ps.screen == Screen::kMessageCentre) {
     title = text_of(pause_text::kNoNetworkTitle);
     message = text_of(pause_text::kNoNetworkBody);
     // interim (SPEC_QUESTIONS Q167): the popup's help bar is not captured.
@@ -565,15 +587,12 @@ bool draw_pause_screen(ui::List& l, const DriveHud& st, const PauseScreenHud& ps
       if (!SceneScreen(kSponsorScene).ok()) return false;
       draw_sponsors(l, st, ps, w, h);
       return true;
-    case Screen::kMessageCentre:
-      if (!SceneScreen(kMessageScene).ok()) return false;
-      draw_messages(l, ps, w, h);
-      return true;
     case Screen::kList:
     case Screen::kExtras:
       if (!SceneScreen(kPauseScene).ok()) return false;
       draw_list(l, st, ps, w, h);
       return true;
+    case Screen::kMessageCentre:
     case Screen::kOffline:
     case Screen::kConfirm: {
       // The rows stay under the popup (blurred with the frame in the

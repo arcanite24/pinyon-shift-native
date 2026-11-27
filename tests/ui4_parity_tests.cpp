@@ -789,11 +789,11 @@ void generate_screenshots(const std::filesystem::path& game_root, const std::fil
       carview::draw_upgrade_shop_hud(l, float(W), float(H), shop, bands, 25, 248500, "Nissan Skyline GT-R V-spec II");
       save_frame("ui4_upgrades_tuning.png", l, load_or_build_backdrop(studio_bg_path, true));
 
-      // Also verify Tuning tab renders cleanly without crashing.
-      shop.set_category(carview::ShopCategory::kTuning);
+      // Retail Dak's Garage has 6 upgrade categories (no Tuning sliders tab); rendering remains clean.
+      shop.set_category(carview::ShopCategory::kEngine);
       carview::ui::List lt;
       carview::draw_upgrade_shop_hud(lt, float(W), float(H), shop, bands, 25, 248500, "Nissan Skyline GT-R V-spec II");
-      check(lt.items().size() > 25, "UpgradeShop Tuning tab emits FH1 slider instances");
+      check(lt.items().size() > 25, "UpgradeShop renders authentic 6-category FH1 parts view");
     }
   }
 
@@ -2801,9 +2801,9 @@ void test_round3_phase_f3_parity() {
               std::string(carview::paint_finish_display_name(cars::PaintFinish::kTwoTone)) == "TWO-TONE" &&
               std::string(carview::paint_finish_display_name(cars::PaintFinish::kChrome)) == "CHROME" &&
               std::string(carview::paint_finish_display_name(cars::PaintFinish::kCarbon)) == "CARBON FIBER" &&
-              std::string(carview::paint_finish_display_name(cars::PaintFinish::kWood)) == "WOOD" &&
-              std::string(carview::paint_finish_display_name(cars::PaintFinish::kCamo)) == "CAMOUFLAGE",
-          "paint_finish_display_name returns authentic human-readable FH1 finish names");
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kWood)) == "FACTORY" &&
+              std::string(carview::paint_finish_display_name(cars::PaintFinish::kCamo)) == "FACTORY",
+          "paint_finish_display_name returns authentic retail FH1 finish names without Wood/Camouflage");
 
     cars::SpecialColorRow sc_pearl{};
     sc_pearl.id = 42;

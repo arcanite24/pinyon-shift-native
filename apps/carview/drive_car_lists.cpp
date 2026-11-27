@@ -157,10 +157,16 @@ void DriveSession::fill_autoshow_list(carview::CarListHud& out) {
     d.stats = {s->speed_rating, s->handling_rating, s->accel_rating, s->launch_rating, s->braking_rating};
     if (!autoshow.show_specs()) d.valid = false;  // Y TOGGLE hides the panel
   }
-  out.prompts = {{"A", carview::text_of(t::kSelect)},
-                 {"B", carview::text_of(t::kBack)},
-                 {"Y", carview::text_of(t::kToggle)},
-                 {"BACK", carview::text_of(t::kSearch)}};
+  if (autoshow.tutorial_mode()) {
+    // Retail first-car Autoshow (HORIZON RECOMMENDS) hides BACK and SEARCH prompts.
+    out.prompts = {{"A", carview::text_of(t::kSelect)},
+                   {"Y", carview::text_of(t::kToggle)}};
+  } else {
+    out.prompts = {{"A", carview::text_of(t::kSelect)},
+                   {"B", carview::text_of(t::kBack)},
+                   {"Y", carview::text_of(t::kToggle)},
+                   {"BACK", carview::text_of(t::kSearch)}};
+  }
 }
 
 const DriveSession::MakeInfo* DriveSession::make_info(int64_t make_id) {
@@ -265,7 +271,17 @@ void DriveSession::fill_garage_list(carview::CarListHud& out) {
                    {"B", carview::text_of(t::kBack)},
                    {"Y", carview::text_of(t::kToggle)}};
   } else {
-    out.title = carview::text_of(t::kMyGarage);
+    // Retail My Garage / Outpost Change Car title reads CAR SELECT (outpost-a1.png).
+    out.title = carview::text_of(t::kCarSelect);
+    // Tighten outdoor Car Select close flank orbit camera toward retail Q365 framing
+    // (dist = 1.67..2.40 m, dy = 0.37..0.56 m, fov = 48.14 deg).
+    const bool indoor_hub =
+        hub_menu.open() &&
+        (hub_menu.top() == carview::HubMenu::kWorkshop || hub_menu.top() == carview::HubMenu::kPaintBooth);
+    if (!indoor_hub && !hub_cam.user_orbited && !hub_cam.sequence &&
+        std::fabs(hub_cam.fov_deg - 48.14f) < 0.25f && hub_cam.target_dist > 2.45f) {
+      hub_cam.set_outdoor_car_select();
+    }
     const auto& vis = garage_browser.visible();
     for (const auto& e : vis) {
       carview::CarTile tile;
@@ -283,11 +299,11 @@ void DriveSession::fill_garage_list(carview::CarListHud& out) {
           out.details.model = model_of(carview::car_name(e->media_name), e->make_name);
       }
     }
-    // 11_car_select_orig.png's bar on the same scene (the event's garage
-    // cars): SELECT, BACK, (X CAR LIST,) TOGGLE, SEARCH. SEARCH steps the
-    // class filter for now; the list view (X) is not built.
+    // outpost-a1.png / 11_car_select_orig.png bar on 108_C_BUY_CARSELECT:
+    // A SELECT, B BACK, X CAR LIST, Y TOGGLE, BACK SEARCH.
     out.prompts = {{"A", carview::text_of(t::kSelect)},
                    {"B", carview::text_of(t::kBack)},
+                   {"X", carview::text_of(t::kCarList)},
                    {"Y", carview::text_of(t::kToggle)},
                    {"BACK", carview::text_of(t::kSearch)}};
   }

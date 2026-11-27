@@ -72,15 +72,24 @@ void draw_notice(ui::List& l, const std::string& notice, float w, float h) {
 constexpr float kInfoTextWidth = 440.0f;
 constexpr int kInfoTextLines = 7;
 
-// The player bar's class follows the car's name (19_autoshow_orig.png),
-// its pill cut after it: the garage, the autoshow's lists and its makes.
+// The player bar's class follows the car's name (19_autoshow_orig.png,
+// outpost-a1.png), its dark pill cut after it: the garage, the autoshow's
+// lists and its makes.
 void place_bar_class(SceneScreen& sc, const DriveHud& st) {
   const SceneDraw& sd = sc.scene();
   const int bar = sc.node("PlayerBar");
   const int car = sc.node("MiddleRow/TEXT_CAR", bar), cls = sc.node("MiddleRow/CLASS_SM", bar);
   const int pill = sc.node("MiddleRow/pill_middle", bar);
-  if (car < 0 || cls < 0 || st.car_class.empty()) return;
+  if (pill >= 0) sc.at(pill).tint = ui::rgba(14, 14, 16, 244);
+  if (car < 0) return;
   const float name_end = sd.at(car)[0] + 0.9f * sd.measure(car, st.car_name);
+  if (cls < 0 || st.car_class.empty()) {
+    if (pill >= 0) {
+      const auto pr = sd.rect(pill);
+      sc.at(pill).visible_width = std::max(80.0f, name_end + kPillTail - pr[0]);
+    }
+    return;
+  }
   const float cls_left = sd.rect(sc.node("Group/CLASS_A", cls))[0];
   sc.at(cls).dx = name_end + kClassGap - cls_left;
   if (pill >= 0) {
@@ -128,6 +137,17 @@ std::string drivetrain_texture(int drive_type, int engine_placement) {
   const char* where = engine_placement == 2 ? "Mid" : engine_placement == 3 ? "Rear" : "Front";
   if (drive_type == 1) where = "Front";
   return std::string("T:UI4/Common/Drivetrain_") + drive + "_" + where;
+}
+
+const char* drivetrain_code(int drive_type, int engine_placement) {
+  if (drive_type == 3) return "AWD";
+  if (drive_type == 1) return "FF";
+  if (drive_type == 2) {
+    if (engine_placement == 2) return "MR";
+    if (engine_placement == 3) return "RR";
+    return "FR";
+  }
+  return "";
 }
 
 std::string ui_texture_key(const std::string& game_path) {
@@ -247,7 +267,10 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
     const CarListDetails& d = c.details;
     // The dirt panel behind the card and its stats.
     sc.at(sc.node("CAR_STATS/BG/HUDPanel01", stats)).wrap = true;
-    sc.text(sc.node("CAR_STATS/TitleBar/TEXT_CAR_NAME", stats), d.model);
+    // Retail outpost-a1.png: dark ink car name on the white tilted TitleBar strip.
+    const int car_name_nd = sc.node("CAR_STATS/TitleBar/TEXT_CAR_NAME", stats);
+    sc.text(car_name_nd, d.model);
+    if (car_name_nd >= 0) sc.at(car_name_nd).tint = kInk;
     sc.text(sc.node("CAR_STATS/INFO/TEXT_MANUFACTURER", stats), d.year_make);
     // The make's flag; without one the year and make move into its place.
     if (const int flag = sc.node("CAR_STATS/INFO/FLAG", stats); flag >= 0) {
@@ -325,9 +348,27 @@ bool draw_car_list(ui::List& l, const DriveHud& st, const CarListHud& c, float w
                          f.y(cy + 12.0f + 0.5f * th), c.details.car_id);
       l.unturn();
     }
+    // Drivetrain badge (FR / FF / AWD / MR / RR) beside the Class/PI chip (outpost-a1.png).
+    const char* dt_code = drivetrain_code(c.details.drive_type, c.details.engine_placement);
     std::array<float, 4> uv{};
     const std::string dt_tex = drivetrain_texture(c.details.drive_type, c.details.engine_placement);
-    if (!dt_tex.empty() && ui4::texture(dt_tex, uv)) {
+    const bool has_dt_icon = !dt_tex.empty() && ui4::texture(dt_tex, uv);
+    if (dt_code && *dt_code) {
+      const float bx = kDrivetrainAt[0];
+      const float by = kDrivetrainAt[1];
+      if (has_dt_icon) {
+        // Place the car drivetrain diagram cleanly left of the drivetrain code chip.
+        l.image_rotated(f.x(bx - 36.0f), f.y(by + 2.0f), kDrivetrainHalf[0] * 0.85f * f.s,
+                        kDrivetrainHalf[1] * 0.85f * f.s, -1.5708f - 0.052f, uv);
+      }
+      l.turn(f.x(bx), f.y(by), -0.052f);
+      const float hw = 18.0f * f.s, hh = 10.0f * f.s;
+      l.rect(f.x(bx) - hw, f.y(by) - hh, f.x(bx) + hw, f.y(by) + hh, ui::rgba(22, 24, 28, 238));
+      l.frame(f.x(bx) - hw, f.y(by) - hh, f.x(bx) + hw, f.y(by) + hh, ui::rgba(255, 255, 255, 110), 1.0f * f.s);
+      l.text(f.x(bx), f.y(by) - 6.0f * f.s, dt_code,
+             ui4::style(ui::Font::kE, 11.5f * f.s, kWhite, ui::Align::kCenter));
+      l.unturn();
+    } else if (has_dt_icon) {
       // The icon's car points up; the capture's lies nose left.
       l.image_rotated(f.x(kDrivetrainAt[0]), f.y(kDrivetrainAt[1]), kDrivetrainHalf[0] * f.s, kDrivetrainHalf[1] * f.s,
                       -1.5708f - 0.052f, uv);

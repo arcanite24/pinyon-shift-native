@@ -732,7 +732,7 @@ void test_polish_tint_and_livery_regions() {
   carview::ui::List l;
   carview::draw_livery_editor_hud(l, 1280.0f, 720.0f, ed, "2002 Nissan Skyline GT-R V-Spec II");
   CHECK(!l.items().empty());
-  ed.move_region(2);  // kWindowTint
+  ed.move_region(1);  // kWindowTint
   CHECK(ed.region() == carview::PaintRegion::kWindowTint);
   ed.step_window_tint(0.25f);
   carview::ui::List l2;
