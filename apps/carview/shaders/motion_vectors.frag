@@ -49,6 +49,8 @@ void main() {
     // Dynamic vehicle OBB pass: test reconstructed view-space point against the vehicle's
     // exact 3D OBB and overwrite velocity only for pixels belonging to this moving vehicle.
     float enc = -pc.params.w;
+    bool skip_reactive = enc >= 4000.0;
+    if (skip_reactive) enc -= 4000.0;
     bool is_player = enc >= 2000.0;
     if (is_player) enc -= 2000.0;
     bool rev_z = enc >= 1000.0;
@@ -88,7 +90,7 @@ void main() {
       if (vlen > 0.25) vel *= (0.25 / vlen);
     }
 
-    float edge_reactive = compute_edge_reactive(v_uv, lin_d, near_p, rev_z);
+    float edge_reactive = skip_reactive ? 0.0 : compute_edge_reactive(v_uv, lin_d, near_p, rev_z);
     float speed_reactive = clamp(length(vel) * (is_player ? 18.0 : 14.0), 0.0, 1.0) * (is_player ? 0.35 : 0.45);
     float reactive = clamp(max(edge_reactive, speed_reactive), 0.0, 1.0);
     out_motion = vec4(vel, reactive, lin_d);
@@ -96,7 +98,9 @@ void main() {
   }
 
   // Pass 0: Fullscreen static-world camera reprojection.
-  bool rev_z = pc.params.z > 0.5;
+  float mode_bits = floor(pc.params.z + 0.5);
+  bool rev_z = mod(mode_bits, 2.0) > 0.5;
+  bool skip_reactive = mode_bits >= 1.5;
   float near_p = max(pc.params.w, 0.05);
   float z = texture(depth_tex, v_uv).r;
   float lin_d = linear_depth_m(z, near_p, rev_z);
@@ -112,7 +116,7 @@ void main() {
     if (vlen > 0.25) vel *= (0.25 / vlen);
   }
 
-  float edge_reactive = compute_edge_reactive(v_uv, lin_d, near_p, rev_z);
+  float edge_reactive = skip_reactive ? 0.0 : compute_edge_reactive(v_uv, lin_d, near_p, rev_z);
   float speed_reactive = clamp(length(vel) * 18.0, 0.0, 1.0) * 0.35;
   float reactive = clamp(max(edge_reactive, speed_reactive), 0.0, 1.0);
 

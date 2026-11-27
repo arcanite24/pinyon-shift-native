@@ -113,13 +113,14 @@ bool Renderer::create_post(std::string& error) {
   if (post_final_) return true;
   // Create auto-exposure targets (16x16 + 1x1 ping-pong) and 33x33x33 3D LUT once
   // (holds 16^3, 17^3, 32^3, and 33^3 LUTs in-place without ever recreating or stalling).
+  const VkFormat bfmt = bloom_format();
   const VkImageUsageFlags lum_usage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  if (!create_image(16, 16, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT, lum_16_) ||
-      !create_image(1, 1, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+  if (!create_image(16, 16, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT, lum_16_) ||
+      !create_image(1, 1, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                     lum_adapt_[0]) ||
-      !create_image(1, 1, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+      !create_image(1, 1, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                     lum_adapt_[1])) {
     error = "post luminance targets";
     return false;
@@ -343,9 +344,9 @@ bool Renderer::create_post(std::string& error) {
     info.layout = post_layout_;
     return vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &dst);
   };
-  VkResult result = build_post_pipe(frag, scene_format(), post_quarter_);
-  if (result == VK_SUCCESS) result = build_post_pipe(frag_bdown, scene_format(), post_bloom_down_);
-  if (result == VK_SUCCESS) result = build_post_pipe(frag_bup, scene_format(), post_bloom_up_);
+  VkResult result = build_post_pipe(frag, bfmt, post_quarter_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag_bdown, bfmt, post_bloom_down_);
+  if (result == VK_SUCCESS) result = build_post_pipe(frag_bup, bfmt, post_bloom_up_);
   if (result == VK_SUCCESS) result = build_post_pipe(frag, color_format_, post_final_);
   if (result == VK_SUCCESS) result = build_post_pipe(frag, VK_FORMAT_R8G8B8A8_UNORM, post_final_sdr_);
   vkDestroyShaderModule(device_, vert, nullptr);
@@ -647,30 +648,6 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
   //    Temporal bloom_persist feeds back mip-0 bright-pass stored in the otherwise-unused `bloom_b_[5]`
   //    slot (upgraded to mip-0 extent on first bloom frame) instead of 6-mip upsampled `bloom_b_[0]`.
   if (s.bloom && bloom_a_[0].image && bloom_b_[0].image && post_bloom_down_ && post_bloom_up_) {
-    // Upgrade the unused mip-5 bloom_b_[5] slot to mip-0 extent for temporal bloom_persist
-    // WITHOUT calling vkDeviceWaitIdle(): create_targets() always runs while idle and neither
-    // bloom_b_[5] nor post_sets_[2] is bound by any command buffer prior to the first bloom frame.
-    if (!bloom_prev_valid_ && bloom_b_[5].image && bloom_w_[0] > 0 && bloom_h_[0] > 0) {
-      const bool need_upgrade =
-          (bloom_persist_img_ != bloom_b_[5].image) || (bloom_b_[5].bytes < bloom_a_[0].bytes);
-      if (need_upgrade) {
-        destroy_image(bloom_b_[5]);
-        const VkImageUsageFlags persist_usage =
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        if (create_image(bloom_w_[0], bloom_h_[0], 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, persist_usage,
-                         VK_IMAGE_ASPECT_COLOR_BIT, bloom_b_[5])) {
-          VkDescriptorImageInfo pimg{post_sampler_, bloom_b_[5].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-          VkWriteDescriptorSet pw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-          pw.dstSet = post_sets_[2];
-          pw.dstBinding = 1;
-          pw.descriptorCount = 1;
-          pw.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-          pw.pImageInfo = &pimg;
-          vkUpdateDescriptorSets(device_, 1, &pw, 0, nullptr);
-          bloom_persist_img_ = bloom_b_[5].image;
-        }
-      }
-    }
     Image& persist_img = bloom_b_[5].image ? bloom_b_[5] : bloom_b_[0];
     // On first bloom frame (or after resize), clear & transition persist target to SHADER_READ_ONLY_OPTIMAL
     // so binding 1 (`aux`) in post_sets_[2] is always in a valid readable layout.

@@ -127,16 +127,21 @@ class WorldGpu {
     uint32_t rows = 0;
     uint32_t trees_count = 0;
     bool pending_upload = false;
-    bool has_opaque_dither = false;
   };
   void destroy_generation(Generation& g);
   struct SlotBuffers {
-    Renderer::Buffer commands, counts, stats, cull_ubo;
+    Renderer::Buffer commands, counts, stats, cull_ubo, tree_cull_ubo;
     Renderer::Buffer tree_vis, tree_cmd, tree_stats;
     void* stats_mapped = nullptr;
     void* tree_stats_mapped = nullptr;
-    VkDescriptorPool pool = VK_NULL_HANDLE;      // reset each frame (cull + hiz sets)
-    VkDescriptorSet vis_set = VK_NULL_HANDLE;    // set 3 (tree visible_indices)
+    VkDescriptorPool pool = VK_NULL_HANDLE;               // persistent per-slot sets (zero per-frame reset/alloc)
+    VkDescriptorSet cull_draw_set = VK_NULL_HANDLE;       // world_cull.comp descriptor set
+    VkDescriptorSet cull_tree_set = VK_NULL_HANDLE;       // tree_cull.comp descriptor set
+    std::array<VkDescriptorSet, kHizMips> hiz_sets{};     // persistent Hi-Z mip 0..9 descriptor sets
+    VkBuffer bound_table_buf = VK_NULL_HANDLE;
+    VkBuffer bound_trees_buf = VK_NULL_HANDLE;
+    VkImageView bound_hiz_depth = VK_NULL_HANDLE;
+    VkDescriptorSet vis_set = VK_NULL_HANDLE;             // set 3 (tree visible_indices)
     bool used = false;
   };
 

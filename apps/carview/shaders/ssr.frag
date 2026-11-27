@@ -89,13 +89,18 @@ void main() {
   int mode = int(pc.texel_mode.z + 0.5);
   if (mode == 1) {
     // Depth- and gloss-aware 5-tap bilateral resolve to smooth stochastic GGX reflections.
-    vec4 center = texture(ssr_in, v_uv);
-    float d_c = sample_linear_depth(v_uv);
+    // Test gloss first so matte sky/terrain/foliage pixels early-out before reading ssr_in or depth_tex.
     float gloss = clamp(texture(hdr_tex, v_uv).a, 0.0, 1.0);
-    if (gloss < 0.06 || d_c > 800.0) {
+    if (gloss < 0.06) {
       out_ssr = vec4(0.0);
       return;
     }
+    float d_c = sample_linear_depth(v_uv);
+    if (d_c > 800.0) {
+      out_ssr = vec4(0.0);
+      return;
+    }
+    vec4 center = texture(ssr_in, v_uv);
     float rough = clamp(1.0 - gloss, 0.04, 0.85);
     vec2 step_uv = pc.texel_mode.xy * mix(0.75, 2.25, rough);
     const vec2 offs[4] = vec2[4](vec2(-1.0, 0.0), vec2(1.0, 0.0), vec2(0.0, -1.0), vec2(0.0, 1.0));

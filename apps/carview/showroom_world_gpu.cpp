@@ -1016,10 +1016,10 @@ bool Showroom::build_gpu_table(std::string& error) {
       d.gpu = true;  // drawn via single hardware-instanced tree pass
       continue;
     }
-    // Keep opaque LOD-dithered props in the opaque batch (never coverage_, which enables
-    // hardware alpha-to-coverage at MSAA and would discard matte props whose .a carries surf_gloss=0).
-    // WorldGpu::record_draw() binds opaque_dither_ (alphaToCoverage=false, full RGBA mask, shader LOD discard).
-    const gpuworld::Batch batch = gpuworld::batch_of(d.blend, d.decal != 0);
+    // Separate solid opaque geometry (kOpaque/kOpaqueDecal: zero discard, Early-Z + Z-prepass)
+    // from LOD-dithered opaque props (kOpaqueDither/kOpaqueDitherDecal: opaque_dither_).
+    const bool opaque_dither = (d.blend == 0) && ((flags & (128u | 256u | 512u)) != 0u);
+    const gpuworld::Batch batch = gpuworld::batch_of(d.blend, d.decal != 0, opaque_dither);
     if (per_batch[batch] >= WorldGpu::kMaxPerBatch || rows.size() >= WorldGpu::kMaxTableRows) continue;  // left to the CPU loop
     bool has_tex0 = false, has_texb = false, has_splat = false, has_lmap = false;
     bool has_nmap = false, has_ao = false, has_layc = false, has_spec = false;

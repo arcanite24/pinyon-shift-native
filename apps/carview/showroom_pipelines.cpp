@@ -720,7 +720,7 @@ bool Showroom::create_pipelines(std::string& error) {
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
   if (!guest_)
-    queue_build(frag_opaque, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
+    queue_build(frag_opaque, r_.bloom_format(), VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
   queue_build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
 
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
@@ -826,9 +826,10 @@ bool Showroom::create_pipelines(std::string& error) {
     queue_build(world_frag, r_.scene_format(), r_.samples_, true, true, 4, world_water_, world_vert, &world_input,
                 false, world_pipeline_layout_);
     if (!guest_) {
-      queue_build(world_opaque_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+      const VkFormat env_fmt = r_.bloom_format();
+      queue_build(world_opaque_frag, env_fmt, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
                   env_world_opaque_, world_vert, &world_input, false, world_pipeline_layout_, cull_back);
-      queue_build(world_frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
+      queue_build(world_frag, env_fmt, VK_SAMPLE_COUNT_1_BIT, true, true, 0,
                   env_world_coverage_, world_vert, &world_input, true, world_pipeline_layout_);
     }
   }

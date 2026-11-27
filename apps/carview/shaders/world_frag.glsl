@@ -413,50 +413,73 @@ vec3 shadow_ambient_tint(float occluded) {
   return mix(vec3(1.0), chroma * depth, clamp(occluded, 0.0, 1.0));
 }
 
-float sun_shadow(vec3 p, vec3 n) {
+float sun_shadow(vec3 p, vec3 n, bool allow_pcss) {
   if (frame.shadow.x < 0.5) return 1.0;
   bool three_c = frame.shadow_mid_bias.y > 0.5;
   float inv_c = three_c ? (1.0 / 3.0) : 0.5;
-  float pcss_mode = frame.shadow_mid_bias.z;
+  float pcss_mode = allow_pcss ? frame.shadow_mid_bias.z : 0.0;
 
   vec4 sn = frame.shadow_matrix * vec4(p + n * frame.shadow_bias.x, 1.0);
   float edge_n = max(abs(sn.x), abs(sn.y));
   bool near_ok = edge_n < 1.0 && sn.z > 0.0 && sn.z < 1.0;
-  float lit_n = near_ok ? sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0) : 1.0;
 
   if (three_c) {
-    if (near_ok && edge_n < 0.80) return clamp(lit_n, 0.0, 1.0);
+    if (near_ok && edge_n < 0.80) {
+      return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+    }
+    if (near_ok) {
+      // Stochastic IGN cascade transition: evaluates a single cascade per pixel instead of
+      // double PCSS in the Near<->Mid overlap band.
+      float bn = smoothstep(0.80, 0.98, edge_n);
+      if (dither_threshold() >= bn) {
+        return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+      }
+      vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
+      float edge_m = max(abs(sm.x), abs(sm.y));
+      if (edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0) {
+        return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+      }
+      return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+    }
     vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
     bool mid_ok = edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0;
-    float lit_m = mid_ok ? sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35) : 1.0;
-    if (near_ok) {
-      float bn = smoothstep(0.80, 0.98, edge_n);
-      return clamp(mix(lit_n, lit_m, bn), 0.0, 1.0);
+    if (mid_ok && edge_m < 0.80) {
+      return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
     }
-    if (mid_ok && edge_m < 0.80) return clamp(lit_m, 0.0, 1.0);
+    if (mid_ok) {
+      float bm = smoothstep(0.80, 0.98, edge_m);
+      if (dither_threshold() >= bm) {
+        return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+      }
+    }
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
-    float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
+      return clamp(mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f)), 0.0, 1.0);
     }
-    float bm = mid_ok ? smoothstep(0.80, 0.98, edge_m) : 1.0;
-    return clamp(mix(lit_m, lit_f, bm), 0.0, 1.0);
+    return 1.0;
   }
 
   if (frame.shadow_far_bias.y > 0.5) {
-    if (near_ok && edge_n < 0.78) return clamp(lit_n, 0.0, 1.0);
+    if (near_ok && edge_n < 0.78) {
+      return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+    }
+    if (near_ok) {
+      float blend = smoothstep(0.78, 0.98, edge_n);
+      if (dither_threshold() >= blend) {
+        return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+      }
+    }
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
     float edge_f = max(abs(sf.x), abs(sf.y));
-    float lit_f = 1.0;
     if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
-      lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+      return clamp(mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f)), 0.0, 1.0);
     }
-    float blend = near_ok ? smoothstep(0.78, 0.98, edge_n) : 1.0;
-    return clamp(mix(lit_n, lit_f, blend), 0.0, 1.0);
+    return 1.0;
   }
   if (!near_ok) return 1.0;
+  float lit_n = sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0);
   return clamp(mix(lit_n, 1.0, smoothstep(0.8, 1.0, edge_n)), 0.0, 1.0);
 }
 
@@ -908,7 +931,7 @@ void main() {
     float a2 = 0.17 * 0.17;
     float d_g2 = nh * nh * (a2 - 1.0) + 1.0;
     float ggx_sheen = (a2 / max(3.14159265 * d_g2 * d_g2, 1e-5)) * 0.045;
-    float shade_w = mix(1.0, sun_shadow(v_position, n_geom), shadow_scale);
+    float shade_w = (shadow_scale > 0.001) ? mix(1.0, sun_shadow(v_position, n_geom, true), shadow_scale) : 1.0;
     vec3 spec_col = sun_col * (ggx_glint + ggx_sheen) * nl_w * shade_w * sun_above;
 
     // Combine refracted depth body + Fresnel sky/mountain reflection + sparkling sun glints.
@@ -1109,12 +1132,13 @@ void main() {
 
   float ndl = max(dot(n, sun), 0.0);
   float raw_shade = 1.0;
-  if ((flags & kFlagBillboard) != 0u) {
-    // Enable sun shadow reception on tree billboards using stable world-up receiver bias
-    // so forested hillsides and roadside conifers darken naturally inside mountain/building shadows.
-    raw_shade = mix(0.32, 1.0, sun_shadow(v_position, up));
-  } else if (ndl > 0.0) {
-    raw_shade = sun_shadow(v_position, n_geom);
+  if (shadow_scale > 0.001) {
+    if ((flags & kFlagBillboard) != 0u) {
+      // Tree billboards receive fast 4-tap PCF shadows using world-up receiver bias.
+      raw_shade = mix(0.32, 1.0, sun_shadow(v_position, up, false));
+    } else if (ndl > 0.0) {
+      raw_shade = sun_shadow(v_position, n_geom, true);
+    }
   }
   mediump float shade = mix(1.0, raw_shade, shadow_scale);
   mediump float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;

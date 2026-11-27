@@ -61,7 +61,7 @@ std::unordered_map<const Showroom*, std::unique_ptr<EnvTreeCache>> g_env_tree_ca
 
 MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cache, VkPipelineLayout car_layout,
                                            VkPipelineLayout particle_layout, VkPipelineLayout world_layout,
-                                           VkFormat depth_format, bool reverse_z) {
+                                           VkFormat hdr_fmt, VkFormat depth_format, bool reverse_z) {
   MirrorExtraPipes out{};
   auto make_mod = [&](const uint32_t* code, size_t bytes, VkShaderModule& m) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -69,7 +69,6 @@ MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cach
     ci.pCode = code;
     return vkCreateShaderModule(device, &ci, nullptr, &m);
   };
-  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   const VkBool32 spec_vals[2] = {VK_TRUE, reverse_z ? VK_TRUE : VK_FALSE};
   const VkSpecializationMapEntry spec_map[2] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}};
   const VkSpecializationInfo spec2{2, spec_map, sizeof(spec_vals), spec_vals};
@@ -276,7 +275,7 @@ MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cach
 }
 
 VkPipeline create_env_glow_pipeline(VkDevice device, VkPipelineCache cache, VkPipelineLayout layout,
-                                    VkFormat depth_format, bool reverse_z) {
+                                    VkFormat hdr_fmt, VkFormat depth_format, bool reverse_z) {
   auto make_mod = [&](const uint32_t* code, size_t bytes, VkShaderModule& m) {
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = bytes;
@@ -343,7 +342,6 @@ VkPipeline create_env_glow_pipeline(VkDevice device, VkPipelineCache cache, VkPi
   dyn.dynamicStateCount = 2;
   dyn.pDynamicStates = dyn_states;
 
-  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
   VkPipelineRenderingCreateInfo rend{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
   rend.colorAttachmentCount = 1;
   rend.pColorAttachmentFormats = &hdr_fmt;
@@ -429,7 +427,7 @@ void Showroom::set_virtual_mirror_enabled(bool enabled) {
 
 void Showroom::update_mirror_mode() {
   if (guest_) return;
-  const bool env_disabled = std::getenv("SHIFT_NO_VIRTUAL_MIRROR") != nullptr;
+  static const bool env_disabled = std::getenv("SHIFT_NO_VIRTUAL_MIRROR") != nullptr;
   virtual_mirror_active_ =
       virtual_mirror_enabled_ && !env_disabled &&
       is_bumper_or_hood_camera(world_lit_, cockpit_camera_active_, draw_car_, have_bounds_, bounds_min_, bounds_max_,
@@ -461,8 +459,8 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
     }
   }
 
-  // RGBA16F cubemap (256^2x9 high, 128^2x8 low-power) for live drive reflections (car + LAKE water).
-  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+  // Packed B10G11R11 (or RGBA16F on Turnip) cubemap for live drive reflections (car + LAKE water).
+  const VkFormat hdr_fmt = r_.bloom_format();
   const uint32_t env_sz = dyn_env_size_;
   const uint32_t env_mips = std::min(dyn_env_mips_, kDynEnvMips);
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -650,7 +648,7 @@ bool Showroom::init_dynamic_reflections(std::string& error) {
 bool Showroom::ensure_mirror_targets() {
   if (guest_ || !r_.device_) return false;
   if (mirror_tex_.view && mirror_depth_.view) return true;
-  const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+  const VkFormat hdr_fmt = r_.bloom_format();
   if (!r_.create_image(kMirrorWidth, kMirrorHeight, 1, hdr_fmt, VK_SAMPLE_COUNT_1_BIT,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                            VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -809,7 +807,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       extra_pipes = it->second;
     } else {
       extra_pipes = create_mirror_extra_pipes(r_.device_, r_.pipeline_cache(), pipeline_layout_,
-                                              particle_pipe_layout_, world_pipeline_layout_, r_.depth_format_,
+                                              particle_pipe_layout_, world_pipeline_layout_, r_.bloom_format(), r_.depth_format_,
                                               r_.reverse_z());
       g_mirror_extra_pipes.emplace(this, extra_pipes);
       VkDevice dev = r_.device_;
@@ -1231,7 +1229,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
       if (it != g_env_glow_pipes.end()) {
         glow_p = it->second;
       } else {
-        glow_p = create_env_glow_pipeline(r_.device_, r_.pipeline_cache(), glow_pipe_layout_, r_.depth_format_,
+        glow_p = create_env_glow_pipeline(r_.device_, r_.pipeline_cache(), glow_pipe_layout_, r_.bloom_format(), r_.depth_format_,
                                           r_.reverse_z());
         g_env_glow_pipes.emplace(this, glow_p);
         if (glow_p) {

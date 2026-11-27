@@ -328,9 +328,10 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
       motion_math::mat4_mul(prev_cam_vp_, curr_inv, pc.prev_vp_inv_curr);
     }
   }
+  const bool need_reactive = active_upscaler().temporal || (active_rt_mode() != rt::RtMode::kOff);
   pc.params[0] = jitter_dx;
   pc.params[1] = jitter_dy;
-  pc.params[2] = options_.reverse_z ? 1.0f : 0.0f;
+  pc.params[2] = (options_.reverse_z ? 1.0f : 0.0f) + (need_reactive ? 0.0f : 2.0f);
   pc.params[3] = safe_near;
   vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
   vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -526,6 +527,12 @@ void Renderer::record_motion_vectors(VkCommandBuffer cmd) {
       uint32_t dyn_words[20]{};
       motion_math::pack_dynamic_push(reproj, jitter_dx, jitter_dy, center_view, q, h_loc, inv_p00, inv_p11, safe_near,
                                      options_.reverse_z, j.is_player, dyn_words);
+      if (!need_reactive) {
+        float w_enc = 0.0f;
+        std::memcpy(&w_enc, &dyn_words[19], sizeof(w_enc));
+        w_enc -= 4000.0f;
+        std::memcpy(&dyn_words[19], &w_enc, sizeof(w_enc));
+      }
       vkCmdSetScissor(cmd, 0, 1, &j.scissor);
       vkCmdPushConstants(cmd, motion_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(dyn_words), dyn_words);
       vkCmdDraw(cmd, 3, 1, 0, 0);

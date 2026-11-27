@@ -3,7 +3,7 @@
 // draw of the resident table: frustum four side planes, prop LOD band, and
 // reprojected previous-frame Hi-Z occlusion culling, then a
 // VkDrawIndexedIndirectCommand appended to the draw's batch.
-// counts[0..3] drawn, counts[4..7] tested, counts[8..11] Hi-Z occluded.
+// counts[0..5] drawn, counts[6..11] tested, counts[12..17] Hi-Z occluded.
 layout(local_size_x = 64) in;
 
 struct DrawGpu {
@@ -18,36 +18,18 @@ struct DrawGpu {
 };
 layout(std430, set = 0, binding = 0) readonly buffer Draws { DrawGpu items[]; };
 layout(std430, set = 0, binding = 1) writeonly buffer Commands { uint cmds[]; };
-layout(std430, set = 0, binding = 2) buffer Counts { uint counts[12]; };
+layout(std430, set = 0, binding = 2) buffer Counts { uint counts[18]; };
 layout(set = 0, binding = 3) uniform sampler2D hiz_tex;
 layout(set = 0, binding = 4) uniform CullUniforms {
   vec4 planes[4];   // normal.xyz, d: w+x, w-x, w+y, w-y in the scenery's frame
   vec4 eye_reach;   // xyz the eye in the scenery's frame, w the LOD reach (0: no LOD test)
   uvec4 info;       // x draws, y commands per batch, z frustum test on, w unused
   mat4 prev_vp;     // scenery space -> previous frame clip space
-  uvec4 hiz_info;   // x hiz enabled, y reverse_z, z hiz_width, w hiz_height
+  uvec4 hiz_info;   // x hiz enabled & camera-stable (CPU-checked), y reverse_z, z hiz_width, w hiz_height
 } p;
 
 const uint kFlagSky = 2u;
 const uint kFlagLodNear = 128u;
-const float kHizMaxTurnCos = 0.99026807;  // cos(8 deg): skip Hi-Z on fast hairpin turns / Look-Back / camera cuts
-
-bool hiz_camera_stable() {
-  if (p.hiz_info.x == 0u) return false;
-  // Row 3 of current clip matrix = 0.5 * (planes[0] + planes[1]) since planes[0..1] = (w+x, w-x).
-  const vec3 curr_raw = p.planes[0].xyz + p.planes[1].xyz;
-  const vec3 prev_raw = vec3(p.prev_vp[0][3], p.prev_vp[1][3], p.prev_vp[2][3]);
-  const float curr_len2 = dot(curr_raw, curr_raw);
-  const float prev_len2 = dot(prev_raw, prev_raw);
-  if (curr_len2 < 1e-6 || prev_len2 < 1e-6) return false;
-  const vec3 curr_fwd = curr_raw * inversesqrt(curr_len2);
-  const vec3 prev_fwd = prev_raw * inversesqrt(prev_len2);
-  if (dot(curr_fwd, prev_fwd) < kHizMaxTurnCos) return false;
-  // Also skip Hi-Z on instant camera cuts / teleports where the eye jumped far from prev_vp.
-  const vec4 prev_eye = p.prev_vp * vec4(p.eye_reach.xyz, 1.0);
-  if (abs(prev_eye.w) > 12.0 || dot(prev_eye.xy, prev_eye.xy) > 144.0) return false;
-  return true;
-}
 
 bool hiz_occluded(vec3 bmin, vec3 bmax) {
   vec2 uv_min = vec2(1.0);
@@ -90,9 +72,9 @@ void main() {
   if (i >= p.info.x) return;
   const DrawGpu d = items[i];
   if (d.draw.x == 0u) return;  // template-only row (e.g. hardware-instanced trees)
-  const uint batch = min(d.draw.w, 3u);
+  const uint batch = min(d.draw.w, 5u);
   const uint flags = uint(round(d.params.y));
-  atomicAdd(counts[4 + batch], 1u);
+  atomicAdd(counts[6u + batch], 1u);
   if (p.info.z != 0u) {
     for (int k = 0; k < 4; ++k) {
       const vec4 pl = p.planes[k];
@@ -105,9 +87,9 @@ void main() {
     const vec3 q = max(max(d.box_min.xyz - p.eye_reach.xyz, vec3(0.0)), p.eye_reach.xyz - d.box_max.xyz);
     if (dot(q, q) > p.eye_reach.w * p.eye_reach.w) return;
   }
-  if (hiz_camera_stable() && (flags & kFlagSky) == 0u && d.params.z < 0.5) {
+  if (p.hiz_info.x != 0u && (flags & kFlagSky) == 0u && d.params.z < 0.5) {
     if (hiz_occluded(d.box_min.xyz, d.box_max.xyz)) {
-      atomicAdd(counts[8 + batch], 1u);
+      atomicAdd(counts[12u + batch], 1u);
       return;
     }
   }

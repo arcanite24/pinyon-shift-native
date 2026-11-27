@@ -95,11 +95,24 @@ uint64_t hash_bytes(uint64_t h, const void* data, size_t bytes);
 inline int64_t quantize_mm(double metres) { return int64_t(metres * 1000.0 + (metres < 0 ? -0.5 : 0.5)); }
 
 // ---- The per-draw table (matches shaders/world_gpu_table.glsl) ------------
-enum Batch : uint32_t { kOpaque = 0, kOpaqueDecal = 1, kCutout = 2, kCutoutDecal = 3, kBatchCount = 4 };
+// Solid opaque batches (0, 1) have zero shader discard -> Early-Z + Z-prepass eligible.
+// Dithered opaque LOD batches (4, 5) run screen-door LOD discard separately so they never
+// disable Early-Z on solid terrain, roads, and buildings.
+enum Batch : uint32_t {
+  kOpaque = 0,
+  kOpaqueDecal = 1,
+  kCutout = 2,
+  kCutoutDecal = 3,
+  kOpaqueDither = 4,
+  kOpaqueDitherDecal = 5,
+  kBatchCount = 6
+};
 // blend: 0 opaque, 1 coverage (cut-out), >= 2 blended (not in the table).
 inline bool in_gpu_batches(uint8_t blend) { return blend <= 1; }
-inline Batch batch_of(uint8_t blend, bool decal) {
-  return Batch((blend == 1 ? 2u : 0u) + (decal ? 1u : 0u));
+inline Batch batch_of(uint8_t blend, bool decal, bool dither = false) {
+  if (blend == 1) return decal ? kCutoutDecal : kCutout;
+  if (dither) return decal ? kOpaqueDitherDecal : kOpaqueDither;
+  return decal ? kOpaqueDecal : kOpaque;
 }
 
 struct DrawGpu {  // std430: eight vec4

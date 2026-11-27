@@ -72,6 +72,29 @@ struct CullUniformsGpu {
 };
 static_assert(sizeof(CullUniformsGpu) == 176);
 
+constexpr VkDeviceSize kCountsBytes = VkDeviceSize(gpuworld::kBatchCount) * 3u * sizeof(uint32_t);
+
+bool hiz_camera_stable_cpu(const gpuworld::CullView& view) {
+  constexpr float kHizMaxTurnCos = 0.99026807f;  // cos(8 deg)
+  const float cx = view.planes[0][0] + view.planes[1][0];
+  const float cy = view.planes[0][1] + view.planes[1][1];
+  const float cz = view.planes[0][2] + view.planes[1][2];
+  const float px = view.prev_vp[3];
+  const float py = view.prev_vp[7];
+  const float pz = view.prev_vp[11];
+  const float cl2 = cx * cx + cy * cy + cz * cz;
+  const float pl2 = px * px + py * py + pz * pz;
+  if (cl2 < 1e-6f || pl2 < 1e-6f) return false;
+  const float dot_fwd = (cx * px + cy * py + cz * pz) / std::sqrt(cl2 * pl2);
+  if (dot_fwd < kHizMaxTurnCos) return false;
+  const float ex = view.eye[0], ey = view.eye[1], ez = view.eye[2];
+  const float pex = view.prev_vp[0] * ex + view.prev_vp[4] * ey + view.prev_vp[8] * ez + view.prev_vp[12];
+  const float pey = view.prev_vp[1] * ex + view.prev_vp[5] * ey + view.prev_vp[9] * ez + view.prev_vp[13];
+  const float pew = view.prev_vp[3] * ex + view.prev_vp[7] * ey + view.prev_vp[11] * ez + view.prev_vp[15];
+  if (std::fabs(pew) > 12.0f || (pex * pex + pey * pey) > 144.0f) return false;
+  return true;
+}
+
 }  // namespace
 
 WorldGpu::~WorldGpu() {
@@ -86,6 +109,7 @@ WorldGpu::~WorldGpu() {
     r_.destroy_buffer(s.counts);
     r_.destroy_buffer(s.stats);
     r_.destroy_buffer(s.cull_ubo);
+    r_.destroy_buffer(s.tree_cull_ubo);
     r_.destroy_buffer(s.tree_vis);
     r_.destroy_buffer(s.tree_cmd);
     r_.destroy_buffer(s.tree_stats);
@@ -466,14 +490,17 @@ bool WorldGpu::create_buffers(std::string& error) {
     if (!r_.create_buffer(VkDeviceSize(gpuworld::kBatchCount) * kMaxPerBatch * sizeof(gpuworld::IndirectCommand),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.commands) ||
-        !r_.create_buffer(48, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        !r_.create_buffer(kCountsBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.counts) ||
-        !r_.create_buffer(48, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        !r_.create_buffer(kCountsBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, s.stats) ||
         !r_.create_buffer(sizeof(CullUniformsGpu),
                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.cull_ubo) ||
+        !r_.create_buffer(sizeof(CullUniformsGpu),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.tree_cull_ubo) ||
         !r_.create_buffer(VkDeviceSize(kMaxTrees) * sizeof(uint32_t),
                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.tree_vis) ||
         !r_.create_buffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
@@ -487,7 +514,7 @@ bool WorldGpu::create_buffers(std::string& error) {
       s.stats_mapped = s.tree_stats_mapped = nullptr;
       return false;
     }
-    std::memset(s.stats_mapped, 0, 48);
+    std::memset(s.stats_mapped, 0, size_t(kCountsBytes));
     std::memset(s.tree_stats_mapped, 0, 16);
 
     const VkDescriptorPoolSize sizes[4] = {
@@ -500,6 +527,67 @@ bool WorldGpu::create_buffers(std::string& error) {
     pi.poolSizeCount = 4;
     pi.pPoolSizes = sizes;
     WG_TRY(vkCreateDescriptorPool(d, &pi, nullptr, &s.pool), "cull pool");
+
+    // Pre-allocate persistent cull_draw_set, cull_tree_set, and hiz_sets[0..9] ONCE per slot
+    // (eliminates per-frame vkResetDescriptorPool + 12 set allocations + 30 descriptor writes).
+    const VkDescriptorSetLayout cull_layouts[2] = {cull_layout_, cull_layout_};
+    VkDescriptorSet cull_pair[2] = {};
+    VkDescriptorSetAllocateInfo cai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    cai.descriptorPool = s.pool;
+    cai.descriptorSetCount = 2;
+    cai.pSetLayouts = cull_layouts;
+    WG_TRY(vkAllocateDescriptorSets(d, &cai, cull_pair), "cull sets");
+    s.cull_draw_set = cull_pair[0];
+    s.cull_tree_set = cull_pair[1];
+
+    const VkDescriptorImageInfo hiz_ro{hiz_sampler_, hiz_image_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    auto init_cull_set = [&](VkDescriptorSet dst_set, VkBuffer b1, VkBuffer b2, VkBuffer ubo) {
+      const VkDescriptorBufferInfo bi0{empty_ssbo_.buffer, 0, VK_WHOLE_SIZE};
+      const VkDescriptorBufferInfo bi1{b1, 0, VK_WHOLE_SIZE};
+      const VkDescriptorBufferInfo bi2{b2, 0, VK_WHOLE_SIZE};
+      const VkDescriptorBufferInfo ubi{ubo, 0, sizeof(CullUniformsGpu)};
+      VkWriteDescriptorSet ws[5]{};
+      ws[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dst_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+               nullptr, &bi0, nullptr};
+      ws[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dst_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+               nullptr, &bi1, nullptr};
+      ws[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dst_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+               nullptr, &bi2, nullptr};
+      ws[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dst_set, 3, 0, 1,
+               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &hiz_ro, nullptr, nullptr};
+      ws[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, dst_set, 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+               nullptr, &ubi, nullptr};
+      vkUpdateDescriptorSets(d, 5, ws, 0, nullptr);
+    };
+    init_cull_set(s.cull_draw_set, s.commands.buffer, s.counts.buffer, s.cull_ubo.buffer);
+    init_cull_set(s.cull_tree_set, s.tree_vis.buffer, s.tree_cmd.buffer, s.tree_cull_ubo.buffer);
+    s.bound_table_buf = empty_ssbo_.buffer;
+    s.bound_trees_buf = empty_ssbo_.buffer;
+
+    std::array<VkDescriptorSetLayout, kHizMips> hiz_layouts;
+    hiz_layouts.fill(hiz_set_layout_);
+    VkDescriptorSetAllocateInfo hai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    hai.descriptorPool = s.pool;
+    hai.descriptorSetCount = kHizMips;
+    hai.pSetLayouts = hiz_layouts.data();
+    WG_TRY(vkAllocateDescriptorSets(d, &hai, s.hiz_sets.data()), "hiz sets");
+    // Write static storage/sampled bindings for mips 0..9 once (mip 0 binding 0 updates only when depth_view changes).
+    std::array<VkDescriptorImageInfo, kHizMips> dst_infos{};
+    std::array<VkDescriptorImageInfo, kHizMips> src_infos{};
+    std::vector<VkWriteDescriptorSet> hw;
+    hw.reserve(kHizMips * 2);
+    for (uint32_t m = 0; m < kHizMips; ++m) {
+      dst_infos[m] = {VK_NULL_HANDLE, hiz_mip_views_[m], VK_IMAGE_LAYOUT_GENERAL};
+      hw.push_back({VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.hiz_sets[m], 1, 0, 1,
+                    VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &dst_infos[m], nullptr, nullptr});
+      if (m > 0) {
+        src_infos[m] = {hiz_sampler_, hiz_mip_views_[m - 1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        hw.push_back({VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.hiz_sets[m], 0, 0, 1,
+                      VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &src_infos[m], nullptr, nullptr});
+      }
+    }
+    vkUpdateDescriptorSets(d, uint32_t(hw.size()), hw.data(), 0, nullptr);
+    s.bound_hiz_depth = VK_NULL_HANDLE;
 
     VkDescriptorSetAllocateInfo vi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     vi.descriptorPool = vis_pool_;
@@ -528,7 +616,6 @@ void WorldGpu::destroy_generation(Generation& g) {
   g.table_bytes = g.trees_bytes = 0;
   g.rows = g.trees_count = 0;
   g.pending_upload = false;
-  g.has_opaque_dither = false;
 }
 
 void WorldGpu::record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, const std::vector<Copy>& vertex_copies,
@@ -746,10 +833,6 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
   };
   for (uint32_t i = 0; i < n; ++i) {
     const auto& row = rows[i];
-    if (row.draw[0] > 0u && row.draw[3] <= gpuworld::kOpaqueDecal) {
-      const uint32_t fl = uint32_t(std::lround(row.params[1]));
-      if ((fl & (128u | 256u | 512u)) != 0u) next.has_opaque_dither = true;
-    }
     for (uint32_t k = 0; k < 4; ++k) record_slot(row.tex0[k]);
     for (uint32_t k = 0; k < 3; ++k) record_slot(row.tex1[k]);
     record_slot(row.tex1[3] >> 1u);
@@ -792,10 +875,10 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   if (s.used && s.stats_mapped) {
     const auto* c = static_cast<const uint32_t*>(s.stats_mapped);
     uint32_t drawn = 0, tested = 0, hiz_culled = 0;
-    for (int b = 0; b < 4; ++b) {
+    for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
       drawn += std::min(c[b], kMaxPerBatch);
-      tested += c[4 + b];
-      hiz_culled += c[8 + b];
+      tested += c[gpuworld::kBatchCount + b];
+      hiz_culled += c[gpuworld::kBatchCount * 2u + b];
     }
     last_drawn_ = drawn;
     last_tested_ = tested;
@@ -805,7 +888,6 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
     const auto* tc = static_cast<const uint32_t*>(s.tree_stats_mapped);
     last_trees_drawn_ = std::min(tc[1], kMaxTrees);
   }
-  vkResetDescriptorPool(r_.device_, s.pool, 0);
 
   // Apply queued per-instance smashable prop hides/restores directly to the resident index arena
   // before any draw pass (opaque, cutout, z-prepass, shadow, env) reads indices_.buffer.
@@ -878,6 +960,30 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
     }
   }
 
+  const bool have_trees = (generation_.trees_count > 0 && generation_.trees.buffer != VK_NULL_HANDLE);
+  // Update binding 0 on persistent per-slot cull descriptor sets only when generation buffers swap.
+  VkDescriptorBufferInfo tbl_bi{}, tree_bi{};
+  VkWriteDescriptorSet desc_writes[2]{};
+  uint32_t desc_write_count = 0;
+  if (s.bound_table_buf != generation_.table.buffer) {
+    tbl_bi = {generation_.table.buffer, 0, VK_WHOLE_SIZE};
+    desc_writes[desc_write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.cull_draw_set, 0, 0, 1,
+                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tbl_bi, nullptr};
+    s.bound_table_buf = generation_.table.buffer;
+  }
+  if (have_trees && s.bound_trees_buf != generation_.trees.buffer) {
+    tree_bi = {generation_.trees.buffer, 0, VK_WHOLE_SIZE};
+    desc_writes[desc_write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.cull_tree_set, 0, 0, 1,
+                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tree_bi, nullptr};
+    s.bound_trees_buf = generation_.trees.buffer;
+  }
+  if (desc_write_count > 0) {
+    vkUpdateDescriptorSets(r_.device_, desc_write_count, desc_writes, 0, nullptr);
+  }
+
+  // Hoist Hi-Z camera stability check once on CPU (avoiding 64k+ redundant GPU thread checks).
+  const bool hiz_on = view.hiz && hiz_valid_ && hiz_camera_stable_cpu(view);
+
   CullUniformsGpu u{};
   std::memcpy(u.planes, view.planes, sizeof u.planes);
   u.eye_reach[0] = view.eye[0], u.eye_reach[1] = view.eye[1], u.eye_reach[2] = view.eye[2];
@@ -886,97 +992,95 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   u.info[1] = kMaxPerBatch;
   u.info[2] = view.frustum ? 1u : 0u;
   std::memcpy(u.prev_vp, view.prev_vp, sizeof u.prev_vp);
-  u.hiz_info[0] = (view.hiz && hiz_valid_) ? 1u : 0u;
+  u.hiz_info[0] = hiz_on ? 1u : 0u;
   u.hiz_info[1] = view.reverse_z ? 1u : 0u;
   u.hiz_info[2] = kHizWidth;
   u.hiz_info[3] = kHizHeight;
   vkCmdUpdateBuffer(cmd, s.cull_ubo.buffer, 0, sizeof u, &u);
-  buffer_barrier(cmd, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+  vkCmdFillBuffer(cmd, s.counts.buffer, 0, kCountsBytes, 0);
 
-  auto alloc_and_write = [&](VkBuffer b0, VkBuffer b1, VkBuffer b2, VkDescriptorSet& out) -> bool {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = s.pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &cull_layout_;
-    if (vkAllocateDescriptorSets(r_.device_, &ai, &out) != VK_SUCCESS) return false;
-    const VkDescriptorBufferInfo b_infos[3] = {{b0, 0, VK_WHOLE_SIZE}, {b1, 0, VK_WHOLE_SIZE}, {b2, 0, VK_WHOLE_SIZE}};
-    const VkDescriptorImageInfo hiz_info{hiz_sampler_, hiz_image_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorBufferInfo ubo_info{s.cull_ubo.buffer, 0, sizeof u};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t i = 0; i < 3; ++i) {
-      writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      writes[i].dstSet = out;
-      writes[i].dstBinding = i;
-      writes[i].descriptorCount = 1;
-      writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      writes[i].pBufferInfo = &b_infos[i];
-    }
-    writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[3].dstSet = out;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo = &hiz_info;
-    writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[4].dstSet = out;
-    writes[4].dstBinding = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[4].pBufferInfo = &ubo_info;
-    vkUpdateDescriptorSets(r_.device_, 5, writes, 0, nullptr);
-    return true;
+  VkBufferMemoryBarrier2 pre_barriers[4]{};
+  uint32_t pre_n = 0;
+  auto add_b = [](VkBufferMemoryBarrier2* arr, uint32_t& count, VkBuffer buf, VkPipelineStageFlags2 ss,
+                  VkAccessFlags2 sa, VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+    VkBufferMemoryBarrier2& b = arr[count++];
+    b = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    b.srcStageMask = ss;
+    b.srcAccessMask = sa;
+    b.dstStageMask = ds;
+    b.dstAccessMask = da;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.buffer = buf;
+    b.size = VK_WHOLE_SIZE;
   };
+  add_b(pre_barriers, pre_n, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+  add_b(pre_barriers, pre_n, s.counts.buffer, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-  VkDescriptorSet draw_set = VK_NULL_HANDLE;
-  if (!alloc_and_write(generation_.table.buffer, s.commands.buffer, s.counts.buffer, draw_set)) return;
-
-  vkCmdFillBuffer(cmd, s.counts.buffer, 0, 48, 0);
-  buffer_barrier(cmd, s.counts.buffer, VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT,
-                 VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &draw_set, 0, nullptr);
-  vkCmdDispatch(cmd, (generation_.rows + 63) / 64, 1, 1);
-
-  buffer_barrier(cmd, s.commands.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
-  buffer_barrier(cmd, s.counts.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                 VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-                 VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
-  const VkBufferCopy copy{0, 0, 48};
-  vkCmdCopyBuffer(cmd, s.counts.buffer, s.stats.buffer, 1, &copy);
-
-  if (generation_.trees_count > 0 && generation_.trees.buffer) {
-    u.info[0] = generation_.trees_count;
-    u.info[1] = kMaxTrees;
-    buffer_barrier(cmd, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT,
-                   VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    vkCmdUpdateBuffer(cmd, s.cull_ubo.buffer, 0, sizeof u, &u);
-    buffer_barrier(cmd, s.cull_ubo.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
-
+  if (have_trees) {
+    CullUniformsGpu tu = u;
+    tu.info[0] = generation_.trees_count;
+    tu.info[1] = kMaxTrees;
+    vkCmdUpdateBuffer(cmd, s.tree_cull_ubo.buffer, 0, sizeof tu, &tu);
     const uint32_t init_cmd[4] = {6u, 0u, 0u, 0u};
     vkCmdUpdateBuffer(cmd, s.tree_cmd.buffer, 0, sizeof init_cmd, init_cmd);
-    buffer_barrier(cmd, s.tree_cmd.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    add_b(pre_barriers, pre_n, s.tree_cull_ubo.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+          VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_UNIFORM_READ_BIT);
+    add_b(pre_barriers, pre_n, s.tree_cmd.buffer, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+  }
+  {
+    VkDependencyInfo pre_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    pre_dep.bufferMemoryBarrierCount = pre_n;
+    pre_dep.pBufferMemoryBarriers = pre_barriers;
+    vkCmdPipelineBarrier2(cmd, &pre_dep);
+  }
 
-    VkDescriptorSet tree_set = VK_NULL_HANDLE;
-    if (alloc_and_write(generation_.trees.buffer, s.tree_vis.buffer, s.tree_cmd.buffer, tree_set)) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tree_cull_);
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &tree_set, 0, nullptr);
-      vkCmdDispatch(cmd, (generation_.trees_count + 63) / 64, 1, 1);
-      buffer_barrier(cmd, s.tree_vis.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
-      buffer_barrier(cmd, s.tree_cmd.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                     VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-                     VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
-      const VkBufferCopy tcopy{0, 0, 16};
-      vkCmdCopyBuffer(cmd, s.tree_cmd.buffer, s.tree_stats.buffer, 1, &tcopy);
-    }
+  // Dispatch world draw culling AND tree culling back-to-back with separate UBOs so the GPU
+  // can overlap both compute dispatches concurrently with zero inter-pass barrier.
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &s.cull_draw_set, 0,
+                          nullptr);
+  vkCmdDispatch(cmd, (generation_.rows + 63) / 64, 1, 1);
+
+  if (have_trees) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tree_cull_);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &s.cull_tree_set, 0,
+                            nullptr);
+    vkCmdDispatch(cmd, (generation_.trees_count + 63) / 64, 1, 1);
+  }
+
+  VkBufferMemoryBarrier2 post_barriers[4]{};
+  uint32_t post_n = 0;
+  add_b(post_barriers, post_n, s.commands.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+        VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+  add_b(post_barriers, post_n, s.counts.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+  if (have_trees) {
+    add_b(post_barriers, post_n, s.tree_vis.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    add_b(post_barriers, post_n, s.tree_cmd.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+          VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+  }
+  {
+    VkDependencyInfo post_dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    post_dep.bufferMemoryBarrierCount = post_n;
+    post_dep.pBufferMemoryBarriers = post_barriers;
+    vkCmdPipelineBarrier2(cmd, &post_dep);
+  }
+
+  const VkBufferCopy copy{0, 0, kCountsBytes};
+  vkCmdCopyBuffer(cmd, s.counts.buffer, s.stats.buffer, 1, &copy);
+  if (have_trees) {
+    const VkBufferCopy tcopy{0, 0, 16};
+    vkCmdCopyBuffer(cmd, s.tree_cmd.buffer, s.tree_stats.buffer, 1, &tcopy);
   }
 
   VkMemoryBarrier2 host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -992,7 +1096,7 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
 }
 
 void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
-  if (generation_.rows == 0 || !slots_[recorded_slot_].used || !z_prepass_ || generation_.has_opaque_dither) return;
+  if (generation_.rows == 0 || !slots_[recorded_slot_].used || !z_prepass_ || p.swap < 1.5f) return;
   SlotBuffers& s = slots_[recorded_slot_];
   const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, generation_.set, s.vis_set};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 4, sets, 0, nullptr);
@@ -1015,6 +1119,7 @@ void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, z_prepass_);
+  // Batches 0..1 (kOpaque, kOpaqueDecal) are strictly discard-free solid terrain/roads/buildings.
   for (uint32_t b = 0; b <= gpuworld::kOpaqueDecal; ++b) {
     const bool decal = (b & 1u) != 0;
     vkCmdSetDepthBias(cmd, decal ? p.bias_sign * p.decal_bias_constant : 0.0f, 0.0f,
@@ -1051,13 +1156,25 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   vkCmdBindVertexBuffers(cmd, 0, 1, &vertices_.buffer, &zero);
   vkCmdBindIndexBuffer(cmd, indices_.buffer, 0, VK_INDEX_TYPE_UINT32);
   VkPipeline bound = VK_NULL_HANDLE;
-  const bool need_opaque_dither = (p.swap < 1.5f) || generation_.has_opaque_dither;
-  const VkPipeline op_pipe = (need_opaque_dither && opaque_dither_)
-                                 ? opaque_dither_
-                                 : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
+  const bool swap_fading = (p.swap < 1.5f);
+  const VkPipeline solid_pipe = (swap_fading && opaque_dither_)
+                                    ? opaque_dither_
+                                    : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
+  const VkPipeline dither_pipe = opaque_dither_ ? opaque_dither_ : opaque_;
   const uint32_t max_draw = std::min<uint32_t>(generation_.rows, kMaxPerBatch);
-  for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
-    const VkPipeline pipeline = b >= gpuworld::kCutout ? coverage_ : op_pipe;
+  // Draw order: discard-free solid opaque first (Early-Z + Hi-Z occluders), then dithered LOD opaque,
+  // then alpha-cutout foliage/fences, then instanced trees.
+  constexpr uint32_t kOrder[gpuworld::kBatchCount] = {
+      gpuworld::kOpaque, gpuworld::kOpaqueDecal,
+      gpuworld::kOpaqueDither, gpuworld::kOpaqueDitherDecal,
+      gpuworld::kCutout, gpuworld::kCutoutDecal,
+  };
+  for (uint32_t b : kOrder) {
+    const VkPipeline pipeline = (b == gpuworld::kCutout || b == gpuworld::kCutoutDecal)
+                                    ? coverage_
+                                    : ((b == gpuworld::kOpaqueDither || b == gpuworld::kOpaqueDitherDecal)
+                                           ? dither_pipe
+                                           : solid_pipe);
     if (pipeline != bound) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
       r_.apply_vrs(cmd);
@@ -1083,6 +1200,19 @@ void WorldGpu::record_hiz(VkCommandBuffer cmd, VkImageView depth_view, uint32_t 
                           bool reverse_z) {
   if (!ready_ || !hiz_gen_ || !depth_view || !depth_w || !depth_h) return;
   SlotBuffers& s = slots_[recorded_slot_];
+  // Only update mip-0 input descriptor when the depth view handle changes (e.g. swapchain resize);
+  // mips 1..9 are permanently bound at init (zero per-frame descriptor allocations/writes).
+  if (s.bound_hiz_depth != depth_view) {
+    const VkDescriptorImageInfo src_info{hiz_sampler_, depth_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = s.hiz_sets[0];
+    w.dstBinding = 0;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo = &src_info;
+    vkUpdateDescriptorSets(r_.device_, 1, &w, 0, nullptr);
+    s.bound_hiz_depth = depth_view;
+  }
   img_barrier(cmd, hiz_image_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
               VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -1092,37 +1222,11 @@ void WorldGpu::record_hiz(VkCommandBuffer cmd, VkImageView depth_view, uint32_t 
   uint32_t sw = depth_w, sh = depth_h;
   uint32_t dw = kHizWidth, dh = kHizHeight;
   for (uint32_t m = 0; m < kHizMips; ++m) {
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = s.pool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &hiz_set_layout_;
-    if (vkAllocateDescriptorSets(r_.device_, &ai, &set) != VK_SUCCESS) break;
-
-    const VkImageView src_view = (m == 0) ? depth_view : hiz_mip_views_[m - 1];
-    const VkImageLayout src_layout =
-        (m == 0) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    const VkDescriptorImageInfo src_info{hiz_sampler_, src_view, src_layout};
-    const VkDescriptorImageInfo dst_info{VK_NULL_HANDLE, hiz_mip_views_[m], VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet writes[2]{};
-    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[0].dstSet = set;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &src_info;
-    writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[1].dstSet = set;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[1].pImageInfo = &dst_info;
-    vkUpdateDescriptorSets(r_.device_, 2, writes, 0, nullptr);
-
     struct Push {
       uint32_t src_w, src_h, dst_w, dst_h, rev_z, is_mip0;
     } pc{sw, sh, dw, dh, reverse_z ? 1u : 0u, m == 0 ? 1u : 0u};
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline_layout_, 0, 1, &set, 0, nullptr);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, hiz_pipeline_layout_, 0, 1, &s.hiz_sets[m], 0,
+                            nullptr);
     vkCmdPushConstants(cmd, hiz_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cmd, (dw + 7) / 8, (dh + 7) / 8, 1);
 

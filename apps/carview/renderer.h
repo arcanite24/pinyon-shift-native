@@ -8,6 +8,10 @@
 #include <cstdint>
 #include <cstring>
 
+#if defined(__F16C__) || (defined(_MSC_VER) && defined(__AVX2__))
+#include <immintrin.h>
+#endif
+
 namespace carview::motion_math {
 
 inline void mat4_identity(float out[16]) {
@@ -70,6 +74,9 @@ inline bool mat4_inv(const float m[16], float out[16]) {
 inline uint16_t float_to_half(float f) {
   if (!std::isfinite(f)) f = 0.0f;
   f = std::clamp(f, -65000.0f, 65000.0f);
+#if defined(__F16C__) || (defined(_MSC_VER) && defined(__AVX2__))
+  return uint16_t(_mm_cvtsi128_si32(_mm_cvtps_ph(_mm_set_ss(f), _MM_FROUND_TO_NEAREST_INT)));
+#else
   uint32_t bits = 0;
   std::memcpy(&bits, &f, sizeof(bits));
   const uint32_t sign = (bits >> 16u) & 0x8000u;
@@ -91,6 +98,7 @@ inline uint16_t float_to_half(float f) {
     if (exp >= 31) return uint16_t(sign | 0x7BFFu);
   }
   return uint16_t(sign | (uint32_t(exp) << 10u) | (mant >> 13u));
+#endif
 }
 
 inline float half_to_float(uint16_t h) {
@@ -642,6 +650,13 @@ class Renderer {
   VkFormat scene_format() const {
     if (!options_.post.enabled) return color_format_;
     return compact_hdr_scene_ ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 : VK_FORMAT_R16G16B16A16_SFLOAT;
+  }
+  // 32-bit packed HDR format (B10G11R11_UFLOAT_PACK32) for alpha-free intermediate HDR targets
+  // (bloom pyramid, luminance adaptation, dynamic env cubemap, mirror) — halves VRAM & bandwidth
+  // on desktop GPUs while preserving Turnip UBWC compression on Android Adreno 7xx.
+  VkFormat bloom_format() const {
+    return (b10g11r11_supported_ && !device_info_.is_turnip) ? VK_FORMAT_B10G11R11_UFLOAT_PACK32
+                                                             : VK_FORMAT_R16G16B16A16_SFLOAT;
   }
   bool post() const { return options_.post.enabled; }
   bool reverse_z() const { return options_.reverse_z; }

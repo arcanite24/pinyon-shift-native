@@ -304,7 +304,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
 
   // 1-sample HDR sky pipelines & descriptor sets for dynamic cubemap and rearview mirror passes.
   if (res == VK_SUCCESS && dyn_env_ready_) {
-    const VkFormat hdr_fmt = VK_FORMAT_R16G16B16A16_SFLOAT;
+    const VkFormat hdr_fmt = r_.bloom_format();
     VkPipelineRenderingCreateInfo env_rend = rend;
     env_rend.pColorAttachmentFormats = &hdr_fmt;
     VkPipelineMultisampleStateCreateInfo ms1{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};

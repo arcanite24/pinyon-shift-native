@@ -461,19 +461,24 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     allocated_targets_ = plan;
 
     if (plan.bloom) {
-      // 6-level Jimenez / Dual-Kawase pyramid (quarter-res start on Android cuts bloom
-      // pixel count & memory bandwidth by 4x with identical soft glow).
+      // 6-level Jimenez / Dual-Kawase pyramid in 32-bit B10G11R11_UFLOAT_PACK32 (halves VRAM & bandwidth).
+      // bloom_b_[5] is pre-allocated at mip-0 extent for temporal bloom_persist (eliminating first-frame recreation).
 #ifdef __ANDROID__
       uint32_t bw = std::max(1u, rw / 4), bh = std::max(1u, rh / 4);
 #else
       uint32_t bw = std::max(1u, rw / 2), bh = std::max(1u, rh / 2);
 #endif
+      const VkFormat bfmt = bloom_format();
+      const VkImageUsageFlags persist_usage = usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
       for (uint32_t k = 0; k < kBloomLevels; ++k) {
         bloom_w_[k] = bw;
         bloom_h_[k] = bh;
-        if (!create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+        const uint32_t b_w = (k == kBloomLevels - 1) ? bloom_w_[0] : bw;
+        const uint32_t b_h = (k == kBloomLevels - 1) ? bloom_h_[0] : bh;
+        const VkImageUsageFlags b_usage = (k == 0 || k == kBloomLevels - 1) ? persist_usage : usage;
+        if (!create_image(bw, bh, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
                           bloom_a_[k]) ||
-            !create_image(bw, bh, 1, scene_format(), VK_SAMPLE_COUNT_1_BIT, usage, VK_IMAGE_ASPECT_COLOR_BIT,
+            !create_image(b_w, b_h, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, b_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                           bloom_b_[k])) {
           error = "post bloom pyramid";
           return false;
@@ -481,6 +486,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         bw = std::max(1u, bw / 2);
         bh = std::max(1u, bh / 2);
       }
+      bloom_persist_img_ = bloom_b_[kBloomLevels - 1].image;
     }
     if (plan.ssao) {
       const bool full_ao = modern::gtao_full_res(graphics_.ssao);
@@ -618,7 +624,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
     VkImageView sources[kPostSetCount][2] = {};
     sources[0][0] = hdr_.view; sources[0][1] = hdr_.view;
     sources[1][0] = lum_16_.view; sources[1][1] = lum_adapt_[1].view;
-    sources[2][0] = hdr_.view; sources[2][1] = bv(bloom_b_[0]);
+    sources[2][0] = hdr_.view; sources[2][1] = bv(bloom_b_[kBloomLevels - 1]);
     bloom_prev_valid_ = false;
     for (uint32_t k = 1; k < kBloomLevels; ++k) {
       sources[2 + k][0] = bv(bloom_a_[k - 1]); sources[2 + k][1] = bv(bloom_a_[k - 1]);
