@@ -203,6 +203,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     if (a == "--profile") { profile_name = next(); continue; }
     if (a == "--fullscreen") { fullscreen = true; continue; }
     if (a == "--no-fullscreen") { fullscreen = false; continue; }
+    bool handled = true;
     if (a == "--headless") headless = true;
     else if (a == "--bake") bake_dir = next();
     else if (a == "--car") car = next();
@@ -318,8 +319,11 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     } else if (a == "--no-rubberband") {
       race_options.rubberband = false;
       if (race_options.ai_mode == race::AiMode::kStock) race_options.ai_mode = race::AiMode::kFair;
+    } else {
+      handled = false;
     }
-    else if (a == "--race-auto") race_auto = 1;
+    if (handled) continue;
+    if (a == "--race-auto") race_auto = 1;
     else if (a == "--race-auto-menus") race_auto = 1, race_auto_menus = true;
     else if (a == "--race-replay") race_options.replay = next();
     else if (a == "--race-seed") race_options.seed = std::strtoull(next(), nullptr, 10);
