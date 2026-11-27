@@ -144,7 +144,9 @@ if(ANDROID)
     endif()
   endforeach()
 elseif(MSVC)
-  foreach(_fp_target shift_audio shift_world shift_drive carview_render carview shift_ffmpeg_avutil shift_ffmpeg_avcodec)
+  # Keep shift_drive on /fp:contract (matching Android -ffp-contract=fast) so
+  # IEEE-754 physics invariants and exact zero checks remain deterministic.
+  foreach(_fp_target shift_audio shift_world carview_render carview shift_ffmpeg_avutil shift_ffmpeg_avcodec)
     if(TARGET ${_fp_target})
       target_compile_options(${_fp_target} PRIVATE $<$<CONFIG:Release>:/fp:fast>)
     endif()
