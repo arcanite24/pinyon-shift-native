@@ -1022,16 +1022,75 @@ void widen_ticket_tape(SceneScreen& sc, int tape, int text, const std::string& s
   widen_ticket_tape_width(sc, tape, text, sc.scene().measure(text, s));
 }
 
+// Widens a 3-part BARBASE26PX pill (PillLeftCap, PillCentre, PillRightCap)
+// leftwards to cover right-aligned text `s` plus horizontal padding.
+void widen_pill_left(SceneScreen& sc, int group, int text, const std::string& s) {
+  const SceneDraw& sd = sc.scene();
+  const int lc = child(sd, group, "PillLeftCap"), ce = child(sd, group, "PillCentre");
+  if (lc < 0 || ce < 0 || text < 0 || s.empty()) return;
+  const float left = sd.at(text)[0] - sd.measure(text, s) - 10.0f;
+  const auto rl = sd.rect(lc), rc = sd.rect(ce);
+  if (left >= rl[0]) return;
+  const float dx = left - rl[0];
+  sc.at(lc).dx += dx;
+  const float from = rl[2] + dx, to = rc[2];
+  sc.at(ce).stretch_x = (to - from) / std::max(1.0f, rc[2] - rc[0]);
+  sc.at(ce).dx += 0.5f * (from + to) - 0.5f * (rc[0] + rc[2]);
+}
+
+// Widens a 3-part BARBASE26PX pill (PillLeftCap, PillCentre, PillRightCap)
+// rightwards to cover left-aligned text `s` plus horizontal padding.
+void widen_pill_right(SceneScreen& sc, int group, int text, const std::string& s) {
+  const SceneDraw& sd = sc.scene();
+  const int rc_cap = child(sd, group, "PillRightCap"), ce = child(sd, group, "PillCentre");
+  if (rc_cap < 0 || ce < 0 || text < 0 || s.empty()) return;
+  const float right = sd.at(text)[0] + sd.measure(text, s) + 12.0f;
+  const auto rr = sd.rect(rc_cap), rc = sd.rect(ce);
+  if (right <= rr[2]) return;
+  const float dx = right - rr[2];
+  sc.at(rc_cap).dx += dx;
+  const float from = rc[0], to = rr[0] + dx;
+  sc.at(ce).stretch_x = (to - from) / std::max(1.0f, rc[2] - rc[0]);
+  sc.at(ce).dx += 0.5f * (from + to) - 0.5f * (rc[0] + rc[2]);
+}
+
 bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& es, float w, float h, bool player_bar) {
   SceneScreen sc(kEventSummaryScene);
   if (!sc.ok()) return false;
   const SceneDraw& sd = sc.scene();
   sc.bindings().fit_text = false;
   for (const char* n : {"ButtonBar", "GROUP_TEST_TEXT"}) sc.hide(sc.node(n));
-  sc.text(sc.node("TitleTapeText"), upper(es.type));
+  const int title_txt = sc.node("TitleTapeText");
+  const std::string title_str = upper(es.type);
+  sc.text(title_txt, title_str);
+  // TitleTape's Slide1 hides Clipon and crops the brushed tapes to the title text.
+  const int title_grp = sc.node("TitleTape/Group");
+  sc.hide(child(sd, title_grp, "Clipon"));
+  if (title_grp >= 0 && title_txt >= 0) {
+    const float title_right = sd.at(title_txt)[0] + sd.measure(title_txt, title_str) + 28.0f;
+    for (const char* tape : {"Smudge_Tape", "Crisp_Tape"}) {
+      if (const int tn = child(sd, title_grp, tape); tn >= 0)
+        sc.at(tn).visible_width = std::max(0.0f, title_right - sd.rect(tn)[0]);
+    }
+    if (const int dt = child(sd, title_grp, "Dirt_Tile"); dt >= 0) {
+      const auto r = sd.rect(dt);
+      const float want = std::max(0.0f, title_right - r[0]);
+      const float orig = std::max(1.0f, r[2] - r[0]);
+      if (want <= 1.0f) {
+        sc.hide(dt);
+      } else if (want < orig) {
+        sc.at(dt).stretch_x = want / orig;
+        sc.at(dt).dx = 0.5f * (r[0] + title_right) - 0.5f * (r[0] + r[2]);
+      }
+    }
+  }
   if (const int bg = sc.node("Ticket/bg"); bg >= 0 && !es.ticket.empty()) sc.at(bg).texture = es.ticket;
-  sc.text(sc.node("TEXT_RACE_INFO"), upper(es.track));
-  sc.text(sc.node("TEXT_TRACK_INFO"), upper(es.track_info));
+  const std::string race_info_str = upper(es.track);
+  const std::string track_info_str = upper(es.track_info);
+  sc.text(sc.node("TEXT_RACE_INFO"), race_info_str);
+  sc.text(sc.node("TEXT_TRACK_INFO"), track_info_str);
+  widen_pill_left(sc, sc.node("RaceInfo"), sc.node("TEXT_RACE_INFO"), race_info_str);
+  widen_pill_left(sc, sc.node("TrackInfo"), sc.node("TEXT_TRACK_INFO"), track_info_str);
 
   const bool has_wb_prize = !es.prize_wristband.empty();
   const bool has_points = !has_wb_prize && es.points > 0;
@@ -1090,10 +1149,11 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   if (pts_txt >= 0 && has_points) sc.at(pts_txt).dy = kTicketPointsTextDy;
   if (pts_txt >= 0 && has_wb_prize && wb_l2.empty()) sc.at(pts_txt).dy = kTicketPointsTextDy;
   // When no points/wristband box sits above credits (Showcases, Street, Showdown),
-  // lift the credits tape up into the main prize slot right below the heading.
+  // lift Credits/Tape into the main prize slot; TEXT_CREDITS is its child and
+  // inherits cr_tape's dy automatically.
   const float credits_lift = credits_only ? -36.0f : 0.0f;
   if (cr_tape >= 0) sc.at(cr_tape).dy = kTicketCreditsDy + credits_lift;
-  if (cr_txt >= 0) sc.at(cr_txt).dy = kTicketCreditsTextDy + credits_lift;
+  if (cr_txt >= 0) sc.at(cr_txt).dy = kTicketCreditsTextDy;
 
   // The eligibility line follows the restriction: measured after OPEN, and
   // pushed right by a longer restriction (MUST BE ...) so they never overlap.
@@ -1124,12 +1184,28 @@ bool draw_event_ticket(ui::List& l, const DriveHud& st, const EventSummaryHud& e
   if (es.provided_car.empty()) {
     sc.hide(sc.node("CarInfo"));
   } else {
-    sc.text(sc.node("TEXT_TOPCAR"), text_of(race_text::kCarProvided));
+    const std::string top_car = text_of(race_text::kCarProvided);
+    sc.text(sc.node("TEXT_TOPCAR"), top_car);
     sc.text(sc.node("TEXT_BOTTOMCAR"), es.provided_car);
+    widen_pill_right(sc, sc.node("CarInfo/TopLine"), sc.node("TEXT_TOPCAR"), top_car);
+    widen_pill_right(sc, sc.node("CarInfo/BottomLine"), sc.node("TEXT_BOTTOMCAR"), es.provided_car);
     sc.hide(sc.node("BottomLine/ClassIcon"));
   }
-  if (es.best_finish.empty()) sc.hide(sc.node("History"));
-  else sc.text(sc.node("TEXT_BEST_FINISH"), format1(text_of(race_text::kBestFinish), es.best_finish));
+  if (es.best_finish.empty()) {
+    sc.hide(sc.node("History"));
+  } else {
+    const std::string hist_str = format1(text_of(race_text::kBestFinish), es.best_finish);
+    const int hist_txt = sc.node("TEXT_BEST_FINISH");
+    sc.text(hist_txt, hist_str);
+    if (const int hp = sc.node("History/Pill01"); hp >= 0 && hist_txt >= 0) {
+      const float need = sd.measure(hist_txt, hist_str) + 26.0f;
+      if (need > 140.0f) {
+        const auto hr = sd.rect(hp);
+        sc.at(hp).dx = (sd.at(hist_txt)[0] + 10.0f - need) - hr[0];
+        sc.at(hp).visible_width = need;
+      }
+    }
+  }
   if (es.restrictions_view) {
     // Y: the restrictions side of the ticket.
     const int info = sc.node("Ticket/Info");

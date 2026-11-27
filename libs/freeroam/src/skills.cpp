@@ -373,6 +373,7 @@ void SkillTracker::reset_session_clock() {
   special_cd_.clear();
   last_skill_.clear();
   last_points_ = 0;
+  last_skill_is_combo_ = false;
   banked_total_ = 0;
   air_armed_ = false;
 }
@@ -460,6 +461,7 @@ void SkillTracker::emit_tag(const PendingTag& tag, double time, std::vector<Skil
   last_tag_at_ = time;
   last_skill_ = tag.label;
   last_points_ = tag.points;
+  last_skill_is_combo_ = tag.is_combo;
   const float mult_f = chain_multiplier();
   const int mult_i = int(std::floor(mult_f));
   SkillEvent ev{SkillEvent::kSkillAwarded, tag.label, tag.canonical_id, tag.points, mult_i, popularity_rank(), 0,
@@ -944,6 +946,7 @@ SkillHudState SkillTracker::hud() const {
   h.skill_count = skill_count_;
   h.last_skill = last_skill_;
   h.last_points = last_points_;
+  h.last_skill_is_combo = last_skill_is_combo_;
   h.last_skill_at = last_award_at_;
   h.banked_total = banked_total_;
   h.banked_at = banked_at_;
@@ -971,6 +974,7 @@ SkillTracker::RewindSnapshot SkillTracker::capture_rewind() const {
   s.over9000_paid = over9000_paid_;
   s.last_skill = last_skill_;
   s.last_points = last_points_;
+  s.last_skill_is_combo = last_skill_is_combo_;
   s.lost_at = lost_at_;
   s.burnout_t = burnout_t_;
   s.burnout_cd = burnout_cd_;
@@ -1018,6 +1022,7 @@ void SkillTracker::restore_rewind(const RewindSnapshot& s) {
   pending_tags_.clear();
   last_skill_ = s.last_skill;
   last_points_ = s.last_points;
+  last_skill_is_combo_ = s.last_skill_is_combo;
   lost_at_ = s.lost_at;
   burnout_t_ = s.burnout_t;
   burnout_cd_ = s.burnout_cd;

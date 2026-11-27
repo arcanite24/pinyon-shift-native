@@ -454,6 +454,7 @@ struct SkillChainHud {
   double chain_timeout_s = 3.0;    // total bank window duration (s)
   std::string last_skill;
   int last_points = 0;
+  bool last_skill_is_combo = false;
   double last_skill_at = -1e9;
   int banked_total = 0;
   double banked_at = -1e9;

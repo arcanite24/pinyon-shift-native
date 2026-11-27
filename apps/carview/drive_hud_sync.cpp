@@ -370,6 +370,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
           sk_hud.chain_timeout_s = app.skills_data.bank_timeout > 0.1 ? app.skills_data.bank_timeout : 3.0;
           sk_hud.last_skill = sh.last_skill;
           sk_hud.last_points = sh.last_points;
+          sk_hud.last_skill_is_combo = sh.last_skill_is_combo;
           sk_hud.last_skill_at = sh.last_skill_at;
           sk_hud.banked_total = sh.banked_total;
           sk_hud.banked_at = sh.banked_at;
@@ -1080,7 +1081,7 @@ void DriveSession::set_hud(int win_w, int win_h, const std::string& banner, cons
         const bool draw_minimap = mm_size > 0 && !app.show_title && !ceremony.active && !campaign_hide_hud &&
                                   !map_overlay.active && !grid_menu_open && st.menu.empty() && !career_page.is_open() &&
                                   !hub_menu.open() && !app.rally_hub_open && !app.rally_service_open &&
-                                  !app.rally_results_open && !club_open && !car_club_open;
+                                  !app.rally_results_open && !club_open && !car_club_open && !d.event_summary;
         if (draw_minimap) {
           list.image(mm_x, mm_y, mm_x + mm_size, mm_y + mm_size, mm_uv);
           d.minimap_visible = true;

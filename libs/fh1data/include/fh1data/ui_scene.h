@@ -35,6 +35,13 @@ struct UiObject {
   uint32_t text_valign = 1, text_mode = 2;
   std::array<float, 2> text_spacing{0.0f, 0.0f};
   float text_width = 0;  // version 1008; 0 otherwise
+  // Version >= 1007 59-byte text effect extension: drop shadow enable, RGBA, (dx, dy).
+  bool text_has_shadow = false;
+  std::array<float, 4> text_shadow_colour{0.0f, 0.0f, 0.0f, 0.0f};
+  std::array<float, 2> text_shadow_offset{0.0f, 0.0f};
+  // Base text colour from companion BGF item's textcolor.r/g/b/a (0..1), when present.
+  bool has_text_colour = false;
+  std::array<float, 4> text_colour{1.0f, 1.0f, 1.0f, 1.0f};
   // kModel.
   uint32_t geometry = 0;
   // kMaterial: the colour (probable).
@@ -273,6 +280,8 @@ bool parse_ui_bsg(std::span<const uint8_t> data, UiScene& out, std::string* erro
 // Reads the BGF document: identity pool, items, contracts, relations and the
 // timeline (curves, actions, slides).
 bool parse_ui_bgf(std::span<const uint8_t> data, UiBgfDocument& out, std::string* error);
+// Populates kText UiObject base text_colour from the parsed BGF's kind==4 items.
+void apply_ui_bgf_defaults(UiScene& out);
 
 class Archive;
 // Loads Scenes/ui4/<name>.fbf / .bsg (and .bgf when present) from a UI.zip:

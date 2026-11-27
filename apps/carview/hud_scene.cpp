@@ -281,17 +281,57 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     const auto& m = tex[0]->matrix;
     auto U = [&](float u) { return uv[0] + (uv[2] - uv[0]) * u; };
     auto V = [&](float v) { return uv[1] + (uv[3] - uv[1]) * v; };
-    const float u0 = m[12], u1 = m[12] + m[0];
+    float u0 = m[12], u1 = m[12] + m[0];
+    const float u_min = std::min(u0, u1), u_max = std::max(u0, u1);
+    const float u_span = u_max - u_min;
+    // Whole-integer wrap shift (e.g. mirrored right pill caps m0=-0.5, m12=-1.5
+    // -> u=0.5..0.0, or wrapped strips u=1..2 -> 0..1).
+    if (const float whole_u = std::floor(u_min + 1e-4f); whole_u != 0.0f && u_max - whole_u <= 1.0f + 1e-4f) {
+      u0 -= whole_u;
+      u1 -= whole_u;
+    }
     float v0 = std::min(m[13], m[13] + m[5]), v1 = std::max(m[13], m[13] + m[5]);
+    const float v_span = v1 - v0;
     // A whole-texture offset (947_HUD's REDLINE maps v 1..2): the same texels
     // under wrap addressing.
-    if (const float whole = std::floor(v0 + 1e-4f); whole != 0.0f && v1 - whole <= 1.0f + 1e-4f) v0 -= whole, v1 -= whole;
+    if (const float whole_v = std::floor(v0 + 1e-4f); whole_v != 0.0f && v1 - whole_v <= 1.0f + 1e-4f) {
+      v0 -= whole_v;
+      v1 -= whole_v;
+    }
+    // Single-texture repeating patterns (e.g. DIRTTILE01 at m0=6.19, LIVERY_GRID at m0=14):
+    // tile cleanly inside the texture's atlas rect via kMaskRepeat + 1x1 white mask.
+    if (u_span > 1.05f || v_span > 1.05f) {
+      static const std::array<uint8_t, 64> kWhite = [] {
+        std::array<uint8_t, 64> w;
+        w.fill(255);
+        return w;
+      }();
+      std::array<float, 4> white{};
+      if (ui::atlas_find("ui.white", white) || ui::atlas_image("ui.white", 4, 4, kWhite, white)) {
+        const float du = 0.25f * (white[2] - white[0]), dv = 0.25f * (white[3] - white[1]);
+        const std::array<float, 4> white_uv = {white[0] + du, white[1] + dv, white[2] - du, white[3] - dv};
+        const float su = (std::fabs(m[0]) > 1e-4f) ? m[0] : 1.0f;
+        const float sv = (std::fabs(m[5]) > 1e-4f) ? std::fabs(m[5]) : 1.0f;
+        const float ou = m[12];
+        const float ov = (m[5] < 0.0f) ? (1.0f - m[13]) : m[13];
+        l.image_masked(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), uv, white_uv, c, {su, sv, ou, ov}, ui::kMaskRepeat);
+        return true;
+      }
+    }
     float x0 = r[0], x1 = r[2], a = u0, b = u1;
-    if (b > a && (a < 0 || b > 1)) {
-      const float w = (x1 - x0) / (b - a);
-      if (a < 0) x0 -= a * w, a = 0;
-      if (b > 1) x1 -= (b - 1) * w, b = 1;
-      if (x1 <= x0) return false;
+    if (std::fabs(b - a) > 1e-4f && (std::min(a, b) < -1e-4f || std::max(a, b) > 1.0f + 1e-4f)) {
+      const float t0 = (0.0f - a) / (b - a);
+      const float t1 = (1.0f - a) / (b - a);
+      const float t_lo = std::clamp(std::min(t0, t1), 0.0f, 1.0f);
+      const float t_hi = std::clamp(std::max(t0, t1), 0.0f, 1.0f);
+      if (t_hi <= t_lo + 1e-4f) return false;
+      const float span_x = x1 - x0;
+      const float na = a + (b - a) * t_lo;
+      const float nb = a + (b - a) * t_hi;
+      x0 = r[0] + span_x * t_lo;
+      x1 = r[0] + span_x * t_hi;
+      a = std::clamp(na, 0.0f, 1.0f);
+      b = std::clamp(nb, 0.0f, 1.0f);
     }
     // The same down for a transparent-border texture (address mode 4): a
     // panel mapped past its edge (H_CAR_CHALLENGE_DETAILS' HUDPANEL01 at
@@ -332,16 +372,34 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
 
   const auto& m0 = tex[0]->matrix;
   const auto& m1 = tex[1]->matrix;
-  // Sub-rect for tex1 (mask / base strip).
+  // Sub-rect for tex1 (mask / base strip), preserving horizontal mirror direction
+  // (e.g. SMUDGETAPE01 m1=-1,1 and TAPECLIPON02 m1=-4,4) and border-transparent clipping.
   auto U1 = [&](float u) { return uv1[0] + (uv1[2] - uv1[0]) * u; };
   auto V1 = [&](float v) { return uv1[1] + (uv1[3] - uv1[1]) * v; };
-  const float b_u0 = std::clamp(std::min(m1[12], m1[12] + m1[0]), 0.0f, 1.0f);
-  const float b_u1 = std::clamp(std::max(m1[12], m1[12] + m1[0]), 0.0f, 1.0f);
+  float u1_a = m1[12], u1_b = m1[12] + m1[0];
+  const float u1_min = std::min(u1_a, u1_b), u1_max = std::max(u1_a, u1_b);
+  if (const float whole = std::floor(u1_min + 1e-4f); whole != 0.0f && u1_max - whole <= 1.0f + 1e-4f) {
+    u1_a -= whole;
+    u1_b -= whole;
+  }
+  float draw_x0 = r[0], draw_x1 = r[2];
+  float t1_lo = 0.0f, t1_hi = 1.0f;
+  if (std::fabs(u1_b - u1_a) > 1e-4f && (std::min(u1_a, u1_b) < -1e-4f || std::max(u1_a, u1_b) > 1.0f + 1e-4f)) {
+    const float s0 = (0.0f - u1_a) / (u1_b - u1_a);
+    const float s1 = (1.0f - u1_a) / (u1_b - u1_a);
+    t1_lo = std::clamp(std::min(s0, s1), 0.0f, 1.0f);
+    t1_hi = std::clamp(std::max(s0, s1), 0.0f, 1.0f);
+    if (t1_hi <= t1_lo + 1e-4f) return false;
+    draw_x0 = r[0] + full * t1_lo;
+    draw_x1 = r[0] + full * t1_hi;
+  }
+  const float b_u0 = std::clamp(u1_a + (u1_b - u1_a) * t1_lo, 0.0f, 1.0f);
+  const float b_u1 = std::clamp(u1_a + (u1_b - u1_a) * t1_hi, 0.0f, 1.0f);
   const float b_v0 = std::clamp(std::min(m1[13], m1[13] + m1[5]), 0.0f, 1.0f);
   const float b_v1 = std::clamp(std::max(m1[13], m1[13] + m1[5]), 0.0f, 1.0f);
   const std::array<float, 4> mask_uv = {U1(b_u0), V1(b_v0), U1(b_u1), V1(b_v1)};
 
-  const float su0 = (std::fabs(m0[0]) > 1e-4f) ? m0[0] : 1.0f;
+  float su0 = (std::fabs(m0[0]) > 1e-4f) ? m0[0] : 1.0f;
   const float sv0 = (std::fabs(m0[5]) > 1e-4f) ? std::fabs(m0[5]) : 1.0f;
   const bool tiled = (std::fabs(su0) > 1.05f || std::fabs(sv0) > 1.05f);
 
@@ -357,13 +415,18 @@ bool SceneDraw::model(ui::List& l, const SceneFrame& f, int node, float opacity,
     const float vis = std::clamp(visible, 0.0f, full);
     ou0 = 1.0f - vis / full;
   }
+  // Remap tex0's linear horizontal UV transform when tex1 clipped the quad to [t1_lo, t1_hi].
+  if (t1_lo > 0.0f || t1_hi < 1.0f) {
+    ou0 = ou0 + su0 * t1_lo;
+    su0 = su0 * (t1_hi - t1_lo);
+  }
   uint32_t mask_flags = 0u;
   if (tiled || wrap) {
     mask_flags = ui::kMaskRepeat;
   } else if (tex[0]->tex_address_mode == 4u || visible > 0.0f || std::fabs(ou0) > 1e-4f || std::fabs(ov0) > 1e-4f) {
     mask_flags = ui::kMaskBorderTransparent;
   }
-  l.image_masked(f.x(r[0]), f.y(r[1]), f.x(r[2]), f.y(r[3]), uv0, mask_uv, c, {su0, sv0, ou0, ov0}, mask_flags);
+  l.image_masked(f.x(draw_x0), f.y(r[1]), f.x(draw_x1), f.y(r[3]), uv0, mask_uv, c, {su0, sv0, ou0, ov0}, mask_flags);
   return true;
 }
 
@@ -407,6 +470,21 @@ float SceneDraw::text(ui::List& l, const SceneFrame& f, int node, std::string_vi
   const float angle = (turn_ ? sc_->nodes[size_t(node)].angle : 0.0f) + extra_angle;
   const bool turning = angle != 0 && !l.turned();
   if (turning) l.turn(f.x(cx + dx), f.y(cy + dy), -angle);
+  const int oi = sc_->nodes[size_t(node)].object_index;
+  if (oi >= 0 && size_t(oi) < sc_->objects.size()) {
+    const fh1::UiObject& o = sc_->objects[size_t(oi)];
+    if (o.kind == fh1::UiObjectKind::kText && o.text_has_shadow && o.text_shadow_colour[3] > 1e-3f) {
+      const float main_a = float((colour >> 24) & 0xFFu) / 255.0f;
+      const uint32_t sh_col = colour_of(o.text_shadow_colour, main_a);
+      if ((sh_col >> 24) > 0u) {
+        ui::TextStyle sh_ts = ts;
+        sh_ts.color = sh_col;
+        const float sh_dx = o.text_shadow_offset[0] * ts.size * 0.25f;
+        const float sh_dy = o.text_shadow_offset[1] * ts.size * 0.25f;
+        l.text(f.x(cx + dx) + sh_dx, f.y(cy + dy) - 0.5f * ts.size + sh_dy, s, sh_ts);
+      }
+    }
+  }
   const float w = l.text(f.x(cx + dx), f.y(cy + dy) - 0.5f * ts.size, s, ts);
   if (turning) l.unturn();
   return w / f.s;
@@ -566,9 +644,10 @@ int SceneDraw::draw_subtree(ui::List& l, const SceneFrame& f, int root_node, con
         ++emitted;
     } else if (o.kind == fh1::UiObjectKind::kText) {
       if (!ov || !ov->text.has_value() || ov->text->empty()) continue;
-      const uint32_t base_col = ov->tint.has_value() ? *ov->tint
+      const uint32_t base_col = ov->tint.has_value()    ? *ov->tint
                                 : bgf_tint[size_t(d.idx)] ? bgf_tint[size_t(d.idx)]
-                                                          : bindings.default_text_color;
+                                : o.has_text_colour     ? colour_of(o.text_colour, 1.0f)
+                                                        : bindings.default_text_color;
       const uint32_t col = ui::fade(base_col, a);
       const auto c = at(d.idx);
       const AnimMap& am = acc_am[size_t(d.idx)];

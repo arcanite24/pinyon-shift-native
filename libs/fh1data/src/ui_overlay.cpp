@@ -76,7 +76,10 @@ bool UiOverlay::load_scene(std::string_view scene, UiScene& out, std::string* er
   out = UiScene{};
   if (!parse_ui_fbf(fbf.read.data, out, error) || !parse_ui_bsg(bsg.read.data, out, error)) return false;
   const File bgf = scene_file(scene, "bgf");
-  if (bgf.ok()) out.has_bgf = parse_ui_bgf(bgf.read.data, out.bgf, nullptr);
+  if (bgf.ok()) {
+    out.has_bgf = parse_ui_bgf(bgf.read.data, out.bgf, nullptr);
+    apply_ui_bgf_defaults(out);
+  }
   return true;
 }
 

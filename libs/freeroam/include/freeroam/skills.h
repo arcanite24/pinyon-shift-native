@@ -159,6 +159,7 @@ struct SkillHudState {
   int skill_count = 0;
   std::string last_skill;
   int last_points = 0;
+  bool last_skill_is_combo = false;
   double last_skill_at = -1e9;
   int banked_total = 0;
   double banked_at = -1e9;
@@ -230,6 +231,7 @@ class SkillTracker {
     bool over9000_paid = false;
     std::string last_skill;
     int last_points = 0;
+    bool last_skill_is_combo = false;
     double lost_at = -1e9;
     double burnout_t = 0.0, burnout_cd = -1e9;
     double donut_yaw = 0.0, donut_dist = 0.0, donut_cd = -1e9;
@@ -324,6 +326,7 @@ class SkillTracker {
   // Recent HUD display.
   std::string last_skill_;
   int last_points_ = 0;
+  bool last_skill_is_combo_ = false;
   int banked_total_ = 0;
   double banked_at_ = -1e9;
   double lost_at_ = -1e9;

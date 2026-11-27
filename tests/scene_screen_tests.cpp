@@ -222,6 +222,40 @@ int main() {
                  "PopularityUnlock/MainMessage/TEXT_TITLE", "MainMessage/Crisp_Tape", "PopularityUnlock/ShowMe/TEXT_SHOW",
                  // The start and the wrong way sign.
                  "I_321_Go/Group/GO", "I_321_Go/Group/TEXT_COUNT", "I_321_Go/Group/Paused", "WrongWay/Sign_Top"});
+    // FBF 59-byte text drop-shadow extension decoded on HUD readouts.
+    for (const char* p : {"PlaceBlock/TEXT_PLACE", "EndConditionBlock/TEXT_ENDCON_CURRENT",
+                          "Total/anim_helper/TEXT_TOTAL", "Skill1/anim_helper/Skill/TEXT_POP_SKILLNAME"}) {
+      const int n = sd.find_path(p);
+      const fh1::UiObject* o = (n >= 0 && sd.scene()->nodes[size_t(n)].object_index >= 0)
+                                   ? &sd.scene()->objects[size_t(sd.scene()->nodes[size_t(n)].object_index)]
+                                   : nullptr;
+      check(o && o->text_has_shadow && o->text_shadow_colour[3] > 0.1f,
+            std::string("947_HUD: FBF drop shadow parsed on ") + p);
+    }
+  }
+  // BGF base textcolor defaults decoded on H_EVENT_SUMMARY via UiOverlay::load_scene.
+  {
+    const SceneDraw ev(carview::ui_scene("H_EVENT_SUMMARY"));
+    check(ev.ok(), "H_EVENT_SUMMARY loads for textcolor check");
+    if (ev.ok()) {
+      auto obj_of = [&](const char* name) -> const fh1::UiObject* {
+        const int n = ev.find(name);
+        if (n < 0 || ev.scene()->nodes[size_t(n)].object_index < 0) return nullptr;
+        return &ev.scene()->objects[size_t(ev.scene()->nodes[size_t(n)].object_index)];
+      };
+      const fh1::UiObject* rt = obj_of("TEXT_RESTRICTION_TITLE");
+      const fh1::UiObject* tc = obj_of("TEXT_TOPCAR");
+      const fh1::UiObject* bc = obj_of("TEXT_BOTTOMCAR");
+      const fh1::UiObject* bf = obj_of("TEXT_BEST_FINISH");
+      check(rt && rt->has_text_colour && rt->text_colour[0] > 0.9f && rt->text_colour[1] < 0.1f,
+            "H_EVENT_SUMMARY: TEXT_RESTRICTION_TITLE has pink BGF textcolor");
+      check(tc && tc->has_text_colour && tc->text_colour[0] < 0.4f && tc->text_colour[2] < 0.2f,
+            "H_EVENT_SUMMARY: TEXT_TOPCAR has dark BGF textcolor");
+      check(bc && bc->has_text_colour && bc->text_colour[0] < 0.2f && bc->text_colour[1] < 0.2f,
+            "H_EVENT_SUMMARY: TEXT_BOTTOMCAR has dark charcoal BGF textcolor");
+      check(bf && bf->has_text_colour && bf->text_colour[0] < 0.2f && bf->text_colour[1] < 0.2f,
+            "H_EVENT_SUMMARY: TEXT_BEST_FINISH has dark charcoal BGF textcolor");
+    }
   }
   {
     // The help bar's buttons (help_bar_screen.cpp).
@@ -1200,6 +1234,11 @@ int main() {
       // 30..50 %).
       sk.chain_remaining_s = 0.5, sk_d.time = 22.5;
       hud_shot("hud_score_warn.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      // Combo skill: ComboIcon + brushed tape backing on Skill1.
+      sk.chain_remaining_s = 3.0, sk.last_skill = "DAREDEVIL", sk.last_points = 1000;
+      sk.last_skill_is_combo = true, sk.last_skill_at = 23.0, sk_d.time = 23.4;
+      hud_shot("hud_score_combo.png", "05_roam_hud_day_drive_orig.png", sk_d);
+      sk.last_skill_is_combo = false;
       sk.chain_remaining_s = 0.0;
       sk.active = false, sk.lost_at = 21.0;
       for (double t : {21.1, 21.5, 21.7, 21.9}) {
@@ -1376,6 +1415,21 @@ int main() {
       hud_shot("race_summary.png", "10_event_card_prerace_orig.png", sum_d);
       es.restrictions_view = true;
       hud_shot("race_summary_restrictions.png", "10_event_card_prerace_orig.png", sum_d);
+      // Showcase / provided-car ticket with CarInfo yellow pills & History pill.
+      {
+        carview::EventSummaryHud sc_es = es;
+        sc_es.restrictions_view = false;
+        sc_es.type = "SHOWCASE RACE";
+        sc_es.track = "MUSTANG VS MUSTANG";
+        sc_es.track_info = "MIXED SURFACE POINT-TO-POINT";
+        sc_es.points = 0;
+        sc_es.credits = 25000;
+        sc_es.provided_car = "1970 Ford Mustang Boss 429";
+        sc_es.best_finish = "1ST";
+        carview::DriveHud sc_d = sum_d;
+        sc_d.event_summary = &sc_es;
+        hud_shot("race_summary_showcase.png", "10_event_card_prerace_orig.png", sc_d);
+      }
       // Car select on 108_C_BUY_CARSELECT's car list (11_car_select_orig.png).
       es.restrictions_view = false;
       es.screen = S::kCarSelect;
@@ -1644,12 +1698,13 @@ int main() {
       check(carview::draw_loading_scene(l, lh, float(W), float(H)), "draw " + file);
       carview::ui::rasterize(l.items(), fb, W, H);
       if (!lh.backdrop.empty()) {
-        // PLEASE WAIT over the backdrop (03_loading_tip_orig.png: 992..1150 x 646..664).
+        // PLEASE WAIT over the backdrop (03_loading_tip_orig.png: 992..1150 x 646..664;
+        // 150_LOADING_SCREEN.bgf authors its base textcolor as 224,224,224).
         int lit = 0;
         for (uint32_t y = 646; y < 664; ++y)
           for (uint32_t x = 992; x < 1150; ++x) {
             const uint8_t* p = &fb[(size_t(y) * W + x) * 4];
-            lit += p[0] > 235 && p[1] > 235 && p[2] > 235;
+            lit += p[0] > 200 && p[1] > 200 && p[2] > 200;
           }
         check(lit > 200, file + ": PLEASE WAIT drawn over the backdrop");
       }

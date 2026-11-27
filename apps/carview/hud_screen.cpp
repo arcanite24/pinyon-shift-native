@@ -60,12 +60,14 @@ void show_all(SceneScreen& sc, int n, float alpha = 1.0f) {
 
 // Gives every node under `n` (not `n` itself) its own alpha 1 where the
 // scene rests it at 0 and the timeline does not set it: unlike show_all, the
-// parents' opacity (a slide's fade on `n`) still multiplies.
+// parents' opacity (a slide's fade on `n`) still multiplies, and nodes with a
+// non-zero authored opacity (e.g. 0.30/0.50/0.70) keep it.
 void raise_all(SceneScreen& sc, int n) {
   if (n < 0) return;
+  const fh1::UiScene* scene = sc.scene().scene();
   for (int c : sc.scene().children_of(n)) {
     auto& a = sc.bindings().anim[c];
-    if (!a.opacity) a.opacity = 1.0f;
+    if (!a.opacity && (!scene || scene->nodes[size_t(c)].opacity <= 1e-4f)) a.opacity = 1.0f;
     raise_all(sc, c);
   }
 }
@@ -397,7 +399,7 @@ void bind_place(SceneScreen& sc, const RaceHud& r) {
 }
 
 // HUDTimes: RACE from the start; on circuits LAP, then LAST and BEST once
-// set, each on its grey tape (a sprint's single RACE line has none).
+// set, each on its grey tape (including sprints' single RACE line).
 int bind_timers(SceneScreen& sc, const RaceHud& r) {
   const SceneDraw& sd = sc.scene();
   const int lines = child_path(sd, sc.node("HUDTimes"), "HUDTimes");
@@ -430,8 +432,7 @@ int bind_timers(SceneScreen& sc, const RaceHud& r) {
     sc.text(title, rows[size_t(i)].title);
     sc.text(value, rows[size_t(i)].value);
     const int bar = child(sd, line, "Bar");
-    if (rows.size() > 1) sc.show(bar, kTimerTapeAlpha);
-    else sc.hide(bar);
+    sc.show(bar, kTimerTapeAlpha);
     // The icons (penalties) are not used.
     for (int c : sd.children_of(value_group))
       if (c != value) sc.hide(c);
@@ -700,12 +701,15 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     const bool played =
         play_slide(sc, score_tl, child_path(sd, skill, "CompleteComponent/ScoreGroup"), score_slide, score_ms);
     if (played) {
-      // Total: BANK as the chain banks, on its own timeline that is not
-      // applied otherwise (BANK ends at alpha 0; its DEFAULT drops the total
-      // out of a live chain's row).
+      // Total: BANK as the chain banks, DEFAULT while live/lost (DEFAULT sets
+      // Total/anim_helper to 100% opacity, overriding its 30% resting BSG alpha).
       static SceneTimeline total_tl;
       const int total_c = child_path(sd, score, "Total");
-      bank_played = banked && !chain_live && play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
+      if (banked && !chain_live) {
+        bank_played = play_slide(sc, total_tl, total_c, "BANK", since_bank * 1000.0, true);
+      } else {
+        play_slide(sc, total_tl, total_c, "DEFAULT", 0.0, true);
+      }
       // Multiplier: ANIMATE as it changes, SHOWN while it holds.
       static float last_mult = 0.0f;
       static double mult_changed = -1e9;
@@ -732,8 +736,7 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
     } else {
       show_all(sc, score);
     }
-    for (int c : {child(sd, mult_h, "Background"), child(sd, mult_h, "Smudge_Tape"), child(sd, mult, "Flash"),
-                  child_path(sd, score, "Total/Flash")})
+    for (int c : {child(sd, mult, "Flash"), child_path(sd, score, "Total/Flash")})
       sc.hide(c);
     // A lost chain shows the total it had (the tracker has cleared it by then).
     static int live_points = 0;
@@ -744,7 +747,23 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
                                                                   : sk.chain_points;
     const std::string total = thousands(shown);
     if (chain_live) {
-      pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, skill_multiplier_text(sk)}}, cx, {kScoreGap, 0.0f});
+      const std::string mult_txt = skill_multiplier_text(sk);
+      pack_row(sc, {{total_n, total}, {x_n, "X"}, {m_n, mult_txt}}, cx, {kScoreGap, 0.0f});
+      // Multiplier's brushed backing (Background 0.30, Smudge_Tape 0.50) wraps the X + multiplier badge.
+      const float total_w = sd.measure(total_n, total);
+      const float x_w = sd.measure(x_n, "X"), m_w = sd.measure(m_n, mult_txt);
+      const float row_w = total_w + kScoreGap + x_w + m_w;
+      const float mult_left = cx - 0.5f * row_w + total_w + kScoreGap - 8.0f;
+      const float mult_w = std::max(28.0f, x_w + m_w + 18.0f);
+      const int mult_bg = child(sd, mult_h, "Background");
+      const int mult_smudge = child(sd, mult_h, "Smudge_Tape");
+      for (auto [n, op] : {std::pair{mult_bg, 0.30f}, std::pair{mult_smudge, 0.50f}}) {
+        if (n < 0) continue;
+        sc.at(n).dx = mult_left - sd.rect(n)[0];
+        sc.at(n).visible_width = mult_w;
+        if (played) sc.bindings().anim[n].opacity = op;
+        else sc.at(n).alpha = op;
+      }
     } else {
       sc.hide(mult);
       pack_row(sc, {{total_n, total}}, cx, {});
@@ -766,27 +785,59 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
   const int skill_group = child_path(sd, skill, "CompleteComponent/SkillGroup");
   sc.hide(child_path(sd, skill_group, "Skill2"));
   if (chain_live && !sk.last_skill.empty()) {
-    // Skill1's slides: SHOWSKILL as a skill lands, WARNINGSKILL over the
-    // chain's last 1.2 s, SHOWNSKILL between.
+    // Skill1's slides: SHOWSKILL/SHOWCOMBO as a skill lands, WARNINGSKILL/WARNINGCOMBO
+    // over the chain's last 1.2 s, SHOWNSKILL/SHOWNCOMBO between.
     static SceneTimeline skill_tl;
+    const bool combo = sk.last_skill_is_combo;
     const double since_skill = time - sk.last_skill_at;
     const double left = sk.chain_remaining_s;
-    std::string_view slide = "SHOWNSKILL";
+    std::string_view slide = combo ? "SHOWNCOMBO" : "SHOWNSKILL";
     double ms = 0.0;
     if (left < kSkillWarnSeconds && since_skill >= kSkillShowSeconds) {
       // Past the timer while a drift or burnout still holds the bank, the
       // pulse's last dim step holds (its end, alpha 0, is the bank).
-      slide = "WARNINGSKILL", ms = std::min(kSkillWarnSeconds - left, kSkillWarnHoldSeconds) * 1000.0;
+      slide = combo ? "WARNINGCOMBO" : "WARNINGSKILL";
+      ms = std::min(kSkillWarnSeconds - left, kSkillWarnHoldSeconds) * 1000.0;
     } else if (since_skill >= 0.0 && since_skill < kSkillShowSeconds) {
-      slide = "SHOWSKILL", ms = since_skill * 1000.0;
+      slide = combo ? "SHOWCOMBO" : "SHOWSKILL";
+      ms = since_skill * 1000.0;
     }
-    if (play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms, true)) raise_all(sc, skill1);
+    const bool sk_played = play_slide(sc, skill_tl, child_path(sd, skill_group, "Skill1"), slide, ms, true);
+    if (sk_played) raise_all(sc, skill1);
     else show_all(sc, skill1);
-    for (int c : {child(sd, skill1, "Background"), child(sd, skill1, "Smudge_Tape"), child(sd, skill1, "ComboIcon")})
-      sc.hide(c);
     sc.hide(child_path(sd, skill_group, "Skill1/Flash"));
     const int name = child(sd, skill1, "TEXT_POP_SKILLNAME"), value = child(sd, skill1, "SkillValue");
-    pack_row(sc, {{name, sk.last_skill}, {value, std::to_string(sk.last_points)}}, cx, {kSkillGap});
+    const std::string pts_str = std::to_string(sk.last_points);
+    const int sk_bg = child(sd, skill1, "Background");
+    const int sk_smudge = child(sd, skill1, "Smudge_Tape");
+    const int sk_icon = child(sd, skill1, "ComboIcon");
+    if (combo) {
+      // Combo skill: brushed tape backing (0.70 / 0.50) and ComboIcon left of the skill name.
+      const float name_w = sd.measure(name, sk.last_skill);
+      const float val_w = sd.measure(value, pts_str);
+      const float text_w = name_w + kSkillGap + val_w;
+      const float icon_gap = 26.0f;
+      const float text_cx = cx + 0.5f * icon_gap;
+      pack_row(sc, {{name, sk.last_skill}, {value, pts_str}}, text_cx, {kSkillGap});
+      const float text_left = text_cx - 0.5f * text_w;
+      const float tape_left = text_left - 16.0f;
+      const float tape_w = std::max(80.0f, text_w + 32.0f);
+      for (auto [n, op] : {std::pair{sk_bg, 0.70f}, std::pair{sk_smudge, 0.50f}}) {
+        if (n < 0) continue;
+        sc.at(n).dx = tape_left - sd.rect(n)[0];
+        sc.at(n).visible_width = tape_w;
+        if (sk_played) sc.bindings().anim[n].opacity = op;
+        else sc.at(n).alpha = op;
+      }
+      if (sk_icon >= 0) {
+        sc.at(sk_icon).dx = (text_left - 24.0f) - sd.at(sk_icon)[0];
+        if (sk_played) sc.bindings().anim[sk_icon].opacity = 1.0f;
+        else sc.show(sk_icon);
+      }
+    } else {
+      for (int c : {sk_bg, sk_smudge, sk_icon}) sc.hide(c);
+      pack_row(sc, {{name, sk.last_skill}, {value, pts_str}}, cx, {kSkillGap});
+    }
     if (value >= 0) sc.at(value).tint = kSkillYellow;
   } else {
     sc.hide(skill_group);
@@ -808,30 +859,52 @@ bool draw_hud_skills(ui::List& l, const SkillChainHud& sk, float w, float h, flo
       sc.at(suffix).dx = sd.at(level)[0] - sd.at(suffix)[0] + 1.0f;
     }
     sc.hide(child_path(sd, pop, "ValueScale/Stars"));
-    sc.hide(child(sd, pop, "Bar"));
-    for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
-      if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
-    sc.hide(child(sd, pop, "Flash_SmokeRing2"));
+    // Keep Bar/BarShader (the dark ring groove) visible; hide only the three
+    // quarter-fill pieces (replaced by l.arc below) and rotated specular chips.
+    const int pop_bar = child(sd, pop, "Bar");
+    for (const char* part : {"BarBL", "BarTL", "BarTR", "Highlight", "Shadow"})
+      sc.hide(child(sd, pop_bar, part));
+    const int bg_group = child(sd, pop, "Backgrounds");
+    const int bg_1st = child(sd, bg_group, "Background1stPlace");
+    const int bg_def = child(sd, bg_group, "BackgroundDefault");
+    if (rank == 1) sc.hide(bg_def);
+    else sc.hide(bg_1st);
     const float fade = disc_banked
                            ? 1.0f - float(std::clamp((since_bank - kDiscFadeFrom) / (kDiscSeconds - kDiscFadeFrom),
                                                      0.0, 1.0))
                            : 1.0f;
-    // PopularityBar's SHOW (1.4 s) then HIDE after a bank; SHOWN for a rank
-    // change on its own.
+    // PopularityBar's LEVEL_UP / LEVEL_UP_FINAL on rank-up (1.4 s), SHOW (1.4 s)
+    // then HIDE after a bank, or SHOWN when holding after rank-up.
     static SceneTimeline pop_tl;
+    const bool leveling = rank_up && since_rank >= 0.0 && since_rank < kDiscShowSeconds;
     const bool showing = disc_banked && since_bank < kDiscShowSeconds;
-    const std::string_view pop_slide = !disc_banked ? "SHOWN" : showing ? "SHOW" : "HIDE";
-    const double pop_ms = !disc_banked ? 0.0 : showing ? since_bank * 1000.0 : (since_bank - kDiscShowSeconds) * 1000.0;
+    const std::string_view pop_slide =
+        leveling ? (rank == 1 ? "LEVEL_UP_FINAL" : "LEVEL_UP") : !disc_banked ? "SHOWN" : showing ? "SHOW" : "HIDE";
+    const double pop_ms = leveling      ? since_rank * 1000.0
+                          : !disc_banked ? 0.0
+                          : showing     ? since_bank * 1000.0
+                                        : (since_bank - kDiscShowSeconds) * 1000.0;
     float arc_alpha = fade;
-    if (play_slide(sc, pop_tl, pop, pop_slide, pop_ms, true)) {
+    const bool pop_played = play_slide(sc, pop_tl, pop, pop_slide, pop_ms, true);
+    if (pop_played) {
       // The fill rides with the disc's backgrounds (in from 0.59 s, out by
       // HIDE's 2.67 s).
-      if (auto it = sc.bindings().anim.find(child(sd, pop, "Backgrounds"));
-          it != sc.bindings().anim.end() && it->second.opacity)
+      if (auto it = sc.bindings().anim.find(bg_group); it != sc.bindings().anim.end() && it->second.opacity)
         arc_alpha = *it->second.opacity;
       raise_all(sc, pop);
+      if (rank == 1 && bg_1st >= 0) sc.bindings().anim[bg_1st].opacity = 1.0f;
+      if (!leveling) {
+        for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
+          if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
+        sc.hide(child(sd, pop, "Flash_SmokeRing2"));
+      }
     } else {
       sc.bindings().opacity = fade;
+      if (pop_bar >= 0) sc.bindings().anim[pop_bar].opacity = 1.0f;
+      if (rank == 1 && bg_1st >= 0) sc.bindings().anim[bg_1st].opacity = 1.0f;
+      for (int c : {child(sd, pop, "CircleFlash"), child(sd, pop, "Flash_SmokeRing")})
+        if (c >= 0) sc.at(c).alpha = anim.ring_flash_alpha;
+      sc.hide(child(sd, pop, "Flash_SmokeRing2"));
     }
     sc.draw(l, f, pop);
     sc.bindings().opacity = 1.0f;
@@ -890,17 +963,39 @@ bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, fl
   // The title line (a sponsor's "HORIZON PRESENTS"), the event's name with
   // its type icon, and the call to action under them: the group's stacker
   // packs the three (measured on 09_event_marker_prompt_orig.png).
+  auto fit_prompt_tape = [&](int tape, int txt_node, const std::string& label) {
+    if (tape < 0 || txt_node < 0) return;
+    const float right = sd.at(txt_node)[0] + sd.measure(txt_node, label) + kPromptTapePad;
+    for (int c : sd.children_of(tape)) {
+      const auto r = sd.rect(c);
+      if (sd.object_name(c) == "Dirt_Tile") {
+        const float want = std::max(0.0f, right - r[0]);
+        const float orig = std::max(1.0f, r[2] - r[0]);
+        if (want <= 1.0f) {
+          sc.hide(c);
+        } else if (want < orig) {
+          sc.at(c).stretch_x = want / orig;
+          sc.at(c).dx = 0.5f * (r[0] + right) - 0.5f * (r[0] + r[2]);
+        }
+        continue;
+      }
+      sc.at(c).visible_width = std::max(0.0f, right - r[0]);
+    }
+  };
   if (!wm.sponsor.empty()) {
+    const std::string sp = upper(wm.sponsor);
+    const int title_text = child(sd, title, "Text");
     show_all(sc, title);
-    sc.text(child(sd, title, "Text"), upper(wm.sponsor));
-    sc.hide(child(sd, title, "Tape"));
+    sc.text(title_text, sp);
+    fit_prompt_tape(child(sd, title, "Tape"), title_text, sp);
     sc.at(title).dx = kPromptTitleDx;
     sc.at(title).dy = kPromptTitleDy;
   } else {
     sc.hide(title);
   }
   const int name_text = child(sd, name_group, "Text");
-  sc.text(name_text, upper(wm.title));
+  const std::string ev_name = upper(wm.title);
+  sc.text(name_text, ev_name);
   sc.at(name_group).dx = kPromptNameDx;
   sc.at(name_group).dy = kPromptNameDy;
   sc.at(name_group).scale = kPromptLineScale;
@@ -911,13 +1006,7 @@ bool draw_hud_prompt(ui::List& l, const WorldMarkerHud& wm, float w, float h, fl
     if (const int icon = child(sd, icon_group, "DEFAULT"); icon >= 0 && !wm.icon.empty()) sc.at(icon).texture = wm.icon;
   }
   // The name's tape runs from the icon to past the name.
-  if (const int tape = child(sd, name_group, "Tape"); tape >= 0) {
-    for (int c : sd.children_of(tape)) {
-      if (sd.object_name(c) == "Dirt_Tile") continue;
-      const float right = sd.at(name_text)[0] + sd.measure(name_text, upper(wm.title)) + kPromptTapePad;
-      sc.at(c).visible_width = std::max(0.0f, right - sd.rect(c)[0]);
-    }
-  }
+  fit_prompt_tape(child(sd, name_group, "Tape"), name_text, ev_name);
   const int locked = child(sd, cta, "Locked"), def = child(sd, cta, "Default");
   const int on = wm.eligible ? def : locked;
   sc.hide(wm.eligible ? locked : def);

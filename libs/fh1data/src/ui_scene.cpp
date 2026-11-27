@@ -105,7 +105,13 @@ bool parse_ui_fbf(std::span<const uint8_t> data, UiScene& out, std::string* erro
         std::memcpy(&o.text_spacing[1], &w[5], 4);
         r.u8();
         if (out.version == 1008) o.text_width = r.f32();
-        if (out.version >= 1007 && r.u8()) r.skip(59);
+        if (out.version >= 1007 && r.u8()) {
+          o.text_has_shadow = r.u8() != 0;
+          for (auto& c : o.text_shadow_colour) c = r.f32();
+          o.text_shadow_offset[0] = r.f32();
+          o.text_shadow_offset[1] = r.f32();
+          r.skip(59 - 1 - 16 - 8);
+        }
         break;
       }
       case UiObjectKind::kCamera: r.skip(64); break;
@@ -313,6 +319,42 @@ std::string ui_texture_member(const std::string& path, bool& horizon) {
   return p + ".xds";
 }
 
+void apply_ui_bgf_defaults(UiScene& out) {
+  if (!out.has_bgf) return;
+  std::unordered_map<uint32_t, size_t> obj_by_id;
+  obj_by_id.reserve(out.objects.size());
+  for (size_t i = 0; i < out.objects.size(); ++i) obj_by_id.emplace(out.objects[i].id, i);
+  for (const auto& item : out.bgf.items) {
+    if (item.kind != 4 || item.value == 0) continue;
+    auto it = obj_by_id.find(item.value);
+    if (it == obj_by_id.end()) continue;
+    UiObject& o = out.objects[it->second];
+    if (o.kind != UiObjectKind::kText) continue;
+    bool any = false;
+    std::array<float, 4> col{1.0f, 1.0f, 1.0f, 1.0f};
+    for (const auto& [tag, raw] : item.properties) {
+      const uint32_t a = tag & 0x07FFFFFFu;
+      if (a == ui_attr::kTextColorR) {
+        col[0] = std::clamp(ui_bgf_number(tag, raw) / 255.0f, 0.0f, 1.0f);
+        any = true;
+      } else if (a == ui_attr::kTextColorG) {
+        col[1] = std::clamp(ui_bgf_number(tag, raw) / 255.0f, 0.0f, 1.0f);
+        any = true;
+      } else if (a == ui_attr::kTextColorB) {
+        col[2] = std::clamp(ui_bgf_number(tag, raw) / 255.0f, 0.0f, 1.0f);
+        any = true;
+      } else if (a == ui_attr::kTextColorA) {
+        col[3] = std::clamp(ui_bgf_number(tag, raw) / 255.0f, 0.0f, 1.0f);
+        any = true;
+      }
+    }
+    if (any) {
+      o.has_text_colour = true;
+      o.text_colour = col;
+    }
+  }
+}
+
 bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::string* error) {
   const std::string base = "Scenes/ui4/" + name;
   auto fbf = ui_zip.read(base + ".fbf");
@@ -324,6 +366,7 @@ bool load_ui_scene(Archive& ui_zip, const std::string& name, UiScene& out, std::
   if (!parse_ui_fbf(fbf.data, out, error) || !parse_ui_bsg(bsg.data, out, error)) return false;
   auto bgf = ui_zip.read(base + ".bgf");
   out.has_bgf = bgf.ok() && parse_ui_bgf(bgf.data, out.bgf, nullptr);
+  apply_ui_bgf_defaults(out);
   return true;
 }
 

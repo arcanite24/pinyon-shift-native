@@ -140,11 +140,26 @@ void draw(ui::List& l, const race::FirstTimeCareer& ftc, float w, float h, int c
   if (kOpeningCardsShown && ftc.show_opening_credits()) draw_opening_titles(l, ftc.opening_credits_time(), w, h);
   if (racing || !ftc.hud_visible()) return;
   if (!ftc.large_instruction_1().empty()) {
-    // The large two-line instruction as a stage starts.
+    // The large two-line instruction as a stage starts (dark tilted brushed
+    // tapes matching 947_HUD's ObjectiveTop/NoIcon).
     const std::string a = text_for("InGame", ftc.large_instruction_1());
     const std::string b = text_for("InGame", ftc.large_instruction_2());
-    l.text(0.5f * w, 0.30f * h, a, ui4::style(ui::Font::kE, 34.0f * s, ui4::kWhite, ui::Align::kCenter));
-    l.text(0.5f * w, 0.30f * h + 40.0f * s, b, ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kCenter));
+    const auto st_a = ui4::style(ui::Font::kE, 34.0f * s, ui4::kWhite, ui::Align::kCenter);
+    const auto st_b = ui4::style(ui::Font::kE, 54.0f * s, ui4::kWhite, ui::Align::kCenter);
+    const float cx = 0.5f * w;
+    const float ya = 0.30f * h;
+    const float yb = ya + 42.0f * s;
+    const ui4::TiltScope tilt(l, cx, ya + 34.0f * s, ui4::kTiltRad);
+    const float wa = ui::List::measure(a, st_a);
+    ui4::brush(l, cx - 0.5f * wa - 24.0f * s, ya - 5.0f * s, cx + 0.5f * wa + 24.0f * s, ya + 39.0f * s,
+               ui4::kBrushBlack, false);
+    l.text(cx, ya, a, st_a);
+    if (!b.empty()) {
+      const float wb = ui::List::measure(b, st_b);
+      ui4::brush(l, cx - 0.5f * wb - 32.0f * s, yb - 6.0f * s, cx + 0.5f * wb + 32.0f * s, yb + 60.0f * s,
+                 ui4::kBrushBlack, true);
+      l.text(cx, yb, b, st_b);
+    }
   }
   if (!ftc.hud_instruction().empty()) ui4::draw_info_tip(l, text_for("InGame", ftc.hud_instruction()), w, h);
   if (ftc.tickets_remaining() >= 0) {
@@ -202,6 +217,8 @@ void draw_hint(ui::List& l, race::TutorMessage m, float w, float h) {
   const float total = lw + gap + 2.0f * hw + gap + rw;
   const float y = 0.88f * h;
   float x = 0.5f * w - 0.5f * total;
+  ui4::pill(l, x - 20.0f * s, y - 6.0f * s, x + total + 20.0f * s, y + st.size + 8.0f * s, ui4::kBrushBlack,
+            ui4::PillKind::kHud01);
   l.text(x, y, left, st);
   x += lw + gap;
   ui4::button_glyph(l, x + hw, y + 0.5f * st.size * 0.8f, r, glyph);
