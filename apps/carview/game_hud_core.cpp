@@ -6,6 +6,7 @@
 #include "touch_controls.h"
 
 #include <cstdlib>
+#include <cstring>
 
 namespace carview {
 

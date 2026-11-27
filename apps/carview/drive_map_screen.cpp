@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
+#include <cstdio>
 
 #include "drive_session.h"
 #include "freeroam/fast_travel.h"

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 
 #include "ui_frag_spv.h"
 #include "ui_vert_spv.h"

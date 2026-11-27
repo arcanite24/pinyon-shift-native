@@ -10,6 +10,7 @@
 #include <iterator>
 #include <optional>
 #include <set>
+#include <cstring>
 
 #include "audio/xml.h"
 #include "fh1data/archive.h"

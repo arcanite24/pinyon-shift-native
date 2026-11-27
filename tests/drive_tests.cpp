@@ -11,6 +11,7 @@
 #include <iterator>
 #include <string>
 #include <vector>
+#include <limits>
 
 #include "cars/physics.h"
 #include "drive/from_bake.h"

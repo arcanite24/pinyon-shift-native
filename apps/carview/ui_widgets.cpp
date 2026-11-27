@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include <cstring>
 
 #include "events_page.h"
 #include "fh1data/stringtables.h"

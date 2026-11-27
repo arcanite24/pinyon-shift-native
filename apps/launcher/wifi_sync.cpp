@@ -30,6 +30,7 @@ inline void close_sock(sock_t s) { closesocket(s); }
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <cctype>
 using sock_t = int;
 constexpr sock_t kInvalidSock = -1;
 inline void close_sock(sock_t s) { close(s); }

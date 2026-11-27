@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <unordered_set>
+#include <cstdlib>
+#include <limits>
 
 namespace carview {
 

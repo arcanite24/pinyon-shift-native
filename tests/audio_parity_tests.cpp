@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <limits>
 
 #include "audio/audio_engine.h"
 #include "audio/bake.h"

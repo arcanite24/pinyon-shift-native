@@ -19,6 +19,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
