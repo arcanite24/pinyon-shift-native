@@ -1,12 +1,14 @@
 #version 450
 precision highp int;
-precision highp float;
+precision mediump float;
 // carview real-time sky shader (SPEC-SKY-AND-TOD §3):
 //   mode 0: atmosphere gradient dome + elliptical sun haze + sky dither
 //   mode 1: sun/moon billboard disc + far clouds (2 layers) + close lit clouds
 //           (2 layers) + sky horizon fog skirt, alpha-blended over sky + stars.
 //   mode 2: combined single-pass daytime sky (atmosphere + disc + clouds + fog)
 //           used when star_fade <= 0.005 to halve sky fullscreen passes & bandwidth.
+// Mixed-precision for Adreno/mobile: default mediump (FP16) for cloud/fog color blends,
+// with explicit highp (FP32) on camera rays, horizon exp/pow, disc projection, and UVs.
 // All view directions V are in game frame (+Y up, +X East, +Z North).
 
 layout(early_fragment_tests) in;
@@ -14,18 +16,18 @@ layout(constant_id = 0) const bool kLinearOut = false;
 
 layout(set = 0, binding = 0) uniform SkyUniforms {
   // Camera basis in game frame: V = normalize(cam_fwd + ndc.x * cam_right - ndc.y * cam_up)
-  vec4 cam_fwd;      // xyz forward, w mode (0 = atmo, 1 = disc+clouds+fog)
-  vec4 cam_right;    // xyz right * tan_half_fov_x, w time_days (tod_sec / 86400)
-  vec4 cam_up;       // xyz up * tan_half_fov_y, w real_time_sec
+  highp vec4 cam_fwd;      // xyz forward, w mode (0 = atmo, 1 = disc+clouds+fog)
+  highp vec4 cam_right;    // xyz right * tan_half_fov_x, w time_days (tod_sec / 86400)
+  highp vec4 cam_up;       // xyz up * tan_half_fov_y, w real_time_sec
 
-  vec4 sun_dir;      // xyz SunDir (game frame), w sky_gain
-  vec4 sun_obj_dir;  // xyz SunObjectDir (game frame), w sun_disc_radius_rad
-  vec4 haze_dir;     // xyz HazeObjectDir (game frame), w is_moon (0 or 1)
+  highp vec4 sun_dir;      // xyz SunDir (game frame), w sky_gain
+  highp vec4 sun_obj_dir;  // xyz SunObjectDir (game frame), w sun_disc_radius_rad
+  highp vec4 haze_dir;     // xyz HazeObjectDir (game frame), w is_moon (0 or 1)
 
-  vec4 atmo_top;     // rgb AtmosphereTopColour, w atmo_color_power
-  vec4 atmo_bottom;  // rgb AtmosphereBottomColour, w atmo_clamp_lo
-  vec4 atmo_haze;    // rgb AtmosphereHazeColour, w atmo_clamp_hi
-  vec4 atmo_haze_p;  // x power, y intensity, z elliptical_scale, w alpha
+  highp vec4 atmo_top;     // rgb AtmosphereTopColour, w atmo_color_power
+  highp vec4 atmo_bottom;  // rgb AtmosphereBottomColour, w atmo_clamp_lo
+  highp vec4 atmo_haze;    // rgb AtmosphereHazeColour, w atmo_clamp_hi
+  highp vec4 atmo_haze_p;  // x power, y intensity, z elliptical_scale, w alpha
 
   vec4 sun_obj_col;  // rgb SunObjectColour, w SunObjectAlpha
 
@@ -34,7 +36,7 @@ layout(set = 0, binding = 0) uniform SkyUniforms {
   vec4 far_params;       // x front_centre_a, y front_edge_a, z front_coverage, w back_coverage
   vec4 far_back_dense;   // rgb FarCloudBackDenseColour, w back_centre_a
   vec4 far_back_thin;    // rgb FarCloudBackThinColour, w back_edge_a
-  vec4 far_scroll;       // xy front scroll uv, zw back scroll uv
+  highp vec4 far_scroll; // xy front scroll uv, zw back scroll uv
 
   vec4 close_top_col;    // rgb CloseCloudTopColour, w top_power
   vec4 close_bot_col;    // rgb CloseCloudBottomColour, w bot_power
@@ -43,13 +45,13 @@ layout(set = 0, binding = 0) uniform SkyUniforms {
   vec4 close_thin_col;   // rgb CloseCloudThinColour, w thin_intensity
   vec4 close_intens;     // x back_int, y top_int, z bot_int, w alpha_curve
   vec4 close_masks;      // x top_mask_pow, y bot_mask_pow, z top_alpha, w bot_alpha
-  vec4 close_layers;     // x front_alpha, y back_alpha, z front_rev_off, w back_rev_off
+  highp vec4 close_layers; // x front_alpha, y back_alpha, z front_rev_off, w back_rev_off
   vec4 close_back_dense_col; // rgb CloseCloudDenseColourBack, w sky_saturation (1.0 main, cubeSkySaturation cubemap)
   vec4 close_back_thin_col;  // rgb CloseCloudThinColourBack, w CloseCloudBottomIntensityBack
   vec4 close_back_bot_col;   // rgb CloseCloudBottomColourBack, w CloseCloudBottomPowerBack
 
   vec4 fog_color;        // rgb FogColour, w sky_fog_start_norm
-  vec4 fog_scatter;      // rgb FogSunScatterColour, w FogSunScatterPower
+  highp vec4 fog_scatter;// rgb FogSunScatterColour, w FogSunScatterPower
   vec4 fog_sky;          // x sky_fog_end_norm, y sky_fog_density, z has_textures, w star_fade
 } sky;
 
@@ -90,22 +92,22 @@ void main() {
     // Smooth C1 horizon-to-zenith falloff anchored at V.y = 0 so dawn/dusk
     // AtmosphereBottomClampPower (~0.06) and small AtmosphereColourPower (~0.05)
     // never produce a hard flat horizon band with a 2-pixel cliff into dark sky.
-    float hi = max(sky.atmo_haze.w, 0.15);
-    float vy = max(V.y, 0.0);
-    float scale = clamp(sky.atmo_top.w * 1.45, 0.11, 0.45) * clamp(hi / 0.50, 0.5, 1.5);
-    float h_t = (1.0 - exp(-vy / scale)) / (1.0 - exp(-1.0 / scale));
-    vec3 base_rgb = mix(sky.atmo_bottom.rgb, sky.atmo_top.rgb, h_t);
+    highp float hi = max(sky.atmo_haze.w, 0.15);
+    highp float vy = max(V.y, 0.0);
+    highp float scale = clamp(sky.atmo_top.w * 1.45, 0.11, 0.45) * clamp(hi / 0.50, 0.5, 1.5);
+    highp float h_t = (1.0 - exp(-vy / scale)) / (1.0 - exp(-1.0 / scale));
+    vec3 base_rgb = mix(sky.atmo_bottom.rgb, sky.atmo_top.rgb, float(h_t));
 
-    vec3 S = normalize(sky.haze_dir.xyz);
-    vec3 horiz_s = vec3(S.x, 0.0, S.z);
-    float hl = length(horiz_s);
-    vec3 T = hl > 1e-4 ? vec3(-horiz_s.z / hl, 0.0, horiz_s.x / hl) : vec3(1.0, 0.0, 0.0);
-    float haze_dot = clamp(dot(V, S), 0.0, 1.0) *
-                     clamp(1.0 + (sky.atmo_haze_p.z - 1.0) * clamp(dot(V, T), 0.0, 1.0), 0.0, 1.0);
-    float haze_t = clamp(sky.atmo_haze_p.y * pow(max(haze_dot, 0.0), max(sky.atmo_haze_p.x, 0.5)), 0.0, 1.0) *
-                   sky.atmo_haze_p.w;
+    highp vec3 S = normalize(sky.haze_dir.xyz);
+    highp vec3 horiz_s = vec3(S.x, 0.0, S.z);
+    highp float hl = length(horiz_s);
+    highp vec3 T = hl > 1e-4 ? vec3(-horiz_s.z / hl, 0.0, horiz_s.x / hl) : vec3(1.0, 0.0, 0.0);
+    highp float haze_dot = clamp(dot(V, S), 0.0, 1.0) *
+                           clamp(1.0 + (sky.atmo_haze_p.z - 1.0) * clamp(dot(V, T), 0.0, 1.0), 0.0, 1.0);
+    highp float haze_t = clamp(sky.atmo_haze_p.y * pow(max(haze_dot, 0.0), max(sky.atmo_haze_p.x, 0.5)), 0.0, 1.0) *
+                         sky.atmo_haze_p.w;
 
-    vec3 lin_rgb = clamp(mix(base_rgb, sky.atmo_haze.rgb, haze_t), vec3(0.0), vec3(1.0)) * sky.sun_dir.w;
+    vec3 lin_rgb = clamp(mix(base_rgb, sky.atmo_haze.rgb, float(haze_t)), vec3(0.0), vec3(1.0)) * float(sky.sun_dir.w);
     // Below the geometric horizon, transition smoothly into the exact world fog colour so
     // distant terrain gaps or far-ring silhouettes never reveal a glowing cyan/white strip.
     if (V.y < 0.0) {
@@ -131,15 +133,15 @@ void main() {
   float acc_a = 0.0;
   {
     // 3. Sun / Moon billboard disc (SKY_AND_TOD.md §3.4).
-    vec3 D = normalize(sky.sun_obj_dir.xyz);
-    float rad = max(sky.sun_obj_dir.w, 0.005);
-    float cos_ang = dot(V, D);
+    highp vec3 D = normalize(sky.sun_obj_dir.xyz);
+    highp float rad = max(sky.sun_obj_dir.w, 0.005);
+    highp float cos_ang = dot(V, D);
     if (cos_ang > 0.0 && sky.sun_obj_col.w > 0.001) {
-      vec3 up_ref = abs(D.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-      vec3 right_d = normalize(cross(up_ref, D));
-      vec3 up_d = cross(D, right_d);
-      vec3 proj = V / max(cos_ang, 1e-4) - D;
-      vec2 duv = vec2(dot(proj, right_d), -dot(proj, up_d)) / (rad * 2.0) + vec2(0.5);
+      highp vec3 up_ref = abs(D.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      highp vec3 right_d = normalize(cross(up_ref, D));
+      highp vec3 up_d = cross(D, right_d);
+      highp vec3 proj = V / max(cos_ang, 1e-4) - D;
+      highp vec2 duv = vec2(dot(proj, right_d), -dot(proj, up_d)) / (rad * 2.0) + vec2(0.5);
       if (duv.x >= 0.0 && duv.x <= 1.0 && duv.y >= 0.0 && duv.y <= 1.0) {
         vec4 tex = texture(tex_disc, duv);
         // Sun/Moon textures are authored in sRGB; decode to linear radiance.
@@ -251,8 +253,8 @@ void main() {
     float ft = clamp((V.y - f_start) / (f_end - f_start), 0.0, 1.0);
     float below_h = 1.0 - smoothstep(-0.008, 0.015, V.y);
     float fog_a = clamp(max((1.0 - ft * ft * (3.0 - 2.0 * ft)) * sky.fog_sky.y, below_h), 0.0, 1.0);
-    float scatter = pow(clamp(dot(V, normalize(sky.sun_dir.xyz)), 0.0, 1.0), max(sky.fog_scatter.w, 1.0));
-    vec3 fog_rgb = mix(sky.fog_color.rgb, sky.fog_scatter.rgb, scatter);
+    highp float scatter = pow(clamp(dot(V, normalize(sky.sun_dir.xyz)), 0.0, 1.0), max(sky.fog_scatter.w, 1.0));
+    vec3 fog_rgb = mix(sky.fog_color.rgb, sky.fog_scatter.rgb, float(scatter));
     if (fog_a > 0.001) {
       acc_premul = fog_rgb * fog_a + acc_premul * (1.0 - fog_a);
       acc_a = fog_a + acc_a * (1.0 - fog_a);
