@@ -4,8 +4,10 @@
 #include <jni.h>
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <unistd.h>
@@ -82,6 +84,14 @@ class JniProgressDispatcher {
   void progress(int stage, int total_stages, float fraction, const std::string& label,
                 const std::string& detail) const {
     if (!vm_ || !listener_ || !on_progress_) return;
+    {
+      std::lock_guard<std::mutex> lk(progress_mu_);
+      const auto now = std::chrono::steady_clock::now();
+      const bool edge = (fraction <= 0.0f || fraction >= 1.0f || stage != last_stage_);
+      if (!edge && (now - last_progress_tp_) < std::chrono::milliseconds(80)) return;
+      last_progress_tp_ = now;
+      last_stage_ = stage;
+    }
     JNIEnv* env = nullptr;
     bool attached = false;
     if (!attach(env, attached) || !env) return;
@@ -125,6 +135,9 @@ class JniProgressDispatcher {
   jobject listener_ = nullptr;
   jmethodID on_progress_ = nullptr;
   jmethodID on_log_ = nullptr;
+  mutable std::mutex progress_mu_;
+  mutable std::chrono::steady_clock::time_point last_progress_tp_{};
+  mutable int last_stage_ = -1;
 };
 
 struct TempDirGuard {

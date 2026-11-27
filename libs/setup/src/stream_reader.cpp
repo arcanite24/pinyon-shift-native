@@ -22,7 +22,14 @@ namespace {
 
 class FilePathReader final : public StreamReader {
  public:
-  FilePathReader(std::FILE* fp, uint64_t sz) : fp_(fp), size_(sz) {}
+  FilePathReader(std::FILE* fp, uint64_t sz) : fp_(fp), size_(sz) {
+#if defined(__linux__)
+    if (fp_) {
+      const int fd = ::fileno(fp_);
+      if (fd >= 0) (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    }
+#endif
+  }
   ~FilePathReader() override {
     if (fp_) std::fclose(fp_);
   }
@@ -60,7 +67,11 @@ class FilePathReader final : public StreamReader {
 
 class FdReader final : public StreamReader {
  public:
-  FdReader(int fd, bool owned, uint64_t sz) : fd_(fd), owned_(owned), size_(sz) {}
+  FdReader(int fd, bool owned, uint64_t sz) : fd_(fd), owned_(owned), size_(sz) {
+#if defined(__linux__)
+    if (fd_ >= 0) (void)::posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
+  }
   ~FdReader() override {
     if (owned_ && fd_ >= 0) {
 #ifdef _WIN32

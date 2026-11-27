@@ -469,6 +469,71 @@ void test_xiso_all_offsets_and_extraction(const fs::path& tmp) {
   setup::xiso::ExtractReport bad_rep;
   CHECK(!setup::xiso::extract_iso(*bad_reader, tmp / "bad_out", opts, nullptr, nullptr, bad_rep));
   CHECK(!bad_rep.ok);
+
+  // Verify pipelined multi-threaded small-file writer pool + async streaming large-file writer
+  // using a 200 KiB file (> 64 KiB chunk size) alongside small files in non-alphabetical sector order.
+  {
+    using setup::xiso::kSectorSize;
+    std::vector<uint8_t> big_payload(200u * 1024u + 37u);
+    for (size_t i = 0; i < big_payload.size(); ++i) {
+      big_payload[i] = static_cast<uint8_t>((i * 73u + 19u) & 0xFFu);
+    }
+    const std::string small_a = "SMALL-ALPHA-PAYLOAD-1234";
+    const std::string small_z = "SMALL-ZETA-PAYLOAD-56789";
+
+    const uint32_t big_sec = 40;
+    const uint32_t big_secs = static_cast<uint32_t>((big_payload.size() + kSectorSize - 1) / kSectorSize);
+    const uint32_t a_sec = big_sec + big_secs + 1;
+    const uint32_t z_sec = 36;  // intentionally earlier sector than big_sec & a_sec
+
+    const auto media_dir = build_gdfx_dir_table({
+        {"big.bin", big_sec, static_cast<uint32_t>(big_payload.size()), false, 1, 2},
+        {"alpha.txt", a_sec, static_cast<uint32_t>(small_a.size()), false, -1, -1},
+        {"zeta.txt", z_sec, static_cast<uint32_t>(small_z.size()), false, -1, -1},
+    });
+    const auto root_dir = build_gdfx_dir_table({
+        {"media", 34, static_cast<uint32_t>(media_dir.size()), true, -1, -1},
+    });
+
+    std::vector<uint8_t> img(static_cast<size_t>(a_sec + 4) * kSectorSize, 0);
+    auto put = [&](uint32_t sec, const void* src, size_t len) {
+      std::memcpy(img.data() + static_cast<size_t>(sec) * kSectorSize, src, len);
+    };
+    std::vector<uint8_t> vd(kSectorSize, 0);
+    std::memcpy(vd.data(), setup::xiso::kGdfxMagic, 20);
+    put_le32(vd, 0x14, 33u);
+    put_le32(vd, 0x18, static_cast<uint32_t>(root_dir.size()));
+    std::memcpy(vd.data() + kSectorSize - 20, setup::xiso::kGdfxMagic, 20);
+    put(32, vd.data(), vd.size());
+    put(33, root_dir.data(), root_dir.size());
+    put(34, media_dir.data(), media_dir.size());
+    put(z_sec, small_z.data(), small_z.size());
+    put(big_sec, big_payload.data(), big_payload.size());
+    put(a_sec, small_a.data(), small_a.size());
+
+    auto mem_reader = setup::StreamReader::from_memory(img);
+    setup::xiso::ExtractOptions popts;
+    popts.chunk_bytes = 64u * 1024u;
+    popts.writer_threads = 3;
+    setup::xiso::ExtractReport prep;
+    const fs::path pout = tmp / "pipelined_out";
+    CHECK(setup::xiso::extract_iso(*mem_reader, pout, popts, nullptr, nullptr, prep));
+    CHECK(prep.ok);
+    CHECK(prep.files_extracted == 3);
+    CHECK(prep.bytes_written == big_payload.size() + small_a.size() + small_z.size());
+    CHECK(read_text(pout / "media" / "alpha.txt") == small_a);
+    CHECK(read_text(pout / "media" / "zeta.txt") == small_z);
+    const std::string got_big = read_text(pout / "media" / "big.bin");
+    CHECK(got_big.size() == big_payload.size());
+    CHECK(std::memcmp(got_big.data(), big_payload.data(), big_payload.size()) == 0);
+
+    // Second pass with overwrite_existing = false must resume/skip all 3 files.
+    setup::xiso::ExtractReport rrep;
+    CHECK(setup::xiso::extract_iso(*mem_reader, pout, popts, nullptr, nullptr, rrep));
+    CHECK(rrep.ok);
+    CHECK(rrep.files_extracted == 0);
+    CHECK(rrep.files_skipped == 3);
+  }
 }
 
 void test_stfs_pirs_live_and_con(const fs::path& tmp) {
@@ -764,7 +829,7 @@ void test_baker_state_machine_and_inspect(const fs::path& tmp) {
 
   // Existing pre-baked Android install (gamedb.slt + colorado/bin.zip + colorado.index + play.txt
   // + bake/cars/*.shiftbake, without raw media/cars/*.zip) must report ready_to_play = true.
-  const fs::path baked_play = root / "baked_only_play";
+  const fs::path baked_play = tmp / "baked_only_play";
   const fs::path baked_game = baked_play / "game";
   write_bytes(baked_game / "media" / "db" / "gamedb.slt", {'S', 'Q', 'L'});
   write_bytes(baked_game / "media" / "tracks" / "colorado" / "bin.zip", {'P', 'K', 3, 4});

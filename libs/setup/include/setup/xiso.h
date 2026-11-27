@@ -39,7 +39,8 @@ struct ExtractOptions {
   bool media_only = true;          // extract media/ tree (plus root fallback if no media/ dir exists)
   bool skip_xex = true;            // skip Xbox 360 executables (.xex / .xexp)
   bool overwrite_existing = false; // false = resume by skipping existing files of identical size
-  size_t chunk_bytes = 1024 * 1024;
+  size_t chunk_bytes = 4 * 1024 * 1024;
+  size_t writer_threads = 0;       // 0 = auto (2..4 parallel writers for small files + async large-file writer)
 };
 
 struct Progress {
