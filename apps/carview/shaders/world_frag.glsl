@@ -1155,7 +1155,8 @@ void main() {
   // preserving distinct Layer B/C roughness/specular contrast on H_ROAD_DIFF2/3 and H_BLND2/3.
   float surf_gloss = 0.0;
   float spec_mask = 1.0;
-  bool has_real_spec = (flags & kFlagSpecMap) != 0u && !spec_slot_is_norm_b && (flags & kFlagBillboard) == 0u;
+  bool has_real_spec = (flags & kFlagSpecMap) != 0u && !spec_slot_is_norm_b && (flags & kFlagBillboard) == 0u &&
+                       !(kMobileFast && (flags & (kFlagVertexBlend | kFlagSplat)) != 0u && (flags & kFlagNormalMap) != 0u);
   if (has_real_spec) {
     vec4 sp_sample;
     if (use_hex) {
@@ -1288,10 +1289,10 @@ void main() {
   }
 
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
-  // Light_Map is baked night light (lamp pools, lit facades) ADDED to the
-  // radiance, Light_Map.rgb * max(SwitchOnLights, c3.w), not a multiply on
-  // the surface albedo (the decoded terrain shaders add it before fog).
-  // EmissiveMap (slot 3) is self-emission (lit windows / neon signs).
+  // Light_Map holds baked incident night irradiance (floodlights, lamp pools, lit facades)
+  // that modulates the surface albedo t.rgb (matching H_INT_*'s `t.rgb * (LM + amb)` and
+  // preserving dark asphalt / grass texture inside bright 1.0 festival floodlight pools).
+  // EmissiveMap (slot 3) is self-emission (lit windows / neon signs), added directly.
   // Dual _EMIS + _LM building props set BOTH flags, reading Light_Map from light_map and EmissiveMap from layer_c.
   // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.
   float emissive_force = clamp((draw.params.z - floor(draw.params.z + 0.01)) / 0.45, 0.0, 1.0);
@@ -1301,7 +1302,7 @@ void main() {
     float lm_gain = max(frame.sky_color.w, emissive_force);
     if (lm_gain > 0.002) {
       vec3 lm = texture(light_map, v_uv2).rgb;
-      colour += lm * lm_gain * lm_scale * draw.up.w;
+      colour += t.rgb * lm * lm_gain * lm_scale * draw.up.w;
     }
   }
   if (has_em) {
