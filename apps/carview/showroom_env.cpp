@@ -31,6 +31,7 @@ struct MirrorExtraPipes {
   VkPipeline particle_alpha = VK_NULL_HANDLE;
   VkPipeline particle_add = VK_NULL_HANDLE;
   VkPipeline world_water = VK_NULL_HANDLE;
+  VkPipeline world_dither = VK_NULL_HANDLE;
 };
 std::mutex g_mirror_extra_mutex;
 std::unordered_map<const Showroom*, MirrorExtraPipes> g_mirror_extra_pipes;
@@ -267,6 +268,21 @@ MirrorExtraPipes create_mirror_extra_pipes(VkDevice device, VkPipelineCache cach
       gp.pDynamicState = &wdyn;
       gp.layout = world_layout;
       vkCreateGraphicsPipelines(device, cache, 1, &gp, nullptr, &out.world_water);
+
+      // 4. 1-sample HDR world dither pipeline (world_frag + back-face culling) so LOD-fading
+      //    world draws in cubemaps and mirrors do not double-draw overlapping LOD00+LOD02.
+      VkPipelineRasterizationStateCreateInfo drs = wrs;
+      drs.cullMode = VK_CULL_MODE_BACK_BIT;
+      VkPipelineColorBlendAttachmentState dba{};
+      dba.blendEnable = VK_FALSE;
+      dba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+      VkPipelineColorBlendStateCreateInfo dcb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+      dcb.attachmentCount = 1;
+      dcb.pAttachments = &dba;
+      gp.pRasterizationState = &drs;
+      gp.pColorBlendState = &dcb;
+      vkCreateGraphicsPipelines(device, cache, 1, &gp, nullptr, &out.world_dither);
     }
     if (wv) vkDestroyShaderModule(device, wv, nullptr);
     if (wf) vkDestroyShaderModule(device, wf, nullptr);
@@ -826,6 +842,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
                             if (doomed.particle_alpha) vkDestroyPipeline(dev, doomed.particle_alpha, nullptr);
                             if (doomed.particle_add) vkDestroyPipeline(dev, doomed.particle_add, nullptr);
                             if (doomed.world_water) vkDestroyPipeline(dev, doomed.world_water, nullptr);
+                            if (doomed.world_dither) vkDestroyPipeline(dev, doomed.world_dither, nullptr);
                           }});
     }
   }
@@ -898,7 +915,11 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         water_draws.push_back(&d);
         continue;
       }
-      VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_) ? env_world_coverage_ : env_world_opaque_;
+      const bool needs_dither = (fl & (128u | 256u | 512u)) != 0u;
+      VkPipeline want_pipe = (d.blend == 1 && env_world_coverage_)
+                                 ? env_world_coverage_
+                                 : ((needs_dither && extra_pipes.world_dither) ? extra_pipes.world_dither
+                                                                               : env_world_opaque_);
       if (want_pipe != bound_pipe)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_pipe = want_pipe);
 
@@ -1173,7 +1194,7 @@ void Showroom::record_offscreen_view(VkCommandBuffer cmd, VkImageView color_view
         clip_m[1][c] = wv - x;
         clip_m[2][c] = wv + y;
         clip_m[3][c] = wv - y;
-        clip_m[4][c] = z;  // standard-Z near plane (mirror atlas uses standard Z [0..1])
+        clip_m[4][c] = r_.reverse_z() ? (wv - z) : z;  // near plane: z <= w (reverse-Z) or z >= 0 (standard-Z)
       }
       struct MirrorCand {
         float d2;

@@ -147,10 +147,9 @@ void Showroom::place_shadow() {
     shadow_update_far_ = ((world_frame_ & 1ull) == 0ull);
   }
 #else
-  // Desktop keeps Near and Mid refreshed every frame for crisp nearby shadows while
-  // amortizing the 200m+ Far cascade every 2nd frame (~30% less shadow CPU/GPU work).
+  // Desktop refreshes Near, Mid, and Far cascades every frame for zero shadow lag/popping.
   shadow_update_mid_ = true;
-  shadow_update_far_ = atlas_reset || ((world_frame_ & 1ull) == 0ull);
+  shadow_update_far_ = true;
 #endif
   if (three_cascades) {
     if (shadow_update_mid_) {
@@ -186,7 +185,7 @@ void Showroom::place_shadow() {
   float shadow_rgb_bits = 0.0f;
   std::memcpy(&shadow_rgb_bits, &packed_shadow_rgb, sizeof(shadow_rgb_bits));
   const float shadow_intensity =
-      tod_active_ ? std::clamp(0.5f * (tod_state_.shadow_intensity + 1.0f), 0.12f, 1.0f) : 1.0f;
+      tod_active_ ? std::clamp(tod_state_.shadow_intensity, 0.0f, 1.0f) : 1.0f;
   frame_.shadow[0] = 1.0f;
   frame_.shadow[1] = 1.0f / float(r_.shadow_size_);
   frame_.shadow[2] = shadow_intensity;
@@ -682,7 +681,11 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
             for (const auto& d : shadow_draws) {
               if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;
               const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+#ifdef __ANDROID__
               if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
+#else
+              if (kl == 5u || kl == 8u) continue;  // keep kInterior casting shadows on desktop
+#endif
               ShowroomPush push = d.push;
               push.params[1] = float(uint32_t(push.params[1]) | 8192u);
               vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
@@ -718,7 +721,11 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     }
     if (shadow_update_far_) {
       clear_cascade_tile(size * 2u);
+#ifdef __ANDROID__
       draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, false);
+#else
+      draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, !low_memory_mode_);
+#endif
     }
   } else if (shadow_set_far_ && atlas_w >= size * 2u) {
     if (shadow_update_far_) {
@@ -750,7 +757,11 @@ void Showroom::record_shadow_car(VkCommandBuffer cmd, const float* m, VkDescript
   for (const auto& d : draws_) {
     if (d.glass || d.detached || d.is_blur_rim || d.cockpit_role >= 0) continue;  // skip glass, detached, blur_rim, cockpit-only parts
     const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+#ifdef __ANDROID__
     if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
+#else
+    if (kl == 5u || kl == 8u) continue;  // keep kInterior casting shadows so cabins/convertibles don't leak sun
+#endif
     ShowroomPush push = d.push;
     if (m) multiply(m, d.push.model, push.model);
     vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

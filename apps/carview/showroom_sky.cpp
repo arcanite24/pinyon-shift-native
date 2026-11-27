@@ -26,8 +26,9 @@ void Showroom::apply_tod_to_frame() {
     return;
   }
   const auto& t = tod_state_;
-  // Map ShadowIntensity [-1..+1] to shadow weight [0.15..1.0] (softening shadows under moonlight).
-  const float shadow_w = std::clamp(0.5f * (t.shadow_intensity + 1.0f), 0.12f, 1.0f);
+  // Honor TimeOfDay ShadowIntensity directly: drops to 0.0 at night (ShadowIntensity <= 0),
+  // suppressing unauthentic moonlight shadows and activating world/car night shadow early-out.
+  const float shadow_w = std::clamp(t.shadow_intensity, 0.0f, 1.0f);
   frame_.sun_color[0] = t.sun_color[0];
   frame_.sun_color[1] = t.sun_color[1];
   frame_.sun_color[2] = t.sun_color[2];
@@ -63,8 +64,8 @@ void Showroom::apply_tod_to_frame() {
   frame_.fog_scatter[2] = t.fog_color[2] + (t.fog_sun_scatter_color[2] - t.fog_color[2]) * sc_dist_world;
   frame_.fog_scatter[3] = t.fog_sun_scatter_power;
 
-  // Convert TimeOfDayA FogDensity (~0.03 day .. 0.08 night) to exp2 distance rate.
-  frame_.fog_params[0] = std::max(t.fog_density, 0.002f) * 0.015f;
+  // Convert TimeOfDayA FogDensity (~0.03 day .. 0.08 night, 0.0 in hub rooms) to exp2 distance rate.
+  frame_.fog_params[0] = std::max(t.fog_density, 0.0f) * 0.015f;
   frame_.fog_params[1] = t.fog_height_fade_start;
   frame_.fog_params[2] = t.fog_height_fade_end;
   frame_.fog_params[3] = t.fog_height_fade_amount;

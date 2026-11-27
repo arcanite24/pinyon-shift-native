@@ -869,6 +869,10 @@ void DriveSession::place_world() {
           // then the festival screen): in a race it runs on the race clock so
           // the count meets the start signal; elsewhere it stays past the
           // count. It moves on monotonically within either.
+          // Clamp SunObjectSize to TrackSettings.xml SunSize [min, max] (SKY_AND_TOD.md §3.4).
+          if (cfg.sun_size_max >= cfg.sun_size_min && cfg.sun_size_max > 0.0f) {
+            tod.sun_object_size = std::clamp(tod.sun_object_size, cfg.sun_size_min, cfg.sun_size_max);
+          }
           const double world_clock = app.race ? kGantryStart + app.race->session().clock()
                                               : vehicle.time() + kGantryIdle;
           host.showroom.set_tod(tod, app.tod_clock.moon_phase(), float(world_clock), float(vpos.y));
@@ -963,9 +967,11 @@ void DriveSession::place_world() {
             }
             ps.near_plane = active_near;
             ps.god_rays = !app.low_preset && (!app.bench || app.bench_full_fx);
-            ps.lens_flare = !app.low_preset && (!app.bench || app.bench_full_fx);
+            // FH1 does not render synthetic anamorphic lens flare or procedural lens dirt
+            // (VFX_AND_PARTICLES.md §7.5; world.toml). Keep off by default.
+            ps.lens_flare = false;
             ps.god_ray_strength = lr_int * (1.0f - tunnel_t);
-            ps.lens_flare_strength = 0.36f * (1.0f - tunnel_t);
+            ps.lens_flare_strength = 0.0f;
             ps.time_sec = float(vehicle.time());
             ps.lut_enabled = true;
             if (app.exposure_given > 0) {
@@ -999,6 +1005,24 @@ void DriveSession::place_world() {
               ps = photo_mode.effects().apply_to_post(ps);
             }
             host.renderer.set_post_settings(ps);
+            if (!host.user_lut_active) {
+              static carview::HubRoom s_uploaded_room_lut = carview::HubRoom::kNone;
+              if (room_post && ps.lut_enabled) {
+                if (s_uploaded_room_lut != room_post->room) {
+                  const char* track = carview::hub_room_track(room_post->room);
+                  world::ColorLut16 room_lut;
+                  if (track &&
+                      room_lut.load_dds_file(app.game_root_of() / "media" / "tracks" / track / "ColorGradingLookup.dds",
+                                             nullptr)) {
+                    host.renderer.set_post_lut(room_lut.rgba);
+                    s_uploaded_room_lut = room_post->room;
+                    have_post_lut = false;
+                  }
+                }
+              } else {
+                s_uploaded_room_lut = carview::HubRoom::kNone;
+              }
+            }
             if (!host.user_lut_active && !room_post) {
               static const DriveWorldHost* s_lut_host = nullptr;
               static world::ColorLutBlender s_lut_blender;

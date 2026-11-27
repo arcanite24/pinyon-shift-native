@@ -475,7 +475,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
     const float dy = in.model[13] - frame_.eye[1];
     const float dz = in.model[14] - frame_.eye[2];
     const float d2 = dx * dx + dy * dy + dz * dz;
-    if (d2 < 180.0f * 180.0f) cands.push_back({d2, &in});
+    if (d2 < 240.0f * 240.0f) cands.push_back({d2, &in});
   }
   std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.dist2 < b.dist2; });
   for (const auto& c : cands) {
@@ -724,7 +724,7 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
         const float ex = d.box_max[0] - d.box_min[0];
         const float ey = d.box_max[1] - d.box_min[1];
         const float ez = d.box_max[2] - d.box_min[2];
-        if (ex > 320.0f || ez > 320.0f || ey > 35.0f || ey < 0.25f) continue;
+        if (ex > 320.0f || ez > 320.0f || ey > 65.0f || ey < 0.25f) continue;
         const bool compact = (ex <= 24.0f && ez <= 24.0f);
         prop_boxes.push_back({{d.box_min[0], d.box_min[1], d.box_min[2]},
                               {d.box_max[0], d.box_max[1], d.box_max[2]},
@@ -762,16 +762,17 @@ void Showroom::record_lights_before(VkCommandBuffer cmd) {
           }
         }
 
-        // Validate height above terrain so sky-pointing searchlight beam tips or floating boxes are dropped.
+        // Validate height above terrain so sky-pointing searchlight beam tips or floating boxes are dropped,
+        // while keeping tall Festival floodlight towers (up to ~48 m above terrain).
         if (active_ground) {
           drive::Hit h;
           const double gx = world_origin_[0] + double(pos[0]);
           const double gz = world_origin_[1] + double(pos[2]);
           const double start_y = double(pos[1]) + 2.0;
-          if (active_ground->raycast({gx, start_y, gz}, {0.0, -1.0, 0.0}, 45.0, h)) {
+          if (active_ground->raycast({gx, start_y, gz}, {0.0, -1.0, 0.0}, 75.0, h)) {
             const float gy = float(start_y - h.distance);
             const float h_above = pos[1] - gy;
-            if (h_above > 17.5f || h_above < 1.0f) continue;
+            if (h_above > 48.0f || h_above < 1.0f) continue;
           }
         }
 

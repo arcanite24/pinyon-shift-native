@@ -65,8 +65,8 @@ layout(push_constant) uniform Post {
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
-mediump vec3 hable(mediump vec3 x) {
-  mediump float A = p.abc.x, B = p.abc.y, C = p.abc.z, D = p.def.x, E = p.def.y, F = p.def.z;
+vec3 hable(vec3 x) {
+  float A = p.abc.x, B = p.abc.y, C = p.abc.z, D = p.def.x, E = p.def.y, F = p.def.z;
   return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
 }
 
@@ -146,11 +146,11 @@ mediump vec3 gtao_multi_bounce(mediump float visibility, mediump vec3 albedo_app
 float eval_auto_exposure() {
   uint flags = uint(p.bloom_p.z + 0.5);
   if ((flags & 4u) == 0u) return p.def.w;
-  // Adapted luminance mapped into TrackSettings.xml key domain (0..65) so sunlit Colorado
-  // asphalt and cyan-blue sky preserve highlight headroom without crushing shadowed hillsides.
+  // Adapted linear HDR luminance scaled to FH1's 10-bit resolved HDR/4 key domain (1023/4 = 255.75),
+  // matching TrackSettings.xml ToneMapAdaptiveExposure keys (0, 4, 13, 65) across night and day.
   float raw_l = texture(lum_adapt, vec2(0.5)).r;
-  if (isnan(raw_l) || isinf(raw_l)) raw_l = 0.35;
-  float L = max(raw_l, 0.06) * 110.0;
+  if (isnan(raw_l) || isinf(raw_l)) raw_l = 0.25;
+  float L = max(raw_l, 0.0) * 255.75;
   float ev_curve = p.exp_ev.x;
   if (L <= p.exp_keys.x) {
     ev_curve = p.exp_ev.x;
@@ -166,10 +166,8 @@ float eval_auto_exposure() {
   } else {
     ev_curve = p.exp_ev.w;
   }
-  // Exact SKY_AND_TOD §5.2 EV formula with daylight-to-night HDR calibration offset
-  // matching FH1's Colorado sky & asphalt luminance without crushing night headlights.
-  float calib_ev = mix(-0.42, -0.74, smoothstep(1.5, 14.0, L));
-  float ev_total = clamp(ev_curve + p.def.w + calib_ev, -2.0, 6.0);
+  // Exact SKY_AND_TOD §5.2 EV formula: exp2(clamp(ev_curve + filmic_exposure + bias, -2.0, 6.0)).
+  float ev_total = clamp(ev_curve + p.def.w, -2.0, 6.0);
   return exp2(ev_total);
 }
 
@@ -274,15 +272,15 @@ void main() {
       }
     }
     float l_frame = sum_l / max(sum_w, 1e-4);
-    if (isnan(l_frame) || isinf(l_frame)) l_frame = 0.35;
-    l_frame = clamp(l_frame, 0.06, 64.0);
+    if (isnan(l_frame) || isinf(l_frame)) l_frame = 0.25;
+    l_frame = clamp(l_frame, 1e-4, 64.0);
     float l_prev = texture(aux, vec2(0.5)).r;
-    if (isnan(l_prev) || isinf(l_prev) || l_prev < 0.05) l_prev = l_frame;
+    if (isnan(l_prev) || isinf(l_prev) || l_prev <= 0.0) l_prev = l_frame;
     float alpha = clamp(p.mode.w, 0.0, 1.0);
     // Hard scene-cut guard (e.g. dark FMV/fade -> sunlit Colorado career start):
-    // snap upward immediately on >3x brightness jumps so auto-exposure never flashes white.
-    if (l_frame > l_prev * 3.0) alpha = 1.0;
-    float l_adapt = clamp(mix(l_prev, l_frame, alpha), 0.06, 64.0);
+    // snap upward immediately on >3x daylight brightness jumps so auto-exposure never flashes white.
+    if (l_frame > 0.05 && l_frame > l_prev * 3.0) alpha = 1.0;
+    float l_adapt = clamp(mix(l_prev, l_frame, alpha), 1e-4, 64.0);
     out_color = vec4(l_adapt, l_frame, 0.0, 1.0);
     return;
   }

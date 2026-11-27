@@ -720,7 +720,7 @@ bool Showroom::create_pipelines(std::string& error) {
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
   if (!guest_)
-    queue_build(frag_opaque, r_.bloom_format(), VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
+    queue_build(frag, r_.bloom_format(), VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
   queue_build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
 
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).

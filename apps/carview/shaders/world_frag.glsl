@@ -271,12 +271,8 @@ mediump vec3 apply_haze(mediump vec3 colour, vec3 position, mediump vec3 up, med
   float d = length(to);
   mediump vec3 view_dir = vec3(to / max(d, 1e-3));
   if (frame.sun_color.w >= 0.0) {
-    // Dynamic TOD atmospheric fog (SPEC-SKY-AND-TOD §4): exponential valley distance fog +
-    // high-altitude Rayleigh/Mie aerial perspective + golden-hour sun in-scattering so distant
-    // Colorado peaks wash warmly into the horizon instead of sitting as dark silhouettes.
-    mediump float sun_elev = dot(sun, up);
-    mediump float day_vis = smoothstep(-0.06, 0.14, sun_elev) * (1.0 - clamp(frame.sky_color.w, 0.0, 1.0));
-    mediump float golden = (1.0 - smoothstep(0.06, 0.52, max(sun_elev, 0.0))) * day_vis;
+    // Dynamic TOD atmospheric fog (SKY_AND_TOD.md §4): exponential distance fog past
+    // FogStartDistance, smoothstep altitude attenuation, and distance-ramped Mie sun scatter.
     float fog_start = frame.fog_color.w;
     float fog_dens = max(frame.fog_params.x, 0.0);
     mediump float t_dist = exp2(-max(d - fog_start, 0.0) * fog_dens);
@@ -285,21 +281,13 @@ mediump vec3 apply_haze(mediump vec3 colour, vec3 position, mediump vec3 up, med
     float h_span = max(frame.fog_params.z - frame.fog_params.y, 1.0);
     mediump float h_u = clamp((world_y - frame.fog_params.y) / h_span, 0.0, 1.0);
     mediump float h_smooth = h_u * h_u * (3.0 - 2.0 * h_u);
-    // Raise the maximum fog cap smoothly from 0.92 toward 1.0 across the far-ring boundary so
-    // distant UberLOD/MIDDIST mountain silhouettes merge cleanly into the sky horizon fog skirt.
-    mediump float max_fog = mix(0.92, 1.0, smoothstep(3200.0, 7500.0, d));
-    mediump float valley_fog = fog_dist * (1.0 - h_smooth * frame.fog_params.w * 0.65);
-    mediump float aerial_dist = (1.0 - exp(-max(d - 160.0, 0.0) * (0.00028 + 0.00024 * golden))) * day_vis * 0.72;
-    mediump float fog_amt = clamp(max(valley_fog, aerial_dist), 0.0, max_fog);
+    mediump float fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, 1.0);
+    // Smoothly dissolve far-ring silhouettes into the sky horizon fog skirt near the draw boundary.
     mediump float far_edge = smoothstep(6500.0, 11500.0, d);
     fog_amt = max(fog_amt, far_edge);
-    mediump float sc_dist = smoothstep(100.0, 2200.0, d);
-    mediump float cos_sun = clamp(dot(view_dir, sun), 0.0, 1.0);
-    mediump float sc_ang = pow(cos_sun, max(frame.fog_scatter.w, 1.0));
+    mediump float sc_dist = clamp(d / 6000.0, 0.0, 1.0);
+    mediump float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
     mediump vec3 fog_col = mix(frame.fog_color.rgb, frame.fog_scatter.rgb, sc_dist * sc_ang);
-    // Warm golden-hour forward Mie aerial veil on sunward ridges and peaks.
-    mediump float cs2 = cos_sun * cos_sun;
-    fog_col += frame.sun_color.rgb * (cs2 * cs2 * sc_dist * golden * 0.42);
     return colour * (1.0 - fog_amt) + fog_amt * fog_col;
   }
   // Legacy fallback when TOD is not set.
@@ -428,18 +416,26 @@ float sun_shadow(vec3 p, vec3 n, bool allow_pcss) {
       return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
     }
     if (near_ok) {
-      // Stochastic IGN cascade transition: evaluates a single cascade per pixel instead of
-      // double PCSS in the Near<->Mid overlap band.
       float bn = smoothstep(0.80, 0.98, edge_n);
-      if (dither_threshold() >= bn) {
+      if (kMobileFast) {
+        if (dither_threshold() >= bn) {
+          return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+        }
+        vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
+        float edge_m = max(abs(sm.x), abs(sm.y));
+        if (edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0) {
+          return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+        }
         return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
       }
+      float lit_n = sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0);
       vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
       float edge_m = max(abs(sm.x), abs(sm.y));
       if (edge_m < 1.0 && sm.z > 0.0 && sm.z < 1.0) {
-        return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+        float lit_m = sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35);
+        return clamp(mix(lit_n, lit_m, bn), 0.0, 1.0);
       }
-      return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+      return clamp(lit_n, 0.0, 1.0);
     }
     vec4 sm = frame.shadow_matrix_mid * vec4(p + n * frame.shadow_mid_bias.x, 1.0);
     float edge_m = max(abs(sm.x), abs(sm.y));
@@ -449,8 +445,19 @@ float sun_shadow(vec3 p, vec3 n, bool allow_pcss) {
     }
     if (mid_ok) {
       float bm = smoothstep(0.80, 0.98, edge_m);
-      if (dither_threshold() >= bm) {
-        return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+      if (kMobileFast) {
+        if (dither_threshold() >= bm) {
+          return clamp(sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35), 0.0, 1.0);
+        }
+      } else {
+        float lit_m = sample_cascade_pcss(sm, inv_c, inv_c, pcss_mode, 0.35);
+        vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
+        float edge_f = max(abs(sf.x), abs(sf.y));
+        if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+          float lit_f = mix(sample_cascade_pcf(sf, 2.0 * inv_c, inv_c), 1.0, smoothstep(0.84, 1.0, edge_f));
+          return clamp(mix(lit_m, lit_f, bm), 0.0, 1.0);
+        }
+        return clamp(mix(lit_m, 1.0, bm), 0.0, 1.0);
       }
     }
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
@@ -467,8 +474,19 @@ float sun_shadow(vec3 p, vec3 n, bool allow_pcss) {
     }
     if (near_ok) {
       float blend = smoothstep(0.78, 0.98, edge_n);
-      if (dither_threshold() >= blend) {
-        return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+      if (kMobileFast) {
+        if (dither_threshold() >= blend) {
+          return clamp(sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0), 0.0, 1.0);
+        }
+      } else {
+        float lit_n = sample_cascade_pcss(sn, 0.0, inv_c, pcss_mode, 1.0);
+        vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
+        float edge_f = max(abs(sf.x), abs(sf.y));
+        if (edge_f < 1.0 && sf.z > 0.0 && sf.z < 1.0) {
+          float lit_f = mix(sample_cascade_pcf(sf, 0.5, 0.5), 1.0, smoothstep(0.82, 1.0, edge_f));
+          return clamp(mix(lit_n, lit_f, blend), 0.0, 1.0);
+        }
+        return clamp(mix(lit_n, 1.0, blend), 0.0, 1.0);
       }
     }
     vec4 sf = frame.shadow_matrix_far * vec4(p + n * frame.shadow_far_bias.x, 1.0);
@@ -1323,9 +1341,9 @@ void main() {
   }
 
   // World night Light_Map (slot 7) & staggered dusk/dawn EmissiveMapSampler (slot 3) (SKY_AND_TOD §6.1-6.2):
-  // Light_Map holds baked incident night irradiance (floodlights, lamp pools, lit facades)
-  // that modulates the surface albedo t.rgb (matching H_INT_*'s `t.rgb * (LM + amb)` and
-  // preserving dark asphalt / grass texture inside bright 1.0 festival floodlight pools).
+  // Outdoor Colorado _LM shaders add baked Light_Map radiance directly (already albedo-baked in
+  // the offline lightmap). Spectator synthetic irradiance atlas draws (flags == kFlagTextured | kFlagLightMap
+  // with raw params.w == 1.0) and hub room interiors (frame.ground_color.w < -0.5 below) modulate by t.rgb.
   // EmissiveMap (slot 3) is self-emission (lit windows / neon signs), added directly.
   // Dual _EMIS + _LM building props set BOTH flags, reading Light_Map from light_map and EmissiveMap from layer_c.
   // c3.w (emissive_force) encoded in fractional part of draw.params.z enables daytime interior/sign glow.

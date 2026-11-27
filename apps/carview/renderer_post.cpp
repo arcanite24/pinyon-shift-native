@@ -114,13 +114,34 @@ bool Renderer::create_post(std::string& error) {
   // Create auto-exposure targets (16x16 + 1x1 ping-pong) and 33x33x33 3D LUT once
   // (holds 16^3, 17^3, 32^3, and 33^3 LUTs in-place without ever recreating or stalling).
   const VkFormat bfmt = bloom_format();
+  // Select a high-precision 2-channel float format with linear filtering for lum_16_ / lum_adapt_
+  // (mode 3 outputs (lum*w, w) and mode 4 performs 8x8 bilinear reduction) instead of 6-bit-mantissa
+  // B10G11R11_UFLOAT so dark night luminances (< 0.02) do not quantize or stall adaptation.
+  VkFormat lum_fmt = bfmt;
+  {
+    const VkFormatFeatureFlags need =
+        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    const VkFormat candidates[3] = {
+        VK_FORMAT_R32G32_SFLOAT,
+        VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R16G16B16A16_SFLOAT,
+    };
+    for (VkFormat cand : candidates) {
+      VkFormatProperties fp{};
+      vkGetPhysicalDeviceFormatProperties(physical_, cand, &fp);
+      if ((fp.optimalTilingFeatures & need) == need) {
+        lum_fmt = cand;
+        break;
+      }
+    }
+  }
   const VkImageUsageFlags lum_usage =
       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-  if (!create_image(16, 16, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT, lum_16_) ||
-      !create_image(1, 1, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+  if (!create_image(16, 16, 1, lum_fmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT, lum_16_) ||
+      !create_image(1, 1, 1, lum_fmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                     lum_adapt_[0]) ||
-      !create_image(1, 1, 1, bfmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+      !create_image(1, 1, 1, lum_fmt, VK_SAMPLE_COUNT_1_BIT, lum_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                     lum_adapt_[1])) {
     error = "post luminance targets";
     return false;
@@ -344,7 +365,7 @@ bool Renderer::create_post(std::string& error) {
     info.layout = post_layout_;
     return vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info, nullptr, &dst);
   };
-  VkResult result = build_post_pipe(frag, bfmt, post_quarter_);
+  VkResult result = build_post_pipe(frag, lum_fmt, post_quarter_);
   if (result == VK_SUCCESS) result = build_post_pipe(frag_bdown, bfmt, post_bloom_down_);
   if (result == VK_SUCCESS) result = build_post_pipe(frag_bup, bfmt, post_bloom_up_);
   if (result == VK_SUCCESS) result = build_post_pipe(frag, color_format_, post_final_);
@@ -672,9 +693,10 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     to_read(bloom_a_[0]);
 
     // Save mip-0 bright-pass into bloom_b_[5] for next frame's bloom_persist feedback only when active.
-    if (use_persist && bloom_b_[5].view && post_quarter_) {
+    // Use post_bloom_up_ (bfmt) with w_cur=1, w_prev=0 so format matches bloom_b_[5] cleanly.
+    if (use_persist && bloom_b_[5].view && post_bloom_up_) {
       to_write(bloom_b_[5]);
-      pass(bloom_b_[5].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[3], 5.0f, 1.0f, 0.0f, 0.0f);
+      pass(bloom_b_[5].view, bloom_w_[0], bloom_h_[0], post_bloom_up_, post_sets_[3], 1.0f, 0.0f, 0.0f, 0.0f);
       to_read(bloom_b_[5]);
     }
 
@@ -687,19 +709,20 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     }
 
     // Progressive 3x3 tent-filter upsample mips 5->4->3->2->1->0 into bloom_b_[4..0].
-    // Map FH1's 5 bloom_weights onto our 6 mips cleanly (mip 5 extends the widest halation tail).
+    // Preserve unnormalized authored zone weight sums (SKY_AND_TOD.md §5.3: Foothills sum 8.7
+    // vs Reservoir sum 2.42 vs Autoshow sum 2.7) using a fixed pyramid energy divisor rather than
+    // dividing by w_sum, splitting layer 4 cleanly across mips 4+5 so total weight sum is exact.
     float mip_w[kBloomLevels];
-    float w_sum = 0.0f;
-    for (uint32_t k = 0; k < kBloomLevels; ++k) {
-      mip_w[k] = std::max(k < 5 ? s.bloom_weights[k] : s.bloom_weights[4] * 0.85f, 0.0f);
-      w_sum += mip_w[k];
-    }
-    const float w_norm = w_sum > 1e-4f ? 1.0f / w_sum : (1.0f / float(kBloomLevels));
+    for (uint32_t k = 0; k < 4u; ++k) mip_w[k] = std::max(s.bloom_weights[k], 0.0f);
+    const float w4 = std::max(s.bloom_weights[4], 0.0f);
+    mip_w[4] = w4 * 0.60f;
+    mip_w[5] = w4 * 0.40f;
+    constexpr float kBloomPyramidScale = 1.0f / float(kBloomLevels);
     constexpr float kTentRadius = 1.15f;
     for (int k = int(kBloomLevels) - 2; k >= 0; --k) {
       const uint32_t set_idx = 8u + uint32_t((int(kBloomLevels) - 2) - k);
-      const float w_cur = mip_w[k] * w_norm;
-      const float w_prev = (k == int(kBloomLevels) - 2) ? (mip_w[k + 1] * w_norm) : 1.0f;
+      const float w_cur = mip_w[k] * kBloomPyramidScale;
+      const float w_prev = (k == int(kBloomLevels) - 2) ? (mip_w[k + 1] * kBloomPyramidScale) : 1.0f;
       to_write(bloom_b_[k]);
       pass(bloom_b_[k].view, bloom_w_[k], bloom_h_[k], post_bloom_up_, post_sets_[set_idx], w_cur,
            kTentRadius / float(std::max(1u, bloom_w_[k + 1])), kTentRadius / float(std::max(1u, bloom_h_[k + 1])),

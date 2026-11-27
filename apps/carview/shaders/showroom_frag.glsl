@@ -567,7 +567,7 @@ vec3 eval_cockpit_mfd(vec2 muv) {
 }
 
 // Match world_frag.glsl ToD atmospheric distance fog + altitude fade + Mie sun in-scattering
-// so distant rivals and highway traffic blend smoothly into the Colorado horizon.
+// (SKY_AND_TOD.md §4) so distant rivals and highway traffic match terrain fog identically.
 vec3 apply_car_haze(vec3 colour, vec3 position, vec3 up, vec3 sun, float alpha_w, bool is_additive) {
   vec3 to = position - frame.eye.xyz;
   float d = length(to);
@@ -578,19 +578,12 @@ vec3 apply_car_haze(vec3 colour, vec3 position, vec3 up, vec3 sun, float alpha_w
   if (frame.sun_color.w >= 0.0) {
     float fog_start = frame.fog_color.w;
     float fog_dens = max(frame.fog_params.x, 0.0);
-    // Primary ToD fog matching world_frag.glsl, plus gentle near-range aerial perspective for
-    // mid-distance rivals/traffic (>45m) so cars soften naturally before far fog_start.
-    float fog_primary = 1.0 - exp2(-max(d - fog_start, 0.0) * fog_dens);
-    float near_start = min(fog_start, 65.0);
-    float near_ramp = smoothstep(45.0, 140.0, d);
-    float fog_aerial = (1.0 - exp2(-max(d - near_start, 0.0) * fog_dens * 0.45)) * near_ramp * 0.42;
-    float fog_dist = clamp(max(fog_primary, fog_aerial), 0.0, 1.0);
+    float fog_dist = 1.0 - exp2(-max(d - fog_start, 0.0) * fog_dens);
     float world_y = dot(to, up) + frame.car_light_bot.w;
     float h_span = max(frame.fog_params.z - frame.fog_params.y, 1.0);
     float h_u = clamp((world_y - frame.fog_params.y) / h_span, 0.0, 1.0);
     float h_smooth = h_u * h_u * (3.0 - 2.0 * h_u);
-    float max_fog = mix(0.92, 1.0, smoothstep(3200.0, 7500.0, d));
-    fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, max_fog);
+    fog_amt = clamp(fog_dist * (1.0 - h_smooth * frame.fog_params.w), 0.0, 1.0);
     fog_amt = max(fog_amt, smoothstep(6500.0, 11500.0, d));
     float sc_dist = clamp(d / 6000.0, 0.0, 1.0);
     float sc_ang = pow(clamp(dot(view_dir, sun), 0.0, 1.0), max(frame.fog_scatter.w, 1.0));
@@ -862,10 +855,10 @@ void main() {
       bool is_red = draw_tint.r > 0.15 && draw_tint.g < 0.05;
       bool is_amber = draw_tint.r > 0.35 && draw_tint.g > 0.10 && draw_tint.b < 0.05;
       if (submat == 7u) {
-        vec3 lens_tex = (flags & kFlagSlot1) != 0u ? mix(vec3(1.0), t1.rgb, 0.45) : vec3(1.0);
-        vec3 trans = is_red ? vec3(0.76, 0.08, 0.06) :
-                     is_amber ? vec3(0.92, 0.50, 0.08) :
-                                vec3(0.86, 0.89, 0.92);
+        vec3 lens_tex = (flags & kFlagSlot1) != 0u ? mix(vec3(1.0), t1.rgb, 0.25) : vec3(1.0);
+        vec3 trans = is_red ? vec3(0.92, 0.10, 0.07) :
+                     is_amber ? vec3(0.95, 0.54, 0.09) :
+                                vec3(0.88, 0.90, 0.93);
         trans = clamp(trans * lens_tex, vec3(0.03), vec3(1.0));
         out_color = vec4(trans, 1.0);
         return;
@@ -875,13 +868,14 @@ void main() {
       gloss = 0.98;
       alpha = is_red ? 0.65 : is_amber ? 0.45 : 0.16;
     } else {
-      // FH1 Normal.xml <window>: GlassColor=(0.0, 0.10, 0.08, 0.29), FresnelIndex=4.35, FresnelScalar=0.70.
+      // FH1 Normal.xml <window> (SHOWROOM_LIGHTING.md): linear GlassColor=(0.0, 0.01, 0.0072),
+      // alpha=0.29, FresnelIndex=4.35, FresnelScalar=0.70, SpecularAmount=0.
       // Exclude front windshield (submat == 20, glassF) from heavy dark window tinting so cockpit
       // view remains crisp and clear even at 100% window tint (max subtle optical tint ~0.14..0.22).
       bool is_windshield = (submat == 20u);
       float raw_wtint = ((flags & kFlagInstanced) == 0u) ? clamp(frame.paint_finish.w, 0.0, 1.0) : 0.0;
       float wtint = is_windshield ? (raw_wtint * 0.15) : raw_wtint;
-      base = mix(vec3(0.0, 0.055, 0.045), vec3(0.002, 0.005, 0.004), wtint);
+      base = mix(vec3(0.0, 0.01, 0.0072), vec3(0.001, 0.003, 0.0025), wtint);
       reflectivity = 0.047;
       gloss = 0.97;
       alpha = is_windshield ? mix(0.14, 0.22, raw_wtint) : mix(0.29, 0.88, wtint);
@@ -971,11 +965,12 @@ void main() {
       }
     }
     if ((flags & kFlagLampEmissive) != 0u) {
-      // Modulate HDR lamp emission by lights_lod0.xds reflector detail and Fresnel angle so
-      // individual rings, housings and bezels read clearly at night instead of flat solid discs.
-      float luma = dot(base, vec3(0.299, 0.587, 0.114));
-      float lens_detail = mix(0.14, 1.38, smoothstep(0.03, 0.72, luma));
-      float ang = 0.36 + 0.64 * pow(nv, 1.15);
+      // Modulate HDR lamp emission by peak channel of lights_lod0.xds (not Rec.601 luma, which
+      // crushes saturated red tail reflectors 7x) so running tail lights and headlights stay
+      // vividly lit at night while preserving internal reflector texture detail (CAR_LAMPS.md).
+      float peak = max(base.r, max(base.g, base.b));
+      float lens_detail = mix(0.65, 1.30, smoothstep(0.02, 0.60, peak));
+      float ang = 0.65 + 0.35 * pow(nv, 0.85);
       emissive = draw_tint.rgb * lens_detail * ang * (kLinearOut ? 1.85 : 0.95) * lamp_alive;
     }
   } else if (klass == kInterior || klass == kGauge) {
@@ -1314,7 +1309,7 @@ void main() {
       gnd_col = max(world_gnd * 0.45, sky_col * 0.16);
     }
     float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
-    float raw_lit = ndl > 0.0 ? drive_shadow(v_position, n) : 1.0;
+    float raw_lit = (shadow_scale > 0.001 && ndl > 0.0) ? drive_shadow(v_position, n) : 1.0;
     // Smooth grazing transition across the ndl=0 terminator avoids harsh clearcoat reflection
     // seams or curved-panel self-shadowing bands on bumpers, fenders, and decklids.
     float term_w = smoothstep(0.02, 0.18, ndl);
@@ -1423,15 +1418,15 @@ void main() {
 #ifndef SHOWROOM_OPAQUE_NO_DISCARD
   } else if (klass == kGlass) {
     if ((flags & kFlagCover) != 0u && submat == 8u) {
-      // Pass 2 Additive reflection + sun glint on detail_glass_red/amber/clear covers.
+      // Pass 2 Additive reflection on detail_glass_red/amber/clear covers (SHOWROOM_LIGHTING.md):
+      // Fresnel Direct=0.10, Glancing=0.40, power=5.0, StaticEnvLightmapDampner=0.85.
       bool is_red = draw.tint.r > 0.15 && draw.tint.g < 0.05;
       bool is_amber = draw.tint.r > 0.35 && draw.tint.g > 0.10 && draw.tint.b < 0.05;
-      float f_idx = is_red ? 1.65 : is_amber ? 1.45 : 3.55;
-      float f_scl = (is_red || is_amber) ? 0.70 : 1.00;
-      float F_cov = clamp(0.05 + f_scl * pow(1.0 - nv, f_idx), 0.05, 0.95);
-      vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl;
-      vec3 cov_spec = direct_col * pow(nh, 128.0) * 2.5 * ndl * lit + dyn_spec_coat * 0.65;
-      // Subtle translucent plastic diffuse scattering on red/amber lamp lenses (P1-3)
+      float F_cov = mix(0.10, 0.40, pow(1.0 - nv, 5.0));
+      float cov_occ = occlusion * mix(0.85, 1.0, lit);
+      vec3 cov_refl = env(r, 0.0) * frame.reflect_tint.rgb * cov_occ;
+      vec3 cov_spec = direct_col * pow(nh, 128.0) * 1.4 * ndl * lit + dyn_spec_coat * 0.65;
+      // Subtle translucent plastic diffuse scattering on red/amber lamp lenses
       // so unlit daylight rear fog/tail lenses read deep ruby-red instead of dull grey-brown.
       vec3 lens_diff = is_red ? (vec3(0.065, 0.002, 0.002) * diffuse_light)
                      : is_amber ? (vec3(0.14, 0.055, 0.004) * diffuse_light)
@@ -1441,11 +1436,11 @@ void main() {
     } else if (submat == 6u) {
       colour = base * (diffuse_light + vec3(0.02)) * alpha;
     } else {
-      // FH1 window glass: strong grazing Fresnel (4.35 / 0.70), sharp mip-0 reflection, clear straight-through.
-      // Lit base tint avoids unlit khaki/tan rear-window glow under high midnight post-exposure.
+      // FH1 window glass (SHOWROOM_LIGHTING.md): FresnelIndex=4.35, FresnelScalar=0.70,
+      // SpecularAmount=0 (sharp mip-0 environment reflection without synthetic sun specular blob).
       float F_glass = clamp(0.047 + 0.70 * pow(1.0 - nv, 4.35), 0.047, 0.92);
       vec3 glass_refl = env(r, 0.0) * frame.reflect_tint.rgb * occ_refl * (1.0 - glass_crack_vein * 0.55);
-      vec3 glass_spec = (direct_col * pow(nh, 140.0) * 2.2 * ndl * lit + dyn_spec_coat) * (1.0 - glass_crack_vein * 0.50);
+      vec3 glass_spec = dyn_spec_coat * (1.0 - glass_crack_vein * 0.50);
       vec3 crack_scatter = vec3(0.48, 0.56, 0.54) * (diffuse_light + direct_col * 0.25) * glass_crack_vein * 0.42;
       colour = base * diffuse_light * alpha + F_glass * glass_refl + glass_spec + crack_scatter + emissive;
       alpha = clamp(alpha + F_glass * 0.65, 0.0, 0.96);
@@ -1472,15 +1467,15 @@ void main() {
     float nh_c = max(dot(n_coat, h), 0.0);
 
     // Layer 1 (Clearcoat): retail FresnelIndex/FresnelScalar/SpecularCubeScalar driven dielectric
-    // clearcoat (defaults 1.55 / 0.90 / 1.0 -> rich automotive saturation, controlled grazing mirror).
+    // clearcoat (SHOWROOM_LIGHTING.md: FresnelIndex=1.55 -> F0=((n-1)/(n+1))^2=0.0465, FresnelScalar=0.90).
     bool is_inst = (flags & kFlagInstanced) != 0u;
     float p_fidx = is_inst ? 1.55 : clamp(frame.paint_shader_a.x, 1.0, 5.0);
     float p_fscl = is_inst ? 0.90 : clamp(frame.paint_shader_a.y, 0.0, 1.5);
     float p_cube = is_inst ? 1.00 : clamp(frame.paint_shader_a.z, 0.05, 2.0);
-    float fres_exp = clamp(3.45 + (p_fidx - 1.55) * 0.85, 2.2, 5.5);
-    float fres_gain = clamp(0.48 * (p_fscl / 0.90), 0.0, 0.78);
-    float F_coat_v = clamp(0.040 + fres_gain * pow(1.0 - nv_c, fres_exp), 0.040, 0.62) * coat_mask;
-    float F_coat_l = clamp(0.040 + fres_gain * pow(1.0 - nl_c, fres_exp), 0.040, 0.62) * coat_mask;
+    float f0_ratio = (p_fidx - 1.0) / (p_fidx + 1.0);
+    float F0_coat = clamp(f0_ratio * f0_ratio, 0.02, 0.35);
+    float F_coat_v = clamp(F0_coat + (1.0 - F0_coat) * p_fscl * pow(1.0 - nv_c, 5.0), F0_coat, 0.90) * coat_mask;
+    float F_coat_l = clamp(F0_coat + (1.0 - F0_coat) * p_fscl * pow(1.0 - nl_c, 5.0), F0_coat, 0.90) * coat_mask;
     float coat_env_scale = (frame.drive.w > 0.5 ? 0.58 : 0.72) * p_cube;
     vec3 coat_refl = env(r_coat, 0.65) * frame.reflect_tint.rgb * occ_refl * coat_env_scale;
     float coat_ggx = ggx_d(nh_c, 0.065) * 0.022;

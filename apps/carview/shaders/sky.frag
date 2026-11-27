@@ -1,6 +1,6 @@
 #version 450
 precision highp int;
-precision mediump float;
+precision highp float;
 // carview real-time sky shader (SPEC-SKY-AND-TOD §3):
 //   mode 0: atmosphere gradient dome + elliptical sun haze + sky dither
 //   mode 1: sun/moon billboard disc + far clouds (2 layers) + close lit clouds
@@ -86,10 +86,10 @@ void main() {
 
   vec3 base_lin_rgb = vec3(0.0);
   if (mode == 0 || mode == 2) {
-    // 1. Atmosphere gradient dome + elliptical sun haze (SPEC-SKY-AND-TOD §3.2).
-    // Use a smooth C1 exponential horizon-to-zenith falloff anchored at V.y = 0 so
-    // AtmosphereBottomClampPower (~0.06) and small dawn/dusk AtmosphereColourPower (~0.05)
-    // never produce a flat blinding horizon strip with a 2-pixel cliff into dark zenith.
+    // 1. Atmosphere gradient dome + elliptical sun haze (SKY_AND_TOD.md §3.2).
+    // Smooth C1 horizon-to-zenith falloff anchored at V.y = 0 so dawn/dusk
+    // AtmosphereBottomClampPower (~0.06) and small AtmosphereColourPower (~0.05)
+    // never produce a hard flat horizon band with a 2-pixel cliff into dark sky.
     float hi = max(sky.atmo_haze.w, 0.15);
     float vy = max(V.y, 0.0);
     float scale = clamp(sky.atmo_top.w * 1.45, 0.11, 0.45) * clamp(hi / 0.50, 0.5, 1.5);
@@ -101,24 +101,11 @@ void main() {
     float hl = length(horiz_s);
     vec3 T = hl > 1e-4 ? vec3(-horiz_s.z / hl, 0.0, horiz_s.x / hl) : vec3(1.0, 0.0, 0.0);
     float haze_dot = clamp(dot(V, S), 0.0, 1.0) *
-                     clamp(1.0 + (sky.atmo_haze_p.z - 1.0) * abs(dot(V, T)), 0.0, 1.0);
+                     clamp(1.0 + (sky.atmo_haze_p.z - 1.0) * clamp(dot(V, T), 0.0, 1.0), 0.0, 1.0);
     float haze_t = clamp(sky.atmo_haze_p.y * pow(max(haze_dot, 0.0), max(sky.atmo_haze_p.x, 0.5)), 0.0, 1.0) *
                    sky.atmo_haze_p.w;
 
-    vec3 lin_rgb = mix(base_rgb, sky.atmo_haze.rgb, haze_t) * sky.sun_dir.w;
-    // Golden-hour HDR solar Mie aureole: broad warm glow across the sunward horizon
-    // feeding the bloom pass cleanly when the sun is low, while keeping midday crisp and night dark.
-    if (sky.haze_dir.w < 0.5) {
-      float sun_elev = S.y;
-      float day_vis = smoothstep(-0.06, 0.12, sun_elev);
-      float golden = (1.0 - smoothstep(0.06, 0.52, max(sun_elev, 0.0))) * day_vis;
-      float cos_s = max(dot(V, S), 0.0);
-      vec3 glow_col = mix(sky.atmo_haze.rgb, max(sky.fog_scatter.rgb, sky.sun_obj_col.rgb * 0.85), 0.62);
-      float cos_s2 = cos_s * cos_s;
-      float wide_glow = (cos_s2 * cos_s2 * cos_s2) * (1.0 - smoothstep(0.0, 0.55, vy)) * (0.22 + 0.68 * golden);
-      float core_glow = pow(cos_s, 28.0) * (0.32 + 0.85 * golden);
-      lin_rgb += glow_col * (wide_glow + core_glow) * sky.sun_dir.w * day_vis;
-    }
+    vec3 lin_rgb = clamp(mix(base_rgb, sky.atmo_haze.rgb, haze_t), vec3(0.0), vec3(1.0)) * sky.sun_dir.w;
     // Below the geometric horizon, transition smoothly into the exact world fog colour so
     // distant terrain gaps or far-ring silhouettes never reveal a glowing cyan/white strip.
     if (V.y < 0.0) {
@@ -142,23 +129,12 @@ void main() {
   // Accumulated in true premultiplied linear Porter-Duff OVER space (zero dark-halo double-premul).
   vec3 acc_premul = vec3(0.0);
   float acc_a = 0.0;
-  float sky_gain = max(sky.sun_dir.w, 0.1);
   {
-    // 3. Sun / Moon billboard disc + soft HDR solar corona (SPEC-SKY-AND-TOD §3.4).
+    // 3. Sun / Moon billboard disc (SKY_AND_TOD.md §3.4).
     vec3 D = normalize(sky.sun_obj_dir.xyz);
     float rad = max(sky.sun_obj_dir.w, 0.005);
     float cos_ang = dot(V, D);
     if (cos_ang > 0.0 && sky.sun_obj_col.w > 0.001) {
-      float day_vis = smoothstep(-0.06, 0.10, D.y);
-      float golden = (1.0 - smoothstep(0.06, 0.52, max(D.y, 0.0))) * day_vis;
-      float horizon_vis = smoothstep(-0.03, 0.05, V.y);
-      if (sky.haze_dir.w < 0.5 && day_vis > 0.001) {
-        // Soft radial solar corona that melts the disc into golden-hour HDR bloom.
-        float corona = pow(cos_ang, 72.0) * mix(0.65, 1.85, golden) +
-                       pow(cos_ang, 320.0) * mix(1.40, 3.40, golden);
-        vec3 corona_col = mix(sky.sun_obj_col.rgb, max(sky.fog_scatter.rgb, sky.sun_obj_col.rgb), 0.35 * golden);
-        acc_premul += corona_col * (corona * horizon_vis * day_vis * sky.sun_obj_col.w);
-      }
       vec3 up_ref = abs(D.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
       vec3 right_d = normalize(cross(up_ref, D));
       vec3 up_d = cross(D, right_d);
@@ -168,14 +144,13 @@ void main() {
         vec4 tex = texture(tex_disc, duv);
         // Sun/Moon textures are authored in sRGB; decode to linear radiance.
         vec3 disc_rgb = pow(max(tex.rgb, vec3(0.0)), vec3(2.2)) * sky.sun_obj_col.rgb;
-        if (sky.haze_dir.w < 0.5) disc_rgb *= mix(3.2, 5.2, golden);  // solar disc HDR bloom punch
         float disc_a = clamp(tex.a * sky.sun_obj_col.w * smoothstep(-0.02, 0.04, V.y), 0.0, 1.0);
         acc_premul = disc_rgb * disc_a + acc_premul * (1.0 - disc_a);
         acc_a = disc_a + acc_a * (1.0 - disc_a);
       }
     }
 
-    // 4. Far high-altitude clouds (2 scrolling layers, SPEC-SKY-AND-TOD §3.5).
+    // 4. Far high-altitude clouds (2 scrolling layers, SKY_AND_TOD.md §3.5 — unmultiplied by SkyGain).
     if (sky.fog_sky.z > 0.5 && V.y > 0.005) {
       highp vec2 plane_uv = V.xz / (V.y + 0.14) * 0.22;
       float horizon_t = smoothstep(0.02, 0.30, V.y);
@@ -189,7 +164,7 @@ void main() {
       float far_exp = clamp(sky.far_thin.w * 0.03, 0.35, 3.0);
       float alpha_b = pow(dens_b, far_exp) *
                       mix(sky.far_back_thin.w, sky.far_back_dense.w, horizon_t) * horizon_t * 0.55;
-      vec3 col_b = mix(sky.far_back_thin.rgb * sky.far_dense.w, sky.far_back_dense.rgb, dens_b) * sky_gain;
+      vec3 col_b = mix(sky.far_back_thin.rgb * sky.far_dense.w, sky.far_back_dense.rgb, dens_b);
 
       // Front far layer
       highp vec2 uv_f = plane_uv * 1.15 + sky.far_scroll.xy;
@@ -199,7 +174,7 @@ void main() {
       float dens_f = clamp((raw_f - (1.0 - sky.far_params.z)) * 1.8, 0.0, 1.0);
       float alpha_f = pow(dens_f, far_exp) *
                       mix(sky.far_params.y, sky.far_params.x, horizon_t) * horizon_t * 0.65;
-      vec3 col_f = mix(sky.far_thin.rgb * sky.far_dense.w, sky.far_dense.rgb, dens_f) * sky_gain;
+      vec3 col_f = mix(sky.far_thin.rgb * sky.far_dense.w, sky.far_dense.rgb, dens_f);
 
       float far_a = clamp(alpha_f + alpha_b * (1.0 - alpha_f), 0.0, 1.0);
       vec3 far_premul = col_f * alpha_f + col_b * alpha_b * (1.0 - alpha_f);
@@ -208,7 +183,7 @@ void main() {
         acc_a = far_a + acc_a * (1.0 - far_a);
       }
 
-      // 5. Close lit dome clouds (2 rotating bands, SPEC-SKY-AND-TOD §3.6).
+      // 5. Close lit dome clouds (2 rotating bands, SKY_AND_TOD.md §3.6 — unmultiplied by SkyGain).
       highp float az = atan(V.z, V.x) / kTwoPi + 0.5;
       // Clamp V slightly inside (0,1) so REPEAT sampler never wraps a bright/dark seam at the horizon.
       highp float elev_v = clamp(1.0 - (asin(clamp(V.y, 0.0, 1.0)) / (kPi * 0.5)), 0.002, 0.998);
@@ -238,7 +213,7 @@ void main() {
       vec3 bot_f = sky.close_bot_col.rgb * sky.close_intens.z *
                    mix(0.28, 1.0, pow(sun_wrap, max(sky.close_bot_col.w * 0.5, 0.5))) *
                    pow(tb_f.g, bot_mask_pow);
-      vec3 lit_f = (base_f + back_f + top_f + bot_f) * sky_gain;
+      vec3 lit_f = base_f + back_f + top_f + bot_f;
       float ca_f = pow(smoothstep(0.03, 0.96, ad_f.r), alpha_curve) * sky.close_layers.x;
 
       highp vec2 cuv_b = vec2(fract(az + sky.close_layers.w), elev_v);
@@ -252,7 +227,7 @@ void main() {
       vec3 bot_b = sky.close_back_bot_col.rgb * sky.close_back_thin_col.w *
                    mix(0.28, 1.0, pow(sun_wrap, max(sky.close_back_bot_col.w * 0.5, 0.5))) *
                    pow(tb_b.g, bot_mask_pow);
-      vec3 lit_b = (base_b + back_b + top_b + bot_b) * sky_gain;
+      vec3 lit_b = base_b + back_b + top_b + bot_b;
       float ca_b = pow(smoothstep(0.03, 0.96, ad_b.r), alpha_curve) * sky.close_layers.y;
 
       // Soft horizon dissolution so clouds melt into the horizon mist instead of hard-clipping.

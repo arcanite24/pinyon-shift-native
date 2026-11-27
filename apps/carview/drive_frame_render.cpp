@@ -223,6 +223,8 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               vst.listener_right = {float(vright.x), float(vright.y), float(vright.z)};
               vst.listener_vel = {float(vvel.x), float(vvel.y), float(vvel.z)};
             }
+            vst.focus_car_pos = {float(vpos.x), float(vpos.y), float(vpos.z)};
+            vst.has_focus_car_pos = true;
             vst.cockpit_view = replay_viewer.active()
                                    ? (replay_viewer.camera_mode() == ReplayCameraMode::kCockpit)
                                    : (cur_audio_view == audio::View::kCockpit);
@@ -1209,8 +1211,17 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
                   t.hl_bottom[size_t(k)] = rs->hemi_bottom[size_t(k)];
                   t.ambient_color[size_t(k)] = rs->ibl_ambient[size_t(k)];
                   t.car_sun_color[size_t(k)] = rs->car_key[size_t(k)];
-                  t.car_hl_top[size_t(k)] = rs->cube_mean[size_t(k)];
-                  t.car_hl_bottom[size_t(k)] = rs->cube_mean[size_t(k)];
+                }
+                // Anisotropic hub-room SH floor bounce (SHOWROOM_LIGHTING.md:149-288):
+                // Autoshow SH irradiance evaluated at +Y (overhead) vs -Y (bright warm floor bounce).
+                if (rs->room == HubRoom::kAutoshow) {
+                  t.car_hl_top = {0.0945f, 0.1292f, 0.3586f};
+                  t.car_hl_bottom = {0.4261f, 0.3578f, 0.4278f};
+                } else {
+                  for (int k = 0; k < 3; ++k) {
+                    t.car_hl_top[size_t(k)] = rs->cube_mean[size_t(k)] * 0.80f;
+                    t.car_hl_bottom[size_t(k)] = rs->cube_mean[size_t(k)] * 1.25f;
+                  }
                 }
                 t.day_night_post = -1.0f;
                 t.ibl_ambient_scale = 1.0f;
@@ -1900,9 +1911,10 @@ void DriveSession::update_driving_line_overlay() {
   static std::unordered_map<const DriveSession*, DrivingLineOverlayState> dl_states;
   auto& dl_state = dl_states[this];
 
-  const bool want_race_dl = app.race && !grid_menu_open && !app.race->player_finished() &&
+  const bool cutscene_active = app.campaign.cutscenes().active();
+  const bool want_race_dl = !cutscene_active && app.race && !grid_menu_open && !app.race->player_finished() &&
                             driving_line_mode != drive::DrivingLineMode::kOff;
-  const bool want_gps_dl = !app.race && !app.show_title && !app.fmv_player.active() &&
+  const bool want_gps_dl = !cutscene_active && !app.race && !app.show_title && !app.fmv_player.active() &&
                            driving_line_mode != drive::DrivingLineMode::kOff &&
                            app.gps_nav.active() && app.gps_nav.route().valid &&
                            app.gps_nav.route().points.size() >= 2;

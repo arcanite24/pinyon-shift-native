@@ -1,13 +1,16 @@
 #include "hub_room.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <set>
 #include <system_error>
+#include <unordered_map>
 
 #include "drive_helpers_runtime.h"
 #include "fh1data/world_texture.h"
@@ -15,6 +18,23 @@
 #include "world/world.h"
 
 namespace carview {
+namespace {
+
+struct HubRoomPostExtra {
+  bool has_bloom = false;
+  float bloom_cutoff = 1.0f;
+  float bloom_scale = 1.0f;
+  float bloom_persist = 0.001f;
+  float bloom_lower_grad = 0.06f;
+  float bloom_upper_grad = 3.0f;
+  std::array<float, 5> bloom_weights = {0.0f, 0.3f, 0.0f, 0.0f, 2.4f};
+  bool has_lut = false;
+};
+
+std::mutex g_hub_post_extra_mutex;
+std::unordered_map<int, HubRoomPostExtra> g_hub_post_extras;
+
+}  // namespace
 
 const char* hub_room_track(HubRoom room) {
   switch (room) {
@@ -138,6 +158,37 @@ bool load_hub_room(const std::filesystem::path& game_root, HubRoom room, HubRoom
                    attr("imageBasedLighting", "iblSunColorB", 1.0f) * direct};
     out.ibl_ambient_scale = attr("imageBasedLighting", "iblAmbientScale", 1.0f);
     out.ibl_ambient_saturation = attr("imageBasedLighting", "iblAmbientSaturation", 1.0f);
+
+    // Parse TrackSettings.xml <bloom> cutoff/scale/curve/weights and check for an optional
+    // room-local ColorGradingLookup.dds (SHOWROOM_LIGHTING.md:234-254).
+    HubRoomPostExtra extra{};
+    const size_t bloom_start = xml.find("<bloom>");
+    const size_t bloom_end = (bloom_start != std::string::npos) ? xml.find("</bloom>", bloom_start) : std::string::npos;
+    if (bloom_start != std::string::npos && bloom_end != std::string::npos) {
+      const std::string bxml = xml.substr(bloom_start, bloom_end - bloom_start);
+      auto battr = [&](const char* tag, const char* name, float fallback) {
+        const size_t at = bxml.find(std::string("<") + tag + " ");
+        if (at == std::string::npos) return fallback;
+        const size_t end = bxml.find('>', at);
+        const std::string key = std::string(" ") + name + "=\"";
+        const size_t q = bxml.find(key, at);
+        if (q == std::string::npos || q > end) return fallback;
+        return std::strtof(bxml.c_str() + q + key.size(), nullptr);
+      };
+      extra.has_bloom = true;
+      extra.bloom_cutoff = battr("cutoff", "value", extra.bloom_cutoff);
+      extra.bloom_scale = battr("scale", "value", extra.bloom_scale);
+      extra.bloom_persist = battr("persist", "value", extra.bloom_persist);
+      extra.bloom_lower_grad = battr("curve", "lowerGradient", extra.bloom_lower_grad);
+      extra.bloom_upper_grad = battr("curve", "upperGradient", extra.bloom_upper_grad);
+      const char* wkeys[5] = {"layer0", "layer1", "layer2", "layer3", "layer4"};
+      for (int i = 0; i < 5; ++i) extra.bloom_weights[size_t(i)] = battr("weights", wkeys[i], extra.bloom_weights[size_t(i)]);
+    }
+    extra.has_lut = std::filesystem::exists(folder / "ColorGradingLookup.dds", ec);
+    {
+      std::lock_guard<std::mutex> lock(g_hub_post_extra_mutex);
+      g_hub_post_extras[int(room)] = extra;
+    }
   }
 
   // The room's static cube (staticcarcubemap.xpr, LogLuv): its mean
@@ -225,7 +276,22 @@ void apply_hub_room_post(const HubRoomScenery& room, PostSettings& post) {
     post.luminance[i] = room.luminance[i];
     post.balance[i] = 1.0f;
   }
-  post.lut_enabled = false;
+  HubRoomPostExtra extra{};
+  {
+    std::lock_guard<std::mutex> lock(g_hub_post_extra_mutex);
+    auto it = g_hub_post_extras.find(int(room.room));
+    if (it != g_hub_post_extras.end()) extra = it->second;
+  }
+  if (extra.has_bloom) {
+    post.bloom = true;
+    post.bloom_cutoff = std::max(0.05f, extra.bloom_cutoff);
+    post.bloom_scale = std::max(0.0f, extra.bloom_scale);
+    post.bloom_persist = std::clamp(extra.bloom_persist, 0.0f, 0.35f);
+    post.bloom_lower_grad = std::max(0.0f, extra.bloom_lower_grad);
+    post.bloom_upper_grad = std::max(0.05f, extra.bloom_upper_grad);
+    for (int i = 0; i < 5; ++i) post.bloom_weights[i] = extra.bloom_weights[size_t(i)];
+  }
+  post.lut_enabled = extra.has_lut;
   post.vignette_amount = 0.0f;
   post.paired_vignette = false;
   post.contrast = 1.0f;
