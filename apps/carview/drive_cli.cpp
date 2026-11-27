@@ -119,6 +119,9 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
     for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
   }
+  bool cli_vrs_explicit = false;
+  bool cli_shadows_explicit = false;
+  bool cli_bloom_explicit = false;
   for (size_t i = 0; i < args.size(); ++i) {
     const std::string a = args[i];
     auto next = [&]() -> const char* { return i + 1 < args.size() ? args[++i].c_str() : ""; };
@@ -271,13 +274,14 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     else if (a == "--no-post") post_on = false;
     else if (a == "--shadows") {
       shadows_flag = next();
+      cli_shadows_explicit = true;
       if (shadows_flag != "off" && shadows_flag != "low" && shadows_flag != "high") {
         std::fprintf(stderr, "carview --drive: --shadows takes off, low or high\n");
         exit_code = 2; return false;
       }
     }
-    else if (a == "--bloom") bloom_flag = 1;
-    else if (a == "--no-bloom") bloom_flag = 0;
+    else if (a == "--bloom") bloom_flag = 1, cli_bloom_explicit = true;
+    else if (a == "--no-bloom") bloom_flag = 0, cli_bloom_explicit = true;
     else if (a == "--motion-blur") motion_blur_flag = 1;
     else if (a == "--no-motion-blur") motion_blur_flag = 0;
     else if (a == "--dof") dof_flag = 1;
@@ -429,6 +433,7 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       else if (a == "--fps-cap") cli_fpscap_explicit = true;
       else if (a == "--render-scale" || a == "--scene-540p" || a == "--no-scene-540p") cli_scale_explicit = true;
       else if (a == "--output") cli_output_explicit = true;
+      else if (a == "--vrs" || a == "--no-vrs") cli_vrs_explicit = true;
     } else if (a == "--hdr-pattern") {
       cli_hdr_pattern = uint32_t(std::clamp(std::atoi(next()), 0, 3));
     } else if (a == "--hdr-pattern-nits") {
@@ -504,24 +509,131 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       if (!cli_cardetail_explicit) cli_graphics.car_detail = pspec.car_detail;
     }
 #ifdef __ANDROID__
-    if (low_preset) {
-      // Mobile TBDR tuning for Android low / smooth-60 / low-power presets:
-      // 720p -> 1080p FSR1, quarter-rate reflections, 1024px texture cap, and disabling
-      // desktop-heavy GTAO/SSCS/DoF unless explicitly opted in.
-      preset_reflection_rate = std::min(preset_reflection_rate, 0.25f);
-      if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
-      if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
-      if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k1024;
-      if (!cli_scale_explicit) {
-        cli_graphics.scale = 1;
-        cli_graphics.base_540p = false;
+    {
+      std::string pl = preset_name;
+      for (char& ch : pl) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+      if (pl == "low-power" || pl == "low_power" || pl == "ultra-low-30" || pl == "ultra-low") {
+        // Lowest Requirements (30 FPS cool battery / 4-6 GB devices):
+        // 540p -> 1080p CAS + VRS, 1x MSAA, 512px texture cap, shadows/bloom/GTAO off.
+        low_preset = true;
+        if (!cli_msaa_explicit) msaa = 1;
+        if (!cli_shadows_explicit) shadows_flag = "off";
+        if (!cli_bloom_explicit) bloom_flag = 0;
+        preset_reflection_rate = 0.25f;
+        preset_anisotropy = 2.0f;
+        if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kOff;
+        if (!cli_vrs_explicit) cli_graphics.vrs = true;
+        if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
+        if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
+        if (!cli_hextile_explicit) cli_graphics.hex_tiling = false;
+        if (!cli_velblur_explicit) cli_graphics.velocity_blur = carview::modern::VelocityBlur::kOff;
+        if (!cli_pcss_explicit) cli_graphics.shadow_pcss = carview::modern::ShadowPcss::kOff;
+        if (!cli_ssr_explicit) cli_graphics.ssr = carview::modern::SsrQuality::kOff;
+        if (!cli_volfog_explicit) cli_graphics.volumetric_fog = carview::modern::VolumetricFog::kOff;
+        if (!cli_cardetail_explicit) cli_graphics.car_detail = false;
+        if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k512;
+        if (!cli_fpscap_explicit) cli_graphics.fps_cap = 30;
+        if (!cli_scale_explicit) {
+          cli_graphics.scale = 1;
+          cli_graphics.base_540p = true;
+        }
+        if (!cli_output_explicit) {
+          cli_graphics.upscaler = carview::modern::Upscaler::kCas;
+          cli_graphics.sharpening = 55.0f;
+        }
+        if (motion_blur_flag < 0) motion_blur_flag = 0;
+        if (dof_flag < 0) dof_flag = 0;
+      } else if (pl == "performance-120" || pl == "performance_120" || pl == "odin-120") {
+        // Best Performance (Odin 2 Portal 120 Hz OLED):
+        // 540p -> 1080p CAS + VRS, 1x MSAA, compact gather radii, 1024px texcap, bloom on, 120 Hz + ADPF.
+        low_preset = true;
+        if (!cli_msaa_explicit) msaa = 1;
+        if (!cli_shadows_explicit) shadows_flag = "off";
+        if (!cli_bloom_explicit) bloom_flag = 1;
+        preset_reflection_rate = 0.25f;
+        preset_anisotropy = 4.0f;
+        if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kOff;
+        if (!cli_vrs_explicit) cli_graphics.vrs = true;
+        if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
+        if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
+        if (!cli_hextile_explicit) cli_graphics.hex_tiling = false;
+        if (!cli_velblur_explicit) cli_graphics.velocity_blur = carview::modern::VelocityBlur::kOff;
+        if (!cli_pcss_explicit) cli_graphics.shadow_pcss = carview::modern::ShadowPcss::kOff;
+        if (!cli_ssr_explicit) cli_graphics.ssr = carview::modern::SsrQuality::kOff;
+        if (!cli_volfog_explicit) cli_graphics.volumetric_fog = carview::modern::VolumetricFog::kOff;
+        if (!cli_cardetail_explicit) cli_graphics.car_detail = false;
+        if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k1024;
+        if (!cli_fpscap_explicit) cli_graphics.fps_cap = 120;
+        if (!cli_scale_explicit) {
+          cli_graphics.scale = 1;
+          cli_graphics.base_540p = true;
+        }
+        if (!cli_output_explicit) {
+          cli_graphics.upscaler = carview::modern::Upscaler::kCas;
+          cli_graphics.sharpening = 65.0f;
+        }
+        if (motion_blur_flag < 0) motion_blur_flag = 0;
+        if (dof_flag < 0) dof_flag = 0;
+      } else if (pl == "smooth-60" || pl == "smooth_60" || low_preset) {
+        // Balanced 60 FPS (daily driver on Odin 2):
+        // 720p -> 1080p CAS + 1x MSAA + VRS, bloom on, quarter-rate reflections, 1024px texcap.
+        low_preset = true;
+        if (!cli_msaa_explicit) msaa = 1;
+        if (!cli_bloom_explicit && (pl == "smooth-60" || pl == "smooth_60")) bloom_flag = 1;
+        preset_reflection_rate = std::min(preset_reflection_rate, 0.25f);
+        if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kOff;
+        if (!cli_vrs_explicit) cli_graphics.vrs = true;
+        if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kOff;
+        if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kOff;
+        if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::k1024;
+        if (!cli_fpscap_explicit) cli_graphics.fps_cap = (pl == "balanced-40") ? 40 : 60;
+        if (!cli_scale_explicit) {
+          cli_graphics.scale = 1;
+          cli_graphics.base_540p = false;
+        }
+        if (!cli_output_explicit && cli_graphics.scale != 0) {
+          cli_graphics.upscaler = carview::modern::Upscaler::kCas;
+          cli_graphics.sharpening = 55.0f;
+        }
+        if (motion_blur_flag < 0) motion_blur_flag = 0;
+        if (dof_flag < 0) dof_flag = 0;
+      } else if (pl == "quality-30" || pl == "quality_30") {
+        // Quality 30 (native 1080p OLED):
+        // Native 1080p, 1x MSAA + FXAA-World + VRS, shadows low + PCSS low, GTAO low, SSCS low, volumetric fog.
+        if (!cli_msaa_explicit) msaa = 1;
+        if (!cli_shadows_explicit) shadows_flag = "low";
+        if (!cli_bloom_explicit) bloom_flag = 1;
+        if (!cli_aa_explicit) cli_graphics.aa = carview::modern::AaMode::kFxaaWorld;
+        if (!cli_vrs_explicit) cli_graphics.vrs = true;
+        if (!cli_scale_explicit) {
+          cli_graphics.scale = 0;
+          cli_graphics.base_540p = false;
+        }
+        if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::kFull;
+        if (!cli_fpscap_explicit) cli_graphics.fps_cap = 30;
+        if (dof_flag < 0) dof_flag = 0;
+      } else if (pl == "ultra" || pl == "best-graphics" || pl == "high" || pl == "quality-60") {
+        // Best Graphics / Ultra (native 1080p OLED showcase):
+        // Native 1080p, 2x MSAA + VRS, shadows high + PCSS high, GTAO high, SSCS high,
+        // SSR half, volumetric fog quarter, terrain hex-tiling, car clearcoat detail, 16x aniso, Full texcap.
+        if (!cli_msaa_explicit) msaa = 2;
+        if (!cli_shadows_explicit) shadows_flag = "high";
+        if (!cli_bloom_explicit) bloom_flag = 1;
+        if (!cli_vrs_explicit) cli_graphics.vrs = true;
+        if (!cli_scale_explicit) {
+          cli_graphics.scale = 0;
+          cli_graphics.base_540p = false;
+        }
+        if (!cli_ssao_explicit) cli_graphics.ssao = carview::modern::SsaoQuality::kHigh;
+        if (!cli_sscs_explicit) cli_graphics.contact_shadows = carview::modern::ContactShadows::kHigh;
+        if (!cli_pcss_explicit) cli_graphics.shadow_pcss = carview::modern::ShadowPcss::kHigh;
+        if (!cli_ssr_explicit) cli_graphics.ssr = carview::modern::SsrQuality::kHalf;
+        if (!cli_volfog_explicit) cli_graphics.volumetric_fog = carview::modern::VolumetricFog::kQuarter;
+        if (!cli_hextile_explicit) cli_graphics.hex_tiling = true;
+        if (!cli_cardetail_explicit) cli_graphics.car_detail = true;
+        if (!cli_texcap_explicit) cli_graphics.texture_cap = carview::modern::TextureCap::kFull;
+        if (!cli_fpscap_explicit) cli_graphics.fps_cap = 30;
       }
-      if (!cli_output_explicit && cli_graphics.scale != 0) {
-        cli_graphics.upscaler = carview::modern::Upscaler::kCas;
-        cli_graphics.sharpening = 55.0f;
-      }
-      if (motion_blur_flag < 0) motion_blur_flag = 0;
-      if (dof_flag < 0) dof_flag = 0;
     }
 #endif
   }

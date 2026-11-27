@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "name": "Mesa Turnip Adreno Driver (MrPurple T30)",
+  "description": "Open-source Mesa Freedreno Turnip Vulkan 1.4 driver for Qualcomm Adreno 6xx/7xx GPUs, tuned with TU_DEBUG=sysmem for Shift Engine on Android (Odin 2 / Snapdragon 8 Gen 2).",
+  "author": "Mesa 3D / Freedreno Turnip contributors (packaged by Mr_Purple_666)",
+  "packageVersion": "T30",
+  "vendor": "Mesa",
+  "driverVersion": "26.3.0-devel (git-62ac221a33, Vulkan 1.4.359)",
+  "license": "MIT",
+  "minApi": 29,
+  "libraryName": "libvulkan_freedreno.so"
+}

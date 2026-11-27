@@ -642,14 +642,15 @@ void Renderer::record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_d
 
 void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescriptorSet src_set, bool src_is_fxaa,
                               uint32_t src_w, uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w,
-                              uint32_t dst_h) {
+                              uint32_t dst_h, VkPipeline final_pipe, bool final_is_color_attachment) {
   const auto color_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   const auto color_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
   const auto read_stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   const auto read_acc = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   const float sharp = graphics_.sharpening / 100.0f;
+  const VkPipeline out_pipe = final_pipe ? final_pipe : upscale_pipe_;
   auto draw_up = [&](VkDescriptorSet set, VkImage target_img, VkImageView target_view, uint32_t sw, uint32_t sh,
-                     uint32_t dw, uint32_t dh, float mode) {
+                     uint32_t dw, uint32_t dh, float mode, VkPipeline pipe, bool leave_color_att) {
     image_barrier(cmd, target_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, read_stage, VK_ACCESS_2_NONE, color_stage, color_write);
     VkRenderingAttachmentInfo col{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -667,7 +668,7 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
     VkRect2D sc{{0, 0}, {dw, dh}};
     vkCmdSetViewport(cmd, 0, 1, &vp);
     vkCmdSetScissor(cmd, 0, 1, &sc);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, upscale_pipe_);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, upscale_layout_, 0, 1, &set, 0, nullptr);
     struct {
       float src_size[4], dst_size[4], params[4];
@@ -677,8 +678,10 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
     vkCmdPushConstants(cmd, upscale_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRendering(cmd);
-    image_barrier(cmd, target_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+    if (!leave_color_att) {
+      image_barrier(cmd, target_img, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
+    }
   };
   const auto choice = active_upscaler();
   if (choice.temporal && temporal_pipe_ && temporal_hist_[0].view && temporal_hist_[1].view) {
@@ -728,16 +731,17 @@ void Renderer::record_upscale(VkCommandBuffer cmd, VkImage /*src_img*/, VkDescri
     vkCmdEndRendering(cmd);
     image_barrier(cmd, hist_out.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, color_stage, color_write, read_stage, read_acc);
-    draw_up(upscale_set_hist_[out_idx], dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, sharp > 0.0f ? 3.0f : 0.0f);
+    draw_up(upscale_set_hist_[out_idx], dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, sharp > 0.0f ? 3.0f : 0.0f,
+            out_pipe, final_is_color_attachment);
     temporal_reset_ = false;
     temporal_idx_ ^= 1u;
   } else if (choice.active == modern::Upscaler::kFsr1) {
-    draw_up(src_set, upscale_tmp_.image, upscale_tmp_.view, src_w, src_h, dst_w, dst_h, 2.0f);
-    draw_up(upscale_set_tmp_, dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, 3.0f);
+    draw_up(src_set, upscale_tmp_.image, upscale_tmp_.view, src_w, src_h, dst_w, dst_h, 2.0f, upscale_pipe_, false);
+    draw_up(upscale_set_tmp_, dst_img, dst_view, dst_w, dst_h, dst_w, dst_h, 3.0f, out_pipe, final_is_color_attachment);
   } else if (choice.active == modern::Upscaler::kCas) {
-    draw_up(src_set, dst_img, dst_view, src_w, src_h, dst_w, dst_h, 1.0f);
+    draw_up(src_set, dst_img, dst_view, src_w, src_h, dst_w, dst_h, 1.0f, out_pipe, final_is_color_attachment);
   } else {
-    draw_up(src_set, dst_img, dst_view, src_w, src_h, dst_w, dst_h, 0.0f);
+    draw_up(src_set, dst_img, dst_view, src_w, src_h, dst_w, dst_h, 0.0f, out_pipe, final_is_color_attachment);
   }
   mark(cmd, "upscale");
 }

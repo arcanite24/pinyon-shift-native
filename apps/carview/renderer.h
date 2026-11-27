@@ -630,7 +630,10 @@ class Renderer {
   bool gpu_timing() const { return gpu_timing_; }
   // The format the scene's pipelines draw into: the output's, or RGBA16F
   // under the post chain.
-  VkFormat scene_format() const { return options_.post.enabled ? VK_FORMAT_R16G16B16A16_SFLOAT : color_format_; }
+  VkFormat scene_format() const {
+    if (!options_.post.enabled) return color_format_;
+    return compact_hdr_scene_ ? VK_FORMAT_B10G11R11_UFLOAT_PACK32 : VK_FORMAT_R16G16B16A16_SFLOAT;
+  }
   bool post() const { return options_.post.enabled; }
   bool reverse_z() const { return options_.reverse_z; }
   bool backface_cull() const { return options_.backface_cull; }
@@ -836,7 +839,8 @@ class Renderer {
     return options_.post.enabled ? modern::scene_extent({out_w, out_h}, graphics_.scale, graphics_.base_540p)
                                  : modern::Extent{out_w, out_h};
   }
-  VkImageView depth_resolved_view() const { return depth_resolved_.view; }
+  VkImageView depth_resolved_view() const { return depth_resolved_.view ? depth_resolved_.view : depth_.view; }
+  bool depth_resolve_supported() const { return depth_resolve_supported_; }
   uint32_t samples() const { return uint32_t(samples_); }
   uint32_t validation_messages() const { return validation_messages_; }
 
@@ -888,7 +892,7 @@ class Renderer {
                    uint32_t h);
   void record_upscale(VkCommandBuffer cmd, VkImage src_img, VkDescriptorSet src_set, bool src_is_fxaa,
                       uint32_t src_w, uint32_t src_h, VkImage dst_img, VkImageView dst_view, uint32_t dst_w,
-                      uint32_t dst_h);
+                      uint32_t dst_h, VkPipeline final_pipe = VK_NULL_HANDLE, bool final_is_color_attachment = false);
   void record_motion_vectors(VkCommandBuffer cmd);
   void record_mblur_tiles(VkCommandBuffer cmd);
   void record_inspector_preview(VkCommandBuffer cmd, VkBuffer readback_dst);
@@ -918,6 +922,7 @@ class Renderer {
   // True when record_scene routes post -> stand_in_ (VK_FORMAT_R8G8B8A8_UNORM)
   // before blitting/tonemapping to final_image.
   bool uses_modern_chain() const;
+  bool uses_standin_target() const;
   // Copies the changed overlay layers into their buffer (none of the GPU's
   // frames may be using it); false when none is staged. `final_format` is the
   // non-modern-chain target format (ignored when uses_modern_chain() is true,
@@ -1018,6 +1023,8 @@ class Renderer {
   bool in_render_pass_ = false;
   bool skip_scene_ = false;
   bool bc_compression_supported_ = false;
+  bool b10g11r11_supported_ = false;
+  bool compact_hdr_scene_ = false;
   uint32_t mark_end_ = 1;
   std::vector<const char*> mark_labels_;
   std::vector<std::pair<std::string, double>> stage_ms_;
@@ -1036,6 +1043,7 @@ class Renderer {
   bool lut_dirty_ = false;
   bool lum_reset_ = true;
   bool bloom_prev_valid_ = false;
+  bool bloom_zero_cleared_ = false;
   VkImage bloom_persist_img_ = VK_NULL_HANDLE;
   VkDescriptorSetLayout post_set_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout post_layout_ = VK_NULL_HANDLE;
@@ -1076,7 +1084,7 @@ class Renderer {
                    inspector_layout_ = VK_NULL_HANDLE;
   VkPipeline ssao_pipe_ = VK_NULL_HANDLE, sscs_pipe_ = VK_NULL_HANDLE, ssr_pipe_ = VK_NULL_HANDLE,
              vol_pipe_ = VK_NULL_HANDLE, mblur_tile_pipe_ = VK_NULL_HANDLE,
-             fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE,
+             fxaa_pipe_ = VK_NULL_HANDLE, upscale_pipe_ = VK_NULL_HANDLE, upscale_pipe_swap_ = VK_NULL_HANDLE,
              motion_pipe_ = VK_NULL_HANDLE, temporal_pipe_ = VK_NULL_HANDLE, inspector_pipe_ = VK_NULL_HANDLE;
   VkPipeline hdr_pipe_sdr_ = VK_NULL_HANDLE, hdr_pipe_swap_ = VK_NULL_HANDLE;
   VkFormat hdr_swap_fmt_ = VK_FORMAT_UNDEFINED;

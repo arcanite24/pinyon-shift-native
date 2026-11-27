@@ -29,8 +29,12 @@ public final class LauncherSettingsStore {
     public static final String KEY_VSYNC = "vsync";
     public static final String KEY_GPU_DRIVER = "android-gpu-driver";
 
-    public static final String[] PRESET_LABELS = { "Smooth 60", "Quality 30", "Low Power", "Low", "High" };
-    public static final String[] PRESET_VALUES = { "smooth-60", "quality-30", "low-power", "low", "high" };
+    public static final String[] PRESET_LABELS = {
+            "Low Power", "Performance 120", "Smooth 60", "Quality 30", "Best Graphics"
+    };
+    public static final String[] PRESET_VALUES = {
+            "low-power", "performance-120", "smooth-60", "quality-30", "ultra"
+    };
 
     public static final String[] TOUCH_LABELS = { "Auto", "On", "Off" };
     public static final String[] TOUCH_VALUES = { "auto", "on", "off" };
@@ -38,8 +42,8 @@ public final class LauncherSettingsStore {
     public static final String[] STEER_LABELS = { "Buttons", "Tilt", "Wheel" };
     public static final String[] STEER_VALUES = { "buttons", "tilt", "stick" };
 
-    public static final String[] FPS_LABELS = { "60", "30", "40", "Display" };
-    public static final String[] FPS_VALUES = { "60", "30", "40", "display" };
+    public static final String[] FPS_LABELS = { "30", "40", "60", "120", "Display" };
+    public static final String[] FPS_VALUES = { "30", "40", "60", "120", "display" };
 
     public static final String[] VSYNC_LABELS = { "FIFO", "Mailbox", "Immediate" };
     public static final String[] VSYNC_VALUES = { "fifo", "mailbox", "immediate" };
@@ -261,6 +265,11 @@ public final class LauncherSettingsStore {
             if ("wheel".equals(t) || "thumbstick".equals(t)) t = "stick";
             if ("always".equals(t)) t = "on";
             if ("0".equals(t) && values == FPS_VALUES) t = "display";
+            if (values == PRESET_VALUES) {
+                if ("low".equals(t) || "ultra-low".equals(t) || "ultra-low-30".equals(t)) t = "low-power";
+                else if ("high".equals(t) || "best-graphics".equals(t)) t = "ultra";
+                else if ("odin-120".equals(t)) t = "performance-120";
+            }
             for (int i = 0; i < values.length; ++i) {
                 if (values[i].equalsIgnoreCase(t)) return i;
             }

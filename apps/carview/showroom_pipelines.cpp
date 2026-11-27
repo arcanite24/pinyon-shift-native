@@ -7,6 +7,7 @@
 #include "mask_frag_spv.h"
 #include "shadow_frag_spv.h"
 #include "showroom_frag_spv.h"
+#include "showroom_opaque_frag_spv.h"
 #include "showroom_vert_spv.h"
 #include "world_frag_spv.h"
 #include "world_opaque_frag_spv.h"
@@ -517,9 +518,11 @@ bool Showroom::create_pipelines(std::string& error) {
     info.pCode = code;
     return vkCreateShaderModule(r_.device_, &info, nullptr, &module);
   };
-  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE, mask = VK_NULL_HANDLE;
+  VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE, frag_opaque = VK_NULL_HANDLE, mask = VK_NULL_HANDLE;
   VK_TRY(make_module(kShowroom_vert_spv, sizeof(kShowroom_vert_spv), vert, "showroom.vert"), "showroom.vert");
   VK_TRY(make_module(kShowroom_frag_spv, sizeof(kShowroom_frag_spv), frag, "showroom.frag"), "showroom.frag");
+  VK_TRY(make_module(kShowroom_opaque_frag_spv, sizeof(kShowroom_opaque_frag_spv), frag_opaque, "showroom_opaque.frag"),
+         "showroom_opaque.frag");
   VK_TRY(make_module(kMask_frag_spv, sizeof(kMask_frag_spv), mask, "mask.frag"), "mask.frag");
 
   static_assert(sizeof(bake::Vertex) == 32);
@@ -674,7 +677,8 @@ bool Showroom::create_pipelines(std::string& error) {
       info.pMultisampleState = &multisample;
       info.pDepthStencilState = &depth;
       info.pColorBlendState = &blend;
-      const bool use_vrs = r_.vrs_supported() && color_out && (blend_mode == 0) && samples == r_.samples_ &&
+      const bool use_vrs = r_.vrs_supported() && color_out &&
+                           ((blend_mode == 0) || (dst == &world_alpha_)) && samples == r_.samples_ &&
                            (dst != &env_world_opaque_) && (dst != &env_world_coverage_) && (dst != &env_car_opaque_);
       info.pDynamicState = (blend_mode == 5) ? &dynamic_blend_const
                                              : (vertex ? (use_vrs ? &dynamic_bias_vrs : &dynamic_bias)
@@ -685,9 +689,14 @@ bool Showroom::create_pipelines(std::string& error) {
   };
 
   const VkCullModeFlags cull_back = r_.backface_cull() ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-  queue_build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_, VK_NULL_HANDLE, nullptr, false,
+  // Discard-free Early-Z car pipelines for solid opaque panels; full showroom.frag for grilles/cutouts/spinning spokes.
+  queue_build(frag_opaque, r_.scene_format(), r_.samples_, true, true, 0, opaque_, VK_NULL_HANDLE, nullptr, false,
               VK_NULL_HANDLE, cull_back);
-  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_, VK_NULL_HANDLE, nullptr, false,
+  queue_build(frag_opaque, r_.scene_format(), r_.samples_, true, false, 0, opaque_after_z_, VK_NULL_HANDLE, nullptr, false,
+              VK_NULL_HANDLE, cull_back, true);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, true, 0, opaque_cutout_, VK_NULL_HANDLE, nullptr, false,
+              VK_NULL_HANDLE, cull_back);
+  queue_build(frag, r_.scene_format(), r_.samples_, true, false, 0, opaque_cutout_after_z_, VK_NULL_HANDLE, nullptr, false,
               VK_NULL_HANDLE, cull_back, true);
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 5, opaque_fade_, VK_NULL_HANDLE, nullptr, false,
               VK_NULL_HANDLE, cull_back);
@@ -696,7 +705,8 @@ bool Showroom::create_pipelines(std::string& error) {
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 1, glass_);
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 2, glass_mul_);
   queue_build(frag, r_.scene_format(), r_.samples_, true, false, 3, glass_add_);
-  if (!guest_) queue_build(frag, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
+  if (!guest_)
+    queue_build(frag_opaque, VK_FORMAT_R16G16B16A16_SFLOAT, VK_SAMPLE_COUNT_1_BIT, true, true, 0, env_car_opaque_);
   queue_build(mask, VK_FORMAT_R8_UNORM, r_.samples_, false, false, 0, mask_);
 
   // Under-car contact / drop shadow pipeline (drive mode multiply-blended quad).
@@ -872,6 +882,7 @@ bool Showroom::create_pipelines(std::string& error) {
   if (world_opaque_frag) vkDestroyShaderModule(r_.device_, world_opaque_frag, nullptr);
   vkDestroyShaderModule(r_.device_, vert, nullptr);
   vkDestroyShaderModule(r_.device_, frag, nullptr);
+  if (frag_opaque) vkDestroyShaderModule(r_.device_, frag_opaque, nullptr);
   vkDestroyShaderModule(r_.device_, mask, nullptr);
   VK_TRY(result, "showroom pipelines");
   return pipes_ok;

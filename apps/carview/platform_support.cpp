@@ -6,6 +6,11 @@
 #include <cctype>
 #include <cstdio>
 #include <system_error>
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <malloc.h>
+#include <unistd.h>
+#endif
 
 namespace carview {
 namespace {
@@ -189,5 +194,98 @@ std::filesystem::path resolve_default_save_path(const std::filesystem::path& por
   if (!pref_drive_dir.empty()) return pref_drive_dir / "save.txt";
   return {};
 }
+
+#ifdef __ANDROID__
+namespace {
+
+struct AdpfApi {
+  bool loaded = false;
+  void* (*get_manager)() = nullptr;
+  void* (*create_session)(void*, const int32_t*, size_t, int64_t) = nullptr;
+  int (*update_target)(void*, int64_t) = nullptr;
+  int (*report_actual)(void*, int64_t) = nullptr;
+  void (*close_session)(void*) = nullptr;
+};
+
+const AdpfApi& adpf_api() {
+  static AdpfApi api = []() {
+    AdpfApi a;
+    if (void* h = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL)) {
+      a.get_manager = reinterpret_cast<void* (*)()>(dlsym(h, "APerformanceHint_getManager"));
+      a.create_session = reinterpret_cast<void* (*)(void*, const int32_t*, size_t, int64_t)>(
+          dlsym(h, "APerformanceHint_createSession"));
+      a.update_target =
+          reinterpret_cast<int (*)(void*, int64_t)>(dlsym(h, "APerformanceHint_updateTargetWorkDuration"));
+      a.report_actual =
+          reinterpret_cast<int (*)(void*, int64_t)>(dlsym(h, "APerformanceHint_reportActualWorkDuration"));
+      a.close_session = reinterpret_cast<void (*)(void*)>(dlsym(h, "APerformanceHint_closeSession"));
+      a.loaded = a.get_manager && a.create_session && a.update_target && a.report_actual && a.close_session;
+    }
+    return a;
+  }();
+  return api;
+}
+
+int64_t fps_to_target_ns(int target_fps) {
+  const int fps = std::clamp(target_fps > 0 ? target_fps : 60, 24, 240);
+  // Target 85% of frame budget so Android's scheduler keeps Prime/Performance cores awake.
+  return int64_t(850000000LL / fps);
+}
+
+}  // namespace
+
+AndroidPerfHintSession::~AndroidPerfHintSession() { close(); }
+
+bool AndroidPerfHintSession::init(int target_fps) {
+  close();
+  const auto& api = adpf_api();
+  if (!api.loaded) return false;
+  void* mgr = api.get_manager();
+  if (!mgr) return false;
+  target_ns_ = fps_to_target_ns(target_fps);
+  const int32_t tid = static_cast<int32_t>(gettid());
+  session_ = api.create_session(mgr, &tid, 1, target_ns_);
+  if (session_) {
+    std::fprintf(stderr, "[adpf] active: tid=%d target_fps=%d target_ms=%.2f\n",
+                 tid, target_fps, double(target_ns_) / 1e6);
+  }
+  return session_ != nullptr;
+}
+
+void AndroidPerfHintSession::update_target_fps(int target_fps) {
+  if (!session_) return;
+  const int64_t ns = fps_to_target_ns(target_fps);
+  if (ns == target_ns_) return;
+  target_ns_ = ns;
+  const auto& api = adpf_api();
+  if (api.loaded) api.update_target(session_, target_ns_);
+}
+
+void AndroidPerfHintSession::report_frame_ns(int64_t actual_work_ns) {
+  if (!session_ || actual_work_ns <= 0) return;
+  const auto& api = adpf_api();
+  if (api.loaded) api.report_actual(session_, actual_work_ns);
+}
+
+void AndroidPerfHintSession::close() {
+  if (!session_) return;
+  const auto& api = adpf_api();
+  if (api.loaded) api.close_session(session_);
+  session_ = nullptr;
+}
+
+void trim_android_memory() {
+#ifdef M_PURGE
+  mallopt(M_PURGE, 0);
+#endif
+}
+#else
+AndroidPerfHintSession::~AndroidPerfHintSession() = default;
+bool AndroidPerfHintSession::init(int) { return false; }
+void AndroidPerfHintSession::update_target_fps(int) {}
+void AndroidPerfHintSession::report_frame_ns(int64_t) {}
+void AndroidPerfHintSession::close() {}
+void trim_android_memory() {}
+#endif
 
 }  // namespace carview

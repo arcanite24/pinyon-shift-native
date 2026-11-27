@@ -70,15 +70,16 @@ void Renderer::set_inspector_preview(bool active, InspectorView view) {
 void Renderer::set_hiz_preview_view(VkImageView view) {
   if (view == hiz_preview_view_) return;
   hiz_preview_view_ = view;
-  if (!modern_ready_ || !inspector_sets_[5] || !post_depth_sampler_ || !post_sampler_ || !depth_resolved_.view) return;
+  const VkImageView depth_v = depth_resolved_view();
+  if (!modern_ready_ || !inspector_sets_[5] || !post_depth_sampler_ || !post_sampler_ || !depth_v) return;
   if (options_.window && device_) wait_idle();
   const VkDescriptorImageInfo info =
       hiz_preview_view_ ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
-                        : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                        : VkDescriptorImageInfo{post_depth_sampler_, depth_v,
                                                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
   const VkDescriptorImageInfo hiz_nearest =
       hiz_preview_view_ ? VkDescriptorImageInfo{post_depth_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
-                        : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+                        : VkDescriptorImageInfo{post_depth_sampler_, depth_v,
                                                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
   VkWriteDescriptorSet writes[3]{};
   uint32_t count = 0;
@@ -375,6 +376,9 @@ bool Renderer::create_modern_passes(std::string& error) {
                 mblur_tile_pipe_);
   queue_fs_pipe(kFxaa_frag_spv, sizeof(kFxaa_frag_spv), fxaa_layout_, VK_FORMAT_R8G8B8A8_UNORM, fxaa_pipe_);
   queue_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, VK_FORMAT_R8G8B8A8_UNORM, upscale_pipe_);
+  if (color_format_ != VK_FORMAT_R8G8B8A8_UNORM && color_format_ != VK_FORMAT_UNDEFINED) {
+    queue_fs_pipe(kUpscale_frag_spv, sizeof(kUpscale_frag_spv), upscale_layout_, color_format_, upscale_pipe_swap_);
+  }
   queue_fs_pipe(kMotion_vectors_frag_spv, sizeof(kMotion_vectors_frag_spv), motion_layout_,
                 VK_FORMAT_R16G16B16A16_SFLOAT, motion_pipe_);
   queue_fs_pipe(kTemporal_upscale_frag_spv, sizeof(kTemporal_upscale_frag_spv), temporal_layout_,
@@ -392,6 +396,7 @@ bool Renderer::create_modern_passes(std::string& error) {
   if (!pipes_ok) return false;
   if (color_format_ == VK_FORMAT_R8G8B8A8_UNORM) {
     hdr_pipe_swap_ = hdr_pipe_sdr_;
+    upscale_pipe_swap_ = upscale_pipe_;
   }
   hdr_swap_fmt_ = color_format_;
   modern_ready_ = true;
@@ -408,6 +413,8 @@ void Renderer::destroy_modern_passes() {
   if (temporal_pipe_) vkDestroyPipeline(device_, temporal_pipe_, nullptr), temporal_pipe_ = VK_NULL_HANDLE;
   if (motion_pipe_) vkDestroyPipeline(device_, motion_pipe_, nullptr), motion_pipe_ = VK_NULL_HANDLE;
   if (mblur_tile_pipe_) vkDestroyPipeline(device_, mblur_tile_pipe_, nullptr), mblur_tile_pipe_ = VK_NULL_HANDLE;
+  if (upscale_pipe_swap_ && upscale_pipe_swap_ != upscale_pipe_) vkDestroyPipeline(device_, upscale_pipe_swap_, nullptr);
+  upscale_pipe_swap_ = VK_NULL_HANDLE;
   if (upscale_pipe_) vkDestroyPipeline(device_, upscale_pipe_, nullptr), upscale_pipe_ = VK_NULL_HANDLE;
   if (fxaa_pipe_) vkDestroyPipeline(device_, fxaa_pipe_, nullptr), fxaa_pipe_ = VK_NULL_HANDLE;
   if (vol_pipe_) vkDestroyPipeline(device_, vol_pipe_, nullptr), vol_pipe_ = VK_NULL_HANDLE;
@@ -446,21 +453,22 @@ void Renderer::destroy_modern_passes() {
 }
 
 void Renderer::update_modern_descriptors() {
-  if (!modern_ready_ || !depth_resolved_.view) return;
+  const VkImageView depth_v = depth_resolved_view();
+  if (!modern_ready_ || !depth_v) return;
   const VkImageView fb = ao_white_.view;
   const VkImageView vel_fb = vel_zero_.view ? vel_zero_.view : fb;
   auto vv = [&](const Image& img) { return img.view ? img.view : fb; };
   auto vvel = [&](const Image& img) { return img.view ? img.view : vel_fb; };
   const VkImageView ao_view =
       (graphics_.ssao != modern::SsaoQuality::kOff && ao_blur_.view) ? ao_blur_.view : ao_white_.view;
-  const VkImageView shadow_view = shadow_map_.view ? shadow_map_.view : depth_resolved_.view;
+  const VkImageView shadow_view = shadow_map_.view ? shadow_map_.view : depth_v;
   VkDescriptorImageInfo ssao_imgs[6] = {
       {post_sampler_, ao_white_.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(ao_raw_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(ao_tmp_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
   };
   VkDescriptorImageInfo tex_imgs[19] = {
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -470,19 +478,19 @@ void Renderer::update_modern_descriptors() {
       {post_sampler_, vv(upscale_tmp_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(stand_in_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(stand_in_fxaa_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[0]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(temporal_hist_[1]), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vv(scene_sdr_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, ao_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_depth_sampler_, shadow_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       hiz_preview_view_
           ? VkDescriptorImageInfo{post_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
-          : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+          : VkDescriptorImageInfo{post_depth_sampler_, depth_v,
                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vvel(motion_vec_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, vvel(mblur_tile_), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };
@@ -539,25 +547,25 @@ void Renderer::update_modern_descriptors() {
   const VkDescriptorImageInfo hiz_nearest =
       hiz_preview_view_
           ? VkDescriptorImageInfo{post_depth_sampler_, hiz_preview_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}
-          : VkDescriptorImageInfo{post_depth_sampler_, depth_resolved_.view,
+          : VkDescriptorImageInfo{post_depth_sampler_, depth_v,
                                   VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
   VkDescriptorImageInfo ssr_imgs[8] = {
       {post_sampler_, hdr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       hiz_nearest,
       {post_sampler_, ssr_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
       {post_sampler_, hdr_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       hiz_nearest,
       {post_sampler_, ssr_raw_.view ? ssr_raw_.view : ssr_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };
-  const VkImageView vol_sh_view = (shadow_map_.view && shadow_sampler_) ? shadow_map_.view : depth_resolved_.view;
+  const VkImageView vol_sh_view = (shadow_map_.view && shadow_sampler_) ? shadow_map_.view : depth_v;
   const VkSampler vol_sh_samp = shadow_sampler_ ? shadow_sampler_ : post_depth_sampler_;
   VkDescriptorImageInfo vol_imgs[6] = {
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {vol_sh_samp, vol_sh_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vol_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+      {post_depth_sampler_, depth_v, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {vol_sh_samp, vol_sh_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
       {post_sampler_, vol_raw_.view ? vol_raw_.view : vol_fb, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
   };

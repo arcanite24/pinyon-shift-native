@@ -16,6 +16,7 @@ SDK; JAVA_HOME or the PATH gives javac and keytool.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -188,15 +189,50 @@ def main() -> int:
             shutil.copy2(so, lib)
         with zipfile.ZipFile(base, "a") as z:
             z.write(dex / "classes.dex", "classes.dex", compress_type=zipfile.ZIP_DEFLATED)
-            # Stored, so the loader maps it from the APK (extractNativeLibs false).
-            z.write(lib, "lib/arm64-v8a/libmain.so", compress_type=zipfile.ZIP_STORED)
-            if a.turnip_dir:
-                turnip_so = a.turnip_dir / "libvulkan_freedreno.so"
+            # extractNativeLibs=true (required by libadrenotools hook libs): compress .so entries cleanly.
+            z.write(lib, "lib/arm64-v8a/libmain.so", compress_type=zipfile.ZIP_DEFLATED)
+            hook_dir = a.build / "_deps" / "libadrenotools-build" / "src" / "hook"
+            hook_names = ("libhook_impl.so", "libmain_hook.so", "libfile_redirect_hook.so", "libgsl_alloc_hook.so")
+            bundled_hooks = 0
+            for hname in hook_names:
+                hso = hook_dir / hname
+                if not hso.is_file():
+                    continue
+                hlib = t / hname
+                if strip:
+                    run([strip, "--strip-unneeded", "-o", hlib, hso])
+                else:
+                    shutil.copy2(hso, hlib)
+                z.write(hlib, f"lib/arm64-v8a/{hname}", compress_type=zipfile.ZIP_DEFLATED)
+                bundled_hooks += 1
+            turnip_dir = a.turnip_dir
+            if not turnip_dir:
+                default_turnip = ROOT / "assets" / "drivers" / "turnip"
+                if default_turnip.is_dir():
+                    turnip_dir = default_turnip
+            bundled_turnip = None
+            if turnip_dir and turnip_dir.is_dir():
+                turnip_so = turnip_dir / "libvulkan_freedreno.so"
+                if not turnip_so.is_file():
+                    meta_p = turnip_dir / "meta.json"
+                    if meta_p.is_file():
+                        try:
+                            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+                            lib_name = meta.get("libraryName", "")
+                            if lib_name and (turnip_dir / lib_name).is_file():
+                                turnip_so = turnip_dir / lib_name
+                        except Exception:
+                            pass
+                if not turnip_so.is_file():
+                    cands = sorted(turnip_dir.glob("*.so"))
+                    if cands:
+                        turnip_so = cands[0]
                 if turnip_so.is_file():
                     z.write(turnip_so, "assets/drivers/turnip/libvulkan_freedreno.so",
                             compress_type=zipfile.ZIP_DEFLATED)
+                    bundled_turnip = turnip_so.name
                     for extra in ("meta.json", "NOTICE.txt"):
-                        ep = a.turnip_dir / extra
+                        ep = turnip_dir / extra
                         if ep.is_file():
                             z.write(ep, f"assets/drivers/turnip/{extra}", compress_type=zipfile.ZIP_DEFLATED)
         aligned = t / "aligned.apk"
@@ -205,7 +241,13 @@ def main() -> int:
         run([tools / ("apksigner" + BAT), "sign", "--ks", keystore, "--ks-pass", "pass:android", "--ks-key-alias",
              "shiftdebug", "--out", apk, aligned])
         run([tools / ("apksigner" + BAT), "verify", apk])
-    print(f"android-apk: {apk} ({apk.stat().st_size / 2**20:.1f} MiB), lib {lib_size(so, strip)}")
+    extras = []
+    if bundled_hooks:
+        extras.append(f"{bundled_hooks} adrenotools hooks")
+    if bundled_turnip:
+        extras.append(f"turnip={bundled_turnip}")
+    extra_str = f" [{', '.join(extras)}]" if extras else ""
+    print(f"android-apk: {apk} ({apk.stat().st_size / 2**20:.1f} MiB), lib {lib_size(so, strip)}{extra_str}")
     return 0
 
 

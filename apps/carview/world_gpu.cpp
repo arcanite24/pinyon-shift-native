@@ -1055,6 +1055,7 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
   const VkPipeline op_pipe = (need_opaque_dither && opaque_dither_)
                                  ? opaque_dither_
                                  : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
+  const uint32_t max_draw = std::min<uint32_t>(generation_.rows, kMaxPerBatch);
   for (uint32_t b = 0; b < gpuworld::kBatchCount; ++b) {
     const VkPipeline pipeline = b >= gpuworld::kCutout ? coverage_ : op_pipe;
     if (pipeline != bound) {
@@ -1066,7 +1067,7 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
                       decal ? p.bias_sign * p.decal_bias_slope : 0.0f);
     vkCmdDrawIndexedIndirectCount(cmd, s.commands.buffer,
                                   VkDeviceSize(b) * kMaxPerBatch * sizeof(gpuworld::IndirectCommand),
-                                  s.counts.buffer, VkDeviceSize(b) * sizeof(uint32_t), kMaxPerBatch,
+                                  s.counts.buffer, VkDeviceSize(b) * sizeof(uint32_t), max_draw,
                                   sizeof(gpuworld::IndirectCommand));
   }
   if (generation_.trees_count > 0 && tree_coverage_) {

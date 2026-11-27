@@ -569,8 +569,17 @@ bool DriveWorldHost::open_world_and_car() {
             app.audio_host.init_sfx(groot_cached, sfx_cache, app.audio_host.car_burble_bank(), app.state_root);
             app.audio_host.init_satnav(groot_cached, sfx_cache, app.language, app.metric_units);
             app.audio_host.init_vo(groot_cached, app.language);
+#ifdef __ANDROID__
+            const bool skip_acoustics =
+                (app.preset_name == "low-power" || app.preset_name == "low_power" || app.preset_name == "ultra-low-30");
+            if (!skip_acoustics) {
+              app.audio_host.init_acoustics(groot_cached, sfx_cache, app.world_dir, app.rally_catalog.package_dir,
+                                            async_sc);
+            }
+#else
             app.audio_host.init_acoustics(groot_cached, sfx_cache, app.world_dir, app.rally_catalog.package_dir,
                                           async_sc);
+#endif
             if (!app.colorado_world() && !app.rally_catalog.package_dir.empty()) {
               app.audio_host.init_codriver(app.rally_catalog.package_dir, sfx_cache, app.language);
             }
@@ -696,7 +705,10 @@ bool DriveWorldHost::open_world_and_car() {
           gather_options.route = active_route;
           if (!app.flat_world && !app.no_far) {
 #ifdef __ANDROID__
-            gather_options.far_radius = app.low_preset ? 2200.0 : 3000.0;
+            const bool is_fast =
+                (app.preset_name == "low-power" || app.preset_name == "low_power" || app.preset_name == "ultra-low-30" ||
+                 app.preset_name == "performance-120" || app.preset_name == "performance_120");
+            gather_options.far_radius = is_fast ? 1500.0 : (app.low_preset ? 2000.0 : 2500.0);
 #else
             gather_options.far_radius = 3000;
 #endif
@@ -704,15 +716,21 @@ bool DriveWorldHost::open_world_and_car() {
           if (const char* fi = std::getenv("SHIFT_FAR_INNER")) gather_options.far_inner = std::atof(fi);
           if (!app.flat_world && !app.no_trees) {
 #ifdef __ANDROID__
-            gather_options.tree_radius = app.low_preset ? 850.0 : kTreeRadius;
+            const bool is_fast =
+                (app.preset_name == "low-power" || app.preset_name == "low_power" || app.preset_name == "ultra-low-30" ||
+                 app.preset_name == "performance-120" || app.preset_name == "performance_120");
+            gather_options.tree_radius = is_fast ? 550.0 : (app.low_preset ? 750.0 : 950.0);
 #else
             gather_options.tree_radius = kTreeRadius;
 #endif
           }
           if (!app.flat_world) {
 #ifdef __ANDROID__
-            const double prop_radius = app.low_preset ? 320.0 : kPropRadius;
-            gather_options.radius = app.low_preset ? 420.0 : kModelRadius;
+            const bool is_fast =
+                (app.preset_name == "low-power" || app.preset_name == "low_power" || app.preset_name == "ultra-low-30" ||
+                 app.preset_name == "performance-120" || app.preset_name == "performance_120");
+            const double prop_radius = is_fast ? 220.0 : (app.low_preset ? 280.0 : 380.0);
+            gather_options.radius = is_fast ? 300.0 : (app.low_preset ? 380.0 : 500.0);
 #else
             const double prop_radius = app.low_preset ? kLowPropRadius : kPropRadius;
             gather_options.radius = app.low_preset ? kLowModelRadius : kModelRadius;
@@ -947,6 +965,7 @@ bool DriveWorldHost::open_world_and_car() {
   if (app.status == 0) {
     std::lock_guard<std::mutex> lock(g_loaded_cars_mutex);
     g_loaded_cars[this] = {lower_ascii(app.car), options};
+    carview::trim_android_memory();
   }
   return app.status == 0;
 }

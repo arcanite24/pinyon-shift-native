@@ -454,6 +454,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"high", {"--preset", "high"}},
         {"ultra", {"--preset", "ultra"}},
         {"low-power", {"--preset", "low-power"}},
+        {"performance-120", {"--preset", "performance-120"}},
         {"smooth-60", {"--preset", "smooth-60"}},
         {"quality-30", {"--preset", "quality-30"}}}},
       {"window mode", {{"windowed", {}}, {"fullscreen", {"--fullscreen"}}}},

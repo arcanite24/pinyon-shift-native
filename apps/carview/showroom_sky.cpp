@@ -262,10 +262,14 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   ds.depthTestEnable = VK_TRUE;
   ds.depthWriteEnable = VK_FALSE;
   ds.depthCompareOp = r_.reverse_z() ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_LESS_OR_EQUAL;
-  const VkDynamicState dyn_states[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+  const VkDynamicState dyn_states[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                        VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR};
   VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dyn.dynamicStateCount = 2;
   dyn.pDynamicStates = dyn_states;
+  VkPipelineDynamicStateCreateInfo dyn_sky{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+  dyn_sky.dynamicStateCount = r_.vrs_supported() ? 3u : 2u;
+  dyn_sky.pDynamicStates = dyn_states;
 
   const VkPipelineShaderStageCreateInfo sky_stages[2] = {
       {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, sv, "main",
@@ -291,7 +295,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   gp.pMultisampleState = &ms;
   gp.pDepthStencilState = &ds;
   gp.pColorBlendState = &cb;
-  gp.pDynamicState = &dyn;
+  gp.pDynamicState = &dyn_sky;
   gp.layout = sky_pipe_layout_;
   VkResult res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &sky_pipe_base_);
 
@@ -315,6 +319,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
     VkGraphicsPipelineCreateInfo egp = gp;
     egp.pNext = &env_rend;
     egp.pMultisampleState = &ms1;
+    egp.pDynamicState = &dyn;
     VkPipelineColorBlendAttachmentState eatt{};
     eatt.colorWriteMask = att.colorWriteMask;
     VkPipelineColorBlendStateCreateInfo ecb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -397,6 +402,7 @@ bool Showroom::upload_sky(const world::RealTimeSkyAssets& assets, std::string& e
   gp.pStages = star_stages;
   gp.pVertexInputState = &star_vi;
   gp.pInputAssemblyState = &tri_ia;
+  gp.pDynamicState = &dyn;
   gp.layout = stars_pipe_layout_;
   if (res == VK_SUCCESS)
     res = vkCreateGraphicsPipelines(r_.device_, r_.pipeline_cache(), 1, &gp, nullptr, &stars_pipe_);
@@ -528,10 +534,12 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
   SkyUniforms u{};
   fill_sky_uniforms(frame_, u);
 
-  // Update mode 0 (atmosphere) and mode 1 (disc + clouds + horizon fog) UBOs.
-  // Pre-transfer WAR barrier ensures prior frame fragment reads complete before overwriting the UBO.
-  for (int m = 0; m < 2; ++m) {
-    u.cam_fwd[3] = float(m);
+  // When no starfield is visible (daytime), combine atmosphere + disc + clouds + horizon fog
+  // into a single opaque pass (mode 2) using sky_ubo_[0] only — halving sky fullscreen passes.
+  const bool need_stars = (star_count_ > 0 && tod_state_.star_fade > 0.005f);
+  const int pass_count = need_stars ? 2 : 1;
+  for (int m = 0; m < pass_count; ++m) {
+    u.cam_fwd[3] = need_stars ? float(m) : 2.0f;
     VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     b.srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
     b.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
@@ -558,14 +566,35 @@ void Showroom::record_sky_before(VkCommandBuffer cmd) {
 void Showroom::record_sky_draw(VkCommandBuffer cmd) {
   if (!sky_ready_) return;
   const int disc = tod_state_.is_moon ? (1 + tod_moon_phase_) : 0;
+  const bool need_stars = (star_count_ > 0 && tod_state_.star_fade > 0.005f);
 
-  // 1. Atmosphere gradient dome + elliptical sun haze.
+  // Smooth sky gradients and clouds are low-frequency: apply 2x2 VRS on Android or when VRS is active.
+  auto set_sky_vrs = [&]() {
+    if (!r_.vrs_supported() || !vkCmdSetFragmentShadingRateKHR) return;
+#if defined(__ANDROID__)
+    const bool coarse_sky = true;
+#else
+    const bool coarse_sky = r_.graphics_settings().vrs;
+#endif
+    const VkExtent2D sz = coarse_sky ? VkExtent2D{2, 2} : VkExtent2D{1, 1};
+    const VkFragmentShadingRateCombinerOpKHR ops[2] = {
+        VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR, VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR};
+    vkCmdSetFragmentShadingRateKHR(cmd, &sz, ops);
+  };
+
+  // 1. Atmosphere gradient dome (or combined single-pass daytime sky when !need_stars).
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_base_);
+  set_sky_vrs();
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[disc], 0, nullptr);
   vkCmdDraw(cmd, 3, 1, 0, 0);
 
+  if (!need_stars) {
+    r_.apply_vrs(cmd);
+    return;
+  }
+
   // 2. Stars.bin starfield instanced quads (drawn only when StarFade > 0.005).
-  if (star_count_ > 0 && tod_state_.star_fade > 0.005f) {
+  {
     struct {
       float view_proj_rot[16];
       float params[4];
@@ -591,9 +620,11 @@ void Showroom::record_sky_draw(VkCommandBuffer cmd) {
 
   // 3. Sun/Moon disc + Far clouds (2 layers) + Close lit clouds (2 layers) + Horizon fog skirt.
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layers_);
+  set_sky_vrs();
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, sky_pipe_layout_, 0, 1, &sky_sets_[6 + disc], 0,
                           nullptr);
   vkCmdDraw(cmd, 3, 1, 0, 0);
+  r_.apply_vrs(cmd);
 }
 
 

@@ -261,6 +261,7 @@ public class SetupActivity extends Activity {
             getWindow().setBackgroundDrawable(new ColorDrawable(COL_CANVAS));
         }
         configureProcessEnv();
+        if (maybeForwardBenchIntent(getIntent())) return;
         ensureDirectories();
         loadSettingsFromDisk();
         mIsLandscapeLayout = shouldUseLandscapeLayout();
@@ -275,10 +276,39 @@ public class SetupActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (maybeForwardBenchIntent(intent)) return;
         mLaunchingDrive = false;
         loadSettingsFromDisk();
         syncSettingsControls();
         refreshAllAsync();
+    }
+
+    private boolean maybeForwardBenchIntent(Intent intent) {
+        if (intent == null) return false;
+        String benchArgs = intent.getStringExtra(DriveActivity.EXTRA_BENCH_ARGS);
+        if (benchArgs == null) benchArgs = intent.getStringExtra("bench_args");
+        if (benchArgs == null || benchArgs.trim().isEmpty()) return false;
+        Intent drive = new Intent(SetupActivity.this, DriveActivity.class);
+        drive.putExtra(DriveActivity.EXTRA_FORCE_PLAY, true);
+        drive.putExtra(DriveActivity.EXTRA_BENCH_ARGS, benchArgs.trim());
+        String drv = intent.getStringExtra(DriveActivity.EXTRA_DRIVER_OVERRIDE);
+        if (drv == null) drv = intent.getStringExtra("driver");
+        if (drv != null && !drv.trim().isEmpty()) {
+            drive.putExtra(DriveActivity.EXTRA_DRIVER_OVERRIDE, drv.trim());
+        }
+        String tu = intent.getStringExtra(DriveActivity.EXTRA_TU_DEBUG);
+        if (tu == null) tu = intent.getStringExtra("tu_debug");
+        if (tu != null && !tu.trim().isEmpty()) {
+            drive.putExtra(DriveActivity.EXTRA_TU_DEBUG, tu.trim());
+        }
+        String envOv = intent.getStringExtra(DriveActivity.EXTRA_ENV_OVERRIDES);
+        if (envOv == null) envOv = intent.getStringExtra("env");
+        if (envOv != null && !envOv.trim().isEmpty()) {
+            drive.putExtra(DriveActivity.EXTRA_ENV_OVERRIDES, envOv.trim());
+        }
+        startActivity(drive);
+        finish();
+        return true;
     }
 
     @Override
@@ -477,6 +507,15 @@ public class SetupActivity extends Activity {
 
     private void updateSetting(String key, String value) {
         mSettings.put(key, value);
+        if (LauncherSettingsStore.KEY_PRESET.equals(key)) {
+            if ("performance-120".equals(value)) {
+                mSettings.put(LauncherSettingsStore.KEY_FPS_CAP, "120");
+            } else if ("smooth-60".equals(value)) {
+                mSettings.put(LauncherSettingsStore.KEY_FPS_CAP, "60");
+            } else {
+                mSettings.put(LauncherSettingsStore.KEY_FPS_CAP, "30");
+            }
+        }
         LauncherSettingsStore.writeAll(getSettingsFile(), mSettings);
         syncSettingsControls();
         updateDriverSummaryText();
@@ -1719,10 +1758,10 @@ public class SetupActivity extends Activity {
         String vsync = LauncherSettingsStore.getOrDefault(mSettings, LauncherSettingsStore.KEY_VSYNC, "fifo");
         String drv = LauncherSettingsStore.getOrDefault(mSettings, LauncherSettingsStore.KEY_GPU_DRIVER, "auto");
 
-        int presetIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.PRESET_VALUES, preset, 0);
+        int presetIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.PRESET_VALUES, preset, 2);
         int touchIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.TOUCH_VALUES, touch, 0);
         int steerIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.STEER_VALUES, steer, 0);
-        int fpsIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.FPS_VALUES, fps, 0);
+        int fpsIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.FPS_VALUES, fps, 2);
         int vsyncIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.VSYNC_VALUES, vsync, 0);
         int drvIdx = LauncherSettingsStore.indexOfValue(LauncherSettingsStore.DRIVER_VALUES, drv, 0);
 

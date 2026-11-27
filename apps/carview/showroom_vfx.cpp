@@ -249,10 +249,18 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   if (guest_ || !r_.device_) return true;
   if (vfx_ready_) return true;
 
-  // 1. Build 2560x2560 RGBA8 mipmapped particle texture atlas (10x10 grid of 256x256 cells, 100 slots).
+  // 1. Build RGBA8 mipmapped particle texture atlas (10x10 grid, 100 slots).
   //    Slot 0 = procedural soft puff; slots 1..31 = <Texture2> / *_grad*.xds ramps; slots 32..99 = primary textures.
-  std::vector<uint8_t> atlas_rgba(size_t(kExpandedAtlasSize) * kExpandedAtlasSize * 4, 0);
-  fill_soft_puff_cell(atlas_rgba.data(), kExpandedAtlasSize, kExpandedAtlasCell);
+#ifdef __ANDROID__
+  const uint32_t atlas_cell = low_memory_mode_ ? 128u : kExpandedAtlasCell;
+  const uint32_t atlas_mips = low_memory_mode_ ? 8u : kExpandedAtlasMips;
+#else
+  const uint32_t atlas_cell = kExpandedAtlasCell;
+  const uint32_t atlas_mips = kExpandedAtlasMips;
+#endif
+  const uint32_t atlas_size = kExpandedAtlasGrid * atlas_cell;
+  std::vector<uint8_t> atlas_rgba(size_t(atlas_size) * atlas_size * 4, 0);
+  fill_soft_puff_cell(atlas_rgba.data(), atlas_size, atlas_cell);
   atlas_tex_slot_.clear();
 
   if (lib) {
@@ -298,8 +306,8 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
         if (sanitize_alpha) sanitize_primary_particle_alpha(img);
         const uint32_t cx = slot % kExpandedAtlasGrid;
         const uint32_t cy = slot / kExpandedAtlasGrid;
-        blit_cell_bilinear(img.rgba.data(), img.width, img.height, atlas_rgba.data(), kExpandedAtlasSize, cx, cy,
-                           kExpandedAtlasCell);
+        blit_cell_bilinear(img.rgba.data(), img.width, img.height, atlas_rgba.data(), atlas_size, cx, cy,
+                           atlas_cell);
         atlas_tex_slot_[tname] = slot;
         ++slot;
       }
@@ -433,9 +441,10 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     return ok;
   };
 
-  if (!upload_rgba_image_mips(atlas_rgba.data(), kExpandedAtlasSize, kExpandedAtlasSize, kExpandedAtlasMips, true,
+  if (!upload_rgba_image_mips(atlas_rgba.data(), atlas_size, atlas_size, atlas_mips, true,
                               particle_atlas_, "particle atlas"))
     return false;
+  std::vector<uint8_t>().swap(atlas_rgba);
 
   // Load retail media/tracks/treadmark.xds (512x128 two-band strip: left = asphalt rubber, right = dirt/gravel rut),
   // falling back cleanly to procedural skid textures when unavailable.
@@ -474,7 +483,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
   psamp.magFilter = psamp.minFilter = VK_FILTER_LINEAR;
   psamp.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   psamp.minLod = 0.0f;
-  psamp.maxLod = float(kExpandedAtlasMips - 1u);
+  psamp.maxLod = float(atlas_mips - 1u);
   psamp.addressModeU = psamp.addressModeV = psamp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
   VK_TRY(vkCreateSampler(r_.device_, &psamp, nullptr, &particle_sampler_), "particle sampler");
 
@@ -491,9 +500,16 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     error = "particle instance buffer";
     return false;
   }
+#ifdef __ANDROID__
+  const uint32_t debris_cap_verts = low_memory_mode_ ? 16384u : 32768u;
+  const uint32_t spectator_cap_verts = 32768u;
+#else
+  const uint32_t debris_cap_verts = kMaxDebrisVerts;
+  const uint32_t spectator_cap_verts = kMaxSpectatorVerts;
+#endif
   if (!create_dyn_buffer(skid_asphalt_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
       !create_dyn_buffer(skid_rut_buf_, VkDeviceSize(kMaxSkidVerts) * sizeof(SkidGpuVertex), error) ||
-      !create_dyn_buffer(debris_buf_, VkDeviceSize(kMaxDebrisVerts) * sizeof(WorldVertex), error) ||
+      !create_dyn_buffer(debris_buf_, VkDeviceSize(debris_cap_verts) * sizeof(WorldVertex), error) ||
       !create_dyn_buffer(showcase_buf_, VkDeviceSize(kMaxShowcaseVerts) * sizeof(WorldVertex), error) ||
       !create_dyn_buffer(driver_buf_, VkDeviceSize(kMaxDriverVerts) * sizeof(WorldVertex), error)) {
     error = "skidmark/debris/driver vertex buffers";
@@ -507,7 +523,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
       // crowd tints/LOD distances, parsed .pgeo objects, and active Colorado/Rally world state).
       spectator_anim_.share_from(*shared_anim);
       anim_ok = spectator_anim_.catalog().has_3d_spectators();
-    } else {
+    } else if (!low_memory_mode_) {
       world::TrackPostConfig post_cfg{};
       post_cfg.load_file(options_.game_root / "media" / "tracks" / "colorado" / "TrackSettings.xml");
       anim_ok = spectator_anim_.init(options_.game_root / "media", post_cfg, &spec_err) &&
@@ -519,7 +535,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
                                  world::SpectatorCatalog::kAtlasSize, world::SpectatorCatalog::kAtlasMipLevels, true,
                                  spectator_atlas_, "spectator atlas") &&
           gpu_textures_.size() >= 2 && allocate_world_set(spectator_set_, spec_err) &&
-          create_dyn_buffer(spectator_buf_, VkDeviceSize(kMaxSpectatorVerts) * sizeof(WorldVertex), spec_err)) {
+          create_dyn_buffer(spectator_buf_, VkDeviceSize(spectator_cap_verts) * sizeof(WorldVertex), spec_err)) {
         // Bind mipmapped 2048x2048 spectator atlas to both binding 0 (albedo) and binding 3
         // (light_map) so dusk/night festival & outpost floodlight bounce illuminates crowds cleanly.
         const VkImageView white = gpu_textures_[0].view;
@@ -713,6 +729,12 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     cb.attachmentCount = 1;
     cb.pAttachments = &ba;
 
+    VkPipelineMultisampleStateCreateInfo pms = ms;
+    // When MSAA depth resolve is supported, particles draw onto the resolved 1-sample target
+    // so Pass 1 keeps MSAA color & depth 100% transient in TBDR GMEM (STORE_OP_DONT_CARE).
+    if (r_.samples_ != VK_SAMPLE_COUNT_1_BIT && r_.depth_resolve_supported()) {
+      pms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    }
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp.pNext = &rend;
     gp.stageCount = 2;
@@ -721,7 +743,7 @@ bool Showroom::init_vfx(const world::ParticleLibrary* lib, std::string& error) {
     gp.pInputAssemblyState = &ia;
     gp.pViewportState = &vp;
     gp.pRasterizationState = &rs;
-    gp.pMultisampleState = &ms;
+    gp.pMultisampleState = &pms;
     gp.pDepthStencilState = &ds;
     gp.pColorBlendState = &cb;
     gp.pDynamicState = &dyn;
@@ -943,7 +965,8 @@ void Showroom::set_debris_mesh(const std::vector<world::DebrisVertex>& tris) {
   debris_batches_.clear();
   if (!vfx_ready_ || !debris_buf_.ready() || tris.empty()) return;
   // Keep vertex count a multiple of 3 (complete triangles).
-  const uint32_t max_in = uint32_t(std::min(tris.size(), size_t(kMaxDebrisVerts)) / 3u) * 3u;
+  const uint32_t max_debris = uint32_t(debris_buf_.cap / sizeof(WorldVertex));
+  const uint32_t max_in = uint32_t(std::min(tris.size(), size_t(max_debris)) / 3u) * 3u;
   if (max_in == 0) return;
 
   // Camera near-lens exclusion sphere in scenery coordinates: cull debris triangles
@@ -1156,9 +1179,10 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
       spectator_anim_.build_spectator_mesh(eye_gx, eye_gy, eye_gz, tod_real_time_, active_ground, spectator_cpu_,
                                            &cache.shadow_discs, &frustum, &nearest_dist);
       constexpr uint32_t kShadowSegs = 8;
+      const uint32_t max_spec_verts = uint32_t(spectator_buf_.cap / sizeof(WorldVertex));
       const uint32_t max_shadow_verts = uint32_t(cache.shadow_discs.size()) * kShadowSegs * 3u;
       const uint32_t spec_cap =
-          (kMaxSpectatorVerts > max_shadow_verts) ? (kMaxSpectatorVerts - max_shadow_verts) : kMaxSpectatorVerts;
+          (max_spec_verts > max_shadow_verts) ? (max_spec_verts - max_shadow_verts) : max_spec_verts;
       const uint32_t n = (uint32_t(std::min(spectator_cpu_.size(), size_t(spec_cap))) / 3u) * 3u;
       uint32_t shadow_verts = 0;
 
@@ -1204,7 +1228,7 @@ void Showroom::record_debris_draw(VkCommandBuffer cmd) {
               0.0f, 0.70710678f, 1.0f, 0.70710678f, 0.0f, -0.70710678f, -1.0f, -0.70710678f, 0.0f,
           }};
           for (const auto& d : cache.shadow_discs) {
-            if (n + shadow_verts + kShadowSegs * 3u > kMaxSpectatorVerts) break;
+            if (n + shadow_verts + kShadowSegs * 3u > max_spec_verts) break;
             const float cx = float(double(d[0]) - ox);
             const float cy = d[1];
             const float cz = float(double(d[2]) - oz);

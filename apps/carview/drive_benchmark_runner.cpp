@@ -229,6 +229,8 @@ void DriveSession::run_benchmark() {
         double draws_sum = 0, culled_sum = 0, indices_sum = 0, shadow_sum = 0, shadow_cars_sum = 0;
         std::vector<std::string> stage_names;
         std::vector<std::vector<double>> stage_ms;
+        carview::AndroidPerfHintSession adpf;
+        adpf.init(120);
 
         for (int s = 0; s <= steps && app.status == 0; ++s) {
           const auto t0 = std::chrono::steady_clock::now();
@@ -378,6 +380,7 @@ void DriveSession::run_benchmark() {
                                        audio_push_ms + pose_ms + ui_build_ms + rec_ms;
           const double total_frame_ms =
               step_total_accum + std::chrono::duration<double, std::milli>(frame_t1 - frame_t0).count();
+          adpf.report_frame_ns(int64_t(total_frame_ms * 1e6));
 
           carview::bench::FrameSample fs{};
           fs.frame_index = frame_idx;

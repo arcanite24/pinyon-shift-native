@@ -15,6 +15,8 @@ fetches these projects with CMake FetchContent, pinned in
 | [stb](https://github.com/nothings/stb) | `f58f558c` (2025-05-26) | `stb_image_write.h`, PNG output | MIT or public domain |
 | [dr_libs](https://github.com/mackron/dr_libs) | `mp3-0.7.4` (`aec2dd20`) | `dr_mp3.h`, the radio's MPEG decoding | public domain or MIT-0 |
 | [FFmpeg](https://github.com/wmarti/FFmpeg) | `0604b464c7` (FFmpeg 4.4) | `libavutil` + `wmaprodec.c` (`xma2`/`wmapro`) only: in-process XMA2 audio decoding | **LGPL-2.1** |
+| [libadrenotools](https://github.com/bylaws/libadrenotools) (with [liblinkernsbypass](https://github.com/bylaws/liblinkernsbypass)) | `8fae8ce254` (2024-09-10) | Android arm64 rootless custom Vulkan driver loading (Mesa Turnip) and Adreno GPU turbo clocks | **BSD-2-Clause** |
+| [Mesa 3D / Freedreno Turnip](https://gitlab.freedesktop.org/mesa/mesa) (`assets/drivers/turnip/libvulkan_freedreno.so`, T30 `git-62ac221a33`) | `26.3.0-devel` (VK 1.4.359) | Bundled Android arm64 open-source Vulkan driver for Qualcomm Adreno 6xx/7xx GPUs | **MIT** |
 
 ## libmspack
 

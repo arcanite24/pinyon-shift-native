@@ -3,8 +3,11 @@
 //   mode 0: atmosphere gradient dome + elliptical sun haze + sky dither
 //   mode 1: sun/moon billboard disc + far clouds (2 layers) + close lit clouds
 //           (2 layers) + sky horizon fog skirt, alpha-blended over sky + stars.
+//   mode 2: combined single-pass daytime sky (atmosphere + disc + clouds + fog)
+//           used when star_fade <= 0.005 to halve sky fullscreen passes & bandwidth.
 // All view directions V are in game frame (+Y up, +X East, +Z North).
 
+layout(early_fragment_tests) in;
 layout(constant_id = 0) const bool kLinearOut = false;
 
 layout(set = 0, binding = 0) uniform SkyUniforms {
@@ -79,7 +82,8 @@ void main() {
   vec3 V = normalize(sky.cam_fwd.xyz + v_ndc.x * sky.cam_right.xyz - v_ndc.y * sky.cam_up.xyz);
   int mode = int(sky.cam_fwd.w + 0.5);
 
-  if (mode == 0) {
+  vec3 base_lin_rgb = vec3(0.0);
+  if (mode == 0 || mode == 2) {
     // 1. Atmosphere gradient dome + elliptical sun haze (SPEC-SKY-AND-TOD §3.2).
     // Use a smooth C1 exponential horizon-to-zenith falloff anchored at V.y = 0 so
     // AtmosphereBottomClampPower (~0.06) and small dawn/dusk AtmosphereColourPower (~0.05)
@@ -121,11 +125,14 @@ void main() {
     // Subtle sky gradient dither scaled by luminance so night exposure does not amplify it.
     float dither = (texture(tex_dither, gl_FragCoord.xy / 128.0).r - 0.5) * 0.0004;
     lin_rgb = max(lin_rgb + vec3(dither), vec3(0.0));
-    float sky_sat = clamp(sky.close_back_dense_col.w, 0.0, 2.0);
-    float sky_luma = dot(lin_rgb, vec3(0.2126, 0.7152, 0.0722));
-    lin_rgb = max(mix(vec3(sky_luma), lin_rgb, sky_sat), vec3(0.0));
-    out_color = vec4(out_rgb(lin_rgb), 1.0);
-    return;
+    base_lin_rgb = lin_rgb;
+    if (mode == 0) {
+      float sky_sat = clamp(sky.close_back_dense_col.w, 0.0, 2.0);
+      float sky_luma = dot(lin_rgb, vec3(0.2126, 0.7152, 0.0722));
+      lin_rgb = max(mix(vec3(sky_luma), lin_rgb, sky_sat), vec3(0.0));
+      out_color = vec4(out_rgb(lin_rgb), 1.0);
+      return;
+    }
   }
 
   // Mode 1: Sun/Moon disc -> Far clouds -> Close lit clouds -> Sky horizon fog skirt.
@@ -274,8 +281,15 @@ void main() {
     }
   }
 
-  vec3 straight_rgb = acc_a > 1e-4 ? (acc_premul / acc_a) : vec3(0.0);
   float sky_sat = clamp(sky.close_back_dense_col.w, 0.0, 2.0);
+  if (mode == 2) {
+    vec3 combined = acc_premul + base_lin_rgb * (1.0 - acc_a);
+    float c_luma = dot(combined, vec3(0.2126, 0.7152, 0.0722));
+    combined = max(mix(vec3(c_luma), combined, sky_sat), vec3(0.0));
+    out_color = vec4(out_rgb(combined), 1.0);
+    return;
+  }
+  vec3 straight_rgb = acc_a > 1e-4 ? (acc_premul / acc_a) : vec3(0.0);
   float acc_luma = dot(straight_rgb, vec3(0.2126, 0.7152, 0.0722));
   straight_rgb = max(mix(vec3(acc_luma), straight_rgb, sky_sat), vec3(0.0));
   vec3 enc = out_rgb(straight_rgb);

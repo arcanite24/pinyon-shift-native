@@ -69,8 +69,22 @@ if(SHIFT_BUILD_CARVIEW)
   target_include_directories(shift_volk PUBLIC
     "${volk_SOURCE_DIR}" "${vulkan_headers_SOURCE_DIR}/include")
   target_compile_definitions(shift_volk PUBLIC VK_NO_PROTOTYPES)
+  if(ANDROID)
+    target_compile_definitions(shift_volk PUBLIC VK_USE_PLATFORM_ANDROID_KHR)
+  endif()
   if(NOT WIN32)
     target_link_libraries(shift_volk PUBLIC ${CMAKE_DL_LIBS})
+  endif()
+
+  if(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    # libadrenotools (BSD-2-Clause): rootless Adreno custom Vulkan driver loader
+    # (Mesa Turnip) and KGSL GPU turbo clocks on Android 9+ arm64.
+    FetchContent_Declare(libadrenotools
+      GIT_REPOSITORY https://github.com/bylaws/libadrenotools.git
+      GIT_TAG 8fae8ce2543862f262695b31a75375175657731a
+      GIT_SUBMODULES "lib/linkernsbypass"
+      GIT_SUBMODULES_RECURSE TRUE)
+    FetchContent_MakeAvailable(libadrenotools)
   endif()
 
   # VulkanMemoryAllocator (MIT): sub-allocates device and staging memory.

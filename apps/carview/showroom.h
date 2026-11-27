@@ -1363,7 +1363,8 @@ class Showroom {
   VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
   VkPipelineLayout world_pipeline_layout_ = VK_NULL_HANDLE;
   GpuTexture flat_normal_tex_;  // 1x1 (128, 128, 255, 255) fallback normal map
-  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, opaque_fade_ = VK_NULL_HANDLE,
+  VkPipeline opaque_ = VK_NULL_HANDLE, opaque_after_z_ = VK_NULL_HANDLE, opaque_cutout_ = VK_NULL_HANDLE,
+             opaque_cutout_after_z_ = VK_NULL_HANDLE, opaque_fade_ = VK_NULL_HANDLE,
              car_z_prepass_ = VK_NULL_HANDLE, glass_ = VK_NULL_HANDLE, glass_mul_ = VK_NULL_HANDLE,
              glass_add_ = VK_NULL_HANDLE, mask_ = VK_NULL_HANDLE;
   VkPipelineLayout contact_shadow_pipe_layout_ = VK_NULL_HANDLE;

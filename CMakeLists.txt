@@ -22,6 +22,17 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SHIFT_STATIC_RUNTIME)
   add_link_options(-static-libstdc++ -static-libgcc)
 endif()
+if(ANDROID)
+  # Universal ARMv8.0-A compatibility for lowest requirements, tuned for Cortex-X3
+  # (Snapdragon 8 Gen 2 / Odin 2) with ThinLTO + section GC + safe ICF in Release.
+  add_compile_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:Release>:-fno-semantic-interposition>
+                      $<$<CONFIG:Release>:-ffunction-sections> $<$<CONFIG:Release>:-fdata-sections>)
+  if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    add_compile_options($<$<CONFIG:Release>:-mtune=cortex-x3>)
+  endif()
+  add_link_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:Release>:-Wl,--gc-sections>
+                   $<$<CONFIG:Release>:-Wl,--icf=safe>)
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Dependencies)

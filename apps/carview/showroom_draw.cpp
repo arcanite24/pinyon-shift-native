@@ -374,13 +374,43 @@ void Showroom::record_draws(VkCommandBuffer cmd, VkPipeline opaque, VkPipeline g
     vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
   };
   if (pass_mode != 2) {
+    const VkPipeline cutout_pipe =
+        (opaque == glass)
+            ? opaque
+            : ((opaque == opaque_after_z_ && opaque_cutout_after_z_) ? opaque_cutout_after_z_
+                                                                     : (opaque_cutout_ ? opaque_cutout_ : opaque));
+    auto draw_needs_discard = [&](const Draw& d) -> bool {
+      if (opaque == glass) return false;
+      const uint32_t fl = uint32_t(std::lround(d.push.params[1]));
+      return ((fl & kFlagCutout) != 0u) || (d.is_static_spoke && d.push.params[3] > 0.45f);
+    };
+    // Pass 1a: solid opaque car panels with discard-free Early-Z pipeline (preserves Adreno LRZ).
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, opaque);
     r_.apply_vrs(cmd);
+    bool any_cutout = false;
     for (const auto& d : draws_) {
       if (d.detached) continue;
       if (d.is_blur_rim) continue;
       if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
       if (!d.glass || opaque == glass) {
+        if (draw_needs_discard(d)) {
+          any_cutout = true;
+          continue;
+        }
+        draw(d);
+        ++car_draws_;
+      }
+    }
+    // Pass 1b: alpha-tested grilles & dither-fading spinning spokes.
+    if (any_cutout) {
+      if (cutout_pipe != opaque) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cutout_pipe);
+        r_.apply_vrs(cmd);
+      }
+      for (const auto& d : draws_) {
+        if (d.detached || d.is_blur_rim || d.glass) continue;
+        if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
+        if (!draw_needs_discard(d)) continue;
         draw(d);
         ++car_draws_;
       }
@@ -604,6 +634,8 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
   const uint32_t slot_base = r_.frame_slot() * kMaxCarInstances;
   uint32_t offset = 0;
   const VkPipeline op_pipe = (depth_equal && opaque_after_z_) ? opaque_after_z_ : opaque_;
+  const VkPipeline op_cutout_pipe =
+      (depth_equal && opaque_cutout_after_z_) ? opaque_cutout_after_z_ : (opaque_cutout_ ? opaque_cutout_ : op_pipe);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &frame_set_, 0, nullptr);
   const int pass_begin = (pass_mode == 2) ? 1 : 0;
   const int pass_end = (pass_mode == 1) ? 1 : 2;
@@ -626,10 +658,12 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
     const uint32_t total_count = solid_count + uint32_t(fade_alphas.size());
     if (total_count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
     // Distance-based runtime LOD detail culling for distant AI/traffic cars:
-    // beyond 55 m skip interior, gauges, calipers, and cockpit-only parts;
-    // beyond 145 m skip subtle mirror/emissive/trim overlays.
-    const bool lod_mid = min_inst_d2 > 55.0f * 55.0f;
-    const bool lod_far = min_inst_d2 > 145.0f * 145.0f;
+    // beyond 55 m (35 m on mobile low-mem) skip interior, gauges, calipers, and cockpit-only parts;
+    // beyond 145 m (95 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
+    const float mid_dist = low_memory_mode_ ? 35.0f : 55.0f;
+    const float far_dist = low_memory_mode_ ? 95.0f : 145.0f;
+    const bool lod_mid = min_inst_d2 > mid_dist * mid_dist;
+    const bool lod_far = min_inst_d2 > far_dist * far_dist;
     const VkDeviceSize zero = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &g->vertex_buffer_.buffer, &zero);
     vkCmdBindIndexBuffer(cmd, g->index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -637,46 +671,53 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
       for (int pass = pass_begin; pass < pass_end; ++pass) {
         VkPipeline bound_p = VK_NULL_HANDLE;
         uint32_t bound_desc = UINT32_MAX;
-        for (const auto& d : g->draws_) {
-          if (d.detached) continue;
-          if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
-          if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
-          if (d.glass != (pass == 1)) continue;
-          if (d.cockpit_role >= 0) continue;
-          if (lod_mid) {
-            const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
-            if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
-            if (lod_far && d.glass && d.is_cover) continue;
-          }
-          ShowroomPush push = d.push;
-          uint32_t flags = uint32_t(std::lround(push.params[1])) | kFlagInstanced;
-          flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
-          push.params[1] = float(flags);
-          if (d.descriptor != bound_desc) {
-            bound_desc = d.descriptor;
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
-                                    &g->material_sets_[d.descriptor], 0, nullptr);
-          }
-          if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
-            if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
-            push.params[2] = 7.0f;
-            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(ShowroomPush), &push);
-            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
-            if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
-            push.params[2] = 8.0f;
-            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(ShowroomPush), &push);
-            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
-          } else {
-            VkPipeline want = pass ? g->glass_ : op_pipe;
-            if (bound_p != want) {
-              vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
-              if (!pass) r_.apply_vrs(cmd);
+        const int sub_end = (pass == 0 && op_cutout_pipe != op_pipe) ? 2 : 1;
+        for (int sub = 0; sub < sub_end; ++sub) {
+          for (const auto& d : g->draws_) {
+            if (d.detached) continue;
+            if (d.is_blur_rim && d.push.params[3] <= 0.05f) continue;
+            if (d.is_static_spoke && d.push.params[3] >= 0.85f) continue;
+            if (d.glass != (pass == 1)) continue;
+            if (d.cockpit_role >= 0) continue;
+            if (lod_mid) {
+              const uint32_t kl = uint32_t(d.push.params[0] + 0.5f);
+              if (kl == 4u || kl == 5u || kl == 8u) continue;  // kInterior, kGauge, kCaliper
+              if (lod_far && d.glass && d.is_cover) continue;
             }
-            vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(ShowroomPush), &push);
-            vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+            const uint32_t base_fl = uint32_t(std::lround(d.push.params[1]));
+            const bool needs_discard = (pass == 0) && (((base_fl & kFlagCutout) != 0u) ||
+                                                       (d.is_static_spoke && d.push.params[3] > 0.45f));
+            if (pass == 0 && sub_end == 2 && (needs_discard != (sub == 1))) continue;
+            ShowroomPush push = d.push;
+            uint32_t flags = base_fl | kFlagInstanced;
+            flags |= (uint32_t(d.lamp_channel) & 31u) << 14u;
+            push.params[1] = float(flags);
+            if (d.descriptor != bound_desc) {
+              bound_desc = d.descriptor;
+              vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 1, 1,
+                                      &g->material_sets_[d.descriptor], 0, nullptr);
+            }
+            if (pass == 1 && d.is_cover && glass_mul_ && glass_add_) {
+              if (bound_p != glass_mul_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_mul_);
+              push.params[2] = 7.0f;
+              vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(ShowroomPush), &push);
+              vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+              if (bound_p != glass_add_) vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = glass_add_);
+              push.params[2] = 8.0f;
+              vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(ShowroomPush), &push);
+              vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+            } else {
+              VkPipeline want = pass ? g->glass_ : (needs_discard ? op_cutout_pipe : op_pipe);
+              if (bound_p != want) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound_p = want);
+                if (!pass) r_.apply_vrs(cmd);
+              }
+              vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                 sizeof(ShowroomPush), &push);
+              vkCmdDrawIndexed(cmd, d.index_count, solid_count, d.first_index, d.vertex_offset, slot_base + offset);
+            }
           }
         }
       }
@@ -1041,7 +1082,15 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
     };
     int bias = -1;  // the depth bias set: -1 none yet, else the decal flag
     const auto eye = eye_in_scenery(transform);
-    for (const auto& d : draws) {
+    // Bucket visible pass_mode==1 draws so ALL discard-free solid opaque terrain/roads/buildings
+    // render FIRST (keeping Adreno Hardware LRZ active and eliminating pipeline thrashing),
+    // followed by dithered LOD opaque props, followed by alpha-cutout vegetation/fences.
+    std::vector<uint32_t> buckets[3];
+    std::vector<uint32_t> touched_textures;
+    touched_textures.reserve(256);
+    const bool swap_dither = (swap < 1.5f || swap > 2.5f);
+    for (uint32_t di = 0; di < uint32_t(draws.size()); ++di) {
+      const auto& d = draws[di];
       if (pass_mode == 1 && d.blend >= 2) continue;
       if (pass_mode == 2 && d.blend < 2) continue;
       if (!outgoing && d.gpu) continue;  // drawn by the culling pass
@@ -1050,110 +1099,126 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
         ++world_stats_.culled;
         continue;
       }
-      ++world_stats_.drawn;
-      world_stats_.indices += d.index_count;
       const uint32_t draw_fl = uint32_t(std::lround(d.push.params[1]));
       const bool sky = draw_fl == 2;
-      // A hidden real-time sky leaves the track's own sky meshes (a hub
-      // room's dome) in.
       if (sky && sky_ready_ && !sky_hidden_) continue;
-      if (group < 0 && !sky) {
-        if (!sky_ready_) r_.mark(cmd, "sky");
-        group = d.blend;
+      if (pass_mode == 1) {
+        const bool needs_dither =
+            swap_dither || ((draw_fl & (128u | 256u | 512u | 32u | 32768u)) != 0u) ||
+            (((draw_fl & 1024u) != 0u) && ((draw_fl & 1u) == 0u)) || sky;
+        const int b = (d.blend == 1) ? 2 : (needs_dither ? 1 : 0);
+        buckets[b].push_back(di);
+      } else {
+        buckets[0].push_back(di);
       }
-      if (group >= 0 && group < 99 && d.blend != group) {
-        r_.mark(cmd, kGroup[std::min(group, 2)]);
-        group = d.blend;
-      }
-      // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
-      const bool needs_dither =
-          (swap < 1.5f || swap > 2.5f) || ((draw_fl & (128u | 256u | 512u)) != 0u) || sky;
-      const VkPipeline op_pipe = (needs_dither && world_opaque_dither_)
-                                     ? world_opaque_dither_
-                                     : ((r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_);
-      const VkPipeline pipeline =
-          d.blend >= 2 ? (((draw_fl & 32768u) != 0u && world_water_) ? world_water_ : world_alpha_)
-                       : d.blend == 1 ? world_coverage_
-                                      : op_pipe;
-      if (pipeline != bound) {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
-        if (d.blend < 2) r_.apply_vrs(cmd);
-        bias = -1;
-      }
-      // Decals and road paint: pulled towards the eye by a few float ulps
-      // and the slope (ours; the sign follows the depth direction).
-      if (int(d.decal) != bias) {
-        bias = d.decal;
-        const float sign = r_.reverse_z() ? 1.0f : -1.0f;
-        vkCmdSetDepthBias(cmd, d.decal ? sign * kDecalBiasConstant : 0.0f, 0.0f, d.decal ? sign * kDecalBiasSlope : 0.0f);
-      }
-      VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
-      if (set) {
-        std::lock_guard<std::mutex> lock(world_textures_mutex_);
-        world_lru_.touch(d.texture, world_frame_);
-      }
-      ShowroomPush push = d.push;
-      const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
-                             d.light_map != kNoWorldTexture || d.normal_map != kNoWorldTexture ||
-                             d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
-                             d.spec_map != kNoWorldTexture;
-      if ((set || d.texture == kNoWorldTexture) && has_extra) {
-        VkDescriptorSet layered = world_layer_set(
-            {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
-        if (layered) {
-          set = layered;
-          std::lock_guard<std::mutex> lock(world_textures_mutex_);
-          if (d.texture_b != kNoWorldTexture) world_lru_.touch(d.texture_b, world_frame_);
-          if (d.splat != kNoWorldTexture) world_lru_.touch(d.splat, world_frame_);
-          if (d.light_map != kNoWorldTexture) world_lru_.touch(d.light_map, world_frame_);
-          if (d.normal_map != kNoWorldTexture) world_lru_.touch(d.normal_map, world_frame_);
-          if (d.ao_map != kNoWorldTexture) world_lru_.touch(d.ao_map, world_frame_);
-          if (d.layer_c != kNoWorldTexture) world_lru_.touch(d.layer_c, world_frame_);
-          if (d.spec_map != kNoWorldTexture) world_lru_.touch(d.spec_map, world_frame_);
-        } else if (d.texture_b != kNoWorldTexture) {
-          // A blend/extra layer did not upload: keep slot 0 and surface flags, drop extra-map flags.
-          constexpr uint32_t kExtraTexMask = 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u | 4194304u |
-                                             8388608u;
-          const uint32_t fl = uint32_t(std::lround(push.params[1])) & ~kExtraTexMask;
-          push.params[1] = float(fl);
-          ++world_stats_.layer_fallback;
+    }
+    const int num_buckets = (pass_mode == 1) ? 3 : 1;
+    for (int bi = 0; bi < num_buckets; ++bi) {
+      for (uint32_t di : buckets[bi]) {
+        const auto& d = draws[di];
+        ++world_stats_.drawn;
+        world_stats_.indices += d.index_count;
+        const uint32_t draw_fl = uint32_t(std::lround(d.push.params[1]));
+        const bool sky = draw_fl == 2;
+        if (group < 0 && !sky) {
+          if (!sky_ready_) r_.mark(cmd, "sky");
+          group = d.blend;
         }
-      }
-      if (!set) {
-        if (d.texture != kNoWorldTexture) ++world_stats_.white;
-        set = world_white_set_;
-        const uint32_t fl = uint32_t(std::lround(push.params[1]));
-        if ((fl & 1u) != 0u) {
-          // Texture missing or evicted: clear textured flags and replace UV tiling in push.tint
-          // with a neutral road/terrain linear albedo instead of pure white (1, 1, 1).
-          constexpr uint32_t kAnyTexMask = 1u | 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u |
-                                           4194304u | 8388608u;
-          push.params[1] = float(fl & ~kAnyTexMask);
-          if ((fl & 1048576u) != 0u) {
-            push.tint[0] = 0.055f;
-            push.tint[1] = 0.054f;
-            push.tint[2] = 0.052f;
-          } else {
-            push.tint[0] = 0.13f;
-            push.tint[1] = 0.11f;
-            push.tint[2] = 0.085f;
+        if (group >= 0 && group < 99 && d.blend != group) {
+          r_.mark(cmd, kGroup[std::min(group, 2)]);
+          group = d.blend;
+        }
+        // Additive (3) shares the blended pipeline: its fragments carry alpha 0.
+        const bool needs_dither =
+            swap_dither || ((draw_fl & (128u | 256u | 512u | 32u | 32768u)) != 0u) ||
+            (((draw_fl & 1024u) != 0u) && ((draw_fl & 1u) == 0u)) || sky;
+        const VkPipeline op_pipe = (needs_dither && world_opaque_dither_)
+                                       ? world_opaque_dither_
+                                       : ((r_.z_prepass() && world_opaque_after_z_) ? world_opaque_after_z_ : world_opaque_);
+        const VkPipeline pipeline =
+            d.blend >= 2 ? (((draw_fl & 32768u) != 0u && world_water_) ? world_water_ : world_alpha_)
+                         : d.blend == 1 ? world_coverage_
+                                        : op_pipe;
+        if (pipeline != bound) {
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
+          if (d.blend < 2 || pipeline == world_alpha_) r_.apply_vrs(cmd);
+          bias = -1;
+        }
+        // Decals and road paint: pulled towards the eye by a few float ulps
+        // and the slope (ours; the sign follows the depth direction).
+        if (int(d.decal) != bias) {
+          bias = d.decal;
+          const float sign = r_.reverse_z() ? 1.0f : -1.0f;
+          vkCmdSetDepthBias(cmd, d.decal ? sign * kDecalBiasConstant : 0.0f, 0.0f, d.decal ? sign * kDecalBiasSlope : 0.0f);
+        }
+        VkDescriptorSet set = d.texture != kNoWorldTexture ? world_set(d.texture) : VK_NULL_HANDLE;
+        if (set) touched_textures.push_back(d.texture);
+        ShowroomPush push = d.push;
+        const bool has_extra = d.texture_b != kNoWorldTexture || d.splat != kNoWorldTexture ||
+                               d.light_map != kNoWorldTexture || d.normal_map != kNoWorldTexture ||
+                               d.ao_map != kNoWorldTexture || d.layer_c != kNoWorldTexture ||
+                               d.spec_map != kNoWorldTexture;
+        if ((set || d.texture == kNoWorldTexture) && has_extra) {
+          VkDescriptorSet layered = world_layer_set(
+              {d.texture, d.texture_b, d.splat, d.light_map, d.normal_map, d.ao_map, d.layer_c, d.spec_map});
+          if (layered) {
+            set = layered;
+            if (d.texture_b != kNoWorldTexture) touched_textures.push_back(d.texture_b);
+            if (d.splat != kNoWorldTexture) touched_textures.push_back(d.splat);
+            if (d.light_map != kNoWorldTexture) touched_textures.push_back(d.light_map);
+            if (d.normal_map != kNoWorldTexture) touched_textures.push_back(d.normal_map);
+            if (d.ao_map != kNoWorldTexture) touched_textures.push_back(d.ao_map);
+            if (d.layer_c != kNoWorldTexture) touched_textures.push_back(d.layer_c);
+            if (d.spec_map != kNoWorldTexture) touched_textures.push_back(d.spec_map);
+          } else if (d.texture_b != kNoWorldTexture) {
+            // A blend/extra layer did not upload: keep slot 0 and surface flags, drop extra-map flags.
+            constexpr uint32_t kExtraTexMask = 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u | 4194304u |
+                                               8388608u;
+            const uint32_t fl = uint32_t(std::lround(push.params[1])) & ~kExtraTexMask;
+            push.params[1] = float(fl);
+            ++world_stats_.layer_fallback;
           }
-          push.tint[3] = 1.0f;
         }
+        if (!set) {
+          if (d.texture != kNoWorldTexture) ++world_stats_.white;
+          set = world_white_set_;
+          const uint32_t fl = uint32_t(std::lround(push.params[1]));
+          if ((fl & 1u) != 0u) {
+            // Texture missing or evicted: clear textured flags and replace UV tiling in push.tint
+            // with a neutral road/terrain linear albedo instead of pure white (1, 1, 1).
+            constexpr uint32_t kAnyTexMask = 1u | 4u | 8u | 16384u | 2048u | 4096u | 8192u | 524288u | 2097152u |
+                                             4194304u | 8388608u;
+            push.params[1] = float(fl & ~kAnyTexMask);
+            if ((fl & 1048576u) != 0u) {
+              push.tint[0] = 0.055f;
+              push.tint[1] = 0.054f;
+              push.tint[2] = 0.052f;
+            } else {
+              push.tint[0] = 0.13f;
+              push.tint[1] = 0.11f;
+              push.tint[2] = 0.085f;
+            }
+            push.tint[3] = 1.0f;
+          }
+        }
+        if (set != bound_set)
+          vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),
+                                  0, nullptr);
+        // Cut-outs without MSAA: world.frag's alpha test (flag 64).
+        if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
+          push.params[1] = float(uint32_t(std::lround(push.params[1])) | 64u);
+        world_draw_model(d, transform, push.model);
+        std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
+        push.uv0[3] = swap;  // world.frag's swap dither
+        std::memcpy(push.uv1, world_up_, sizeof push.uv1);
+        vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                           sizeof(ShowroomPush), &push);
+        vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
       }
-      if (set != bound_set)
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, world_pipeline_layout_, 1, 1, &(bound_set = set),
-                                0, nullptr);
-      // Cut-outs without MSAA: world.frag's alpha test (flag 64).
-      if (d.blend == 1 && r_.samples_ == VK_SAMPLE_COUNT_1_BIT)
-        push.params[1] = float(uint32_t(std::lround(push.params[1])) | 64u);
-      world_draw_model(d, transform, push.model);
-      std::memcpy(push.uv0, world_sun_, sizeof push.uv0);
-      push.uv0[3] = swap;  // world.frag's swap dither
-      std::memcpy(push.uv1, world_up_, sizeof push.uv1);
-      vkCmdPushConstants(cmd, world_pipeline_layout_, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         sizeof(ShowroomPush), &push);
-      vkCmdDrawIndexed(cmd, d.index_count, 1, d.first_index, d.vertex_offset, 0);
+    }
+    if (!touched_textures.empty()) {
+      std::lock_guard<std::mutex> lock(world_textures_mutex_);
+      for (uint32_t rec : touched_textures) world_lru_.touch(rec, world_frame_);
     }
     if (group >= 0 && group < 99) r_.mark(cmd, kGroup[std::min(group, 2)]);
   }

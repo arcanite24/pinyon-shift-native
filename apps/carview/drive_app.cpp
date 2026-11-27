@@ -614,7 +614,8 @@ bool DriveApp::init(int& exit_code) {
   const auto db_cat_t0 = std::chrono::steady_clock::now();
   if (career_png.empty() && map_png.empty()) {
 #ifdef __ANDROID__
-    carview::ui::set_atlas_size(low_preset ? 2048u : Renderer::kUiAtlas);
+    // 2048x2048 holds all UI4 glyphs/assets at <30% utilization and saves 96 MiB on unified mobile RAM.
+    carview::ui::set_atlas_size(2048u);
 #else
     carview::ui::set_atlas_size(Renderer::kUiAtlas);
 #endif
@@ -1239,20 +1240,27 @@ void DriveApp::start_world_assets_async(bool init_anim) {
     });
   }
   if (!groot.empty()) {
-    const auto media = groot / "media";
-    fut_anim_ = std::async(std::launch::async, [this, media, wdir, init_anim]() {
-      // Wait for ToD post_config? Only read post_config after wait_tod_ready or load with default if concurrent.
-      // world_anim reads pgeo/xds/crowds; post_config only supplies tint fallback, so use safe default here
-      // and update world_anim if needed.
-      std::string anim_err;
-      const decltype(tod_system.post_config) default_post{};
-      if (init_anim) {
-        return world_anim.init(media, default_post, &anim_err, wdir);
-      }
-      world_anim.set_world(media, wdir, default_post);
-      return true;
-    });
-    anim_shared_bound_ = false;
+#ifdef __ANDROID__
+    const bool skip_anim = (preset_name == "low-power" || preset_name == "low_power" || preset_name == "ultra-low-30");
+#else
+    const bool skip_anim = false;
+#endif
+    if (!skip_anim) {
+      const auto media = groot / "media";
+      fut_anim_ = std::async(std::launch::async, [this, media, wdir, init_anim]() {
+        // Wait for ToD post_config? Only read post_config after wait_tod_ready or load with default if concurrent.
+        // world_anim reads pgeo/xds/crowds; post_config only supplies tint fallback, so use safe default here
+        // and update world_anim if needed.
+        std::string anim_err;
+        const decltype(tod_system.post_config) default_post{};
+        if (init_anim) {
+          return world_anim.init(media, default_post, &anim_err, wdir);
+        }
+        world_anim.set_world(media, wdir, default_post);
+        return true;
+      });
+      anim_shared_bound_ = false;
+    }
   }
 }
 

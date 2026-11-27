@@ -10,18 +10,18 @@
     "point_list_allowed": false
   },
   "summary": {
-    "total_shader_files": 56,
-    "entry_shaders": 53,
-    "shared_headers": 3,
+    "total_shader_files": 58,
+    "entry_shaders": 54,
+    "shared_headers": 4,
     "max_push_constant_bytes_observed": 128,
     "point_size_shaders": 0,
     "point_coord_shaders": 0,
     "bindless_shaders": 9,
     "ray_query_shaders": 7,
     "bda_shaders": 0,
-    "vulkan_1_3_ready": 53,
-    "metal_3_ready": 53,
-    "dx12_sm_6_6_ready": 53
+    "vulkan_1_3_ready": 54,
+    "metal_3_ready": 54,
+    "dx12_sm_6_6_ready": 54
   },
   "headers": [
     {
@@ -32,9 +32,16 @@
       "notes": []
     },
     {
+      "name": "showroom_frag.glsl",
+      "kind": "header",
+      "lines": 1586,
+      "uses_bda": false,
+      "notes": []
+    },
+    {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 1367,
+      "lines": 1368,
       "uses_bda": false,
       "notes": []
     },
@@ -2752,7 +2759,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 176812,
+      "spirv_bytes": 177784,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2986,6 +2993,177 @@
       ]
     },
     {
+      "name": "showroom_opaque.frag",
+      "source": "apps/carview/shaders/showroom_opaque.frag",
+      "prebuilt_spv": "apps/carview/shaders/prebuilt/showroom_opaque.frag.spv",
+      "stage": "fragment",
+      "entry_point": "main",
+      "spirv_version": "1.6",
+      "spirv_bytes": 160772,
+      "local_size": null,
+      "push_constant_bytes": 128,
+      "spec_constants": [
+        {
+          "id": 0,
+          "name": "kLinearOut",
+          "default": false
+        }
+      ],
+      "bindings": [
+        {
+          "set": 0,
+          "binding": 0,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "frame"
+        },
+        {
+          "set": 0,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "headlight_cookie",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 4,
+          "type": "uniform_buffer",
+          "count": 1,
+          "name": "headlights"
+        },
+        {
+          "set": 0,
+          "binding": 5,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "mirror_map",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 6,
+          "type": "storage_buffer",
+          "count": 1,
+          "name": "CarInstances",
+          "readonly": true
+        },
+        {
+          "set": 0,
+          "binding": 7,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "static_environment",
+          "dim": "Cube"
+        },
+        {
+          "set": 0,
+          "binding": 8,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_dirt_pattern",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 9,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_dirt_mask",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 10,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shared_glass_crack",
+          "dim": "2D"
+        },
+        {
+          "set": 0,
+          "binding": 11,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "shadow_depth_raw",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 0,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "slot0",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 1,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "slot1",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 2,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "livery",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 3,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "normal_map",
+          "dim": "2D"
+        },
+        {
+          "set": 1,
+          "binding": 4,
+          "type": "combined_image_sampler",
+          "count": 1,
+          "name": "damage_map",
+          "dim": "2D"
+        }
+      ],
+      "vertex_inputs": [],
+      "capabilities": [
+        "Shader"
+      ],
+      "uses_point_size": false,
+      "uses_point_coord": false,
+      "uses_instance_index": false,
+      "uses_frag_coord": false,
+      "uses_bda": false,
+      "uses_ray_query": false,
+      "uses_bindless": false,
+      "readiness": {
+        "vulkan_1_3": true,
+        "metal_3_msl_3_1": true,
+        "dx12_hlsl_sm_6_6": true
+      },
+      "notes": []
+    },
+    {
       "name": "skid.frag",
       "source": "apps/carview/shaders/skid.frag",
       "prebuilt_spv": "apps/carview/shaders/prebuilt/skid.frag.spv",
@@ -3124,7 +3302,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 32724,
+      "spirv_bytes": 33628,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -4346,7 +4524,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 141612,
+      "spirv_bytes": 115952,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4454,7 +4632,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 134084,
+      "spirv_bytes": 108856,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [

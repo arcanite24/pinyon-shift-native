@@ -372,8 +372,8 @@ void Renderer::set_overlay(std::vector<uint8_t> rgba, uint32_t width, uint32_t h
 bool Renderer::stage_overlay(VkFormat final_format) {
   overlay_staged_ = false;
   for (auto& l : overlays_) l.staged = false;
-  const bool modern_chain = uses_modern_chain();
-  if (!overlay_supported_ && !modern_chain) return false;
+  const bool to_standin = uses_standin_target();
+  if (!overlay_supported_ && !to_standin) return false;
   // Where each layer that fits goes, packed one after another (16-byte
   // aligned offsets, as copies want a multiple of the texel size).
   VkDeviceSize bytes = 0, offsets[kOverlayLayers]{};
@@ -404,11 +404,11 @@ bool Renderer::stage_overlay(VkFormat final_format) {
     }
     all = true;
   }
-  // Overlays copy into stand_in_ (VK_FORMAT_R8G8B8A8_UNORM) when the modern
-  // chain is active, and directly into final_image otherwise. Match the exact
+  // Overlays copy into stand_in_ (VK_FORMAT_R8G8B8A8_UNORM) when routing through
+  // stand_in_, and directly into final_image otherwise. Match the exact
   // destination format so R/B channels are never double-swapped!
   const VkFormat eff_final = (final_format == VK_FORMAT_UNDEFINED) ? color_format_ : final_format;
-  const VkFormat dst_fmt = modern_chain ? VK_FORMAT_R8G8B8A8_UNORM : eff_final;
+  const VkFormat dst_fmt = to_standin ? VK_FORMAT_R8G8B8A8_UNORM : eff_final;
   const bool bgra = dst_fmt == VK_FORMAT_B8G8R8A8_UNORM || dst_fmt == VK_FORMAT_B8G8R8A8_SRGB;
   for (int i = 0; i < kOverlayLayers; ++i) {
     OverlayLayer& l = overlays_[i];

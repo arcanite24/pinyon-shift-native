@@ -98,4 +98,30 @@ std::filesystem::path resolve_portable_data_root(const std::filesystem::path& ex
 std::filesystem::path resolve_default_save_path(const std::filesystem::path& portable_data_root,
                                                 const std::filesystem::path& pref_drive_dir);
 
+// ---- Android ADPF (Performance Hint API) & Memory Trim ---------------------
+
+// Lightweight RAII wrapper around Android 12+ APerformanceHintManager (dynamically
+// loaded from libandroid.so; clean no-op on non-Android and Android < 12).
+// Keeps the render thread on Prime/Performance cores and stabilizes frame pacing.
+class AndroidPerfHintSession {
+ public:
+  AndroidPerfHintSession() = default;
+  ~AndroidPerfHintSession();
+  AndroidPerfHintSession(const AndroidPerfHintSession&) = delete;
+  AndroidPerfHintSession& operator=(const AndroidPerfHintSession&) = delete;
+
+  bool init(int target_fps);
+  void update_target_fps(int target_fps);
+  void report_frame_ns(int64_t actual_work_ns);
+  void close();
+  bool active() const { return session_ != nullptr; }
+
+ private:
+  void* session_ = nullptr;
+  int64_t target_ns_ = 16666667;
+};
+
+// Returns unused allocator pages back to the OS on Android (Scudo mallopt(M_PURGE)).
+void trim_android_memory();
+
 }  // namespace carview

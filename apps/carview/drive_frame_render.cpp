@@ -1698,14 +1698,21 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           host.renderer.set_display_brightness_offset(carview::Renderer::brightness_offset_for(active_brightness));
           app.fmv_player.set_subtitles_enabled(app.subtitles_enabled);
           host.renderer.set_skip_scene(map_overlay.active || app.fmv_player.active());
+          static carview::AndroidPerfHintSession s_adpf;
+          const int adpf_target =
+              host.active_graphics.fps_cap > 0 ? host.active_graphics.fps_cap : std::max(60, host.display_hz);
+          if (!s_adpf.active()) s_adpf.init(adpf_target);
+          else s_adpf.update_target_fps(adpf_target);
           const auto wf_t0 = std::chrono::steady_clock::now();
           if (!host.renderer.draw_frame(FrameConstants{}, app.error)) {
             std::fprintf(stderr, "carview: %s\n", app.error.c_str());
             app.status = 1;
             return false;
           }
-          host.last_frame_cpu_ms =
-              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wf_t0).count();
+          const auto wf_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - wf_t0).count();
+          host.last_frame_cpu_ms = double(wf_ns) * 1e-6;
+          s_adpf.report_frame_ns(wf_ns);
           const double now_s =
               std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
           const double wait_s = host.frame_pacer.wait_for(now_s);

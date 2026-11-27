@@ -97,6 +97,8 @@ cmake --build build-android --target carview
 python3 tools/android-apk.py --build build-android
 ```
 
+`android-apk.py` automatically bundles the open-source Mesa Freedreno Turnip driver in `assets/drivers/turnip/` (loaded rootlessly on Qualcomm Adreno GPUs via `libadrenotools` with `TU_DEBUG=sysmem` and Adreno GPU Turbo, with automatic fallback to the system Vulkan driver on non-Adreno GPUs or when **System** is selected in the launcher). Built-in Android graphics presets cover all three mobile targets: **Low Power** (540p + VRS, 512px textures, lowest RAM/VRAM), **Performance 120** (720p CAS + VRS, 120 Hz display lock + ADPF), **Smooth 60** (720p CAS + 2x MSAA + VRS, 60 Hz), **Quality 30** (native 1080p, 2x MSAA, shadows, GTAO, volumetric fog), and **Best Graphics** (`ultra`, native 1080p OLED showcase with SSR, high shadows/PCSS, GTAO, contact shadows, hex-tiling, and car clearcoat detail).
+
 See the [Building guide](https://arcanite24.github.io/pinyon-shift-native/building/) for shader regeneration, corpus tests, and packaging (`tools/package.py`).
 
 ## Repository layout

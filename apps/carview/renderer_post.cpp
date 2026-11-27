@@ -696,14 +696,16 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
                     VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
     }
     // Downsample mip 0 (Karis average + soft-knee prefilter + temporal bloom_persist from previous mip-0 bright-pass).
-    const float safe_persist = bloom_prev_valid_ ? std::clamp(finite_or(s.bloom_persist, 0.0f), 0.0f, 0.35f) : 0.0f;
+    const float raw_persist = std::clamp(finite_or(s.bloom_persist, 0.0f), 0.0f, 0.35f);
+    const bool use_persist = raw_persist > 0.005f;
+    const float safe_persist = (bloom_prev_valid_ && use_persist) ? raw_persist : 0.0f;
     to_write(bloom_a_[0]);
     pass(bloom_a_[0].view, bloom_w_[0], bloom_h_[0], post_bloom_down_, post_sets_[2], 0.0f,
          1.0f / float(std::max(1u, render_width_)), 1.0f / float(std::max(1u, render_height_)), safe_persist);
     to_read(bloom_a_[0]);
 
-    // Save mip-0 bright-pass into bloom_b_[5] for next frame's bloom_persist feedback.
-    if (bloom_b_[5].view && post_quarter_) {
+    // Save mip-0 bright-pass into bloom_b_[5] for next frame's bloom_persist feedback only when active.
+    if (use_persist && bloom_b_[5].view && post_quarter_) {
       to_write(bloom_b_[5]);
       pass(bloom_b_[5].view, bloom_w_[0], bloom_h_[0], post_quarter_, post_sets_[3], 5.0f, 1.0f, 0.0f, 0.0f);
       to_read(bloom_b_[5]);
@@ -738,10 +740,12 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
       to_read(bloom_b_[k]);
     }
     bloom_prev_valid_ = true;
+    bloom_zero_cleared_ = false;
     mark(cmd, "bloom");
-  } else if (bloom_b_[0].image) {
+  } else if (bloom_b_[0].image && !bloom_zero_cleared_) {
     bloom_prev_valid_ = false;
-    // Explicitly clear bloom_b_[0] to black when bloom is skipped so uninitialized VRAM
+    bloom_zero_cleared_ = true;
+    // Clear bloom_b_[0] to black once when bloom is disabled so uninitialized VRAM
     // can never leak into the composite pass as a white flash.
     const VkClearColorValue zero_col{{0.0f, 0.0f, 0.0f, 0.0f}};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
@@ -752,6 +756,8 @@ void Renderer::record_post(VkCommandBuffer cmd, VkImageView final_view, VkPipeli
     image_barrier(cmd, bloom_b_[0].image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_CLEAR_BIT,
                   VK_ACCESS_2_TRANSFER_WRITE_BIT, read_stage, read);
+  } else if (bloom_b_[0].image) {
+    bloom_prev_valid_ = false;
   }
 
   // 3. Final composite (scene + McGuire MBlur + XeGTAO + SSCS + bloom -> exposure -> selected tonemapper -> LUT -> display).

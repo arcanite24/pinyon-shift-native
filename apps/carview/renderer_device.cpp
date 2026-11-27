@@ -15,6 +15,13 @@
 #if defined(__APPLE__) || defined(__ANDROID__)
 #include <dlfcn.h>
 #endif
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include <android/native_window.h>
+#if defined(SHIFT_HAS_ADRENOTOOLS)
+#include <adrenotools/driver.h>
+#endif
+#endif
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -186,8 +193,68 @@ bool Renderer::init(const Options& options, std::string& error) {
   render_thread_ = std::this_thread::get_id();
   bool volk_ok = false;
 #if defined(__ANDROID__)
-  // Optional Turnip / custom Vulkan driver hook (files/state/drivers or SHIFT_ANDROID_GPU_DRIVER).
-  if (const char* drv = std::getenv("SHIFT_ANDROID_GPU_DRIVER"); drv && *drv && std::strcmp(drv, "system") != 0) {
+  // Optional Mesa Turnip / custom Adreno Vulkan driver loading via libadrenotools
+  // (bypasses Android linker namespaces and W^X SELinux restrictions rootlessly).
+  const char* drv = std::getenv("SHIFT_ANDROID_GPU_DRIVER");
+  const bool want_custom = drv && *drv && std::strcmp(drv, "system") != 0;
+#if defined(SHIFT_HAS_ADRENOTOOLS)
+  {
+    const char* turbo_env = std::getenv("SHIFT_ANDROID_GPU_TURBO");
+    const bool enable_turbo = !turbo_env || std::strcmp(turbo_env, "0") != 0;
+    adrenotools_set_turbo(enable_turbo);
+  }
+  if (want_custom) {
+    static void* s_adrenotools_vk = nullptr;
+    static std::string s_adrenotools_drv;
+    void* lib = nullptr;
+    if (s_adrenotools_vk && s_adrenotools_drv == drv) {
+      lib = s_adrenotools_vk;
+    } else {
+      std::filesystem::path drv_path(drv);
+      std::string custom_dir = drv_path.parent_path().string();
+      if (!custom_dir.empty() && custom_dir.back() != '/') custom_dir.push_back('/');
+      const std::string custom_name = drv_path.filename().string();
+      std::string hook_dir;
+      if (const char* h = std::getenv("SHIFT_ANDROID_HOOK_LIB_DIR"); h && *h) {
+        hook_dir = h;
+        if (!hook_dir.empty() && hook_dir.back() != '/') hook_dir.push_back('/');
+      }
+      std::string tmp_dir;
+      if (const char* t = std::getenv("SHIFT_ANDROID_TMP_DIR"); t && *t) {
+        tmp_dir = t;
+        if (!tmp_dir.empty() && tmp_dir.back() != '/') tmp_dir.push_back('/');
+      }
+      std::fprintf(stderr, "[vulkan] adrenotools opening custom driver: dir=%s name=%s hooks=%s\n",
+                   custom_dir.c_str(), custom_name.c_str(), hook_dir.c_str());
+      if (!hook_dir.empty() && !custom_dir.empty() && !custom_name.empty()) {
+        lib = adrenotools_open_libvulkan(
+            RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM,
+            tmp_dir.empty() ? nullptr : tmp_dir.c_str(),
+            hook_dir.c_str(), custom_dir.c_str(), custom_name.c_str(),
+            nullptr, nullptr);
+        if (lib) {
+          s_adrenotools_vk = lib;
+          s_adrenotools_drv = drv;
+        } else {
+          std::fprintf(stderr, "[vulkan] adrenotools_open_libvulkan failed for %s (dlerror=%s); falling back to system\n",
+                       drv, dlerror() ? dlerror() : "none");
+        }
+      } else {
+        std::fprintf(stderr, "[vulkan] adrenotools skipped (missing hook_dir or driver path)\n");
+      }
+    }
+    if (lib) {
+      if (auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"))) {
+        volkInitializeCustom(gipa);
+        volk_ok = true;
+        std::fprintf(stderr, "[vulkan] loaded custom Android driver via libadrenotools: %s\n", drv);
+      } else {
+        std::fprintf(stderr, "[vulkan] dlsym(vkGetInstanceProcAddr) failed on adrenotools handle; falling back to system\n");
+      }
+    }
+  }
+#else
+  if (want_custom) {
     if (void* lib = dlopen(drv, RTLD_NOW | RTLD_LOCAL)) {
       if (auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"))) {
         volkInitializeCustom(gipa);
@@ -196,6 +263,7 @@ bool Renderer::init(const Options& options, std::string& error) {
       }
     }
   }
+#endif
 #elif defined(__APPLE__)
   // Probe bundled MoltenVK / Vulkan loader inside Shift Engine.app/Contents/Frameworks
   // before falling back to system/Homebrew Vulkan loader.
@@ -292,6 +360,12 @@ bool Renderer::init(const Options& options, std::string& error) {
 bool Renderer::create_instance(std::string& error) {
   std::vector<const char*> extensions;
   if (options_.window) {
+#if defined(__ANDROID__)
+    // Avoid calling SDL_Vulkan_GetInstanceExtensions() on Android so SDL does not
+    // dlopen system libvulkan.so when libadrenotools loaded a custom Turnip ICD.
+    extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+    extensions.push_back(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+#else
     Uint32 count = 0;
     const char* const* names = SDL_Vulkan_GetInstanceExtensions(&count);
     if (!names) {
@@ -299,6 +373,7 @@ bool Renderer::create_instance(std::string& error) {
       return false;
     }
     extensions.assign(names, names + count);
+#endif
     uint32_t inst_ext_count = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &inst_ext_count, nullptr);
     std::vector<VkExtensionProperties> inst_exts(inst_ext_count);
@@ -380,10 +455,26 @@ bool Renderer::create_instance(std::string& error) {
     VK_TRY(vkCreateDebugUtilsMessengerEXT(instance_, &messenger, nullptr, &messenger_),
            "vkCreateDebugUtilsMessengerEXT");
   }
+#if defined(__ANDROID__)
+  if (options_.window) {
+    auto* native_win = static_cast<ANativeWindow*>(
+        SDL_GetPointerProperty(SDL_GetWindowProperties(options_.window),
+                               SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
+    if (native_win && vkCreateAndroidSurfaceKHR) {
+      VkAndroidSurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
+      sci.window = native_win;
+      VK_TRY(vkCreateAndroidSurfaceKHR(instance_, &sci, nullptr, &surface_), "vkCreateAndroidSurfaceKHR");
+    } else if (!SDL_Vulkan_CreateSurface(options_.window, instance_, nullptr, &surface_)) {
+      error = std::string("SDL_Vulkan_CreateSurface: ") + SDL_GetError();
+      return false;
+    }
+  }
+#else
   if (options_.window && !SDL_Vulkan_CreateSurface(options_.window, instance_, nullptr, &surface_)) {
     error = std::string("SDL_Vulkan_CreateSurface: ") + SDL_GetError();
     return false;
   }
+#endif
   return true;
 }
 
@@ -502,6 +593,17 @@ bool Renderer::pick_device(std::string& error) {
   depth_format_ = (format_props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
                       ? VK_FORMAT_D32_SFLOAT
                       : VK_FORMAT_D16_UNORM;
+  std::fprintf(stderr,
+               "[vulkan] device: %s (API %u.%u.%u) | driver: %s (%s) | turnip=%d lazy_mem=%d depth_resolve=%d\n",
+               device_info_.device_name.c_str(),
+               VK_API_VERSION_MAJOR(device_info_.api_version),
+               VK_API_VERSION_MINOR(device_info_.api_version),
+               VK_API_VERSION_PATCH(device_info_.api_version),
+               device_info_.driver_name.c_str(),
+               device_info_.driver_info.c_str(),
+               device_info_.is_turnip ? 1 : 0,
+               lazy_memory_supported_ ? 1 : 0,
+               depth_resolve_supported_ ? 1 : 0);
   return true;
 }
 
@@ -549,16 +651,23 @@ bool Renderer::create_device(std::string& error) {
     VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
     p2.pNext = &di;
     vkGetPhysicalDeviceProperties2(physical_, &p2);
-    const bool env_off = [] {
-      const char* e = std::getenv("SHIFT_GPU_WORLD");
-      return e && *e == '0';
+    const bool allow_gpu_world = [] {
+      if (const char* e = std::getenv("SHIFT_GPU_WORLD")) return *e != '0';
+#if defined(__ANDROID__)
+      // Adreno / Turnip incurs heavy nonuniformEXT waterfall scalarization and per-frame
+      // descriptor overhead in WorldGpu; direct indexed draws are ~50% faster and save ~85 MB
+      // of unified RAM on Android. Allow opting in via SHIFT_GPU_WORLD=1.
+      return false;
+#else
+      return true;
+#endif
     }();
     const modern::SplitBindlessLimits bl_limits{
         di.maxPerStageDescriptorUpdateAfterBindSamplers,
         di.maxPerStageDescriptorUpdateAfterBindSampledImages,
         di.maxDescriptorSetUpdateAfterBindSampledImages,
     };
-    gpu_driven_ = !env_off && o12.drawIndirectCount && o12.descriptorIndexing && o12.runtimeDescriptorArray &&
+    gpu_driven_ = allow_gpu_world && o12.drawIndirectCount && o12.descriptorIndexing && o12.runtimeDescriptorArray &&
                   o12.shaderSampledImageArrayNonUniformIndexing && o12.descriptorBindingPartiallyBound &&
                   o12.descriptorBindingSampledImageUpdateAfterBind && o12.descriptorBindingUpdateUnusedWhilePending &&
                   offered2.features.multiDrawIndirect && offered2.features.drawIndirectFirstInstance &&
@@ -665,6 +774,28 @@ bool Renderer::create_device(std::string& error) {
         vrs_supported_ = true;
       }
     }
+    {
+      VkFormatProperties fp{};
+      vkGetPhysicalDeviceFormatProperties(physical_, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &fp);
+      const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                        VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT |
+                                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      b10g11r11_supported_ = (fp.optimalTilingFeatures & need) == need;
+    }
+#ifdef __ANDROID__
+    {
+      const char* no_chdr = std::getenv("SHIFT_NO_COMPACT_HDR");
+      const bool allow_chdr = !(no_chdr && *no_chdr == '1');
+      // B10G11R11_UFLOAT_PACK32 halves HDR scene/MSAA/bloom memory & bandwidth on system Qualcomm/Mali
+      // drivers (4 B/px vs 8 B/px RGBA16F) when SSR is off. Keep RGBA16F on Mesa Turnip because Turnip
+      // preserves full hardware UBWC compression on RGBA16F (~10-16% faster on Adreno 740).
+      compact_hdr_scene_ = allow_chdr && b10g11r11_supported_ && !device_info_.is_turnip &&
+                           options_.graphics.ssr == modern::SsrQuality::kOff;
+    }
+#endif
+    std::fprintf(stderr, "[vulkan] features: bc=%d vrs=%d gpu_world=%d b10g11r11=%d aniso=%.1f\n",
+                 bc_compression_supported_ ? 1 : 0, vrs_supported_ ? 1 : 0, gpu_driven_ ? 1 : 0,
+                 compact_hdr_scene_ ? 1 : 0, anisotropy_);
 #ifdef SHIFT_ENABLE_RAY_TRACING
     const char* rt_off_env = std::getenv("SHIFT_RT_FORCE_OFF");
     const bool rt_force_off = rt_off_env && *rt_off_env == '1';
@@ -862,6 +993,10 @@ bool Renderer::create_device(std::string& error) {
     alloc_info.pVulkanFunctions = &funcs;
     alloc_info.instance = instance_;
     alloc_info.vulkanApiVersion = VK_API_VERSION_1_3;
+#ifdef __ANDROID__
+    // Unified mobile RAM: avoid VMA's default 256 MiB large-heap blocks that reserve ~200 MiB of slack.
+    alloc_info.preferredLargeHeapBlockSize = 32ULL << 20;
+#endif
     VK_TRY(vmaCreateAllocator(&alloc_info, &allocator_), "vmaCreateAllocator");
   }
   vkGetDeviceQueue(device_, queue_family_, 0, &queue_);

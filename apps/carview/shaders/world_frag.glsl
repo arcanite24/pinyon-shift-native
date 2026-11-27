@@ -695,6 +695,7 @@ void main() {
       out_color = vec4(out_rgb(led_col), kLinearOut ? 0.0 : 1.0);
       return;
     }
+#ifndef OPAQUE_NO_DISCARD
     if (draw.params.w > 1.5) {
       // 1:1 Forza Horizon 1 3D driving/braking line:
       // Sleek continuous feathered translucent ribbon with subtle world-locked forward chevrons.
@@ -771,6 +772,7 @@ void main() {
     float a = v_colour.a;
     out_color = vec4(encoded * a, a);
     return;
+#endif
   }
   vec3 up = normalize(draw.up.xyz);
   vec3 sun = normalize(draw.sun.xyz);
@@ -795,11 +797,7 @@ void main() {
   float shadow_scale = frame.sun_color.w >= 0.0 ? clamp(frame.sun_color.w, 0.0, 1.0) : clamp(frame.shadow.z, 0.0, 1.0);
 
   // LAKE / WATER shader (kFlagWater):
-  // - Dual-scrolling authored water normal maps (NormalMap A / B) driven by gentle directional
-  //   river-current flow + 2-octave crisp analytical micro-ripple specular (replaces 26x sky_noise)
-  // - Physically-based Schlick Fresnel (F0=0.02) & distance-adapted dynamic cubemap reflections
-  // - Beer-Lambert Colorado alpine lake depth absorption & sunlit subsurface scatter
-  // - Sparkling dual-lobe GGX sun highlights + smooth animated shoreline foam
+#ifndef OPAQUE_NO_DISCARD
   if ((flags & kFlagWater) != 0u) {
     float t_sec = frame.env_basis_x.w;
     float wind = clamp(max(frame.env_basis_y.w, 0.85), 0.65, 2.2);
@@ -938,6 +936,7 @@ void main() {
     out_color = blend == kAlpha ? vec4(w_enc * wa, wa) : vec4(w_enc, 1.0);
     return;
   }
+#endif
 
   vec4 t;
   bool use_hex = false;
@@ -1021,18 +1020,18 @@ void main() {
   } else {
     t = vec4(draw.tint.rgb, 1.0);
   }
+#ifndef OPAQUE_NO_DISCARD
   // Additive world effects (DIFF_GLOW_*, ADD_DIFF_OPAC_RGBA): unlit colour masked by alpha,
   // added over what is behind (alpha 0 under ONE, ONE_MINUS_SRC_ALPHA).
   if (blend == kAdditive) {
     out_color = vec4(out_rgb(t.rgb * t.a * draw.up.w), 0.0);
     return;
   }
-#ifndef OPAQUE_NO_DISCARD
   // Execute cutout alpha-test before normal mapping, shadows, specular, and headlights.
   if (blend == kCoverage && (flags & kFlagAlphaTest) != 0u && t.a < 0.42) discard;
-#endif
   // Tree sprites: soft linearize vertex tint without crushing distant conifers to black silhouettes.
   if ((flags & kFlagBillboard) != 0u) t.rgb *= 1.85 * pow(max(v_colour.rgb, vec3(0.0)), vec3(1.35));
+#endif
 
   vec3 n = n_geom;
   bool spec_slot_is_norm_b = false;
@@ -1128,6 +1127,7 @@ void main() {
   vec3 colour = t.rgb * light * draw.up.w;
 
   // Soft view-dependent backlit subsurface translucency on tree billboards and 3D cutout foliage.
+#ifndef OPAQUE_NO_DISCARD
   bool is_foliage_sss = ((flags & kFlagBillboard) != 0u) ||
                         (blend == kCoverage && (flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u &&
                          (flags & kFlagAnimFlag) == 0u);
@@ -1143,6 +1143,7 @@ void main() {
       colour += fol_sss * draw.up.w;
     }
   }
+#endif
 
   // Per-material Blinn-Phong sun specular: H_ROAD asphalt glossiness & SpecularMap modulation,
   // preserving distinct Layer B/C roughness/specular contrast on H_ROAD_DIFF2/3 and H_BLND2/3.

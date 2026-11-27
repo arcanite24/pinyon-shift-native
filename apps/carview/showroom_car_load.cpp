@@ -215,8 +215,14 @@ class DiscCarCache {
   }
 
  private:
+#ifdef __ANDROID__
+  // Android unified RAM: keep only the active car + immediate wheel cache on CPU.
+  static constexpr size_t kMaxCachedCars = 2;
+  static constexpr size_t kMaxCachedWheels = 4;
+#else
   static constexpr size_t kMaxCachedCars = 32;
   static constexpr size_t kMaxCachedWheels = 32;
+#endif
 
   using LruList = std::list<std::pair<std::string, std::shared_ptr<const cars::bake::Bake>>>;
   using LruMap = std::unordered_map<std::string, LruList::iterator>;
@@ -671,7 +677,8 @@ Showroom::~Showroom() {
   if (sampler_) vkDestroySampler(d, sampler_, nullptr);
   if (material_pool_) vkDestroyDescriptorPool(d, material_pool_, nullptr);
   if (pool_) vkDestroyDescriptorPool(d, pool_, nullptr);
-  for (VkPipeline p : {opaque_, opaque_after_z_, opaque_fade_, car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
+  for (VkPipeline p : {opaque_, opaque_after_z_, opaque_cutout_, opaque_cutout_after_z_, opaque_fade_,
+                       car_z_prepass_, glass_, glass_mul_, glass_add_, mask_,
                        contact_shadow_pipe_, world_opaque_, world_opaque_after_z_, world_opaque_dither_,
                        world_z_prepass_, world_coverage_, world_alpha_, world_water_, shadow_world_, shadow_cutout_, shadow_car_,
                        sky_pipe_base_, sky_pipe_layers_, stars_pipe_})

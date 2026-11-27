@@ -400,28 +400,34 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
                                 : modern::Extent{width, height};
   const uint32_t rw = re.w ? re.w : width;
   const uint32_t rh = re.h ? re.h : height;
+  const bool gmem_msaa = (samples_ != VK_SAMPLE_COUNT_1_BIT) && depth_resolve_supported_;
   if (samples_ != VK_SAMPLE_COUNT_1_BIT &&
       !create_image(rw, rh, 1, scene_format(), samples_,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                        (gmem_msaa ? VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT : 0u),
                     VK_IMAGE_ASPECT_COLOR_BIT, msaa_color_)) {
     error = "MSAA colour target";
     return false;
   }
   const VkImageUsageFlags depth_usage =
       samples_ != VK_SAMPLE_COUNT_1_BIT
-          ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-          : (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+          ? (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+             ((gmem_msaa && !options_.z_prepass) ? VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT : 0u))
+          : (VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+             VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   if (!create_image(rw, rh, 1, depth_format_, samples_, depth_usage,
                     VK_IMAGE_ASPECT_DEPTH_BIT, depth_)) {
     error = "depth target";
     return false;
   }
-  if (!create_image(rw, rh, 1, depth_format_, VK_SAMPLE_COUNT_1_BIT,
-                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, depth_resolved_)) {
-    error = "resolved depth target";
-    return false;
+  if (samples_ != VK_SAMPLE_COUNT_1_BIT) {
+    if (!create_image(rw, rh, 1, depth_format_, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                      VK_IMAGE_ASPECT_DEPTH_BIT, depth_resolved_)) {
+      error = "resolved depth target";
+      return false;
+    }
   }
   if (options_.post.enabled) {
     // Resolved HDR scene (always needed when post is on) + lazily allocated optional passes.
@@ -519,10 +525,13 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (plan.modern_chain) {
+      const bool need_hdr_stage =
+          (hdr_mode_ != modern::HdrMode::kOff) || graphics_.hdr_compare || (hdr_pattern_ != 0) || need_brightness;
+      const bool need_standin = plan.fxaa_standin || need_hdr_stage;
       if (!create_image(rw, rh, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
                         VK_IMAGE_ASPECT_COLOR_BIT, scene_sdr_) ||
-          !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
-                        VK_IMAGE_ASPECT_COLOR_BIT, stand_in_)) {
+          (need_standin && !create_image(width, height, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, sdr_usage,
+                                         VK_IMAGE_ASPECT_COLOR_BIT, stand_in_))) {
         error = "post modern targets";
         return false;
       }
@@ -645,7 +654,7 @@ bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& erro
       {
         const size_t iidx = size_t(s) * 11 + 4;
         const size_t widx = size_t(s) * 12 + 4;
-        images[iidx] = {post_depth_sampler_, depth_resolved_.view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
+        images[iidx] = {post_depth_sampler_, depth_resolved_view(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet& w = writes[widx];
         w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         w.dstSet = post_sets_[s];
@@ -801,6 +810,7 @@ void Renderer::destroy_targets() {
     destroy_image(bloom_b_[k]);
     bloom_w_[k] = bloom_h_[k] = 0;
   }
+  bloom_zero_cleared_ = false;
   target_width_ = target_height_ = 0;
   render_width_ = render_height_ = 0;
 }
