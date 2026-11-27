@@ -355,12 +355,11 @@ public class DriveActivity extends SDLActivity {
     }
 
     public File getFilesRoot() {
-        File ext = getExternalFilesDir(null);
-        return ext != null ? ext : getFilesDir();
+        return LauncherSettingsStore.getInternalFilesRoot(this);
     }
 
     public File getPlayDirectory() {
-        File root = getFilesRoot();
+        File root = LauncherSettingsStore.resolvePlayStorageRoot(this);
         return root != null ? new File(root, "play") : null;
     }
 

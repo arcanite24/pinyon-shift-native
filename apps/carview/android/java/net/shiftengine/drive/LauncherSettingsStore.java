@@ -3,7 +3,11 @@
 package net.shiftengine.drive;
 
 import android.app.Activity;
+import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Build;
+import android.os.Environment;
+import android.os.StatFs;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -42,6 +46,151 @@ public final class LauncherSettingsStore {
 
     public static final String[] DRIVER_LABELS = { "Auto", "Turnip", "System" };
     public static final String[] DRIVER_VALUES = { "auto", "turnip", "system" };
+
+    private static final String PREFS_NAME = "shift_launcher_prefs";
+    private static final String PREF_PLAY_STORAGE_ROOT = "play_storage_root";
+    private static final long MIN_SD_PARTITION_BYTES = 1024L * 1024L * 1024L; // Ignore < 1 GiB boot partitions (e.g. FAT boot)
+
+    public static final class StorageOption {
+        public final File rootDir;
+        public final String label;
+        public final String shortName;
+        public final boolean isSdCard;
+        public final long totalBytes;
+        public final long freeBytes;
+        public final boolean hasPlayData;
+
+        public StorageOption(File rootDir, String label, String shortName, boolean isSdCard,
+                             long totalBytes, long freeBytes, boolean hasPlayData) {
+            this.rootDir = rootDir;
+            this.label = label;
+            this.shortName = shortName;
+            this.isSdCard = isSdCard;
+            this.totalBytes = totalBytes;
+            this.freeBytes = freeBytes;
+            this.hasPlayData = hasPlayData;
+        }
+    }
+
+    public static String formatCompactBytes(long bytes) {
+        if (bytes <= 0L) return "0 B";
+        double gb = bytes / (1024.0 * 1024.0 * 1024.0);
+        if (gb >= 10.0) return String.format(Locale.US, "%.0f GB", gb);
+        if (gb >= 1.0) return String.format(Locale.US, "%.1f GB", gb);
+        double mb = bytes / (1024.0 * 1024.0);
+        return String.format(Locale.US, "%.0f MB", mb);
+    }
+
+    public static File getInternalFilesRoot(Context ctx) {
+        if (ctx == null) return null;
+        File ext = ctx.getExternalFilesDir(null);
+        return ext != null ? ext : ctx.getFilesDir();
+    }
+
+    // Enumerates usable app-owned storage roots across Internal storage and mounted
+    // SD card partitions (skipping tiny <1 GiB boot partitions unless they already hold play data).
+    public static List<StorageOption> listPlayStorageOptions(Context ctx) {
+        List<StorageOption> out = new ArrayList<>();
+        if (ctx == null) return out;
+        File[] dirs = ctx.getExternalFilesDirs(null);
+        File internal = getInternalFilesRoot(ctx);
+        if (dirs == null || dirs.length == 0) {
+            if (internal != null) dirs = new File[] { internal };
+            else return out;
+        }
+        int sdCount = 0;
+        List<File> validSd = new ArrayList<>();
+        for (int i = 1; i < dirs.length; ++i) {
+            File d = dirs[i];
+            if (d == null) continue;
+            try {
+                if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState(d))) continue;
+                if (!d.exists()) d.mkdirs();
+                if (!d.isDirectory()) continue;
+                StatFs sf = new StatFs(d.getAbsolutePath());
+                long total = sf.getTotalBytes();
+                boolean hasPlay = new File(d, "play/play.txt").isFile();
+                if (total < MIN_SD_PARTITION_BYTES && !hasPlay) continue;
+                validSd.add(d);
+            } catch (Throwable ignored) {
+            }
+        }
+        sdCount = validSd.size();
+
+        if (dirs[0] != null) {
+            File d0 = dirs[0];
+            if (!d0.exists()) d0.mkdirs();
+            long total = 0L, free = 0L;
+            try {
+                StatFs sf = new StatFs(d0.getAbsolutePath());
+                total = sf.getTotalBytes();
+                free = sf.getAvailableBytes();
+            } catch (Throwable ignored) {
+            }
+            boolean hasPlay = new File(d0, "play/play.txt").isFile();
+            out.add(new StorageOption(
+                    d0,
+                    "Internal (" + formatCompactBytes(free) + ")",
+                    "Internal",
+                    false, total, free, hasPlay));
+        }
+
+        for (File sd : validSd) {
+            long total = 0L, free = 0L;
+            try {
+                StatFs sf = new StatFs(sd.getAbsolutePath());
+                total = sf.getTotalBytes();
+                free = sf.getAvailableBytes();
+            } catch (Throwable ignored) {
+            }
+            boolean hasPlay = new File(sd, "play/play.txt").isFile();
+            String volTag = extractVolumeTag(sd.getAbsolutePath());
+            String shortName = (sdCount > 1 && !volTag.isEmpty()) ? ("SD " + volTag) : "SD Card";
+            out.add(new StorageOption(
+                    sd,
+                    shortName + " (" + formatCompactBytes(free) + ")",
+                    shortName,
+                    true, total, free, hasPlay));
+        }
+        return out;
+    }
+
+    private static String extractVolumeTag(String absPath) {
+        if (absPath == null) return "";
+        String prefix = "/storage/";
+        if (absPath.startsWith(prefix)) {
+            int slash = absPath.indexOf('/', prefix.length());
+            if (slash > prefix.length()) return absPath.substring(prefix.length(), slash);
+        }
+        return "";
+    }
+
+    public static File resolvePlayStorageRoot(Context ctx) {
+        File fallback = getInternalFilesRoot(ctx);
+        if (ctx == null) return fallback;
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            String saved = prefs.getString(PREF_PLAY_STORAGE_ROOT, "");
+            if (saved != null && !saved.isEmpty()) {
+                for (StorageOption opt : listPlayStorageOptions(ctx)) {
+                    if (opt.rootDir.getAbsolutePath().equals(saved)) {
+                        return opt.rootDir;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return fallback;
+    }
+
+    public static void setPlayStorageRoot(Context ctx, File rootDir) {
+        if (ctx == null || rootDir == null) return;
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            prefs.edit().putString(PREF_PLAY_STORAGE_ROOT, rootDir.getAbsolutePath()).apply();
+        } catch (Throwable ignored) {
+        }
+    }
 
     private LauncherSettingsStore() {}
 

@@ -170,6 +170,12 @@ public class SetupActivity extends Activity {
     private SegmentedControl mPlaySteerSeg;
     private SegmentedControl mPlayFpsSeg;
 
+    private List<LauncherSettingsStore.StorageOption> mStorageOptions = new ArrayList<>();
+    private SegmentedControl mSetupStorageSeg;
+    private SegmentedControl mSetStorageSeg;
+    private TextView mSetupStoragePathText;
+    private TextView mSetStoragePathText;
+
     // Tab 2: Setup widgets
     private TextView mDiscStatusText;
     private TextView mDiscHintText;
@@ -405,12 +411,16 @@ public class SetupActivity extends Activity {
     }
 
     private File getFilesRoot() {
-        File ext = getExternalFilesDir(null);
-        return ext != null ? ext : getFilesDir();
+        return LauncherSettingsStore.getInternalFilesRoot(this);
+    }
+
+    private File getPlayStorageRoot() {
+        File root = LauncherSettingsStore.resolvePlayStorageRoot(this);
+        return root != null ? root : getFilesRoot();
     }
 
     private File getPlayDir() {
-        return new File(getFilesRoot(), "play");
+        return new File(getPlayStorageRoot(), "play");
     }
 
     private File getGameDir() {
@@ -1269,6 +1279,24 @@ public class SetupActivity extends Activity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
 
+        // Storage Location Card (Internal vs SD Card)
+        mStorageOptions = LauncherSettingsStore.listPlayStorageOptions(this);
+        LinearLayout storageCard = makeCard(
+                "Game Data Storage",
+                "Choose where game files and Colorado index live. Saves, settings, and Turnip drivers stay on Internal storage.");
+        mSetupStorageSeg = addStorageSelectorRow(storageCard);
+        mSetupStoragePathText = new TextView(this);
+        mSetupStoragePathText.setText(getPlayDir().getAbsolutePath());
+        mSetupStoragePathText.setTextColor(COL_TEXT_MUTED);
+        mSetupStoragePathText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        mSetupStoragePathText.setTypeface(Typeface.MONOSPACE);
+        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        splp.topMargin = dp(4);
+        mSetupStoragePathText.setLayoutParams(splp);
+        storageCard.addView(mSetupStoragePathText);
+        col.addView(storageCard);
+
         // Disc Card
         LinearLayout discCard = makeCard(
                 "Game Disc (.ISO or Extracted Folder)",
@@ -1636,6 +1664,23 @@ public class SetupActivity extends Activity {
                 (i, val) -> updateSetting(LauncherSettingsStore.KEY_GPU_DRIVER, val));
         col.addView(gfxCard);
 
+        // Storage Location Card (synced with Setup tab)
+        LinearLayout setStorageCard = makeCard(
+                "Game Data Storage Location",
+                "Switch between Internal storage and mounted SD Card for game assets and direct-from-disc streaming.");
+        mSetStorageSeg = addStorageSelectorRow(setStorageCard);
+        mSetStoragePathText = new TextView(this);
+        mSetStoragePathText.setText(getPlayDir().getAbsolutePath());
+        mSetStoragePathText.setTextColor(COL_TEXT_MUTED);
+        mSetStoragePathText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f);
+        mSetStoragePathText.setTypeface(Typeface.MONOSPACE);
+        LinearLayout.LayoutParams ssplp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ssplp.topMargin = dp(4);
+        mSetStoragePathText.setLayoutParams(ssplp);
+        setStorageCard.addView(mSetStoragePathText);
+        col.addView(setStorageCard);
+
         // Custom Vulkan Driver (Mesa Turnip) Card
         LinearLayout gpuCard = makeCard(
                 "Custom Vulkan Driver (Mesa Turnip)",
@@ -1692,6 +1737,53 @@ public class SetupActivity extends Activity {
         setSegmentedIndex(mSetTouchSeg, touchIdx);
         setSegmentedIndex(mSetSteerSeg, steerIdx);
         setSegmentedIndex(mSetDriverPrefSeg, drvIdx);
+        syncStorageControls();
+    }
+
+    private SegmentedControl addStorageSelectorRow(LinearLayout card) {
+        if (mStorageOptions.isEmpty()) {
+            mStorageOptions = LauncherSettingsStore.listPlayStorageOptions(this);
+        }
+        int n = Math.max(1, mStorageOptions.size());
+        String[] labels = new String[n];
+        String[] values = new String[n];
+        if (mStorageOptions.isEmpty()) {
+            labels[0] = "Internal";
+            values[0] = getFilesRoot().getAbsolutePath();
+        } else {
+            for (int i = 0; i < mStorageOptions.size(); ++i) {
+                labels[i] = mStorageOptions.get(i).label;
+                values[i] = mStorageOptions.get(i).rootDir.getAbsolutePath();
+            }
+        }
+        return addSegmentedSettingRow(card, "Active Storage", labels, values, (idx, pathVal) -> {
+            if (mBusy.get()) {
+                syncStorageControls();
+                return;
+            }
+            File chosen = new File(pathVal);
+            LauncherSettingsStore.setPlayStorageRoot(this, chosen);
+            configureProcessEnv();
+            syncStorageControls();
+            appendSetupLog("Switched game storage to: " + getPlayDir().getAbsolutePath());
+            refreshLibraryAsync();
+        });
+    }
+
+    private void syncStorageControls() {
+        String activePath = getPlayStorageRoot().getAbsolutePath();
+        int idx = 0;
+        for (int i = 0; i < mStorageOptions.size(); ++i) {
+            if (mStorageOptions.get(i).rootDir.getAbsolutePath().equals(activePath)) {
+                idx = i;
+                break;
+            }
+        }
+        setSegmentedIndex(mSetupStorageSeg, idx);
+        setSegmentedIndex(mSetStorageSeg, idx);
+        String playPath = getPlayDir().getAbsolutePath();
+        if (mSetupStoragePathText != null) mSetupStoragePathText.setText(playPath);
+        if (mSetStoragePathText != null) mSetStoragePathText.setText(playPath);
     }
 
     private void applyAllCachedStateToUi() {
@@ -2346,7 +2438,8 @@ public class SetupActivity extends Activity {
                     final String label = "Syncing (" + fileNum + "/" + totalFiles + ")";
                     runOnUiThread(() -> updateWifiProgressUi(frac, label, targetRel));
 
-                    WifiSyncClient.downloadFileResumable(host, port, code, fileIdx, filesRoot, targetRel, sz);
+                    File targetRoot = targetRel.startsWith("play/") ? getPlayStorageRoot() : filesRoot;
+                    WifiSyncClient.downloadFileResumable(host, port, code, fileIdx, targetRoot, targetRel, sz);
                     doneBytes += sz;
                     doneFiles++;
                 }
@@ -2430,7 +2523,7 @@ public class SetupActivity extends Activity {
         mFreeStorageBytes = st.optLong("free_storage_bytes", 0L);
         if (mFreeStorageBytes <= 0L) {
             try {
-                StatFs sf = new StatFs(getFilesRoot().getAbsolutePath());
+                StatFs sf = new StatFs(getPlayStorageRoot().getAbsolutePath());
                 mFreeStorageBytes = sf.getAvailableBytes();
             } catch (Throwable ignored) {
             }
