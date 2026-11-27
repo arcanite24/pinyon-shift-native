@@ -1571,7 +1571,7 @@ void prime_world_and_snap_impl(DriveSession& s, std::array<double, 3> target_pos
         any_changed = any_changed || ch;
       }
       s.host.streamer->set_async(s.host.streamer_async);
-      if (any_changed && s.host.streamer->prepared().has_value()) {
+      if (any_changed && s.host.streamer->prepared()) {
         s.host.ground = &s.host.streamer->ground();
         s.host.follower.set_ground(&s.host.streamer->ground());
         s.host.set_staged_world();
@@ -1716,7 +1716,7 @@ void prime_world_at(DriveSession& s, double x, double z) {
     any_changed = any_changed || ch;
   }
   s.host.streamer->set_async(s.host.streamer_async);
-  if (any_changed && s.host.streamer->prepared().has_value()) {
+  if (any_changed && s.host.streamer->prepared()) {
     s.host.ground = &s.host.streamer->ground();
     s.host.follower.set_ground(&s.host.streamer->ground());
     s.host.set_staged_world();

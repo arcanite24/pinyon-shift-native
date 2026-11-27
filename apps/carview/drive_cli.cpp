@@ -230,14 +230,38 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
       const std::string p = next();
       preset_name = p;
       cli_preset_explicit = true;
+      // Clear earlier settings.txt / pre-preset overrides so switching presets
+      // (e.g. ultra -> performance-120) never leaks stale heavy effects; flags
+      // that appear AFTER --preset still override the preset cleanly.
+      cli_msaa_explicit = false;
+      cli_aa_explicit = false;
+      cli_vrs_explicit = false;
+      cli_shadows_explicit = false;
+      cli_bloom_explicit = false;
+      cli_ssao_explicit = false;
+      cli_sscs_explicit = false;
+      cli_hextile_explicit = false;
+      cli_velblur_explicit = false;
+      cli_pcss_explicit = false;
+      cli_ssr_explicit = false;
+      cli_volfog_explicit = false;
+      cli_cardetail_explicit = false;
+      cli_texcap_explicit = false;
+      cli_fpscap_explicit = false;
+      cli_scale_explicit = false;
+      cli_output_explicit = false;
+      shadows_flag.clear();
+      bloom_flag = -1;
+      motion_blur_flag = -1;
+      dof_flag = -1;
       carview::GraphicsPresetSpec pspec;
       if (carview::resolve_graphics_preset(p, pspec)) {
         msaa = pspec.msaa;
         low_preset = pspec.low_preset;
         preset_reflection_rate = pspec.env_map_rate;
         preset_anisotropy = pspec.anisotropy;
-        if (shadows_flag.empty()) shadows_flag = pspec.shadows;
-        if (bloom_flag < 0) bloom_flag = pspec.bloom ? 1 : 0;
+        shadows_flag = pspec.shadows;
+        bloom_flag = pspec.bloom ? 1 : 0;
       } else {
         msaa = p == "low" ? 1 : 4;
         low_preset = p == "low";

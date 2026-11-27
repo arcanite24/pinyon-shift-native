@@ -234,6 +234,15 @@ public class DriveActivity extends SDLActivity {
                 cache.mkdirs();
                 Os.setenv("TMPDIR", cache.getAbsolutePath(), true);
             }
+            File codeCache = getCodeCacheDir();
+            File mesaBase = codeCache != null ? codeCache : cache;
+            if (mesaBase != null) {
+                File mesaCache = new File(mesaBase, "mesa_shader_cache");
+                mesaCache.mkdirs();
+                Os.setenv("MESA_SHADER_CACHE_DIR", mesaCache.getAbsolutePath(), true);
+                Os.setenv("MESA_DISK_CACHE_SINGLE_FILE", "1", true);
+                Os.setenv("MESA_SHADER_CACHE_MAX_SIZE", "256M", true);
+            }
             if (root != null) {
                 root.mkdirs();
                 new File(root, "drive").mkdirs();
@@ -509,9 +518,10 @@ public class DriveActivity extends SDLActivity {
                         best = m;
                     }
                 }
-                if (best.getModeId() != cur.getModeId()) {
-                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                if (lp.preferredDisplayModeId != best.getModeId() || Math.abs(lp.preferredRefreshRate - targetHz) > 1.0f) {
                     lp.preferredDisplayModeId = best.getModeId();
+                    lp.preferredRefreshRate = targetHz;
                     getWindow().setAttributes(lp);
                 }
             } catch (Throwable ignored) {

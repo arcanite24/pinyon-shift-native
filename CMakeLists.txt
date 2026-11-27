@@ -10,10 +10,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+set(_shift_default_rt ON)
+if(ANDROID)
+  set(_shift_default_rt OFF)
+endif()
 option(SHIFT_BUILD_CARVIEW "Build the carview app (SDL3 + Vulkan)" ON)
 option(SHIFT_BUILD_LAUNCHER "Build the unified cross-platform GUI launcher" ON)
-option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path tracing backend" ON)
+option(SHIFT_ENABLE_RAY_TRACING "Compile Vulkan hardware ray tracing & path tracing backend" ${_shift_default_rt})
 option(SHIFT_STATIC_RUNTIME "Link libstdc++/libgcc statically on Linux" ON)
+set(SHIFT_ANDROID_ARM64_ARCH "armv8.2-a+lse+crc+fp16+dotprod" CACHE STRING
+    "Android arm64-v8a -march target (use armv8-a for maximum legacy compatibility)")
 
 if(MSVC)
   add_compile_options(/utf-8 /permissive- /Zc:__cplusplus $<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
@@ -23,19 +29,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SHIFT_STATIC_RUNTIME)
   add_link_options(-static-libstdc++ -static-libgcc)
 endif()
 if(ANDROID)
-  # Universal ARMv8.0-A compatibility for lowest requirements, tuned for Cortex-X3
-  # (Snapdragon 8 Gen 2 / Odin 2) with ThinLTO + section GC + safe ICF in Release.
+  # Tuned for modern ARMv8.2+ mobile SoCs (Snapdragon 8 Gen 2 / Cortex-X3 on Odin 2)
+  # with ThinLTO O3, hardware LSE atomics/CRC32/FP16/dotprod, section GC, and safe ICF.
   add_compile_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:Release>:-fno-semantic-interposition>
-                      $<$<CONFIG:Release>:-ffunction-sections> $<$<CONFIG:Release>:-fdata-sections>)
+                      $<$<CONFIG:Release>:-ffunction-sections> $<$<CONFIG:Release>:-fdata-sections>
+                      $<$<CONFIG:Release>:-fno-math-errno> $<$<CONFIG:Release>:-fno-trapping-math>
+                      $<$<CONFIG:Release>:-gline-tables-only>)
   if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    if(SHIFT_ANDROID_ARM64_ARCH)
+      add_compile_options($<$<CONFIG:Release>:-march=${SHIFT_ANDROID_ARM64_ARCH}>)
+    endif()
     add_compile_options($<$<CONFIG:Release>:-mtune=cortex-x3>)
   endif()
-  add_link_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:Release>:-Wl,--gc-sections>
-                   $<$<CONFIG:Release>:-Wl,--icf=safe>)
+  add_link_options($<$<CONFIG:Release>:-flto=thin> $<$<CONFIG:Release>:-Wl,--lto-O3>
+                   $<$<CONFIG:Release>:-Wl,--gc-sections> $<$<CONFIG:Release>:-Wl,--icf=safe>)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Dependencies)
+
+if(ANDROID)
+  # Internalize project symbols (SDL_main & JNIEXPORT stay visible) and drop
+  # unused C++ RTTI tables across project libraries/carview (SDL3/adrenotools untouched).
+  add_compile_options(-fvisibility=hidden $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
+                      $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+endif()
 
 # Refresh SHIFT_GIT_COMMIT automatically whenever HEAD or its active branch ref moves.
 set(_shift_git_dir "${CMAKE_CURRENT_SOURCE_DIR}/.git")
@@ -91,6 +109,14 @@ if(SHIFT_BUILD_CARVIEW)
 endif()
 if(SHIFT_BUILD_LAUNCHER)
   add_subdirectory(apps/launcher)
+endif()
+
+if(ANDROID)
+  foreach(_fp_target shift_audio shift_world shift_drive carview_render carview)
+    if(TARGET ${_fp_target})
+      target_compile_options(${_fp_target} PRIVATE $<$<CONFIG:Release>:-ffp-contract=fast>)
+    endif()
+  endforeach()
 endif()
 
 enable_testing()

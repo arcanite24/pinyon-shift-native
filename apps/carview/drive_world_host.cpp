@@ -1,7 +1,6 @@
 #include "drive_world_host.h"
 
 #include <algorithm>
-#include <any>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +19,7 @@
 #include "drive_session.h"
 #include "fh1data/cjk_font.h"
 #include "fh1data/members.h"
+#include "platform_support.h"
 #include "settings.h"
 #include "world_view.h"
 
@@ -37,6 +37,10 @@
 #ifdef far
 #undef far
 #endif
+#elif defined(__ANDROID__)
+#include <sched.h>
+#include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 namespace carview {
@@ -45,6 +49,15 @@ namespace {
 inline void lower_stream_worker_priority() {
 #ifdef _WIN32
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(__ANDROID__)
+  setpriority(PRIO_PROCESS, 0, 10);
+  const long ncpus = sysconf(_SC_NPROCESSORS_CONF);
+  if (ncpus == 8) {
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    for (int cpu = 0; cpu < 3; ++cpu) CPU_SET(cpu, &mask);
+    sched_setaffinity(0, sizeof(mask), &mask);
+  }
 #else
   SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_LOW);
 #endif
@@ -264,12 +277,11 @@ ShowroomOptions DriveWorldHost::build_car_options() {
 }
 
 bool DriveWorldHost::set_staged_world() {
-        if (!streamer || !streamer->prepared().has_value()) {
+        if (!streamer || !streamer->prepared()) {
           app.error = "world staging buffers";
           return false;
         }
-        auto* prepared_ptr = std::any_cast<std::shared_ptr<Prepared>>(&streamer->prepared());
-        std::shared_ptr<Prepared> prepared = prepared_ptr ? std::move(*prepared_ptr) : std::shared_ptr<Prepared>{};
+        std::shared_ptr<Prepared> prepared = std::static_pointer_cast<Prepared>(std::move(streamer->prepared()));
         streamer->prepared().reset();
         if (!prepared) {
           app.error = "world staging buffers";
@@ -332,6 +344,8 @@ bool DriveWorldHost::pump_deferred_world() {
 }
 
 bool DriveWorldHost::open_world_and_car() {
+    enable_arm64_fp_flush_to_zero();
+    configure_android_render_thread_qos();
     // SHIFT_NO_CULL=1: every world draw, for comparison with the culled frame.
     if (const char* e = std::getenv("SHIFT_NO_CULL"); e && *e == '1') showroom.set_world_culling(false);
     ShowroomOptions options = build_car_options();
@@ -888,7 +902,7 @@ bool DriveWorldHost::open_world_and_car() {
               sg.position[2] = float(double(g.position[2]) - cz);
               prepared->glows.push_back(sg);
             }
-            return std::any(prepared);
+            return prepared;
           });
           const double sx = app.have_spawn ? app.spawn[0] : app.near_given || app.render_ground ? app.near_x : world::kSpawnX;
           const double sz = app.have_spawn ? app.spawn[2] : app.near_given || app.render_ground ? app.near_z : world::kSpawnZ;
@@ -1163,7 +1177,7 @@ bool DriveWorldHost::hot_reload_car_and_world() {
             follower.set_ground(&streamer->ground());
             const bool saved_async = streamer_async;
             streamer_async = false;
-            const bool staged_ok = streamer->prepared().has_value() && set_staged_world();
+            const bool staged_ok = static_cast<bool>(streamer->prepared()) && set_staged_world();
             streamer_async = saved_async;
             if (!staged_ok) {
               std::fprintf(stderr, "carview: hot stage world: %s\n", app.error.c_str());
@@ -1311,11 +1325,10 @@ bool DriveWorldHost::leave_room_world() {
   if (streamer->mesh().triangles() == 0) return false;
   // On this thread: no worker priority, no deferred textures.
   prepare_on_main = true;
-  std::any any = streamer->prepare()(streamer->mesh(), streamer->centre_x(), streamer->centre_z());
+  std::shared_ptr<void> any = streamer->prepare()(streamer->mesh(), streamer->centre_x(), streamer->centre_z());
   prepare_on_main = false;
-  auto* pp = std::any_cast<std::shared_ptr<Prepared>>(&any);
-  if (!pp || !*pp || !(*pp)->staged) return false;
-  std::shared_ptr<Prepared> prepared = std::move(*pp);
+  std::shared_ptr<Prepared> prepared = std::static_pointer_cast<Prepared>(std::move(any));
+  if (!prepared || !prepared->staged) return false;
   follower.set_points(std::move(prepared->road));
   showroom.set_world_glows(std::move(prepared->glows));
   std::string e;

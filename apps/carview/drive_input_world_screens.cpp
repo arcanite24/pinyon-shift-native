@@ -195,7 +195,7 @@ bool DriveSession::handle_campaign_and_title_event(const SDL_Event& e) {
                   bool changed = false;
                   const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2],
                                                         &changed, &rerr);
-                  if (ok && changed && host.streamer->prepared().has_value()) {
+                  if (ok && changed && host.streamer->prepared()) {
                     host.ground = &host.streamer->ground();
                     host.follower.set_ground(&host.streamer->ground());
                     host.set_staged_world();

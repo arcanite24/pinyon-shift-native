@@ -392,8 +392,32 @@ void DriveSession::set_minimap(int height, bool force) {
           return;
         }
         const double t = vehicle.time();
-        if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 1.0 / 60) return;
+#ifdef __ANDROID__
+        // 25 Hz minimap cadence on Android (with stationary skip) saves ~1-2 ms/frame CPU
+        // and halves 2D UI atlas re-uploads at 120 Hz.
+        constexpr double kMinimapInterval = 1.0 / 25.0;
+#else
+        constexpr double kMinimapInterval = 1.0 / 60.0;
+#endif
+        if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < kMinimapInterval) return;
+        const drive::Vec3 cur_pos = vehicle.position();
+        const drive::Vec3 cur_fwd = drive::rotate(vehicle.orientation(), {0, 0, 1});
+        const double cur_hdg = std::atan2(cur_fwd.x, cur_fwd.z);
+        static double s_mm_x = 1e18, s_mm_z = 1e18, s_mm_h = 0.0;
+        static double s_mm_markers_t = -1e9;
+        static bool s_mm_was_race = false;
+#ifdef __ANDROID__
+        if (!force && minimap_at >= 0 && t >= minimap_at && t - minimap_at < 0.20) {
+          const double dx = cur_pos.x - s_mm_x;
+          const double dz = cur_pos.z - s_mm_z;
+          const double dh = std::fabs(cur_hdg - s_mm_h);
+          if (dx * dx + dz * dz < 0.16 && dh < 0.02 && !app.race) return;
+        }
+#endif
         minimap_at = t;
+        s_mm_x = cur_pos.x;
+        s_mm_z = cur_pos.z;
+        s_mm_h = cur_hdg;
         // SPEC-UI-LAYOUTS a: 90,420-280,600 at 1280x720, no frame.
         // When Android touch controls are visible, lift into non-overlapping safe rect.
         const double k = height / 720.0;
@@ -404,10 +428,51 @@ void DriveSession::set_minimap(int height, bool force) {
           carview::TouchControls::hud_safe_rects(float(app.width), float(height), mm_safe, tach_safe);
           display_px = std::max(96, int(std::lround(std::min(mm_safe.w() * float(app.width), mm_safe.h() * float(height)))));
         }
-        // Cap minimap CPU raster size to 320 px on 4K displays (GPU bilinearly scales
-        // cleanly to `display_px`, saving 2.6x CPU & UI atlas space at 60 Hz).
+        // Cap minimap CPU raster size (180 px on Android, 320 px on desktop 4K); GPU bilinearly
+        // scales cleanly to `display_px`.
+#ifdef __ANDROID__
+        const int req_px = std::clamp(display_px, 96, 180);
+#else
         const int req_px = std::clamp(display_px, 96, 320);
-        HudImage img = app.map_view.minimap(map_scene(), req_px);
+#endif
+        // Reuse cached career/outpost/speedtrap markers instead of rebuilding 80+ localized
+        // strings via map_scene() on every minimap tick (refresh every 2.0 s or on race change).
+        MapScene ms;
+        const bool is_race = bool(app.race);
+        if (is_race || force || cached_map_markers.empty() || is_race != s_mm_was_race ||
+            t < s_mm_markers_t || (t - s_mm_markers_t) >= 2.0) {
+          ms = map_scene();
+          if (!is_race) cached_map_markers = ms.markers;
+          s_mm_markers_t = t;
+          s_mm_was_race = is_race;
+        } else {
+          ms.x = cur_pos.x;
+          ms.z = cur_pos.z;
+          ms.heading = cur_hdg;
+          ms.north_up = (live_minimap_mode == 1);
+          ms.speed_mps = std::fabs(vehicle.speed());
+          ms.data = app.progress_loaded ? &app.collectibles : nullptr;
+          ms.progress = app.progress_loaded ? &app.progress : nullptr;
+          ms.road_discovery = app.road_discovery.ready() ? &app.road_discovery : nullptr;
+          ms.reveal = app.reveal || app.treasure_map_setting || slice12.trainer.effective_reveal_collectibles();
+          if (traffic && traffic->cars()) {
+            ms.traffic.reserve(traffic->cars()->size());
+            for (const auto& tc : *traffic->cars()) ms.traffic.push_back({tc.position.x, tc.position.z});
+          }
+          if (app.gps_nav.active()) {
+            app.gps_nav.remaining_polyline(ms.gps_route);
+            ms.has_gps_dest = true;
+            ms.gps_dest_x = app.gps_nav.route().snapped_dest_x;
+            ms.gps_dest_z = app.gps_nav.route().snapped_dest_z;
+          }
+          if (festival_mgr) {
+            for (const auto& fc : festival_mgr->cars()) ms.festival_ai.push_back({fc.position.x, fc.position.z});
+            if (festival_mgr->h2h_active()) ms.route = festival_mgr->h2h_route();
+          }
+          ms.markers = cached_map_markers;
+          ms.selected_marker = map_selected_marker;
+        }
+        HudImage img = app.map_view.minimap(ms, req_px);
         if (carview::ui::atlas_update("minimap", img.width, img.height, img.rgba, mm_uv)) {
           mm_size = float(display_px);
           if (touch_vis) {

@@ -63,6 +63,7 @@ void DriveSession::poll_sdl_events() {
                   host.showroom.set_instances({});
                   festival_guests.clear();
                 }
+                carview::trim_android_memory();
               }
               continue;
             }

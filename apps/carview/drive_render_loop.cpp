@@ -555,7 +555,7 @@ void DriveSession::run_window_loop() {
               bool changed = false;
               const bool ok = host.streamer->update(app.saved_resume_spawn[0], app.saved_resume_spawn[2], &changed, &rerr);
               if (!ok || changed || !host.streamer->gathering()) {
-                if (ok && changed && host.streamer->prepared().has_value()) {
+                if (ok && changed && host.streamer->prepared()) {
                   host.ground = &host.streamer->ground();
                   host.follower.set_ground(&host.streamer->ground());
                   host.set_staged_world();

@@ -203,6 +203,131 @@ Inspecting the Pass 2 Odin 2 Portal logs exposed 7 remaining opportunities:
    Android swapchain creation so HDR10 (`VK_COLOR_SPACE_HDR10_ST2084_EXT`)
    capability on Turnip + Odin 2 Portal OLED is explicitly verified.
 
+## Optimization Pass 4: Ultra-Deep Assessment (Waves 1–3)
+
+A full end-to-end audit of Android GPU passes, shaders, synchronization, CPU
+threading, memory footprint, startup time, and ARM64 code generation was
+implemented and verified on the AYN Odin 2 Portal (`bd89bfde`, Turnip MrPurple
+T30, 1080p target):
+
+### Wave 1 — High-Impact Sync, Render-Pass & Shader Fixes
+
+1. **Preset Leak Fix (`drive_cli.cpp`)**: Prevented `settings.txt` default
+   tokens from overriding `--preset` flags when running presets or benchmarks.
+2. **Eliminated Hidden Full-Res SDR Brightness Pass (`upscale.frag`, `post.frag`, `renderer_frame.cpp`)**:
+   Folded `sdr_brightness` directly into `upscale.frag` and `post.frag`,
+   removing the extra 8 MiB `stand_in_` render target, 1080p full-screen blit
+   pass, and Frame-1 `vkDeviceWaitIdle()`.
+3. **Car & Guest Car Pipeline / Shader Cleanup (`showroom_frag.glsl`, `showroom_upload.cpp`, `showroom_draw.cpp`, `showroom_pipelines.cpp`)**:
+   - Chained glass/mirror branches before full PBR lighting and skipped wasted
+     `spec_map` sampling on `_NORM2` under `kMobileFast`.
+   - Fixed guest/AI car duplicate pipeline creation, skipped redundant dual-pass
+     glass covers and forced `2x2` VRS + `LOD2` far slices for distant AI cars,
+     and merged rigid bodywork draws into contiguous index runs.
+4. **4-Image Android FIFO Swapchain & Frame Pacing (`renderer_swapchain.cpp`, `drive_frame_render.cpp`, `drive_input_loop.cpp`, `DriveActivity.java`)**:
+   - Requested 4 swapchain images on Android (`minImageCount + 2` clamped to
+     `maxImageCount`), bypassed software `FramePacer` sleep under FIFO vsync,
+     fixed ADPF work-duration reporting to exclude swapchain wait, switched DRS
+     to GPU-timed feedback, and applied `preferredDisplayModeId` unconditionally.
+5. **CPU & Allocator Hygiene (`drive_map_radio.cpp`, `platform_support.cpp`, `sfx_engine.cpp`, `drive_world_host.cpp`)**:
+   - Throttled live minimap road/event rebuilding, configured Scudo
+     `mallopt(M_DECAY_TIME, 1)` + `M_PURGE_ALL`, lowered background SFX decoder
+     priority on Android/Linux, and made world soundscape loading asynchronous
+     (`async_sc = !app.headless || app.bench`).
+
+### Wave 2 — Zero-Barrier UBO Rings, FP16 Shaders & World Batching
+
+1. **Zero Per-Frame `vkCmdUpdateBuffer` Calls or UBO Barriers (`renderer.h`, `renderer_*.cpp`, `showroom.h`, `showroom_*.cpp`)**:
+   - Converted `post_optical_buf_`, `vol_ubo_`, `sky_ubo_`, and `env_sky_ubo_`
+     to `kFramesInFlight`-sliced `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC`
+     rings; converted `frame_buffer_`, all 3 shadow cascade UBOs,
+     `headlights_ubo_`, and `env_frame_buffer_` to persistently-mapped
+     `Showroom::MappedRing`s; converted `glow_buf_` and `overlay_buf_` to
+     `DynBuffer`s.
+2. **Render-Pass & Barrier Reductions (`renderer_resources.cpp`, `renderer_frame.cpp`, `showroom_env.cpp`)**:
+   - Started the Android bloom pyramid at quarter-res (`rw/4 x rh/4`).
+   - Bypassed the 1:1 native bilinear `upscale` pass when no upscale or FXAA is
+     needed.
+   - Merged offscreen cubemap/mirror sky rendering into single-pass mode-2 sky
+     and batched `env_prefilter` mip transitions into 2 barriers instead of
+     serial per-mip barriers.
+3. **Deep FP16 (`mediump`) & Shader ALU Cuts (all 54 SPIR-V shaders regenerated)**:
+   - Replaced `transpose(inverse(mat3(model_mat)))` in `showroom.vert` with a
+     division-free cofactor matrix; guarded `sin()` hash in `world_vert.glsl`.
+   - Expanded `mediump` across `sky.frag`, `world_frag.glsl`, `showroom_frag.glsl`,
+     `ssao.frag`, `ssr.frag`, and `post.frag`; replaced integer `pow()` calls
+     with multiplies and `pow(denom, 1.5)` with `denom * sqrt(denom)` in
+     `volumetric.frag`; gated multi-scale paint flakes, 12/16-tap car shadow
+     loops, and PCSS under `kMobileFast`, capped dynamic headlights at 6 under
+     `kMobileFast`, and respected `frame.shadow.w` for 1-tap bilinear PCF.
+4. **World Draw Batching & Cached Descriptor Sets (`world.h`, `showroom_world_stream.cpp`, `showroom_world_gpu.cpp`, `showroom_draw.cpp`)**:
+   - Dropped raw `effect` string from `MeshMaterial::key()` so shader-identical
+     materials merge into one batch; tuned Android near cell size to `384 m`
+     (`128 m` for `fade == 1`).
+   - Cached resolved `VkDescriptorSet` per `WorldGeometry::Draw` behind
+     `world_sets_gen_`, reused bucket/touched scratch vectors, and sorted
+     opaque/cutout draws by `(cached_set, decal)`.
+
+### Wave 3 — Memory (-1.0 GiB PSS), Startup TTFF (-45%) & ARM64 Build
+
+1. **Shared `bin.zip` (`Archive::open_shared`), Lock-Free `pread`, Hardware ARM64 CRC32 (`archive.h/.cpp`, `members.h/.cpp`, `world_acoustics.cpp`)**:
+   - Deduplicated the 230k-member `bin.zip` central directory and sorted
+     `BaseNameIndex` across `World`, `Collision`, `SmashableWorld`, and
+     `WorldAcousticsData`.
+   - Used lock-free POSIX `::pread()`, fast-pathed extra-field `0x1123` payload
+     offsets (avoiding redundant local-header seeks), and accelerated
+     `fh1::crc32()` with ARMv8 `__crc32d/w/h/b`.
+2. **Audio Heap Cuts & RT Priority (`fsb4.h/.cpp`, `audio_engine.h/.cpp`, `satnav_vo.cpp`, `radio.cpp`)**:
+   - Added `read_fsb4_file_headers()` so UI music, SatNav, and Radio scan only
+     the FSB4 header table (~5–30 KiB instead of reading entire multi-MB banks).
+   - Replaced eager 5-track float32 `init_ui_music()` decoding with lazy
+     on-demand single-track `int16_t` loading and Android eviction when inactive.
+   - Reduced Android `RadioPlayer` `StreamPool` to `(6, 49152)` and enabled
+     ARM64 FPCR Flush-to-Zero + `PRIO_PROCESS -16` on the audio render thread.
+3. **World/Prop Memory, Binary Disk Cache & RTTI Removal (`props.h/.cpp`, `world.h/.cpp`, `smashables.cpp`, `world_anim.h/.cpp`, `showroom_vfx.cpp`, `showroom_upload.cpp`, `stream.h`)**:
+   - Interned `PropWorld::route_lists` (`uint16_t route_list` per placement/tree)
+     and added versioned binary disk cache (`<cache>.props.bin`).
+   - Shared `.bundle` small-texture payloads between `World` and `SmashableWorld`.
+   - Fixed `World::gather()` prop preload radius (`prop_r2` instead of `tree_r2`),
+     bounded Android `PropModels` via `trim(512)`, freed `SpectatorCatalog::atlas_rgba`
+     (16 MiB) and player car CPU models/wheel/shared textures after GPU upload.
+   - Replaced the repo's sole `std::any` (`world::Streamer::Prepare`) with
+     `std::shared_ptr<void>`, enabling `-fno-rtti` cleanly across Android.
+4. **ARM64 Compiler Flags, Symbol Visibility, Thread QoS & Mesa Shader Cache (`CMakeLists.txt`, `cmake/Dependencies.cmake`, `platform_support.h/.cpp`, `DriveActivity.java`)**:
+   - Disabled `SHIFT_ENABLE_RAY_TRACING` and SDL OpenGL/GLES by default on
+     Android (dropped `libGLESv1_CM.so` / `libGLESv2.so` linkage).
+   - Added `-march=armv8.2-a+lse+crc+fp16+dotprod -mtune=cortex-x3 -fno-rtti -fvisibility=hidden -fvisibility-inlines-hidden -fno-math-errno -fno-trapping-math -gline-tables-only -Wl,--lto-O3` and `-ffp-contract=fast` on hot libraries.
+   - Added ARM64 FPCR FZ + big/prime (`CPU 3..7`, nice `-4`) render-thread QoS
+     and LITTLE (`CPU 0..2`, nice `+10`) stream-worker pinning on 8-core SoCs.
+   - Configured Mesa single-file persistent shader cache (`MESA_SHADER_CACHE_DIR`,
+     `MESA_DISK_CACHE_SINGLE_FILE=1`, `MESA_SHADER_CACHE_MAX_SIZE=256M`).
+
+### Measured Wave 1–3 Progression (Odin 2 Portal, 1080p Target, Turnip MrPurple T30 + `TU_DEBUG=sysmem`)
+
+| Benchmark (1920x1080) | Pre-Audit Baseline | Wave 1 | Wave 2 | **Wave 3 (Final)** | Total Gain vs Baseline |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **`live_perf120`** (real live 120 Hz) | 62.0 FPS (`p50 21.1 ms`) | 65.3 FPS (`p50 15.4 ms`) | 119.0 FPS (`p50 8.31 ms`) | **118.8 FPS** (`avg 8.33 ms`, `p50 8.30 ms`, `p95 9.23 ms`, `p99 10.45 ms`) | **+91.6% (120 Hz ceiling locked)** |
+| **`perf120_noon`** (headless) | 47.4 FPS (`GPU 11.42 ms`, 356 draws) | 61.8 FPS (`GPU 8.38 ms`) | 102.2 FPS (`GPU 4.73 ms`, 148 draws) | **100.9 FPS** (`GPU 4.78 ms`, `CPU 1.88 ms`, 148 draws, 100% hitch-free) | **+112.9% FPS / -58.1% GPU** |
+| **`smooth60_noon`** (2× MSAA + GTAO/SSCS) | — | 50.6 FPS (`GPU 10.53 ms`) | 79.7 FPS (`min 61.4 FPS`) | **84.8 FPS** (`min 63.9 FPS`, `GPU 5.79 ms`, `0 >16.7ms`) | **+67.6% vs Wave 1** |
+| **`quality30_noon`** (4× MSAA + shadows/vol/bloom) | — | 25.8 FPS (`GPU 22.03 ms`) | 37.2 FPS (`GPU 14.81 ms`) | **40.4 FPS** (`min 34.5 FPS`, `GPU 13.44 ms`, `0 >33.3ms`) | **+56.6% vs Wave 1** |
+| **`ultra_noon`** (4× MSAA + PCSS/SSR/Full GTAO) | — | 20.1 FPS (`GPU 28.87 ms`) | 31.0 FPS (`GPU 18.08 ms`) | **31.1 FPS** (`GPU 17.95 ms`, 228 draws) | **+54.7% vs Wave 1** |
+| **`perf120_race`** (8-car pack) | 33.7 FPS (`GPU 16.13 ms`) | 42.9 FPS (`GPU 12.20 ms`) | 48.5 FPS (`GPU 10.63 ms`) | **49.7 FPS** (`min 44.0 FPS`, `GPU 10.59 ms`, 100% hitch-free) | **+47.5% FPS** |
+| **`live_perf120` TOTAL PSS** (`dumpsys meminfo`) | 1,491 MiB (`Native Heap 1,175 MiB`) | — | 1,491 MiB | **489 MiB** (`Native Heap 373 MiB`, `TOTAL RSS 502 MiB`) | **-67.2% (-1.00 GiB PSS)** |
+| **Warm Startup TTFF** (`perf120_noon`) | ~5,243 ms (`perf120_race`) | — | 5,243 ms | **2,905 ms** (`pipe 6.6 ms`, `world 1,892 ms`; `perf120_race` 4,087 ms) | **-44.6% TTFF** |
+| **Android Binary / APK** | ~220+ MiB unstripped / >22k exports | — | — | **73.2 MiB unstripped, 11.1 MiB APK, 4,321 exports, 0 GLES deps** | **~3× smaller debug `.so`, ~5× fewer exports** |
+
+### Post-Wave 3 `TU_DEBUG=sysmem` vs `gmem` Verification (Odin 2 Portal, 1080p `noon_cruise`)
+
+Even after Wave 1–3 render-pass, UBO-barrier, and draw-count cuts, `TU_DEBUG=sysmem`
+still beats `TU_DEBUG=gmem` across every preset (including 4× MSAA):
+
+| Preset | `TU_DEBUG=sysmem` | `TU_DEBUG=gmem` | `sysmem` Advantage |
+| --- | ---: | ---: | ---: |
+| `performance-120` | **100.9 FPS** (`GPU 4.78 ms`) | 78.5 FPS (`GPU 6.56 ms`) | **+28.5%** |
+| `smooth-60` | **84.8 FPS** (`GPU 5.79 ms`) | 76.6 FPS (`GPU 6.61 ms`) | **+10.7%** |
+| `quality-30` (4× MSAA) | **40.4 FPS** (`GPU 13.44 ms`) | 33.9 FPS (`GPU 16.44 ms`) | **+19.2%** |
+| `ultra` (4× MSAA) | **31.1 FPS** (`GPU 17.95 ms`) | 27.1 FPS (`GPU 20.96 ms`) | **+14.8%** |
+
 ## Future Stretch Opportunities
 
 1. **ASTC / ETC2 offline texture transcoding cache**:

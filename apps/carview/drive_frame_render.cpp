@@ -15,6 +15,7 @@ namespace carview {
 
 bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_paused,
                                        bool trainer_freecam_active) {
+          const auto frame_work_t0 = std::chrono::steady_clock::now();
           // Ensure player vehicle starts cleanly snapped onto the road surface on race grid
           // before the first camera/frame render (matches RaceView::load_cars AI ground snap).
           if (app.race && host.ground && vehicle.time() <= 1e-6 && !app.race->session().started()) {
@@ -1704,44 +1705,52 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
           if (!s_adpf.active()) s_adpf.init(adpf_target);
           else s_adpf.update_target_fps(adpf_target);
           carview::set_android_refresh_rate_hz(host.active_graphics.fps_cap == 0 ? 120 : adpf_target);
+#ifdef __ANDROID__
+          // Enable lightweight hardware GPU timestamps so Android DRS measures real GPU work
+          // (never VSync/acquire/fence wall time).
+          if (!app.headless && !app.bench && !host.renderer.gpu_timing()) host.renderer.set_gpu_timing(true);
+#endif
           const auto wf_t0 = std::chrono::steady_clock::now();
           if (!host.renderer.draw_frame(FrameConstants{}, app.error)) {
             std::fprintf(stderr, "carview: %s\n", app.error.c_str());
             app.status = 1;
             return false;
           }
-          const auto wf_ns =
-              std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - wf_t0).count();
+          const auto wf_end = std::chrono::steady_clock::now();
+          const auto wf_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wf_end - wf_t0).count();
+          const auto work_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(wf_end - frame_work_t0).count();
           host.last_frame_cpu_ms = double(wf_ns) * 1e-6;
-          s_adpf.report_frame_ns(wf_ns);
+          // Report full frame work (sim + audio + pose + UI + command record) to ADPF.
+          s_adpf.report_frame_ns(work_ns);
 #ifdef __ANDROID__
-          // Lightweight Dynamic Resolution Scaling (live windowed gameplay only; off in --bench/--headless).
+          // Dynamic Resolution Scaling driven strictly by hardware Vulkan GPU timestamps
+          // (live windowed gameplay only; off in --bench/--headless).
           if (!app.headless && !app.bench && host.active_graphics.scale >= 0) {
             static const bool s_drs_enabled = [] {
               const char* e = std::getenv("SHIFT_ANDROID_DRS");
               return !(e && *e == '0');
             }();
-            if (s_drs_enabled) {
-              static double s_ema_ms = 0.0;
+            const double gpu_ms = host.renderer.gpu_frame_ms();
+            if (s_drs_enabled && gpu_ms > 0.05 && gpu_ms < 250.0) {
+              static double s_ema_gpu_ms = 0.0;
               static uint64_t s_drs_frames = 0;
               static uint64_t s_drs_last_change = 0;
               ++s_drs_frames;
-              const double cur_ms = host.last_frame_cpu_ms;
-              s_ema_ms = (s_drs_frames == 1) ? cur_ms : (s_ema_ms * 0.92 + cur_ms * 0.08);
+              s_ema_gpu_ms = (s_drs_frames == 1) ? gpu_ms : (s_ema_gpu_ms * 0.92 + gpu_ms * 0.08);
               const double budget_ms = 1000.0 / double(std::max(30, adpf_target));
-              if (s_drs_frames > 45 && (s_drs_frames - s_drs_last_change) >= 90) {
+              if (s_drs_frames > 60 && (s_drs_frames - s_drs_last_change) >= 120) {
                 const float cur_drs = host.renderer.drs_scale();
                 float next_drs = cur_drs;
-                if (s_ema_ms > budget_ms * 1.15 && cur_drs > 0.70f) {
+                if (s_ema_gpu_ms > budget_ms * 1.12 && cur_drs > 0.70f) {
                   next_drs = std::max(0.70f, cur_drs - 0.05f);
-                } else if (s_ema_ms < budget_ms * 0.80 && cur_drs < 1.0f) {
+                } else if (s_ema_gpu_ms < budget_ms * 0.78 && cur_drs < 1.0f) {
                   next_drs = std::min(1.0f, cur_drs + 0.05f);
                 }
                 if (std::fabs(next_drs - cur_drs) > 0.005f) {
                   host.renderer.set_drs_scale(next_drs);
                   s_drs_last_change = s_drs_frames;
-                  std::fprintf(stderr, "[drs] scale %.2f -> %.2f (ema=%.2f ms, budget=%.2f ms)\n",
-                               double(cur_drs), double(next_drs), s_ema_ms, budget_ms);
+                  std::fprintf(stderr, "[drs] scale %.2f -> %.2f (gpu_ema=%.2f ms, budget=%.2f ms)\n",
+                               double(cur_drs), double(next_drs), s_ema_gpu_ms, budget_ms);
                 }
               }
             }
@@ -1749,8 +1758,13 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
 #endif
           const double now_s =
               std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+          // When FIFO VSync already paces at the panel's native refresh rate (e.g. 120 FPS on
+          // a 120 Hz OLED), skip CPU sleep so FramePacer never double-sleeps against VSync.
+          const bool fifo_paces_native =
+              host.renderer.vsync_active() == carview::modern::VSync::kFifo &&
+              (host.active_graphics.fps_cap == 0 || host.active_graphics.fps_cap >= std::max(60, host.display_hz));
           const double wait_s = host.frame_pacer.wait_for(now_s);
-          if (wait_s > 0.0005) SDL_DelayNS(Uint64(wait_s * 1e9));
+          if (!fifo_paces_native && wait_s > 0.0005) SDL_DelayNS(Uint64(wait_s * 1e9));
           app.frame_stats.frame(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
           if (host.renderer.active_frame_gen() != carview::modern::FrameGen::kOff) app.frame_stats.generated(1);
           if (app.window_frames_limit && app.frame_stats.frames() >= app.window_frames_limit) {

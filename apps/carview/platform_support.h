@@ -124,6 +124,12 @@ class AndroidPerfHintSession {
 // Returns unused allocator pages back to the OS on Android (Scudo mallopt(M_PURGE)).
 void trim_android_memory();
 
+// Enables ARM64 FPCR Flush-to-Zero (FZ) on the calling thread so subnormals never trap.
+void enable_arm64_fp_flush_to_zero();
+
+// Configures render-thread QoS on Android (elevates priority and pins to big+prime cores).
+void configure_android_render_thread_qos();
+
 // Requests a live display refresh-rate switch (e.g. 60 Hz vs 120 Hz) via DriveActivity JNI.
 void set_android_refresh_rate_hz(int desired_hz);
 

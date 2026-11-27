@@ -10,6 +10,8 @@
 #include <dlfcn.h>
 #include <jni.h>
 #include <malloc.h>
+#include <sched.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
@@ -276,9 +278,39 @@ void AndroidPerfHintSession::close() {
 }
 
 void trim_android_memory() {
-#ifdef M_PURGE
+#ifdef M_DECAY_TIME
+  static const bool s_decay_set = (mallopt(M_DECAY_TIME, 1) != 0);
+  (void)s_decay_set;
+#endif
+#ifdef M_PURGE_ALL
+  mallopt(M_PURGE_ALL, 0);
+#elif defined(M_PURGE)
   mallopt(M_PURGE, 0);
 #endif
+}
+
+void enable_arm64_fp_flush_to_zero() {
+#if defined(__aarch64__)
+  uint64_t fpcr = 0;
+  __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+  fpcr |= (1ull << 24);  // FZ: flush subnormals to zero
+  __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
+#endif
+}
+
+void configure_android_render_thread_qos() {
+  setpriority(PRIO_PROCESS, 0, -4);
+  const long ncpus = sysconf(_SC_NPROCESSORS_CONF);
+  if (ncpus == 8) {
+    // Snapdragon 8 Gen 2 (Odin 2): CPUs 0..2 are efficiency (Cortex-A510),
+    // CPUs 3..6 are performance (A715/A710), CPU 7 is prime (Cortex-X3).
+    // Keep the render thread on performance + prime cores so it never migrates
+    // onto slow LITTLE cores under load.
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    for (int cpu = 3; cpu < 8; ++cpu) CPU_SET(cpu, &mask);
+    sched_setaffinity(0, sizeof(mask), &mask);
+  }
 }
 
 void set_android_refresh_rate_hz(int desired_hz) {
@@ -306,6 +338,8 @@ void AndroidPerfHintSession::update_target_fps(int) {}
 void AndroidPerfHintSession::report_frame_ns(int64_t) {}
 void AndroidPerfHintSession::close() {}
 void trim_android_memory() {}
+void enable_arm64_fp_flush_to_zero() {}
+void configure_android_render_thread_qos() {}
 void set_android_refresh_rate_hz(int) {}
 #endif
 
