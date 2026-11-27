@@ -355,6 +355,8 @@ void Streamer::take(Gathered&& g) {
   std::swap(ground_, g.ground);
   std::swap(composite_ground_, g.composite_ground);
   std::swap(mesh_, g.mesh);
+  last_mesh_triangles_ = mesh_.triangles();
+  last_mesh_materials_ = mesh_.materials.size();
   stats_ = std::move(g.stats);
   std::swap(collision_mesh_, g.collision);
   std::swap(ground_source_, g.ground_source);
@@ -365,6 +367,42 @@ void Streamer::take(Gathered&& g) {
   job_cx_ = cx_;
   job_cz_ = cz_;
   ++gathers_;
+}
+
+void Streamer::release_render_mesh() {
+  if (!mesh_.has_render_data()) return;
+  // Compact positions + surface down to Surface::kRoad triangles only so
+  // find_spawn() / recover() keep working without holding ~180 MB of CPU
+  // render vertex attributes after GPU staging.
+  const size_t tris = mesh_.triangles();
+  size_t road_tris = 0;
+  for (size_t t = 0; t < tris; ++t) {
+    if (mesh_.surface[t] == Surface::kRoad) ++road_tris;
+  }
+  std::vector<std::array<float, 3>> road_pos;
+  std::vector<Surface> road_surf;
+  road_pos.reserve(road_tris * 3);
+  road_surf.reserve(road_tris);
+  for (size_t t = 0; t < tris; ++t) {
+    if (mesh_.surface[t] != Surface::kRoad) continue;
+    road_pos.push_back(mesh_.positions[t * 3]);
+    road_pos.push_back(mesh_.positions[t * 3 + 1]);
+    road_pos.push_back(mesh_.positions[t * 3 + 2]);
+    road_surf.push_back(Surface::kRoad);
+  }
+  mesh_.positions.swap(road_pos);
+  mesh_.surface.swap(road_surf);
+  std::vector<uint32_t>().swap(mesh_.model);
+  std::vector<uint8_t>().swap(mesh_.ground);
+  std::vector<std::array<float, 3>>().swap(mesh_.normals);
+  std::vector<std::array<float, 2>>().swap(mesh_.uv0);
+  std::vector<std::array<float, 2>>().swap(mesh_.uv1);
+  std::vector<std::array<float, 2>>().swap(mesh_.uv2);
+  std::vector<std::array<uint8_t, 4>>().swap(mesh_.colours);
+  std::vector<uint32_t>().swap(mesh_.material);
+  std::vector<std::array<float, 3>>().swap(mesh_.instance);
+  std::vector<MeshMaterial>().swap(mesh_.materials);
+  std::vector<WorldGlow>().swap(mesh_.world_glows);
 }
 
 bool Streamer::update(double x, double z, bool* changed, std::string* error) {

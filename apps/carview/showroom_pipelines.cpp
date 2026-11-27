@@ -562,10 +562,17 @@ bool Showroom::create_pipelines(std::string& error) {
   // Under the drive's post chain the scene shaders write linear HDR
   // (constant 0 of showroom.frag and world.frag).
   // Constant 1 (world.vert): reversed depth, for the sky's depth.
-  const VkBool32 spec_values[2] = {r_.post() ? VK_TRUE : VK_FALSE, r_.reverse_z() ? VK_TRUE : VK_FALSE};
-  const VkSpecializationMapEntry spec_entries[2] = {{0, 0, sizeof(VkBool32)},
-                                                    {1, sizeof(VkBool32), sizeof(VkBool32)}};
-  const VkSpecializationInfo spec{2, spec_entries, sizeof spec_values, spec_values};
+  // Constant 2 (showroom_frag.glsl / world_frag.glsl): mobile fast shading path on Android low-mem presets.
+#ifdef __ANDROID__
+  const VkBool32 mobile_fast = low_memory_mode_ ? VK_TRUE : VK_FALSE;
+#else
+  const VkBool32 mobile_fast = VK_FALSE;
+#endif
+  const VkBool32 spec_values[3] = {r_.post() ? VK_TRUE : VK_FALSE, r_.reverse_z() ? VK_TRUE : VK_FALSE, mobile_fast};
+  const VkSpecializationMapEntry spec_entries[3] = {{0, 0, sizeof(VkBool32)},
+                                                    {1, sizeof(VkBool32), sizeof(VkBool32)},
+                                                    {2, 2 * sizeof(VkBool32), sizeof(VkBool32)}};
+  const VkSpecializationInfo spec{3, spec_entries, sizeof spec_values, spec_values};
   // The world's pipelines take a depth bias per draw (decals and road
   // paint over the surface they lie on; the rest 0).
   VkPipelineRasterizationStateCreateInfo raster_bias = raster;

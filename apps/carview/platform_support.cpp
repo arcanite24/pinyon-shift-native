@@ -8,6 +8,7 @@
 #include <system_error>
 #ifdef __ANDROID__
 #include <dlfcn.h>
+#include <jni.h>
 #include <malloc.h>
 #include <unistd.h>
 #endif
@@ -279,6 +280,25 @@ void trim_android_memory() {
   mallopt(M_PURGE, 0);
 #endif
 }
+
+void set_android_refresh_rate_hz(int desired_hz) {
+  static int s_last_hz = -1;
+  const int bucket = (desired_hz >= 110) ? 120 : ((desired_hz >= 80) ? 90 : 60);
+  if (bucket == s_last_hz) return;
+  s_last_hz = bucket;
+  auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  auto act = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !act) return;
+  jclass cls = env->GetObjectClass(act);
+  if (cls) {
+    if (jmethodID mid = env->GetMethodID(cls, "setPreferredRefreshRateHz", "(I)V")) {
+      env->CallVoidMethod(act, mid, static_cast<jint>(bucket));
+    }
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+  }
+  env->DeleteLocalRef(act);
+}
 #else
 AndroidPerfHintSession::~AndroidPerfHintSession() = default;
 bool AndroidPerfHintSession::init(int) { return false; }
@@ -286,6 +306,7 @@ void AndroidPerfHintSession::update_target_fps(int) {}
 void AndroidPerfHintSession::report_frame_ns(int64_t) {}
 void AndroidPerfHintSession::close() {}
 void trim_android_memory() {}
+void set_android_refresh_rate_hz(int) {}
 #endif
 
 }  // namespace carview

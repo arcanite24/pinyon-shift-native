@@ -696,6 +696,8 @@ struct ShowroomOptions {
   // exhaust, aftermarket rim, upgraded brakes, ride height, track offsets,
   // tyre widths/rim sizes, camber).
   cars::VisualSetup visual;
+  // Prefer LOD1-5 exterior meshes and omit interior/cockpit meshes (mobile traffic & AI opponents).
+  bool prefer_lod1 = false;
 };
 
 class Showroom {
@@ -1383,6 +1385,14 @@ class Showroom {
   ShowroomFrame shadow_frame_{};
   ShowroomFrame shadow_frame_mid_{};
   ShowroomFrame shadow_frame_far_{};
+  bool shadow_atlas_valid_ = false;
+  uint64_t shadow_atlas_world_gen_ = 0;
+  bool shadow_update_mid_ = true;
+  bool shadow_update_far_ = true;
+  float shadow_cached_mid_matrix_[16] = {};
+  float shadow_cached_far_matrix_[16] = {};
+  float shadow_cached_mid_bias_ = 0.0f;
+  float shadow_cached_far_bias_ = 0.0f;
   float rotor_glow_ = 0.0f;
   float rotor_glow_front_ = 0.0f;
   float rotor_glow_rear_ = 0.0f;

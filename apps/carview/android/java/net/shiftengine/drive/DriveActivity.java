@@ -5,6 +5,7 @@
 package net.shiftengine.drive;
 
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -126,6 +127,7 @@ public class DriveActivity extends SDLActivity {
         super.onCreate(savedInstanceState);
         if (getWindow() != null) {
             getWindow().setBackgroundDrawable(new ColorDrawable(COL_BG_OBSIDIAN));
+            enableHdrColorModeIfSupported();
         }
         applyPreferredRefreshRate();
         enableImmersiveFullscreen();
@@ -439,6 +441,21 @@ public class DriveActivity extends SDLActivity {
         }
     }
 
+    // Requests HDR window color mode on Android HDR OLED displays (API 26+) so
+    // Vulkan swapchain queries expose VK_COLOR_SPACE_HDR10_ST2084_EXT cleanly.
+    private void enableHdrColorModeIfSupported() {
+        if (mRedirectingToSetup || getWindow() == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        try {
+            Display display = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    ? getDisplay()
+                    : getWindowManager().getDefaultDisplay();
+            if (display != null && display.isHdr()) {
+                getWindow().setColorMode(ActivityInfo.COLOR_MODE_HDR);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     // Matches the display's hardware refresh mode (e.g. 120 Hz vs 60 Hz on Odin 2 Portal)
     // to the player's preset / FPS cap so Performance 120 runs at true 120 Hz and
     // 60/30 FPS presets save OLED power without frame-pacing judder.
@@ -454,41 +471,52 @@ public class DriveActivity extends SDLActivity {
                 preset = LauncherSettingsStore.getOrDefault(settings, LauncherSettingsStore.KEY_PRESET, "smooth-60");
                 fpsCap = LauncherSettingsStore.getOrDefault(settings, LauncherSettingsStore.KEY_FPS_CAP, "60");
             }
-            float desiredHz = 60.0f;
+            int desiredHz = 60;
             if ("performance-120".equals(preset) || "120".equals(fpsCap) || "display".equals(fpsCap)) {
-                desiredHz = 120.0f;
+                desiredHz = 120;
             } else if ("90".equals(fpsCap)) {
-                desiredHz = 90.0f;
-            } else {
-                desiredHz = 60.0f;
+                desiredHz = 90;
             }
-            Display display = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                    ? getDisplay()
-                    : getWindowManager().getDefaultDisplay();
-            if (display == null) return;
-            Display.Mode cur = display.getMode();
-            Display.Mode[] modes = display.getSupportedModes();
-            if (cur == null || modes == null || modes.length <= 1) return;
-            Display.Mode best = cur;
-            float bestDiff = Math.abs(cur.getRefreshRate() - desiredHz);
-            for (Display.Mode m : modes) {
-                if (m.getPhysicalWidth() != cur.getPhysicalWidth()
-                        || m.getPhysicalHeight() != cur.getPhysicalHeight()) {
-                    continue;
-                }
-                float diff = Math.abs(m.getRefreshRate() - desiredHz);
-                if (diff < bestDiff) {
-                    bestDiff = diff;
-                    best = m;
-                }
-            }
-            if (best.getModeId() != cur.getModeId()) {
-                WindowManager.LayoutParams lp = getWindow().getAttributes();
-                lp.preferredDisplayModeId = best.getModeId();
-                getWindow().setAttributes(lp);
-            }
+            setPreferredRefreshRateHz(desiredHz);
         } catch (Throwable ignored) {
         }
+    }
+
+    // Callable from native C++ via JNI when in-game FPS cap or preset changes at runtime.
+    public void setPreferredRefreshRateHz(final int desiredHz) {
+        if (mRedirectingToSetup) return;
+        final float targetHz = (desiredHz >= 110) ? 120.0f : ((desiredHz >= 80) ? 90.0f : 60.0f);
+        runOnUiThread(() -> {
+            try {
+                if (getWindow() == null) return;
+                Display display = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                        ? getDisplay()
+                        : getWindowManager().getDefaultDisplay();
+                if (display == null) return;
+                Display.Mode cur = display.getMode();
+                Display.Mode[] modes = display.getSupportedModes();
+                if (cur == null || modes == null || modes.length <= 1) return;
+                Display.Mode best = cur;
+                float bestDiff = Math.abs(cur.getRefreshRate() - targetHz);
+                for (Display.Mode m : modes) {
+                    if (m.getPhysicalWidth() != cur.getPhysicalWidth()
+                            || m.getPhysicalHeight() != cur.getPhysicalHeight()) {
+                        continue;
+                    }
+                    float diff = Math.abs(m.getRefreshRate() - targetHz);
+                    if (diff < bestDiff) {
+                        bestDiff = diff;
+                        best = m;
+                    }
+                }
+                if (best.getModeId() != cur.getModeId()) {
+                    WindowManager.LayoutParams lp = getWindow().getAttributes();
+                    lp.preferredDisplayModeId = best.getModeId();
+                    getWindow().setAttributes(lp);
+                }
+            } catch (Throwable ignored) {
+            }
+        });
     }
 
     // Adds a subtle, non-focusable dark frosted capsule anchored in the

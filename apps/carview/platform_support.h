@@ -124,4 +124,7 @@ class AndroidPerfHintSession {
 // Returns unused allocator pages back to the OS on Android (Scudo mallopt(M_PURGE)).
 void trim_android_memory();
 
+// Requests a live display refresh-rate switch (e.g. 60 Hz vs 120 Hz) via DriveActivity JNI.
+void set_android_refresh_rate_hz(int desired_hz);
+
 }  // namespace carview

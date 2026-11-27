@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -19,8 +20,25 @@
 namespace audio {
 
 struct PcmSample {
-  std::vector<float> data;  // mono, -1..1; loops over its whole length
+  std::vector<float> data;   // mono, -1..1; loops over its whole length
+  std::vector<int16_t> s16;  // optional compacted 16-bit PCM (halves RAM on mobile)
   int rate = 0;
+
+  bool empty() const { return data.empty() && s16.empty(); }
+  size_t frame_count() const { return !data.empty() ? data.size() : s16.size(); }
+  float sample_at(size_t i) const {
+    return !data.empty() ? data[i] : (float(s16[i]) * (1.0f / 32768.0f));
+  }
+  size_t byte_size() const { return data.size() * sizeof(float) + s16.size() * sizeof(int16_t); }
+  void compact_to_s16() {
+    if (data.empty()) return;
+    s16.resize(data.size());
+    for (size_t i = 0; i < data.size(); ++i) {
+      const float v = std::clamp(data[i], -1.0f, 1.0f);
+      s16[i] = static_cast<int16_t>(std::lrint(v * 32767.0f));
+    }
+    std::vector<float>().swap(data);
+  }
 };
 
 class EnginePlayer {

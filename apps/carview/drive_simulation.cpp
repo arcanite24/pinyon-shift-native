@@ -1746,7 +1746,7 @@ bool DriveSession::step(const drive::Input& user_in) {
           const auto t2 = clock::now();
           std::printf("t %.2f s: gathered again around %.1f %.1f (%zu triangles, %.2f s; on the step: ground "
                       "%.1f ms, scenery hand-over %.1f ms)\n",
-                      vehicle.time(), host.streamer->centre_x(), host.streamer->centre_z(), host.streamer->mesh().triangles(),
+                      vehicle.time(), host.streamer->centre_x(), host.streamer->centre_z(), host.streamer->last_mesh_triangles(),
                       host.streamer->last_gather_seconds(), std::chrono::duration<double, std::milli>(t1 - t0).count(),
                       std::chrono::duration<double, std::milli>(t2 - t1).count());
         }

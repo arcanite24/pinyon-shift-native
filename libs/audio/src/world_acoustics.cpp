@@ -1329,7 +1329,7 @@ void AmbienceBedPlayer::set_rally_bed_sample(int region_idx, std::string_view re
 int AmbienceBedPlayer::loaded_bed_count() const {
   int n = 0;
   for (const PcmSample* p : beds_)
-    if (p && !p->data.empty()) ++n;
+    if (p && !p->empty()) ++n;
   return n;
 }
 
@@ -1370,7 +1370,7 @@ const AmbienceBedPlayer::EventTable::Ref* AmbienceBedPlayer::EventTable::find(ui
 int AmbienceBedPlayer::rally_bed_count() const {
   int n = 0;
   for (const PcmSample* p : rally_beds_)
-    if (p && !p->data.empty()) ++n;
+    if (p && !p->empty()) ++n;
   return n;
 }
 
@@ -1535,10 +1535,13 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
         ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
         if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
       }
-      if (ok && !pcm->data.empty()) {
+      if (ok && !pcm->empty()) {
+#ifdef __ANDROID__
+        pcm->compact_to_s16();
+#endif
         PcmSample* raw = pcm.release();
         if (j.event_sample >= 0) {
-          const size_t bytes = raw->data.size() * sizeof(float);
+          const size_t bytes = raw->byte_size();
           if (event_loaded_q_.push({j.event_sample, raw})) {
             event_sample_bytes_.fetch_add(bytes, std::memory_order_acq_rel);
             event_sample_count_.fetch_add(1, std::memory_order_acq_rel);
@@ -1678,7 +1681,10 @@ int AmbienceBedPlayer::load_rally_from_disc(const std::filesystem::path& rally_r
         ok = decode_amb_subsound(j.bank, j.sub, ffmpeg, temp_dir, *pcm);
         if (ok && !cf.empty()) write_cached_amb(cf, *pcm);
       }
-      if (ok && !pcm->data.empty()) {
+      if (ok && !pcm->empty()) {
+#ifdef __ANDROID__
+        pcm->compact_to_s16();
+#endif
         LoadedRallyBed item{};
         item.region_idx = j.region_idx;
         const size_t n = std::min(j.region_name.size(), item.name.size() - 1);
@@ -1741,12 +1747,12 @@ bool AmbienceBedPlayer::render_event_emitter(const EventTable& t, const RtAmbien
       if (pcm && !(tpl && tpl->spawned()) && !fade_out) target = lv[k].gain * (tpl ? tpl->volume : 1.0f);
     }
     float& g = v.ev_gain[size_t(k)];
-    if (!pcm || pcm->data.empty() || (target < 1e-5f && g < 1e-5f)) {
+    if (!pcm || pcm->empty() || (target < 1e-5f && g < 1e-5f)) {
       g = 0.0f;
       continue;
     }
     const float g0 = g, g1 = g + (target - g) * a;
-    const size_t len = pcm->data.size();
+    const size_t len = pcm->frame_count();
     const double step = double(std::max(1, pcm->rate)) / double(rate_);
     double ph = std::fmod(v.ev_phase[size_t(k)], double(len));
     if (ph < 0.0) ph += double(len);
@@ -1754,7 +1760,8 @@ bool AmbienceBedPlayer::render_event_emitter(const EventTable& t, const RtAmbien
       const float gi = g0 + (g1 - g0) * (float(i + 1) / float(frames));
       const size_t s0 = size_t(ph) % len;
       const float frac = float(ph - std::floor(ph));
-      const float x = (pcm->data[s0] + (pcm->data[(s0 + 1) % len] - pcm->data[s0]) * frac) * gi;
+      const float x0 = pcm->sample_at(s0);
+      const float x = (x0 + (pcm->sample_at((s0 + 1) % len) - x0) * frac) * gi;
       out_stereo[2 * i] += x * pan_l;
       out_stereo[2 * i + 1] += x * pan_r;
       ph += step;
@@ -1858,8 +1865,8 @@ void AmbienceBedPlayer::render_3d_emitters(const RtAcousticsSample& sample, floa
       bp_a = 0.010f;
     }
 
-    if (pcm && !pcm->data.empty()) {
-      const size_t n = pcm->data.size();
+    if (pcm && !pcm->empty()) {
+      const size_t n = pcm->frame_count();
       const double step = double(std::max(1, pcm->rate)) / double(rate_);
       double ph = std::fmod(v.phase, double(n));
       if (ph < 0.0) ph += double(n);
@@ -1870,7 +1877,8 @@ void AmbienceBedPlayer::render_3d_emitters(const RtAcousticsSample& sample, floa
         const float pan_r = std::sqrt(0.5f * (1.0f + v.pan));
         const size_t k = size_t(ph) % n;
         const float frac = float(ph - std::floor(ph));
-        const float s = (pcm->data[k] + (pcm->data[(k + 1) % n] - pcm->data[k]) * frac) * v.gain * base_scale;
+        const float s0 = pcm->sample_at(k);
+        const float s = (s0 + (pcm->sample_at((k + 1) % n) - s0) * frac) * v.gain * base_scale;
         out_stereo[2 * i] += s * pan_l;
         out_stereo[2 * i + 1] += s * pan_r;
         ph += step;
@@ -1968,7 +1976,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
     int loaded_indices[kMaxRallyRegions]{};
     int loaded_count = 0;
     for (int i = 0; i < kMaxRallyRegions; ++i) {
-      if (rally_beds_[size_t(i)] && !rally_beds_[size_t(i)]->data.empty()) {
+      if (rally_beds_[size_t(i)] && !rally_beds_[size_t(i)]->empty()) {
         if (first_loaded < 0) first_loaded = i;
         loaded_indices[loaded_count++] = i;
       }
@@ -1987,7 +1995,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
       if (want_tok.size() > 3 && want_tok.substr(0, 3) == "amb") want_tok.remove_prefix(3);
       if (!want_tok.empty()) {
         for (int i = 0; i < kMaxRallyRegions; ++i) {
-          if (!rally_beds_[size_t(i)] || rally_beds_[size_t(i)]->data.empty()) continue;
+          if (!rally_beds_[size_t(i)] || rally_beds_[size_t(i)]->empty()) continue;
           const std::string_view rname(rally_names_[size_t(i)].data());
           if (!rname.empty() && (rname == want_tok || rname.find(want_tok) != std::string_view::npos ||
                                  want_tok.find(rname) != std::string_view::npos)) {
@@ -1999,7 +2007,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
       if (active_r < 0 && sample.ambience_template_idx >= 0) {
         const int direct_idx = sample.ambience_template_idx;
         if (direct_idx < kMaxRallyRegions && rally_beds_[size_t(direct_idx)] &&
-            !rally_beds_[size_t(direct_idx)]->data.empty()) {
+            !rally_beds_[size_t(direct_idx)]->empty()) {
           active_r = direct_idx;
         } else {
           active_r = loaded_indices[direct_idx % loaded_count];
@@ -2010,7 +2018,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
 
       for (int i = 0; i < kMaxRallyRegions; ++i) {
         const PcmSample* pcm = rally_beds_[size_t(i)];
-        if (!pcm || pcm->data.empty()) {
+        if (!pcm || pcm->empty()) {
           rally_gain_[size_t(i)] = 0.0f;
           continue;
         }
@@ -2019,7 +2027,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
           rally_gain_[size_t(i)] = 0.0f;
           continue;
         }
-        const size_t n = pcm->data.size();
+        const size_t n = pcm->frame_count();
         const double step = double(std::max(1, pcm->rate)) / double(rate_);
         const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * pcm->rate))) : 0;
         double ph = rally_phase_[size_t(i)];
@@ -2028,9 +2036,11 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
           g += (target - g) * sm;
           const size_t k = size_t(ph);
           const float frac = float(ph - double(k));
-          const float sl = pcm->data[k % n] + (pcm->data[(k + 1) % n] - pcm->data[k % n]) * frac;
+          const float sl0 = pcm->sample_at(k % n);
+          const float sl = sl0 + (pcm->sample_at((k + 1) % n) - sl0) * frac;
           const size_t kr = (k + r_off) % n;
-          const float sr = pcm->data[kr] + (pcm->data[(kr + 1) % n] - pcm->data[kr]) * frac;
+          const float sr0 = pcm->sample_at(kr);
+          const float sr = sr0 + (pcm->sample_at((kr + 1) % n) - sr0) * frac;
           out_stereo[2 * f] += sl * g;
           out_stereo[2 * f + 1] += sr * g;
           ph += step;
@@ -2041,8 +2051,8 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
       }
       // Mix crowd bed on top if near rally spectators.
       const PcmSample* crowd_pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
-      if (crowd_pcm && !crowd_pcm->data.empty() && fest_target > 1e-4f) {
-        const size_t n = crowd_pcm->data.size();
+      if (crowd_pcm && !crowd_pcm->empty() && fest_target > 1e-4f) {
+        const size_t n = crowd_pcm->frame_count();
         const double step = double(std::max(1, crowd_pcm->rate)) / double(rate_);
         const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * crowd_pcm->rate))) : 0;
         double ph = bed_phase_[size_t(AmbienceBedSlot::kCrowd)];
@@ -2052,9 +2062,11 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
           g += (target - g) * sm;
           const size_t k = size_t(ph);
           const float frac = float(ph - double(k));
-          const float sl = crowd_pcm->data[k % n] + (crowd_pcm->data[(k + 1) % n] - crowd_pcm->data[k % n]) * frac;
+          const float sl0 = crowd_pcm->sample_at(k % n);
+          const float sl = sl0 + (crowd_pcm->sample_at((k + 1) % n) - sl0) * frac;
           const size_t kr = (k + r_off) % n;
-          const float sr = crowd_pcm->data[kr] + (crowd_pcm->data[(kr + 1) % n] - crowd_pcm->data[kr]) * frac;
+          const float sr0 = crowd_pcm->sample_at(kr);
+          const float sr = sr0 + (crowd_pcm->sample_at((kr + 1) % n) - sr0) * frac;
           out_stereo[2 * f] += sl * g;
           out_stereo[2 * f + 1] += sr * g;
           ph += step;
@@ -2078,19 +2090,19 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
   else if (snap_view == "Festival") region = AmbienceBedSlot::kFestival;
 
   const PcmSample* active_reg_pcm = beds_[size_t(region)];
-  if (!active_reg_pcm || active_reg_pcm->data.empty()) {
+  if (!active_reg_pcm || active_reg_pcm->empty()) {
     region = AmbienceBedSlot::kDefault;
     active_reg_pcm = beds_[size_t(AmbienceBedSlot::kDefault)];
   }
-  const bool have_reg_pcm = active_reg_pcm && !active_reg_pcm->data.empty();
+  const bool have_reg_pcm = active_reg_pcm && !active_reg_pcm->empty();
   const PcmSample* crowd_pcm = beds_[size_t(AmbienceBedSlot::kCrowd)];
-  const bool have_crowd_pcm = crowd_pcm && !crowd_pcm->data.empty();
+  const bool have_crowd_pcm = crowd_pcm && !crowd_pcm->empty();
 
   // Mix any loaded regional/crowd PCM beds with smooth crossfading.
   if (have_reg_pcm || have_crowd_pcm) {
     for (int s = 0; s < int(AmbienceBedSlot::kCount); ++s) {
       const PcmSample* pcm = beds_[size_t(s)];
-      if (!pcm || pcm->data.empty()) {
+      if (!pcm || pcm->empty()) {
         bed_gain_[size_t(s)] = 0.0f;
         continue;
       }
@@ -2109,7 +2121,7 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
         bed_gain_[size_t(s)] = 0.0f;
         continue;
       }
-      const size_t n = pcm->data.size();
+      const size_t n = pcm->frame_count();
       const double step = double(std::max(1, pcm->rate)) / double(rate_);
       // Decorrelate stereo slightly by reading R channel offset by ~13 ms within the loop.
       const size_t r_off = n > 1024 ? size_t(std::min<size_t>(n / 3, size_t(0.013 * pcm->rate))) : 0;
@@ -2119,9 +2131,11 @@ void AmbienceBedPlayer::render(const RtAcousticsSample& sample, const AmbiencePa
         g += (target - g) * sm;
         const size_t k = size_t(ph);
         const float frac = float(ph - double(k));
-        const float sl = pcm->data[k % n] + (pcm->data[(k + 1) % n] - pcm->data[k % n]) * frac;
+        const float sl0 = pcm->sample_at(k % n);
+        const float sl = sl0 + (pcm->sample_at((k + 1) % n) - sl0) * frac;
         const size_t kr = (k + r_off) % n;
-        const float sr = pcm->data[kr] + (pcm->data[(kr + 1) % n] - pcm->data[kr]) * frac;
+        const float sr0 = pcm->sample_at(kr);
+        const float sr = sr0 + (pcm->sample_at((kr + 1) % n) - sr0) * frac;
         out_stereo[2 * i] += sl * g;
         out_stereo[2 * i + 1] += sr * g;
         ph += step;

@@ -2,6 +2,8 @@
 #ifdef SHOWROOM_OPAQUE_NO_DISCARD
 layout(early_fragment_tests) in;
 #endif
+precision highp int;
+precision highp float;
 // carview showroom: car shader with Paint Shop finishes (Normal, Metallic
 // flake, Matte, Two-Tone Pearlescent, Chrome, Carbon, Wood, Camo), 1024^2
 // composited LiveryMasks vinyl layer stack, window tint, cosmetic impact
@@ -128,6 +130,7 @@ vec3 encode_srgb(vec3 c) {
 }
 
 layout(constant_id = 0) const bool kLinearOut = false;
+layout(constant_id = 2) const bool kMobileFast = false;
 vec3 filmic_showroom(vec3 x) {
   // Soft Hable shoulder for standalone UNORM showroom (drive.w < 0.5) so HDR
   // staticcarcubemap.xpr 80-97 studio strips roll cleanly without clipping white paint.
@@ -1096,7 +1099,7 @@ void main() {
         base = rim_paint;
       }
       // Only run fallback UV-smear loop when wheel lacks retail blur_rim geometry.
-      if ((flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+      if (!kMobileFast && (flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
         vec2 duv = v_uv0 - vec2(0.5);
         vec3 acc = base;
         float span = wblur * 0.52;
@@ -1159,7 +1162,7 @@ void main() {
         if (fade_out >= 0.99 || ign_shadow() < fade_out) discard;
       }
 #endif
-      if ((flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
+      if (!kMobileFast && (flags & kFlagHasBlurMesh) == 0u && wblur > 0.01 && (flags & kFlagNoSlot0) == 0u) {
         vec2 duv = v_uv0 - vec2(0.5);
         vec3 acc = t0.rgb;
         float span = wblur * 0.52;
@@ -1229,8 +1232,7 @@ void main() {
     if (local_dmg > 0.02 && frame.damage_dirt.w > 0.01) {
       float dmg_amt = clamp(local_dmg * frame.damage_dirt.w, 0.0, 1.0);
       // Directional scrape streaks along car-local panels for subtle scuff breakup on fallback meshes.
-      vec2 scrape_uv = vec2(v_local_pos.z * 7.5 + v_local_pos.x * 3.0, v_local_pos.y * 22.0);
-      float streak = smoothstep(0.48, 0.84, fbm(scrape_uv));
+      float streak = kMobileFast ? 0.55 : smoothstep(0.48, 0.84, fbm(vec2(v_local_pos.z * 7.5 + v_local_pos.x * 3.0, v_local_pos.y * 22.0)));
       float scratch_mask = 0.0;
       vec3 dmg_col = vec3(0.14, 0.145, 0.155);
       if ((flags & kFlagDamageMap) != 0u) {
@@ -1348,10 +1350,11 @@ void main() {
       diffuse_light += hl_sum * hl_night * 0.85;
     }
     // Dynamic point lights: nearby night streetlamps/tunnel lamps + active brake/reverse/backfire spill.
-    int dyn_count = clamp(int(frame.dyn_light_meta.x + 0.5), 0, 6);
+    int dyn_cap = kMobileFast ? 2 : 6;
+    int dyn_count = clamp(int(frame.dyn_light_meta.x + 0.5), 0, dyn_cap);
     if (dyn_count > 0) {
-      vec3 dyn_diff = vec3(0.0);
-      float std_pow = mix(12.0, 220.0, gloss);
+      mediump vec3 dyn_diff = vec3(0.0);
+      mediump float std_pow = mix(12.0, 220.0, gloss);
       for (int i = 0; i < dyn_count; ++i) {
         vec3 lpos = frame.dyn_light_pos[i].xyz;
         float radius = max(frame.dyn_light_pos[i].w, 0.5);
@@ -1361,18 +1364,20 @@ void main() {
         if (d2 >= r2 || d2 < 1e-4) continue;
         float dist = sqrt(d2);
         vec3 L = to_l / dist;
-        float ndl_l = max(dot(n, L), 0.0);
+        mediump float ndl_l = max(dot(n, L), 0.0);
         if (ndl_l <= 0.001) continue;
-        float ratio = d2 / r2;
-        float win = clamp(1.0 - ratio * ratio, 0.0, 1.0);
-        float att = (win * win) / (1.0 + 0.28 * d2);
-        vec3 lcol = frame.dyn_light_col[i].rgb * att;
-        float spec_s = max(frame.dyn_light_col[i].w, 0.0);
+        mediump float ratio = d2 / r2;
+        mediump float win = clamp(1.0 - ratio * ratio, 0.0, 1.0);
+        mediump float att = (win * win) / (1.0 + 0.28 * d2);
+        mediump vec3 lcol = frame.dyn_light_col[i].rgb * att;
+        mediump float spec_s = max(frame.dyn_light_col[i].w, 0.0);
         dyn_diff += lcol * ndl_l;
-        vec3 H_l = normalize(L + view);
-        float nh_l = max(dot(n, H_l), 0.0);
-        dyn_spec_coat += lcol * (ggx_d(nh_l, 0.09) * 0.045) * ndl_l * spec_s;
-        dyn_spec_std += lcol * pow(nh_l, std_pow) * ((std_pow + 8.0) * 0.035) * ndl_l * gloss * spec_s;
+        if (!kMobileFast) {
+          vec3 H_l = normalize(L + view);
+          mediump float nh_l = max(dot(n, H_l), 0.0);
+          dyn_spec_coat += lcol * (ggx_d(nh_l, 0.09) * 0.045) * ndl_l * spec_s;
+          dyn_spec_std += lcol * pow(nh_l, std_pow) * ((std_pow + 8.0) * 0.035) * ndl_l * gloss * spec_s;
+        }
       }
       diffuse_light += dyn_diff;
     }

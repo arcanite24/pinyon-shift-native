@@ -84,6 +84,16 @@ class Streamer {
   // Seconds the last gather took (on whichever thread ran it).
   double last_gather_seconds() const { return last_seconds_; }
   const Mesh& mesh() const { return mesh_; }
+  // Total triangles & materials captured by the last gather (preserved even
+  // after release_render_mesh() drops the CPU render arrays on mobile).
+  size_t last_mesh_triangles() const { return last_mesh_triangles_; }
+  size_t last_mesh_materials() const { return last_mesh_materials_; }
+  // Frees the heavy CPU render arrays in mesh_ (normals, UVs, colours,
+  // materials, non-road positions) after GPU upload while retaining road
+  // triangle positions so find_spawn() / recover() keep working.
+  void release_render_mesh();
+  // Forces the next update() to run a fresh gather even if within regather_.
+  void force_regather() { force_ = true; }
   const drive::Ground& ground() const { return composite_ground_ ? *composite_ground_ : static_cast<const drive::Ground&>(*ground_); }
   const drive::MeshGround& mesh_ground() const { return *ground_; }
   const GatherStats& stats() const { return stats_; }
@@ -135,6 +145,8 @@ class Streamer {
   double preload_x_ = 0, preload_z_ = 0;
   int gathers_ = 0;
   Mesh mesh_;
+  size_t last_mesh_triangles_ = 0;
+  size_t last_mesh_materials_ = 0;
   GatherStats stats_;
   std::unique_ptr<drive::MeshGround> ground_;
   std::unique_ptr<drive::Ground> composite_ground_;

@@ -2,6 +2,8 @@
 #ifdef GPU_DRIVEN
 #extension GL_EXT_nonuniform_qualifier : require
 #endif
+precision highp int;
+precision highp float;
 #ifdef OPAQUE_NO_DISCARD
 layout(early_fragment_tests) in;
 #endif
@@ -245,6 +247,7 @@ vec3 sky_colour(vec3 dir, vec3 up, vec3 sun) {
 // The drive renders linear HDR for its post chain (post.frag), clipped at
 // 4.0 as the game's resolve is; the showroom encodes sRGB here.
 layout(constant_id = 0) const bool kLinearOut = false;
+layout(constant_id = 2) const bool kMobileFast = false;
 
 // Distance haze (WORLD-MATERIALS, Lighting: FogConsts2 (200, 4000, 0.9) is
 // start, end and the most fog; the ramp between and the colour are ours):
@@ -950,7 +953,8 @@ void main() {
   float road_spec_mod = 1.0;
   if ((flags & kFlagTextured) != 0u) {
     // Mikkelsen Hex-Tiling on organic multi-layer terrain blends (never on directional roads or billboards).
-    use_hex = frame.shadow_bias.z > 0.5 &&
+    use_hex = !kMobileFast &&
+              frame.shadow_bias.z > 0.5 &&
               (flags & (kFlagVertexBlend | kFlagSplat)) != 0u &&
               (flags & (kFlagRoad | kFlagBillboard)) == 0u &&
               eye_dist < 1100.0;
@@ -1003,7 +1007,7 @@ void main() {
       }
     }
     // H_ROAD macro variation: Noise (slot 2 -> splat_map) & Modulate (slot 6 -> spec_map).
-    if ((flags & kFlagRoad) != 0u) {
+    if (!kMobileFast && (flags & kFlagRoad) != 0u) {
       if ((flags & kFlagRoadNoise) != 0u) {
         vec3 r_noise = texture(splat_map, v_uv1).rgb;
         t.rgb *= mix(vec3(0.84), vec3(1.16), r_noise);
@@ -1037,9 +1041,11 @@ void main() {
   bool spec_slot_is_norm_b = false;
   if ((flags & kFlagNormalMap) != 0u && (flags & kFlagBillboard) == 0u) {
     // Extended normal-map fade distances keep highway asphalt, gravel shoulders, and rocky hillsides
-    // crisp well beyond 175 m (zero reversed smoothstep).
-    float nm_near = (flags & kFlagRoad) != 0u ? 220.0 : 180.0;
-    float nm_far = (flags & kFlagRoad) != 0u ? 420.0 : 340.0;
+    // crisp well beyond 175 m (tighter on kMobileFast to skip screen-space dFdx/dFdy TBN on distant tiles).
+    float nm_near = kMobileFast ? ((flags & kFlagRoad) != 0u ? 65.0 : 50.0)
+                                : ((flags & kFlagRoad) != 0u ? 220.0 : 180.0);
+    float nm_far = kMobileFast ? ((flags & kFlagRoad) != 0u ? 130.0 : 100.0)
+                               : ((flags & kFlagRoad) != 0u ? 420.0 : 340.0);
     float fade_nm = 1.0 - smoothstep(nm_near, nm_far, eye_dist);
     if (fade_nm > 0.001) {
       vec2 nm_uv = v_uv0 * draw.tint.xy;
@@ -1052,7 +1058,7 @@ void main() {
       vec3 np = perturb_normal_dxy(n_geom, v_position, nm_uv, nm_dxy);
       float nm_strength = 0.78;
       // Blend Layer B's authored DXN/BC5 normal map when bound in spec_map on _NORM2 road/terrain effects.
-      if ((flags & kFlagSpecMap) != 0u && (flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
+      if (!kMobileFast && (flags & kFlagSpecMap) != 0u && (flags & (kFlagVertexBlend | kFlagSplat)) != 0u) {
         vec4 sp_b_probe = texture(spec_map, uv_b_saved);
         if (sp_b_probe.b < 0.002 && sp_b_probe.r > 0.05 && sp_b_probe.g > 0.05) {
           spec_slot_is_norm_b = true;
@@ -1109,9 +1115,9 @@ void main() {
   } else if (ndl > 0.0) {
     raw_shade = sun_shadow(v_position, n_geom);
   }
-  float shade = mix(1.0, raw_shade, shadow_scale);
-  float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
-  vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
+  mediump float shade = mix(1.0, raw_shade, shadow_scale);
+  mediump float ibl_amb = frame.sun_color.w >= 0.0 ? max(frame.car_light_top.w, 0.01) : 1.0;
+  mediump vec3 hemi_amb = mix(gnd_col, sky_col, 0.5 + 0.5 * dot(n, up)) * ibl_amb;
   if (frame.sun_color.w >= 0.0) {
     if ((flags & (kFlagLodNear | kFlagLodFar | kFlagLodOne)) != 0u && (flags & kFlagBillboard) == 0u) {
       // SKY_AND_TOD §2.4: AmbientColour lifts shadowed world props cleanly in daylight.
@@ -1123,8 +1129,8 @@ void main() {
     }
   }
   hemi_amb *= shadow_ambient_tint((1.0 - shade) * shadow_scale);
-  vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
-  vec3 colour = t.rgb * light * draw.up.w;
+  mediump vec3 light = (sun_col * ndl * shade + hemi_amb) * ao;
+  mediump vec3 colour = t.rgb * light * draw.up.w;
 
   // Soft view-dependent backlit subsurface translucency on tree billboards and 3D cutout foliage.
 #ifndef OPAQUE_NO_DISCARD

@@ -27,6 +27,14 @@ void Renderer::apply_vrs(VkCommandBuffer cmd) const {
   vkCmdSetFragmentShadingRateKHR(cmd, &sz, ops);
 }
 
+void Renderer::reset_vrs(VkCommandBuffer cmd) const {
+  if (!vrs_supported_ || !vkCmdSetFragmentShadingRateKHR) return;
+  const VkExtent2D sz{1, 1};
+  const VkFragmentShadingRateCombinerOpKHR ops[2] = {
+      VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR, VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR};
+  vkCmdSetFragmentShadingRateKHR(cmd, &sz, ops);
+}
+
 void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
   const modern::GraphicsSettings clamped = modern::clamp_graphics(g);
   const bool need_targets =

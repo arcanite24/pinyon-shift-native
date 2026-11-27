@@ -25,7 +25,7 @@ void DriveSession::print_scenery_summary() {
         const auto& st = host.streamer->stats();
         std::printf("scenery: %zu triangles, %zu materials, %zu textures decoded (%zu failed), %zu models with the "
                     "default UV scale, %zu submeshes without a material\n",
-                    host.streamer->mesh().triangles(), host.streamer->mesh().materials.size(), host.texture_loader.decoded,
+                    host.streamer->last_mesh_triangles(), host.streamer->last_mesh_materials(), host.texture_loader.decoded,
                     host.texture_loader.failed.size(), st.default_uv_models.size(), st.no_material);
         if (st.far_models)
           std::printf("far ring: %zu models, %zu triangles\n", st.far_models, st.far_triangles);

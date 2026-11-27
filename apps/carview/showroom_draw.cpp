@@ -658,10 +658,15 @@ void Showroom::record_all_instances(VkCommandBuffer cmd, bool depth_equal, int p
     const uint32_t total_count = solid_count + uint32_t(fade_alphas.size());
     if (total_count == 0 || g->draws_.empty() || g->material_sets_.empty()) continue;
     // Distance-based runtime LOD detail culling for distant AI/traffic cars:
-    // beyond 55 m (35 m on mobile low-mem) skip interior, gauges, calipers, and cockpit-only parts;
-    // beyond 145 m (95 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
+    // beyond 55 m (14 m mobile low-mem / 25 m mobile) skip interior, gauges, calipers, and cockpit-only parts;
+    // beyond 145 m (80 m on mobile low-mem) skip subtle mirror/emissive/trim overlays.
+#ifdef __ANDROID__
+    const float mid_dist = low_memory_mode_ ? 14.0f : 25.0f;
+    const float far_dist = low_memory_mode_ ? 80.0f : 120.0f;
+#else
     const float mid_dist = low_memory_mode_ ? 35.0f : 55.0f;
     const float far_dist = low_memory_mode_ ? 95.0f : 145.0f;
+#endif
     const bool lod_mid = min_inst_d2 > mid_dist * mid_dist;
     const bool lod_far = min_inst_d2 > far_dist * far_dist;
     const VkDeviceSize zero = 0;
@@ -1141,7 +1146,9 @@ void Showroom::record_world_textured(VkCommandBuffer cmd, const std::vector<Worl
                                         : op_pipe;
         if (pipeline != bound) {
           vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = pipeline);
-          if (d.blend < 2 || pipeline == world_alpha_) r_.apply_vrs(cmd);
+          // Keep alpha-tested cutouts (fences, foliage) at crisp 1x1 shading rate while opaque terrain/roads/sky use VRS.
+          if (d.blend == 1) r_.reset_vrs(cmd);
+          else if (d.blend == 0 || pipeline == world_alpha_) r_.apply_vrs(cmd);
           bias = -1;
         }
         // Decals and road paint: pulled towards the eye by a few float ulps

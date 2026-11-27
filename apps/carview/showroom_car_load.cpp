@@ -603,12 +603,17 @@ bool stub_pool(const std::vector<bake::Vertex>& pool) {
 }
 
 // The part's best drawable LOD: the lowest whose pool is not a stand-in,
-// or -1.
-int32_t best_lod(const bake::Part& part) {
+// or -1. When prefer_lod1 is set, picks the lowest lod >= 1 first.
+int32_t best_lod(const bake::Part& part, bool prefer_lod1) {
   std::set<int32_t> lods;
   for (const auto& s : part.subsections)
     if ((s.material != MaterialClass::kHidden || cars::is_blur_rim_technique(s.technique)) && !s.indices.empty())
       lods.insert(s.lod);
+  if (prefer_lod1) {
+    for (int32_t lod : lods) {
+      if (lod >= 1 && !stub_pool(part.lod_vertices)) return lod;
+    }
+  }
   // A LOD0 pool with under a quarter of the LOD1-5 pool's vertices is a
   // stand-in too (some rims: 74 against about 2,300).
   const bool lod0_coarse = lods.count(0) && lods.size() > 1 &&
@@ -1173,18 +1178,25 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
     return hidden_variant(n, real);
   };
 
-  // Which body: LOD0 when it has geometry, else the LOD1-5 model.
+  // Which body: LOD0 when it has geometry (unless prefer_lod1 requests LOD1-5 for traffic/AI), else LOD1-5.
   const bake::Model* body = nullptr;
   const bake::Model* exterior = nullptr;
   const bake::Model* cockpit = nullptr;
+  bool exterior_real = false;
   for (const auto& m : car_.models) {
     bool real = false;
     for (const auto& p : m.parts) real |= !placeholder(p);
     if (m.role == Role::kLod0 && real) body = &m;
-    if (m.role == Role::kExterior) exterior = &m;
+    if (m.role == Role::kExterior) {
+      exterior = &m;
+      exterior_real = real;
+    }
     if (m.role == Role::kCockpit) cockpit = &m;
   }
-  if (!body) {
+  if (options.prefer_lod1 && exterior && exterior_real) {
+    body = exterior;
+    cockpit = nullptr;
+  } else if (!body) {
     body = exterior;
     notes_.push_back("no LOD0 geometry (or only stand-in boxes): drawing the LOD1-5 model");
   }

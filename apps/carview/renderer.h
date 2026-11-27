@@ -772,6 +772,7 @@ class Renderer {
   bool vrs_supported() const { return vrs_supported_; }
   bool vrs_active() const { return vrs_supported_ && graphics_.vrs; }
   void apply_vrs(VkCommandBuffer cmd) const;
+  void reset_vrs(VkCommandBuffer cmd) const;
   bool hdr10_supported() const { return hdr10_supported_; }
   bool scrgb_supported() const { return scrgb_supported_; }
   modern::HdrMode hdr_active() const { return hdr_mode_; }

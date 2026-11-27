@@ -132,6 +132,39 @@ void Showroom::place_shadow() {
   }
   build_cascade(far_radius, 0.52f, m_far, texel_far, centre_far);
 
+  const bool atlas_reset = !shadow_atlas_valid_ || (shadow_atlas_world_gen_ != world_generation_);
+#ifdef __ANDROID__
+  // Amortize Mid and Far shadow cascades across alternating frames on Android while keeping
+  // Near (~20-40 m around the player car) refreshed every frame (~40-50% less shadow GPU time).
+  if (atlas_reset) {
+    shadow_update_mid_ = true;
+    shadow_update_far_ = true;
+  } else if (three_cascades) {
+    shadow_update_mid_ = ((world_frame_ & 1ull) == 0ull);
+    shadow_update_far_ = ((world_frame_ & 1ull) == 1ull);
+  } else {
+    shadow_update_mid_ = false;
+    shadow_update_far_ = ((world_frame_ & 1ull) == 0ull);
+  }
+#else
+  shadow_update_mid_ = true;
+  shadow_update_far_ = true;
+#endif
+  if (three_cascades) {
+    if (shadow_update_mid_) {
+      std::memcpy(shadow_cached_mid_matrix_, m_mid, sizeof m_mid);
+      shadow_cached_mid_bias_ = 1.45f * texel_mid;
+    } else {
+      std::memcpy(m_mid, shadow_cached_mid_matrix_, sizeof m_mid);
+    }
+  }
+  if (shadow_update_far_) {
+    std::memcpy(shadow_cached_far_matrix_, m_far, sizeof m_far);
+    shadow_cached_far_bias_ = 1.55f * texel_far;
+  } else {
+    std::memcpy(m_far, shadow_cached_far_matrix_, sizeof m_far);
+  }
+
   std::memcpy(frame_.shadow_matrix, m_near, sizeof m_near);
   std::memcpy(frame_.shadow_matrix_mid, m_mid, sizeof m_mid);
   std::memcpy(frame_.shadow_matrix_far, m_far, sizeof m_far);
@@ -159,13 +192,13 @@ void Showroom::place_shadow() {
   frame_.shadow_bias[0] = 1.35f * texel_near;
   frame_.shadow_bias[1] = frame_.shadow_bias[2] = 0.0f;
   frame_.shadow_bias[3] = shadow_rgb_bits;
-  frame_.shadow_mid_bias[0] = 1.45f * texel_mid;
+  frame_.shadow_mid_bias[0] = three_cascades ? shadow_cached_mid_bias_ : (1.45f * texel_mid);
   frame_.shadow_mid_bias[1] = three_cascades ? 1.0f : 0.0f;
   frame_.shadow_mid_bias[2] = (pcss_q == modern::ShadowPcss::kUltra) ? 2.0f
                             : (pcss_q == modern::ShadowPcss::kHigh)  ? 1.0f
                                                                      : 0.0f;
   frame_.shadow_mid_bias[3] = float(r_.shadow_cascades_);
-  frame_.shadow_far_bias[0] = 1.55f * texel_far;
+  frame_.shadow_far_bias[0] = shadow_cached_far_bias_;
   frame_.shadow_far_bias[1] = shadow_set_far_ ? 1.0f : 0.0f;
 
   auto fill_shadow_frame = [&](ShowroomFrame& dst, const float m[16]) {
@@ -188,12 +221,16 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   const uint32_t size = r_.shadow_size_;
   const uint32_t cascades = std::max(1u, r_.shadow_cascades_);
   const uint32_t atlas_w = size > 1 ? size * cascades : size;
+  const bool partial_update =
+      shadow_atlas_valid_ && (shadow_atlas_world_gen_ == world_generation_) &&
+      ((cascades >= 3u && (!shadow_update_mid_ || !shadow_update_far_)) ||
+       (cascades == 2u && !shadow_update_far_));
   VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   b.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
   b.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
   b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
   b.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b.oldLayout = partial_update ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
   b.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
   b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   b.image = r_.shadow_map_.image;
@@ -206,7 +243,7 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
   VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   depth.imageView = r_.shadow_map_.view;
   depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-  depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  depth.loadOp = partial_update ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
   depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   depth.clearValue.depthStencil = {1.0f, 0};
   VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -605,13 +642,37 @@ void Showroom::record_shadow(VkCommandBuffer cmd) {
     }
   };
 
+  auto clear_cascade_tile = [&](uint32_t x_offset) {
+    if (!partial_update) return;
+    VkClearAttachment att{};
+    att.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    att.clearValue.depthStencil = {1.0f, 0};
+    VkClearRect rect{};
+    rect.rect = {{int32_t(x_offset), 0}, {size, size}};
+    rect.baseArrayLayer = 0;
+    rect.layerCount = 1;
+    vkCmdClearAttachments(cmd, 1, &att, 1, &rect);
+  };
+
+  clear_cascade_tile(0);
   draw_cascade(0, shadow_set_, shadow_frame_, false, true);
   if (cascades >= 3u && shadow_set_mid_ && shadow_set_far_ && atlas_w >= size * 3u) {
-    draw_cascade(size, shadow_set_mid_, shadow_frame_mid_, false, true);
-    draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
+    if (shadow_update_mid_) {
+      clear_cascade_tile(size);
+      draw_cascade(size, shadow_set_mid_, shadow_frame_mid_, false, true);
+    }
+    if (shadow_update_far_) {
+      clear_cascade_tile(size * 2u);
+      draw_cascade(size * 2u, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
+    }
   } else if (shadow_set_far_ && atlas_w >= size * 2u) {
-    draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
+    if (shadow_update_far_) {
+      clear_cascade_tile(size);
+      draw_cascade(size, shadow_set_far_, shadow_frame_far_, true, allow_shadow_cutouts);
+    }
   }
+  shadow_atlas_valid_ = true;
+  shadow_atlas_world_gen_ = world_generation_;
   vkCmdEndRendering(cmd);
 
   b.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;

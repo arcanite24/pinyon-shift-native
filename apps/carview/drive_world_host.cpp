@@ -302,8 +302,16 @@ bool DriveWorldHost::set_staged_world() {
         // The first gather and synchronous streams swap at once; later
         // background ones keep the old scenery drawn until the GPU copy is
         // done (poll_world, each step).
-        return streamer_async && streamer->gathers() > 1 ? showroom.begin_world(std::move(*staged), app.error)
-                                                         : showroom.set_world(std::move(*staged), app.error);
+        const bool ok = streamer_async && streamer->gathers() > 1 ? showroom.begin_world(std::move(*staged), app.error)
+                                                                  : showroom.set_world(std::move(*staged), app.error);
+#ifdef __ANDROID__
+        if (ok && app.world_reference_path.empty() && app.contacts_log_path.empty() && !app.texture_census &&
+            !std::getenv("SHIFT_WORLD_DEBUG") && !std::getenv("SHIFT_WORLD_PICK")) {
+          streamer->release_render_mesh();
+          carview::trim_android_memory();
+        }
+#endif
+        return ok;
 }
 
 bool DriveWorldHost::pump_deferred_world() {
@@ -311,7 +319,15 @@ bool DriveWorldHost::pump_deferred_world() {
   if (!deferred_prepared_ || showroom.has_pending_world() || showroom.deferred_upload_queue_size() > 0) return true;
   auto prepared = std::move(deferred_prepared_);
   if (!prepared || !prepared->staged) return true;
-  return showroom.begin_world(std::move(*prepared->staged), app.error);
+  const bool ok = showroom.begin_world(std::move(*prepared->staged), app.error);
+#ifdef __ANDROID__
+  if (ok && streamer && app.world_reference_path.empty() && app.contacts_log_path.empty() && !app.texture_census &&
+      !std::getenv("SHIFT_WORLD_DEBUG") && !std::getenv("SHIFT_WORLD_PICK")) {
+    streamer->release_render_mesh();
+    carview::trim_android_memory();
+  }
+#endif
+  return ok;
 }
 
 bool DriveWorldHost::open_world_and_car() {
@@ -1247,11 +1263,34 @@ bool DriveWorldHost::leave_room_world() {
   room_world = HubRoom::kNone;
   showroom.set_sky_hidden(false);
   deferred_prepared_.reset();
-  if (!streamer || !streamer->prepare() || streamer->mesh().triangles() == 0) return false;
+  if (!streamer || !streamer->prepare()) return false;
   // A gather on the worker owns the World: its result swaps Colorado in
   // when it lands (set_staged_world).
   if (streamer->gathering()) return true;
   const auto t0 = std::chrono::steady_clock::now();
+  // On Android, release_render_mesh() drops the CPU render attributes after
+  // GPU staging to save ~180 MB RAM; synchronously regather when leaving a
+  // hub room so Colorado returns intact.
+  if (!streamer->mesh().has_render_data()) {
+    const double cx = streamer->centre_x();
+    const double cz = streamer->centre_z();
+    const bool was_async = streamer_async;
+    streamer->set_async(false);
+    streamer->force_regather();
+    bool changed = false;
+    std::string regather_err;
+    const bool ok_gather = streamer->update(cx, cz, &changed, &regather_err);
+    streamer->set_async(was_async);
+    if (!ok_gather) {
+      std::fprintf(stderr, "carview: Colorado regather after hub room: %s\n", regather_err.c_str());
+      return false;
+    }
+    const bool ok = set_staged_world();
+    std::printf("hub room left: Colorado regathered and drawn again (%.0f ms)\n",
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    return ok;
+  }
+  if (streamer->mesh().triangles() == 0) return false;
   // On this thread: no worker priority, no deferred textures.
   prepare_on_main = true;
   std::any any = streamer->prepare()(streamer->mesh(), streamer->centre_x(), streamer->centre_z());

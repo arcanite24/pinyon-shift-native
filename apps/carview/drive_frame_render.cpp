@@ -1703,6 +1703,7 @@ bool DriveSession::render_window_frame(uint64_t now, double frame_dt, bool menu_
               host.active_graphics.fps_cap > 0 ? host.active_graphics.fps_cap : std::max(60, host.display_hz);
           if (!s_adpf.active()) s_adpf.init(adpf_target);
           else s_adpf.update_target_fps(adpf_target);
+          carview::set_android_refresh_rate_hz(host.active_graphics.fps_cap == 0 ? 120 : adpf_target);
           const auto wf_t0 = std::chrono::steady_clock::now();
           if (!host.renderer.draw_frame(FrameConstants{}, app.error)) {
             std::fprintf(stderr, "carview: %s\n", app.error.c_str());

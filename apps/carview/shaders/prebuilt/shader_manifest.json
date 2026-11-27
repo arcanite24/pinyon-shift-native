@@ -34,14 +34,14 @@
     {
       "name": "showroom_frag.glsl",
       "kind": "header",
-      "lines": 1586,
+      "lines": 1591,
       "uses_bda": false,
       "notes": []
     },
     {
       "name": "world_frag.glsl",
       "kind": "header",
-      "lines": 1368,
+      "lines": 1374,
       "uses_bda": false,
       "notes": []
     },
@@ -2759,13 +2759,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 177784,
+      "spirv_bytes": 178744,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],
@@ -2999,13 +3004,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 160772,
+      "spirv_bytes": 161732,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],
@@ -4034,13 +4044,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 139200,
+      "spirv_bytes": 140484,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],
@@ -4332,13 +4347,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 146872,
+      "spirv_bytes": 148156,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],
@@ -4524,13 +4544,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 115952,
+      "spirv_bytes": 117200,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],
@@ -4632,13 +4657,18 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 108856,
+      "spirv_bytes": 110104,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
         {
           "id": 0,
           "name": "kLinearOut",
+          "default": false
+        },
+        {
+          "id": 2,
+          "name": "kMobileFast",
           "default": false
         }
       ],

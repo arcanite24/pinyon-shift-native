@@ -460,7 +460,7 @@ class SfxEngine {
   bool is_ui_sample_active(int sample) const;
   int loaded_ui_sample_count() const;
   bool has_ui_sample(int sample) const {
-    return sample >= 0 && sample < kMaxUiSamples && ui_samples_[size_t(sample)] && !ui_samples_[size_t(sample)]->data.empty();
+    return sample >= 0 && sample < kMaxUiSamples && ui_samples_[size_t(sample)] && !ui_samples_[size_t(sample)]->empty();
   }
   static constexpr int kMaxUiSamples = 2048;
 

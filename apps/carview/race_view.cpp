@@ -754,6 +754,9 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       m->set_guest();
       ShowroomOptions options;
       if (specs[i].color_seq > 0) options.match_sequence = specs[i].color_seq;
+#ifdef __ANDROID__
+      options.prefer_lod1 = true;
+#endif
       std::string e;
       if (!m->load(bake_dir_, specs[i].media, options, e)) {
         loaded[i].err = specs[i].media + ": " + e;

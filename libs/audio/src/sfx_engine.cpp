@@ -869,7 +869,7 @@ void SfxEngine::stop_decoder_worker() {
 
 SfxSoundId SfxEngine::resolve_fallback(SfxSoundId preferred, SfxSoundId fallback) const {
   const size_t pi = size_t(preferred);
-  if (pi < samples_.size() && samples_[pi] && !samples_[pi]->data.empty()) return preferred;
+  if (pi < samples_.size() && samples_[pi] && !samples_[pi]->empty()) return preferred;
   return fallback;
 }
 
@@ -955,7 +955,7 @@ int SfxEngine::tyre_event_count() const {
 int SfxEngine::loaded_ui_sample_count() const {
   int n = 0;
   for (const PcmSample* p : ui_samples_)
-    if (p && !p->data.empty()) ++n;
+    if (p && !p->empty()) ++n;
   return n;
 }
 
@@ -981,7 +981,7 @@ bool SfxEngine::decoding() const { return decoders_running_.load(std::memory_ord
 int SfxEngine::loaded_sample_count() const {
   int n = 0;
   for (const PcmSample* p : samples_)
-    if (p && !p->data.empty()) ++n;
+    if (p && !p->empty()) ++n;
   return n;
 }
 
@@ -2138,7 +2138,10 @@ bool SfxEngine::load_rally_sfx(const std::filesystem::path& rally_root_or_state_
         if (ok && !cache_file.empty()) write_cached_sfx(cache_file, *pcm);
       }
       if (!ok) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
-      if (ok && !pcm->data.empty()) {
+      if (ok && !pcm->empty()) {
+#ifdef __ANDROID__
+        pcm->compact_to_s16();
+#endif
         PcmSample* raw_pcm = pcm.release();
         if (!rally_loaded_q_.push({job.id, raw_pcm})) delete raw_pcm;
       }
@@ -2236,7 +2239,10 @@ void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const
         if (ok && !cache_file.empty()) write_cached_sfx(cache_file, *pcm);
       }
       if (!ok) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
-      if (ok && !pcm->data.empty()) {
+      if (ok && !pcm->empty()) {
+#ifdef __ANDROID__
+        pcm->compact_to_s16();
+#endif
         PcmSample* raw_pcm = pcm.release();
         if (!burble_loaded_q_.push({job.id, raw_pcm})) delete raw_pcm;
       }
@@ -2277,7 +2283,10 @@ void SfxEngine::start_decoder_worker(std::vector<DecodeJob> jobs, std::filesyste
       }
       // A UI catalog event plays its own sample or nothing.
       if (!ok && job.ui < 0 && job.ev < 0) ok = synthesize_fallback_sfx(job.id, 24000, *pcm);
-      if (ok && !pcm->data.empty()) {
+      if (ok && !pcm->empty()) {
+#ifdef __ANDROID__
+        pcm->compact_to_s16();
+#endif
         PcmSample* raw = pcm.release();
         if (!loaded_q_.push({job.id, raw, job.ui, job.ev})) delete raw;
       }
@@ -2291,12 +2300,12 @@ void SfxEngine::spawn_one_shot(SfxSoundId id, Bus bus, float gain, float left, f
   if (gain <= 1e-4f) return;
   if (ev >= 0) {
     ui = -1;
-    if (ev >= kMaxEventSamples || !event_samples_[size_t(ev)] || event_samples_[size_t(ev)]->data.empty()) return;
+    if (ev >= kMaxEventSamples || !event_samples_[size_t(ev)] || event_samples_[size_t(ev)]->empty()) return;
   } else if (ui >= 0) {
-    if (ui >= kMaxUiSamples || !ui_samples_[size_t(ui)] || ui_samples_[size_t(ui)]->data.empty()) return;
+    if (ui >= kMaxUiSamples || !ui_samples_[size_t(ui)] || ui_samples_[size_t(ui)]->empty()) return;
   } else {
     const size_t idx = size_t(id);
-    if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->data.empty()) return;
+    if (idx >= samples_.size() || !samples_[idx] || samples_[idx]->empty()) return;
   }
   // UI events are sparse and must not be stolen by tyre or impact ticks.
   const uint8_t prio = ui >= 0 ? uint8_t(100) : one_shot_priority(id);
@@ -2801,11 +2810,11 @@ void SfxEngine::mix_loop_pcm(LoopVoice& v, const PcmSample* pcm, float target_ga
   if (!std::isfinite(v.left)) v.left = tl;
   if (!std::isfinite(v.right)) v.right = tr;
   if (!std::isfinite(v.phase) || v.phase < 0.0) v.phase = 0.0;
-  if (!bus || !pcm || pcm->data.empty() || (tg <= 1e-4f && v.gain <= 1e-4f)) {
+  if (!bus || !pcm || pcm->empty() || (tg <= 1e-4f && v.gain <= 1e-4f)) {
     v.gain = 0.0f;
     return;
   }
-  const size_t n = pcm->data.size();
+  const size_t n = pcm->frame_count();
   const double rate_ratio = double(std::max(1, pcm->rate)) / double(rate_);
   const float p_clamped = safe_clamp_f(target_pitch, 0.25f, 4.0f, 1.0f);
   for (int i = 0; i < frames; ++i) {
@@ -2816,8 +2825,8 @@ void SfxEngine::mix_loop_pcm(LoopVoice& v, const PcmSample* pcm, float target_ga
     if (v.gain > 1e-5f) {
       const size_t k = size_t(v.phase);
       const double frac = v.phase - double(k);
-      const float a = pcm->data[k % n];
-      const float b = pcm->data[(k + 1) % n];
+      const float a = pcm->sample_at(k % n);
+      const float b = pcm->sample_at((k + 1) % n);
       const float s = (a + (b - a) * float(frac)) * v.gain;
       if (std::isfinite(s)) {
         bus[2 * i] += s * v.left;
@@ -2838,11 +2847,11 @@ void SfxEngine::mix_loop_mono(LoopVoice& v, SfxSoundId id, float target_gain, fl
   if (!std::isfinite(v.gain) || v.gain < 0.0f) v.gain = 0.0f;
   if (!std::isfinite(v.pitch) || v.pitch < 0.25f) v.pitch = 1.0f;
   if (!std::isfinite(v.phase) || v.phase < 0.0) v.phase = 0.0;
-  if (!mono_out || !pcm || pcm->data.empty() || (tg <= 1e-4f && v.gain <= 1e-4f)) {
+  if (!mono_out || !pcm || pcm->empty() || (tg <= 1e-4f && v.gain <= 1e-4f)) {
     v.gain = 0.0f;
     return;
   }
-  const size_t n = pcm->data.size();
+  const size_t n = pcm->frame_count();
   const double rate_ratio = double(std::max(1, pcm->rate)) / double(rate_);
   const float p_clamped = safe_clamp_f(target_pitch, 0.25f, 4.0f, 1.0f);
   for (int i = 0; i < frames; ++i) {
@@ -2851,8 +2860,8 @@ void SfxEngine::mix_loop_mono(LoopVoice& v, SfxSoundId id, float target_gain, fl
     if (v.gain > 1e-5f) {
       const size_t k = size_t(v.phase);
       const double frac = v.phase - double(k);
-      const float a = pcm->data[k % n];
-      const float b = pcm->data[(k + 1) % n];
+      const float a = pcm->sample_at(k % n);
+      const float b = pcm->sample_at((k + 1) % n);
       const float s = (a + (b - a) * float(frac)) * v.gain;
       if (std::isfinite(s)) mono_out[i] += s;
     }
@@ -3347,7 +3356,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
                                      : 0.0f;
       const float dmg_p = 0.65f + 0.90f * std::clamp(norm_rpm, 0.0f, 1.2f);
       const PcmSample* dmg_pcm = samples_[size_t(SfxSoundId::kEngineDamageLoop)];
-      if (dmg_pcm && !dmg_pcm->data.empty()) {
+      if (dmg_pcm && !dmg_pcm->empty()) {
         mix_loop(damage_voice_, SfxSoundId::kEngineDamageLoop, dmg_g, dmg_p, 0.707f, 0.707f, dmg_bus, frames);
       } else if (dmg_active || damage_voice_.gain > 1e-4f) {
         // Real-time procedural rod-knock + metallic rattle fallback when Damage.fev bank is absent.
@@ -3383,7 +3392,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         int navail = 0;
         for (SfxSoundId bid : pool) {
           const auto* s = samples_[size_t(bid)];
-          if (s && !s->data.empty()) avail[navail++] = bid;
+          if (s && !s->empty()) avail[navail++] = bid;
         }
         return navail > 0 ? avail[std::uniform_int_distribution<int>(0, navail - 1)(rng_)] : fallback;
       };
@@ -3730,7 +3739,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           hi_id = kOppHiBanks[bank_idx];
         }
         const bool has_hi = (hi_id != SfxSoundId::kCount && hi_id != lo_id && size_t(hi_id) < samples_.size() &&
-                             samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->data.empty());
+                             samples_[size_t(hi_id)] && !samples_[size_t(hi_id)]->empty());
         sl.last_lo_id = lo_id;
         sl.last_hi_id = has_hi ? hi_id : SfxSoundId::kCount;
 
@@ -3809,7 +3818,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
         default: sid = SfxSoundId::kShowcaseP51; break;
       }
       const PcmSample* sc_pcm = samples_[size_t(sid)];
-      if (sc_pcm && !sc_pcm->data.empty()) {
+      if (sc_pcm && !sc_pcm->empty()) {
         mix_loop(showcase_voice_, sid, target_gain, target_pitch, pl, pr, other_bus, frames);
       } else if (procedural_mode_ && (target_gain > 1e-4f || showcase_voice_.gain > 1e-4f)) {
         // Clean in-process rotor / prop / turbine / burner synthesizer fallback (Android / no ffmpeg).
@@ -3891,9 +3900,9 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       if (o.ev >= 0) pcm = o.ev < kMaxEventSamples ? event_samples_[size_t(o.ev)] : nullptr;
       else if (o.ui >= 0) pcm = o.ui < kMaxUiSamples ? ui_samples_[size_t(o.ui)] : nullptr;
       else pcm = idx < samples_.size() ? samples_[idx] : nullptr;
-      if (!pcm || pcm->data.empty() || !std::isfinite(o.phase) || o.phase < 0.0) return false;
+      if (!pcm || pcm->empty() || !std::isfinite(o.phase) || o.phase < 0.0) return false;
       bus = resolve_shot_bus(o.bus);
-      n = pcm->data.size();
+      n = pcm->frame_count();
       o_gain = safe_clamp_f(o.gain, 0.0f, 4.0f, 0.0f);
       o_pitch = safe_clamp_f(o.pitch, 0.25f, 4.0f, 1.0f);
       o_left = safe_clamp_f(o.left, 0.0f, 2.0f, 0.707f);
@@ -3958,8 +3967,8 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
       }
       if (route_mono_lfe || bus) {
         const double frac = o.phase - double(k);
-        const float a = pcm->data[k];
-        const float b = (k + 1 < n) ? pcm->data[k + 1] : 0.0f;
+        const float a = pcm->sample_at(k);
+        const float b = (k + 1 < n) ? pcm->sample_at(k + 1) : 0.0f;
         float env = steal_env;
         if (attack_n > 1.0 && o.phase < attack_n) env *= float(o.phase / attack_n);
         const double rem = double(n) - o.phase;

@@ -27,7 +27,7 @@ void Showroom::add_model(const bake::Model& model, const std::vector<std::string
     if (t.name == "livery_mask") livery = texture_index("livery_mask", car_, true);
   for (const auto& part : model.parts) {
     if (std::find(parts.begin(), parts.end(), part.name) == parts.end()) continue;
-    const int32_t best = best_lod(part);
+    const int32_t best = best_lod(part, options_.prefer_lod1);
     if (best < 0) continue;
     const auto& pool = best == 0 ? part.lod0_vertices : part.lod_vertices;
     const int32_t vertex_offset = int32_t(vertices_.size());
