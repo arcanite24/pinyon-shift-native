@@ -47,7 +47,7 @@ MANIFEST_PATH = PREBUILT_DIR / "shader_manifest.json"
 ENTRY_EXTS = (".vert", ".frag", ".comp", ".rgen", ".rchit", ".rahit", ".rmiss")
 HEADER_EXTS = (".glsl",)
 MAX_PUSH_CONSTANT_BYTES = 128
-ALLOWED_SPEC_IDS = {0: "kLinearOut", 1: "kReverseZ"}
+ALLOWED_SPEC_IDS = {0: "kLinearOut", 1: "kReverseZ", 2: "kMobileFast"}
 
 # SPIR-V constants
 SPV_MAGIC = 0x07230203

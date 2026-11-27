@@ -16,7 +16,7 @@
     "max_push_constant_bytes_observed": 128,
     "point_size_shaders": 0,
     "point_coord_shaders": 0,
-    "bindless_shaders": 9,
+    "bindless_shaders": 5,
     "ray_query_shaders": 7,
     "bda_shaders": 0,
     "vulkan_1_3_ready": 54,
@@ -61,7 +61,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 22568,
+      "spirv_bytes": 21440,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -71,7 +71,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -79,7 +79,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "aux",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -87,7 +87,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lum_adapt",
+          "name": "set0_b3",
           "dim": "2D"
         }
       ],
@@ -116,7 +116,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 6108,
+      "spirv_bytes": 4940,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -126,7 +126,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -134,7 +134,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "aux",
+          "name": "set0_b1",
           "dim": "2D"
         }
       ],
@@ -163,7 +163,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 3948,
+      "spirv_bytes": 2664,
       "local_size": null,
       "push_constant_bytes": 112,
       "spec_constants": [],
@@ -173,7 +173,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "atlas",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -202,7 +202,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 1856,
+      "spirv_bytes": 1324,
       "local_size": null,
       "push_constant_bytes": 112,
       "spec_constants": [],
@@ -210,19 +210,19 @@
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_position"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_normal"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_extra"
+          "name": "in_loc3"
         }
       ],
       "capabilities": [
@@ -251,7 +251,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 5540,
+      "spirv_bytes": 2980,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
@@ -281,7 +281,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 2368,
+      "spirv_bytes": 1672,
       "local_size": null,
       "push_constant_bytes": 96,
       "spec_constants": [],
@@ -291,7 +291,7 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         }
       ],
       "vertex_inputs": [],
@@ -321,7 +321,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 8340,
+      "spirv_bytes": 4528,
       "local_size": null,
       "push_constant_bytes": 16,
       "spec_constants": [],
@@ -331,7 +331,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_cube",
+          "name": "set0_b0",
           "dim": "Cube"
         }
       ],
@@ -360,7 +360,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 16164,
+      "spirv_bytes": 7812,
       "local_size": null,
       "push_constant_bytes": 16,
       "spec_constants": [],
@@ -370,7 +370,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_tex",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -399,7 +399,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 5064,
+      "spirv_bytes": 3852,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -415,7 +415,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 7,
-          "name": "glow_tex",
+          "name": "set1_b0",
           "dim": "2D"
         }
       ],
@@ -444,7 +444,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 7632,
+      "spirv_bytes": 4912,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
@@ -454,25 +454,25 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_pos_radius"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_dir_inner"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_color_outer"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_extra"
+          "name": "in_loc3"
         }
       ],
       "capabilities": [
@@ -501,7 +501,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 14208,
+      "spirv_bytes": 10884,
       "local_size": null,
       "push_constant_bytes": 64,
       "spec_constants": [],
@@ -511,7 +511,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "stand_in",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -540,7 +540,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 7440,
+      "spirv_bytes": 4780,
       "local_size": [
         8,
         8,
@@ -554,7 +554,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_tex",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -562,7 +562,7 @@
           "binding": 1,
           "type": "storage_image",
           "count": 1,
-          "name": "dst_img",
+          "name": "set0_b1",
           "dim": "2D",
           "readonly": false
         }
@@ -592,7 +592,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 5000,
+      "spirv_bytes": 3444,
       "local_size": null,
       "push_constant_bytes": 16,
       "spec_constants": [],
@@ -602,7 +602,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_tex",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -631,7 +631,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 760,
+      "spirv_bytes": 288,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
@@ -661,7 +661,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 4508,
+      "spirv_bytes": 2996,
       "local_size": null,
       "push_constant_bytes": 16,
       "spec_constants": [],
@@ -671,7 +671,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_vel",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -700,7 +700,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 13008,
+      "spirv_bytes": 10960,
       "local_size": null,
       "push_constant_bytes": 80,
       "spec_constants": [],
@@ -710,7 +710,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -739,7 +739,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 28432,
+      "spirv_bytes": 18228,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [
@@ -760,14 +760,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -775,7 +775,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -783,14 +783,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 1,
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "particle_atlas",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -798,7 +798,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "scene_depth",
+          "name": "set1_b1",
           "dim": "2D"
         }
       ],
@@ -827,9 +827,9 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 8908,
+      "spirv_bytes": 5592,
       "local_size": null,
-      "push_constant_bytes": 48,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
         {
@@ -837,33 +837,33 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_pos_sx"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_vel_sy"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv_rect"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_color"
+          "name": "in_loc3"
         },
         {
           "location": 4,
-          "name": "in_light"
+          "name": "in_loc4"
         },
         {
           "location": 5,
-          "name": "in_extra"
+          "name": "in_loc5"
         }
       ],
       "capabilities": [
@@ -892,7 +892,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 78408,
+      "spirv_bytes": 59492,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -902,7 +902,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -910,7 +910,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "aux",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -918,7 +918,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lut3d",
+          "name": "set0_b2",
           "dim": "3D"
         },
         {
@@ -926,7 +926,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "lum_adapt",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -934,7 +934,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b4",
           "dim": "2D"
         },
         {
@@ -942,14 +942,14 @@
           "binding": 5,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "opt"
+          "name": "set0_b5"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ao_tex",
+          "name": "set0_b6",
           "dim": "2D"
         },
         {
@@ -957,7 +957,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "sscs_tex",
+          "name": "set0_b7",
           "dim": "2D"
         },
         {
@@ -965,7 +965,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -973,7 +973,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "mblur_neighbor_tex",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -981,7 +981,7 @@
           "binding": 10,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ssr_tex",
+          "name": "set0_b10",
           "dim": "2D"
         },
         {
@@ -989,7 +989,7 @@
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "vol_tex",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -997,7 +997,7 @@
           "binding": 12,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "virtual_mirror_tex",
+          "name": "set0_b12",
           "dim": "2D"
         }
       ],
@@ -1026,7 +1026,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 1304,
+      "spirv_bytes": 916,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
@@ -1058,13 +1058,13 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17216,
+      "spirv_bytes": 7120,
       "local_size": [
         8,
         8,
         1
       ],
-      "push_constant_bytes": 16,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
         {
@@ -1072,96 +1072,29 @@
           "binding": 0,
           "type": "acceleration_structure",
           "count": 1,
-          "name": "tlas"
-        },
-        {
-          "set": 0,
-          "binding": 1,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "InstInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 2,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "GeomInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 3,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "LightsBuf",
-          "readonly": true
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
-        },
-        {
-          "set": 0,
-          "binding": 5,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "dyn_env",
-          "dim": "Cube"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b6",
           "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 7,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "motion_tex",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 8,
-          "type": "storage_image",
-          "count": 1,
-          "name": "hdr_img",
-          "dim": "2D",
-          "readonly": false
         },
         {
           "set": 0,
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 10,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_gbuf_albedo",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_refl_img",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -1170,102 +1103,9 @@
           "binding": 12,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b12",
           "dim": "2D",
           "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 13,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_pt_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 14,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 15,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
-          "readonly": false
-        },
-        {
-          "set": 1,
-          "binding": 0,
-          "type": "sampler",
-          "count": 1,
-          "name": "world_sampler"
-        },
-        {
-          "set": 1,
-          "binding": 1,
-          "type": "sampled_image",
-          "count": "unbounded",
-          "name": "world_textures",
-          "dim": "2D"
-        },
-        {
-          "set": 2,
-          "binding": 0,
-          "type": "storage_buffer",
-          "count": "unbounded",
-          "name": "rt_geom_bufs",
-          "readonly": true
         }
       ],
       "vertex_inputs": [],
@@ -1280,7 +1120,7 @@
       "uses_frag_coord": false,
       "uses_bda": false,
       "uses_ray_query": true,
-      "uses_bindless": true,
+      "uses_bindless": false,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
@@ -1295,7 +1135,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 22872,
+      "spirv_bytes": 13740,
       "local_size": [
         8,
         8,
@@ -1306,64 +1146,17 @@
       "bindings": [
         {
           "set": 0,
-          "binding": 0,
-          "type": "acceleration_structure",
-          "count": 1,
-          "name": "tlas"
-        },
-        {
-          "set": 0,
-          "binding": 1,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "InstInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 2,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "GeomInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 3,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "LightsBuf",
-          "readonly": true
-        },
-        {
-          "set": 0,
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
-        },
-        {
-          "set": 0,
-          "binding": 5,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "dyn_env",
-          "dim": "Cube"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 7,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b6",
           "dim": "2D"
         },
         {
@@ -1371,7 +1164,7 @@
           "binding": 8,
           "type": "storage_image",
           "count": 1,
-          "name": "hdr_img",
+          "name": "set0_b8",
           "dim": "2D",
           "readonly": false
         },
@@ -1380,7 +1173,7 @@
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -1389,7 +1182,7 @@
           "binding": 10,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_albedo",
+          "name": "set0_b10",
           "dim": "2D",
           "readonly": false
         },
@@ -1398,7 +1191,7 @@
           "binding": 11,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_refl_img",
+          "name": "set0_b11",
           "dim": "2D",
           "readonly": false
         },
@@ -1407,7 +1200,7 @@
           "binding": 12,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b12",
           "dim": "2D",
           "readonly": false
         },
@@ -1416,16 +1209,7 @@
           "binding": 13,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_pt_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 14,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_prev",
+          "name": "set0_b13",
           "dim": "2D",
           "readonly": false
         },
@@ -1434,75 +1218,9 @@
           "binding": 15,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_curr",
+          "name": "set0_b15",
           "dim": "2D",
           "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
-          "readonly": false
-        },
-        {
-          "set": 1,
-          "binding": 0,
-          "type": "sampler",
-          "count": 1,
-          "name": "world_sampler"
-        },
-        {
-          "set": 1,
-          "binding": 1,
-          "type": "sampled_image",
-          "count": "unbounded",
-          "name": "world_textures",
-          "dim": "2D"
-        },
-        {
-          "set": 2,
-          "binding": 0,
-          "type": "storage_buffer",
-          "count": "unbounded",
-          "name": "rt_geom_bufs",
-          "readonly": true
         }
       ],
       "vertex_inputs": [],
@@ -1517,7 +1235,7 @@
       "uses_frag_coord": false,
       "uses_bda": false,
       "uses_ray_query": true,
-      "uses_bindless": true,
+      "uses_bindless": false,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
@@ -1532,13 +1250,13 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 125436,
+      "spirv_bytes": 173456,
       "local_size": [
         8,
         8,
         1
       ],
-      "push_constant_bytes": 16,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
         {
@@ -1546,14 +1264,14 @@
           "binding": 0,
           "type": "acceleration_structure",
           "count": 1,
-          "name": "tlas"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "InstInfos",
+          "name": "set0_b1",
           "readonly": true
         },
         {
@@ -1561,7 +1279,7 @@
           "binding": 2,
           "type": "storage_buffer",
           "count": 1,
-          "name": "GeomInfos",
+          "name": "set0_b2",
           "readonly": true
         },
         {
@@ -1569,7 +1287,7 @@
           "binding": 3,
           "type": "storage_buffer",
           "count": 1,
-          "name": "LightsBuf",
+          "name": "set0_b3",
           "readonly": true
         },
         {
@@ -1577,30 +1295,22 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "dyn_env",
+          "name": "set0_b5",
           "dim": "Cube"
-        },
-        {
-          "set": 0,
-          "binding": 6,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "depth_tex",
-          "dim": "2D"
         },
         {
           "set": 0,
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b7",
           "dim": "2D"
         },
         {
@@ -1608,7 +1318,7 @@
           "binding": 8,
           "type": "storage_image",
           "count": 1,
-          "name": "hdr_img",
+          "name": "set0_b8",
           "dim": "2D",
           "readonly": false
         },
@@ -1617,7 +1327,7 @@
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -1626,25 +1336,7 @@
           "binding": 10,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_albedo",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_refl_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 12,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b10",
           "dim": "2D",
           "readonly": false
         },
@@ -1653,7 +1345,7 @@
           "binding": 13,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_pt_img",
+          "name": "set0_b13",
           "dim": "2D",
           "readonly": false
         },
@@ -1662,7 +1354,7 @@
           "binding": 14,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_prev",
+          "name": "set0_b14",
           "dim": "2D",
           "readonly": false
         },
@@ -1671,34 +1363,7 @@
           "binding": 15,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
+          "name": "set0_b15",
           "dim": "2D",
           "readonly": false
         },
@@ -1707,7 +1372,7 @@
           "binding": 19,
           "type": "storage_buffer",
           "count": 1,
-          "name": "ReservoirsPrev",
+          "name": "set0_b19",
           "readonly": true
         },
         {
@@ -1715,7 +1380,7 @@
           "binding": 20,
           "type": "storage_buffer",
           "count": 1,
-          "name": "ReservoirsCurr",
+          "name": "set0_b20",
           "readonly": false
         },
         {
@@ -1723,14 +1388,14 @@
           "binding": 0,
           "type": "sampler",
           "count": 1,
-          "name": "world_sampler"
+          "name": "set1_b0"
         },
         {
           "set": 1,
           "binding": 1,
           "type": "sampled_image",
           "count": "unbounded",
-          "name": "world_textures",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -1738,7 +1403,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": "unbounded",
-          "name": "rt_geom_bufs",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
@@ -1770,13 +1435,13 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 83500,
+      "spirv_bytes": 78820,
       "local_size": [
         8,
         8,
         1
       ],
-      "push_constant_bytes": 16,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
         {
@@ -1784,14 +1449,14 @@
           "binding": 0,
           "type": "acceleration_structure",
           "count": 1,
-          "name": "tlas"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "InstInfos",
+          "name": "set0_b1",
           "readonly": true
         },
         {
@@ -1799,15 +1464,7 @@
           "binding": 2,
           "type": "storage_buffer",
           "count": 1,
-          "name": "GeomInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 3,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "LightsBuf",
+          "name": "set0_b2",
           "readonly": true
         },
         {
@@ -1815,14 +1472,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "dyn_env",
+          "name": "set0_b5",
           "dim": "Cube"
         },
         {
@@ -1830,32 +1487,15 @@
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b6",
           "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 7,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "motion_tex",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 8,
-          "type": "storage_image",
-          "count": 1,
-          "name": "hdr_img",
-          "dim": "2D",
-          "readonly": false
         },
         {
           "set": 0,
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -1864,7 +1504,7 @@
           "binding": 10,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_albedo",
+          "name": "set0_b10",
           "dim": "2D",
           "readonly": false
         },
@@ -1873,87 +1513,8 @@
           "binding": 11,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_refl_img",
+          "name": "set0_b11",
           "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 12,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_shad_ao_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 13,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_pt_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 14,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 15,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
           "readonly": false
         },
         {
@@ -1961,14 +1522,14 @@
           "binding": 0,
           "type": "sampler",
           "count": 1,
-          "name": "world_sampler"
+          "name": "set1_b0"
         },
         {
           "set": 1,
           "binding": 1,
           "type": "sampled_image",
           "count": "unbounded",
-          "name": "world_textures",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -1976,7 +1537,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": "unbounded",
-          "name": "rt_geom_bufs",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
@@ -2008,13 +1569,13 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 32428,
+      "spirv_bytes": 20628,
       "local_size": [
         8,
         8,
         1
       ],
-      "push_constant_bytes": 16,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
         {
@@ -2022,14 +1583,14 @@
           "binding": 0,
           "type": "acceleration_structure",
           "count": 1,
-          "name": "tlas"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "InstInfos",
+          "name": "set0_b1",
           "readonly": true
         },
         {
@@ -2037,7 +1598,7 @@
           "binding": 2,
           "type": "storage_buffer",
           "count": 1,
-          "name": "GeomInfos",
+          "name": "set0_b2",
           "readonly": true
         },
         {
@@ -2045,7 +1606,7 @@
           "binding": 3,
           "type": "storage_buffer",
           "count": 1,
-          "name": "LightsBuf",
+          "name": "set0_b3",
           "readonly": true
         },
         {
@@ -2053,65 +1614,22 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
-        },
-        {
-          "set": 0,
-          "binding": 5,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "dyn_env",
-          "dim": "Cube"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b6",
           "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 7,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "motion_tex",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 8,
-          "type": "storage_image",
-          "count": 1,
-          "name": "hdr_img",
-          "dim": "2D",
-          "readonly": false
         },
         {
           "set": 0,
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 10,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_gbuf_albedo",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_refl_img",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -2120,78 +1638,8 @@
           "binding": 12,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b12",
           "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 13,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_pt_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 14,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 15,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
           "readonly": false
         },
         {
@@ -2199,14 +1647,14 @@
           "binding": 0,
           "type": "sampler",
           "count": 1,
-          "name": "world_sampler"
+          "name": "set1_b0"
         },
         {
           "set": 1,
           "binding": 1,
           "type": "sampled_image",
           "count": "unbounded",
-          "name": "world_textures",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -2214,7 +1662,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": "unbounded",
-          "name": "rt_geom_bufs",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
@@ -2246,7 +1694,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17940,
+      "spirv_bytes": 9440,
       "local_size": [
         8,
         8,
@@ -2257,81 +1705,25 @@
       "bindings": [
         {
           "set": 0,
-          "binding": 0,
-          "type": "acceleration_structure",
-          "count": 1,
-          "name": "tlas"
-        },
-        {
-          "set": 0,
-          "binding": 1,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "InstInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 2,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "GeomInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 3,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "LightsBuf",
-          "readonly": true
-        },
-        {
-          "set": 0,
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
-        },
-        {
-          "set": 0,
-          "binding": 5,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "dyn_env",
-          "dim": "Cube"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b6",
           "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 7,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "motion_tex",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 8,
-          "type": "storage_image",
-          "count": 1,
-          "name": "hdr_img",
-          "dim": "2D",
-          "readonly": false
         },
         {
           "set": 0,
           "binding": 9,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_norm",
+          "name": "set0_b9",
           "dim": "2D",
           "readonly": false
         },
@@ -2340,25 +1732,7 @@
           "binding": 10,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_albedo",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_refl_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 12,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b10",
           "dim": "2D",
           "readonly": false
         },
@@ -2367,16 +1741,7 @@
           "binding": 13,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_pt_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 14,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_hist_prev",
+          "name": "set0_b13",
           "dim": "2D",
           "readonly": false
         },
@@ -2385,7 +1750,7 @@
           "binding": 15,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_curr",
+          "name": "set0_b15",
           "dim": "2D",
           "readonly": false
         },
@@ -2394,66 +1759,9 @@
           "binding": 16,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_svgf_tmp",
+          "name": "set0_b16",
           "dim": "2D",
           "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 17,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_prev",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 18,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_moments_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
-          "readonly": false
-        },
-        {
-          "set": 1,
-          "binding": 0,
-          "type": "sampler",
-          "count": 1,
-          "name": "world_sampler"
-        },
-        {
-          "set": 1,
-          "binding": 1,
-          "type": "sampled_image",
-          "count": "unbounded",
-          "name": "world_textures",
-          "dim": "2D"
-        },
-        {
-          "set": 2,
-          "binding": 0,
-          "type": "storage_buffer",
-          "count": "unbounded",
-          "name": "rt_geom_bufs",
-          "readonly": true
         }
       ],
       "vertex_inputs": [],
@@ -2468,7 +1776,7 @@
       "uses_frag_coord": false,
       "uses_bda": false,
       "uses_ray_query": true,
-      "uses_bindless": true,
+      "uses_bindless": false,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
@@ -2483,67 +1791,28 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17844,
+      "spirv_bytes": 8824,
       "local_size": [
         8,
         8,
         1
       ],
-      "push_constant_bytes": 16,
+      "push_constant_bytes": 0,
       "spec_constants": [],
       "bindings": [
-        {
-          "set": 0,
-          "binding": 0,
-          "type": "acceleration_structure",
-          "count": 1,
-          "name": "tlas"
-        },
-        {
-          "set": 0,
-          "binding": 1,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "InstInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 2,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "GeomInfos",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 3,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "LightsBuf",
-          "readonly": true
-        },
         {
           "set": 0,
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "ubo"
-        },
-        {
-          "set": 0,
-          "binding": 5,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "dyn_env",
-          "dim": "Cube"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b6",
           "dim": "2D"
         },
         {
@@ -2551,33 +1820,15 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b7",
           "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 8,
-          "type": "storage_image",
-          "count": 1,
-          "name": "hdr_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 9,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_gbuf_norm",
-          "dim": "2D",
-          "readonly": false
         },
         {
           "set": 0,
           "binding": 10,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_gbuf_albedo",
+          "name": "set0_b10",
           "dim": "2D",
           "readonly": false
         },
@@ -2586,16 +1837,7 @@
           "binding": 11,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_refl_img",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 12,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_shad_ao_img",
+          "name": "set0_b11",
           "dim": "2D",
           "readonly": false
         },
@@ -2604,7 +1846,7 @@
           "binding": 13,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_pt_img",
+          "name": "set0_b13",
           "dim": "2D",
           "readonly": false
         },
@@ -2613,7 +1855,7 @@
           "binding": 14,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_prev",
+          "name": "set0_b14",
           "dim": "2D",
           "readonly": false
         },
@@ -2622,16 +1864,7 @@
           "binding": 15,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_hist_curr",
-          "dim": "2D",
-          "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 16,
-          "type": "storage_image",
-          "count": 1,
-          "name": "rt_svgf_tmp",
+          "name": "set0_b15",
           "dim": "2D",
           "readonly": false
         },
@@ -2640,7 +1873,7 @@
           "binding": 17,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_moments_prev",
+          "name": "set0_b17",
           "dim": "2D",
           "readonly": false
         },
@@ -2649,48 +1882,9 @@
           "binding": 18,
           "type": "storage_image",
           "count": 1,
-          "name": "rt_moments_curr",
+          "name": "set0_b18",
           "dim": "2D",
           "readonly": false
-        },
-        {
-          "set": 0,
-          "binding": 19,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsPrev",
-          "readonly": true
-        },
-        {
-          "set": 0,
-          "binding": 20,
-          "type": "storage_buffer",
-          "count": 1,
-          "name": "ReservoirsCurr",
-          "readonly": false
-        },
-        {
-          "set": 1,
-          "binding": 0,
-          "type": "sampler",
-          "count": 1,
-          "name": "world_sampler"
-        },
-        {
-          "set": 1,
-          "binding": 1,
-          "type": "sampled_image",
-          "count": "unbounded",
-          "name": "world_textures",
-          "dim": "2D"
-        },
-        {
-          "set": 2,
-          "binding": 0,
-          "type": "storage_buffer",
-          "count": "unbounded",
-          "name": "rt_geom_bufs",
-          "readonly": true
         }
       ],
       "vertex_inputs": [],
@@ -2705,7 +1899,7 @@
       "uses_frag_coord": false,
       "uses_bda": false,
       "uses_ray_query": true,
-      "uses_bindless": true,
+      "uses_bindless": false,
       "readiness": {
         "vulkan_1_3": true,
         "metal_3_msl_3_1": true,
@@ -2720,7 +1914,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 1516,
+      "spirv_bytes": 1168,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -2730,7 +1924,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "albedo",
+          "name": "set1_b0",
           "dim": "2D"
         }
       ],
@@ -2759,7 +1953,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 178744,
+      "spirv_bytes": 167392,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -2780,14 +1974,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -2795,7 +1989,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -2803,7 +1997,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -2811,14 +2005,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "mirror_map",
+          "name": "set0_b5",
           "dim": "2D"
         },
         {
@@ -2826,7 +2020,7 @@
           "binding": 6,
           "type": "storage_buffer",
           "count": 1,
-          "name": "CarInstances",
+          "name": "set0_b6",
           "readonly": true
         },
         {
@@ -2834,7 +2028,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "static_environment",
+          "name": "set0_b7",
           "dim": "Cube"
         },
         {
@@ -2842,7 +2036,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_pattern",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -2850,7 +2044,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_mask",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -2858,15 +2052,7 @@
           "binding": 10,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_glass_crack",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b10",
           "dim": "2D"
         },
         {
@@ -2874,7 +2060,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot0",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -2882,7 +2068,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot1",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -2890,7 +2076,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "livery",
+          "name": "set1_b2",
           "dim": "2D"
         },
         {
@@ -2898,7 +2084,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "normal_map",
+          "name": "set1_b3",
           "dim": "2D"
         },
         {
@@ -2906,7 +2092,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "damage_map",
+          "name": "set1_b4",
           "dim": "2D"
         }
       ],
@@ -2935,7 +2121,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 13900,
+      "spirv_bytes": 8772,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -2945,37 +2131,37 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 6,
           "type": "storage_buffer",
           "count": 1,
-          "name": "CarInstances",
+          "name": "set0_b6",
           "readonly": true
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_position"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_frame"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv0"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_uv1"
+          "name": "in_loc3"
         },
         {
           "location": 4,
-          "name": "in_light"
+          "name": "in_loc4"
         }
       ],
       "capabilities": [
@@ -3004,7 +2190,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 161732,
+      "spirv_bytes": 148872,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -3025,14 +2211,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -3040,7 +2226,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -3048,7 +2234,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -3056,14 +2242,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "mirror_map",
+          "name": "set0_b5",
           "dim": "2D"
         },
         {
@@ -3071,7 +2257,7 @@
           "binding": 6,
           "type": "storage_buffer",
           "count": 1,
-          "name": "CarInstances",
+          "name": "set0_b6",
           "readonly": true
         },
         {
@@ -3079,7 +2265,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "static_environment",
+          "name": "set0_b7",
           "dim": "Cube"
         },
         {
@@ -3087,7 +2273,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_pattern",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -3095,23 +2281,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shared_dirt_mask",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 10,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "shared_glass_crack",
-          "dim": "2D"
-        },
-        {
-          "set": 0,
-          "binding": 11,
-          "type": "combined_image_sampler",
-          "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -3119,7 +2289,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot0",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -3127,7 +2297,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "slot1",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -3135,7 +2305,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "livery",
+          "name": "set1_b2",
           "dim": "2D"
         },
         {
@@ -3143,7 +2313,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "normal_map",
+          "name": "set1_b3",
           "dim": "2D"
         },
         {
@@ -3151,7 +2321,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "damage_map",
+          "name": "set1_b4",
           "dim": "2D"
         }
       ],
@@ -3180,7 +2350,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 18408,
+      "spirv_bytes": 11828,
       "local_size": null,
       "push_constant_bytes": 96,
       "spec_constants": [
@@ -3196,14 +2366,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -3211,7 +2381,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -3219,14 +2389,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 1,
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "skid_tex",
+          "name": "set1_b0",
           "dim": "2D"
         }
       ],
@@ -3255,7 +2425,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 3860,
+      "spirv_bytes": 2540,
       "local_size": null,
       "push_constant_bytes": 96,
       "spec_constants": [],
@@ -3265,25 +2435,25 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_position"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_normal"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_color"
+          "name": "in_loc3"
         }
       ],
       "capabilities": [
@@ -3312,7 +2482,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 33628,
+      "spirv_bytes": 21560,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -3328,14 +2498,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "sky"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_disc",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -3343,7 +2513,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_dither",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -3351,7 +2521,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_far_front",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -3359,7 +2529,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_far_back",
+          "name": "set0_b4",
           "dim": "2D"
         },
         {
@@ -3367,7 +2537,7 @@
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_far_mask",
+          "name": "set0_b5",
           "dim": "2D"
         },
         {
@@ -3375,7 +2545,7 @@
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_ad_f",
+          "name": "set0_b6",
           "dim": "2D"
         },
         {
@@ -3383,7 +2553,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_ad_b",
+          "name": "set0_b7",
           "dim": "2D"
         },
         {
@@ -3391,7 +2561,7 @@
           "binding": 8,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_am_f",
+          "name": "set0_b8",
           "dim": "2D"
         },
         {
@@ -3399,7 +2569,7 @@
           "binding": 9,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_am_b",
+          "name": "set0_b9",
           "dim": "2D"
         },
         {
@@ -3407,7 +2577,7 @@
           "binding": 10,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_tb_f",
+          "name": "set0_b10",
           "dim": "2D"
         },
         {
@@ -3415,7 +2585,7 @@
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "tex_close_tb_b",
+          "name": "set0_b11",
           "dim": "2D"
         }
       ],
@@ -3444,7 +2614,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 1560,
+      "spirv_bytes": 1132,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -3482,7 +2652,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 28320,
+      "spirv_bytes": 23932,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3492,7 +2662,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_tex",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -3500,7 +2670,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b1",
           "dim": "2D"
         }
       ],
@@ -3529,7 +2699,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 10848,
+      "spirv_bytes": 6724,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3539,7 +2709,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -3568,7 +2738,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 27848,
+      "spirv_bytes": 21704,
       "local_size": null,
       "push_constant_bytes": 64,
       "spec_constants": [],
@@ -3578,7 +2748,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "hdr_tex",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -3586,7 +2756,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -3594,7 +2764,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "hiz_tex",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -3602,7 +2772,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ssr_in",
+          "name": "set0_b3",
           "dim": "2D"
         }
       ],
@@ -3631,7 +2801,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 1664,
+      "spirv_bytes": 1088,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [
@@ -3667,7 +2837,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 4888,
+      "spirv_bytes": 3356,
       "local_size": null,
       "push_constant_bytes": 96,
       "spec_constants": [
@@ -3681,7 +2851,7 @@
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_star"
+          "name": "in_loc0"
         }
       ],
       "capabilities": [
@@ -3710,7 +2880,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 15884,
+      "spirv_bytes": 8764,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3720,7 +2890,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "curr_color",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -3728,7 +2898,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "history_color",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -3736,7 +2906,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "motion_tex",
+          "name": "set0_b2",
           "dim": "2D"
         }
       ],
@@ -3765,7 +2935,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 13088,
+      "spirv_bytes": 8360,
       "local_size": [
         64,
         1,
@@ -3779,7 +2949,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Trees",
+          "name": "set0_b0",
           "readonly": true
         },
         {
@@ -3787,7 +2957,7 @@
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "VisibleTrees",
+          "name": "set0_b1",
           "readonly": false
         },
         {
@@ -3795,7 +2965,7 @@
           "binding": 2,
           "type": "storage_buffer",
           "count": 1,
-          "name": "cmd",
+          "name": "set0_b2",
           "readonly": false
         },
         {
@@ -3803,7 +2973,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "hiz_tex",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -3811,7 +2981,7 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "p"
+          "name": "set0_b4"
         }
       ],
       "vertex_inputs": [],
@@ -3839,7 +3009,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 17900,
+      "spirv_bytes": 12728,
       "local_size": null,
       "push_constant_bytes": 0,
       "spec_constants": [],
@@ -3849,7 +3019,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Font",
+          "name": "set0_b0",
           "readonly": true
         },
         {
@@ -3857,7 +3027,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "atlas",
+          "name": "set0_b1",
           "dim": "2D"
         }
       ],
@@ -3886,7 +3056,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 2608,
+      "spirv_bytes": 2024,
       "local_size": null,
       "push_constant_bytes": 16,
       "spec_constants": [],
@@ -3894,27 +3064,27 @@
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_rect"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_p"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_q"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_r"
+          "name": "in_loc3"
         },
         {
           "location": 4,
-          "name": "in_m"
+          "name": "in_loc4"
         },
         {
           "location": 5,
-          "name": "in_cw"
+          "name": "in_loc5"
         }
       ],
       "capabilities": [
@@ -3943,7 +3113,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 44788,
+      "spirv_bytes": 27160,
       "local_size": null,
       "push_constant_bytes": 48,
       "spec_constants": [],
@@ -3953,7 +3123,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "src_tex",
+          "name": "set0_b0",
           "dim": "2D"
         }
       ],
@@ -3982,7 +3152,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 24300,
+      "spirv_bytes": 15656,
       "local_size": null,
       "push_constant_bytes": 32,
       "spec_constants": [],
@@ -3992,7 +3162,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "depth_tex",
+          "name": "set0_b0",
           "dim": "2D"
         },
         {
@@ -4000,7 +3170,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b1",
           "dim": "2D"
         },
         {
@@ -4008,7 +3178,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "vol_in",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -4016,7 +3186,7 @@
           "binding": 3,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "vol"
+          "name": "set0_b3"
         }
       ],
       "vertex_inputs": [],
@@ -4044,7 +3214,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 140484,
+      "spirv_bytes": 160640,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4065,14 +3235,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -4080,7 +3250,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -4088,7 +3258,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -4096,14 +3266,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -4111,7 +3281,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "albedo",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -4119,7 +3289,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "layer_b",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -4127,7 +3297,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "splat_map",
+          "name": "set1_b2",
           "dim": "2D"
         },
         {
@@ -4135,7 +3305,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "light_map",
+          "name": "set1_b3",
           "dim": "2D"
         },
         {
@@ -4143,7 +3313,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "normal_map",
+          "name": "set1_b4",
           "dim": "2D"
         },
         {
@@ -4151,7 +3321,7 @@
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ao_map",
+          "name": "set1_b5",
           "dim": "2D"
         },
         {
@@ -4159,7 +3329,7 @@
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "layer_c",
+          "name": "set1_b6",
           "dim": "2D"
         },
         {
@@ -4167,7 +3337,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "spec_map",
+          "name": "set1_b7",
           "dim": "2D"
         }
       ],
@@ -4196,7 +3366,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 28136,
+      "spirv_bytes": 18356,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4212,37 +3382,37 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_position"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_normal"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv0"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_uv1"
+          "name": "in_loc3"
         },
         {
           "location": 4,
-          "name": "in_colour"
+          "name": "in_loc4"
         },
         {
           "location": 5,
-          "name": "in_centre"
+          "name": "in_loc5"
         },
         {
           "location": 6,
-          "name": "in_uv2"
+          "name": "in_loc6"
         }
       ],
       "capabilities": [
@@ -4271,7 +3441,7 @@
       "stage": "compute",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 15172,
+      "spirv_bytes": 9752,
       "local_size": [
         64,
         1,
@@ -4285,7 +3455,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Draws",
+          "name": "set0_b0",
           "readonly": true
         },
         {
@@ -4293,7 +3463,7 @@
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Commands",
+          "name": "set0_b1",
           "readonly": false
         },
         {
@@ -4301,7 +3471,7 @@
           "binding": 2,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Counts",
+          "name": "set0_b2",
           "readonly": false
         },
         {
@@ -4309,7 +3479,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "hiz_tex",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -4317,7 +3487,7 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "p"
+          "name": "set0_b4"
         }
       ],
       "vertex_inputs": [],
@@ -4347,7 +3517,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 148156,
+      "spirv_bytes": 164288,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4368,14 +3538,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -4383,7 +3553,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -4391,7 +3561,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -4399,14 +3569,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -4414,14 +3584,14 @@
           "binding": 0,
           "type": "sampler",
           "count": 1,
-          "name": "world_sampler"
+          "name": "set1_b0"
         },
         {
           "set": 1,
           "binding": 1,
           "type": "sampled_image",
           "count": "unbounded",
-          "name": "textures",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -4429,7 +3599,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Draws",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
@@ -4460,7 +3630,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 29780,
+      "spirv_bytes": 18880,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4476,45 +3646,45 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 2,
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Draws",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
       "vertex_inputs": [
         {
           "location": 0,
-          "name": "in_position"
+          "name": "in_loc0"
         },
         {
           "location": 1,
-          "name": "in_normal"
+          "name": "in_loc1"
         },
         {
           "location": 2,
-          "name": "in_uv0"
+          "name": "in_loc2"
         },
         {
           "location": 3,
-          "name": "in_uv1"
+          "name": "in_loc3"
         },
         {
           "location": 4,
-          "name": "in_colour"
+          "name": "in_loc4"
         },
         {
           "location": 5,
-          "name": "in_centre"
+          "name": "in_loc5"
         },
         {
           "location": 6,
-          "name": "in_uv2"
+          "name": "in_loc6"
         }
       ],
       "capabilities": [
@@ -4544,7 +3714,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 117200,
+      "spirv_bytes": 111384,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4565,14 +3735,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -4580,7 +3750,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -4588,7 +3758,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -4596,14 +3766,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -4611,14 +3781,14 @@
           "binding": 0,
           "type": "sampler",
           "count": 1,
-          "name": "world_sampler"
+          "name": "set1_b0"
         },
         {
           "set": 1,
           "binding": 1,
           "type": "sampled_image",
           "count": "unbounded",
-          "name": "textures",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -4626,7 +3796,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Draws",
+          "name": "set2_b0",
           "readonly": true
         }
       ],
@@ -4657,7 +3827,7 @@
       "stage": "fragment",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 110104,
+      "spirv_bytes": 108156,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [
@@ -4678,14 +3848,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 0,
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "environment",
+          "name": "set0_b1",
           "dim": "Cube"
         },
         {
@@ -4693,7 +3863,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_map",
+          "name": "set0_b2",
           "dim": "2D"
         },
         {
@@ -4701,7 +3871,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "headlight_cookie",
+          "name": "set0_b3",
           "dim": "2D"
         },
         {
@@ -4709,14 +3879,14 @@
           "binding": 4,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "headlights"
+          "name": "set0_b4"
         },
         {
           "set": 0,
           "binding": 11,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "shadow_depth_raw",
+          "name": "set0_b11",
           "dim": "2D"
         },
         {
@@ -4724,7 +3894,7 @@
           "binding": 0,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "albedo",
+          "name": "set1_b0",
           "dim": "2D"
         },
         {
@@ -4732,7 +3902,7 @@
           "binding": 1,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "layer_b",
+          "name": "set1_b1",
           "dim": "2D"
         },
         {
@@ -4740,7 +3910,7 @@
           "binding": 2,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "splat_map",
+          "name": "set1_b2",
           "dim": "2D"
         },
         {
@@ -4748,7 +3918,7 @@
           "binding": 3,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "light_map",
+          "name": "set1_b3",
           "dim": "2D"
         },
         {
@@ -4756,7 +3926,7 @@
           "binding": 4,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "normal_map",
+          "name": "set1_b4",
           "dim": "2D"
         },
         {
@@ -4764,7 +3934,7 @@
           "binding": 5,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "ao_map",
+          "name": "set1_b5",
           "dim": "2D"
         },
         {
@@ -4772,7 +3942,7 @@
           "binding": 6,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "layer_c",
+          "name": "set1_b6",
           "dim": "2D"
         },
         {
@@ -4780,7 +3950,7 @@
           "binding": 7,
           "type": "combined_image_sampler",
           "count": 1,
-          "name": "spec_map",
+          "name": "set1_b7",
           "dim": "2D"
         }
       ],
@@ -4809,7 +3979,7 @@
       "stage": "vertex",
       "entry_point": "main",
       "spirv_version": "1.6",
-      "spirv_bytes": 15308,
+      "spirv_bytes": 9676,
       "local_size": null,
       "push_constant_bytes": 128,
       "spec_constants": [],
@@ -4819,14 +3989,14 @@
           "binding": 0,
           "type": "uniform_buffer",
           "count": 1,
-          "name": "frame"
+          "name": "set0_b0"
         },
         {
           "set": 2,
           "binding": 1,
           "type": "storage_buffer",
           "count": 1,
-          "name": "Trees",
+          "name": "set2_b1",
           "readonly": true
         },
         {
@@ -4834,7 +4004,7 @@
           "binding": 0,
           "type": "storage_buffer",
           "count": 1,
-          "name": "VisibleTrees",
+          "name": "set3_b0",
           "readonly": true
         }
       ],

@@ -2,7 +2,7 @@
 # SPIR-V in shaders/prebuilt (tools/regenerate-shaders.py refreshes it).
 set(SHIFT_GLSL_COMPILER "" CACHE FILEPATH "glslangValidator or glslc (optional)")
 if(NOT SHIFT_GLSL_COMPILER)
-  find_program(SHIFT_GLSL_FOUND NAMES glslangValidator glslc
+  find_program(SHIFT_GLSL_FOUND NAMES glslc glslangValidator
     HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
   if(SHIFT_GLSL_FOUND)
     set(SHIFT_GLSL_COMPILER "${SHIFT_GLSL_FOUND}")
@@ -28,7 +28,7 @@ foreach(shader ${carview_shaders})
     set(spv "${generated}/${shader}.spv")
     get_filename_component(compiler_name "${SHIFT_GLSL_COMPILER}" NAME_WE)
     if(compiler_name STREQUAL "glslc")
-      set(compile_args --target-env=vulkan1.3 -o "${spv}" "${source}")
+      set(compile_args -O --target-env=vulkan1.3 -o "${spv}" "${source}")
     else()
       set(compile_args -V --target-env vulkan1.3 -o "${spv}" "${source}")
     endif()

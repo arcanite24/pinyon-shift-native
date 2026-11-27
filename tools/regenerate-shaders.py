@@ -186,7 +186,9 @@ def main() -> int:
 
     # 1. Compile GLSL -> SPIR-V unless skipped
     if not args.skip_spv and not args.manifest_only:
-        compiler = args.compiler or checker.find_tool(("glslangValidator", "glslc"))
+        # Prefer glslc so -O SPIR-V optimization runs (keeps large uber-shaders like
+        # showroom.frag compact and avoids Apple M4 AGX MCObjectStreamer codegen faults).
+        compiler = args.compiler or checker.find_tool(("glslc", "glslangValidator"))
         if not compiler:
             print("no glslangValidator or glslc found; pass --compiler or --skip-spv", file=sys.stderr)
             return 1
@@ -194,7 +196,7 @@ def main() -> int:
         PREBUILT.mkdir(parents=True, exist_ok=True)
         for source, out in zip(sources, spv_files):
             if is_glslc:
-                command = [compiler, f"--target-env={args.target_env}", "-o", str(out), str(source)]
+                command = [compiler, "-O", f"--target-env={args.target_env}", "-o", str(out), str(source)]
             else:
                 command = [compiler, "-V", "--target-env", args.target_env, "-o", str(out), str(source)]
             subprocess.run(command, check=True)
