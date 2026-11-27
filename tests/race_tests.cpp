@@ -1621,9 +1621,11 @@ int main() {
       CHECK(near(tuned.mass, stock.mass * 0.95, 1e-6));
       CHECK(near(tuned.torque_scale, stock.torque_scale * 1.20, 1e-6));
       CHECK(near(tuned.lat_scale[0], 1.10, 1e-6));
-      CHECK(tuned.spring_rate[0] > stock.spring_rate[0]);
-      CHECK(tuned.bump_rate[0] > stock.bump_rate[0]);
-      CHECK(tuned.gear_shift_time < stock.gear_shift_time);
+      // Retail AIAutoUpgrades modifies only mass, torque, and tyre friction (no tuning_level buffs).
+      CHECK(near(tuned.spring_rate[0], stock.spring_rate[0], 1e-9));
+      CHECK(near(tuned.bump_rate[0], stock.bump_rate[0], 1e-9));
+      CHECK(near(tuned.gear_shift_time, stock.gear_shift_time, 1e-9));
+      CHECK(near(tuned.final_drive, stock.final_drive, 1e-9));
     }
 
     // R2-4: AIPlayerColors lookup & fallback selection.

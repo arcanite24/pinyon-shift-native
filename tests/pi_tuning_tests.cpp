@@ -5,6 +5,7 @@
 // - 35-slider CarTune -> CarParams wiring and garage.txt v2 round-trip persistence
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -270,6 +271,53 @@ static void test_synthetic_pi_and_tuning() {
   CHECK(race::resolve_player_race_pi(&rt.cars[0], "FOR_FocusRS_09", baked_ids, nullptr, nullptr, nullptr, nullptr) <
         0.0);
   CHECK(race::resolve_player_race_pi(nullptr, "VW_CorradoVR6_95", baked_ids, nullptr, nullptr, nullptr, nullptr) < 0.0);
+
+  // P0-10: Sequential P_prev turbo bin sweep reproduces lag-limited low-RPM peak torque
+  // and keeps engine SimPeakTorque/SimPeakPower independent of GameTorqueScale.
+  {
+    drive::CarParams tp = base_p;
+    tp.redline_rpm = 3000.0;
+    tp.torque_curve_max_rpm = 3500.0;
+    tp.torque_curve_slots = 35.0;  // 100 rpm per bin
+    tp.torque_curve.assign(36, 0.5);
+    tp.torque_curve[11] = 1.0;  // peak base torque at 1100 rpm
+    tp.torque_scale = 2000.0;
+    tp.game_torque_scale = 0.775;
+    tp.has_turbo = true;
+    tp.turbo_power_min = 50000.0;
+    tp.turbo_power_max = 350000.0;
+    tp.boost_scale_min = 0.85;
+    tp.boost_scale_max = 1.50;
+
+    cars::CarPhysics empty_phys;
+    const CarStats st_lag = compute_car_stats(tp, empty_phys);
+    // Instant max boost at bin 11 would give 2000 * 1.50 = 3000 N*m; sequential P_prev from bin 10
+    // (1000 rpm, base 0.5 -> ~90 kW < 350 kW) yields strictly lower peak torque!
+    CHECK(st_lag.peak_torque_nm < 2600.0 && st_lag.peak_torque_nm > 1700.0);
+    // Exact check against hand-evaluated sequential P_prev sweep:
+    double p_prev = 0.0, exp_tq = 0.0, exp_kw = 0.0;
+    constexpr double kPi = 3.14159265358979323846;
+    for (int i = 0; i <= 30; ++i) {
+      const double u_p = std::clamp((p_prev - 50000.0) / 300000.0, 0.0, 1.0);
+      const double f_b = 0.85 + (1.50 - 0.85) * u_p;
+      const double tq = tp.torque_curve[size_t(i)] * 2000.0 * f_b;
+      const double pw = (double(i) * 100.0 * kPi / 30.0) * tq;
+      p_prev = pw;
+      exp_tq = std::max(exp_tq, tq);
+      exp_kw = std::max(exp_kw, pw / 1000.0);
+    }
+    CHECK(std::fabs(st_lag.peak_torque_nm - exp_tq) < 1e-3);
+    CHECK(std::fabs(st_lag.peak_power_kw - exp_kw) < 1e-3);
+
+    // Changing GameTorqueScale must NOT alter engine peak torque/power stats,
+    // while faster GameTorqueScale must strictly reduce virtual lap time.
+    drive::CarParams tp_full_gts = tp;
+    tp_full_gts.game_torque_scale = 1.0;
+    const CarStats st_full = compute_car_stats(tp_full_gts, empty_phys);
+    CHECK(std::fabs(st_full.peak_torque_nm - st_lag.peak_torque_nm) < 1e-6);
+    CHECK(std::fabs(st_full.peak_power_kw - st_lag.peak_power_kw) < 1e-6);
+    CHECK(simulate_pi_lap(tp_full_gts, nullptr, synth_cfg) < simulate_pi_lap(tp, nullptr, synth_cfg));
+  }
 }
 
 static void test_disc_pi_conversions_and_auto_upgrade() {

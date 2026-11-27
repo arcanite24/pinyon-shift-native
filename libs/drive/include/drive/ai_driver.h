@@ -101,9 +101,9 @@ struct AiCapacity {
 // and 18.26 (SPEC-RACE-AI, Measured tables), so every car's tables are
 // scaled by that and keep their differences from the car's own physics.
 // Calibration factor for ai_capacity() against SPEC-RACE-AI measured tables
-// after downforce, updated tyre curves, and Q341 rev-limiter parity.
+// (unity {1.0, 1.0} by default).
 struct AiCapacityCalibration {
-  double lateral = 1.024, braking = 1.018;
+  double lateral = 1.0, braking = 1.0;
 };
 AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal = {});
 struct AiCarState;

@@ -854,6 +854,10 @@ bool export_forza_profile(const Imported& p, const std::filesystem::path& out_fo
           "CREATE TABLE Career_Garage ("
           "Id INTEGER PRIMARY KEY, CarId INTEGER, PerformanceIndex REAL, ClassID INTEGER, "
           "PartsValue INTEGER, DefaultManufacturerColorIndex INTEGER, LiveryFileName TEXT, "
+          "CurbWeight REAL, WeightDistribution REAL, SpeedRating REAL, HandlingRating REAL, "
+          "AccelerationRating REAL, LaunchRating REAL, BrakingRating REAL, "
+          "SimPeakTorque REAL, SimPeakPower REAL, SimRedlineAngVel REAL, PeakIntakePSI REAL, "
+          "MirroredPerformanceIndex REAL, "
           "DistanceDriven REAL, TimeDriven REAL, TotalWinnings INTEGER, TotalRepairs INTEGER, "
           "NumVictories INTEGER, NumPodiums INTEGER, NumRaces INTEGER";
       for (const auto& slot : cars::upgrade_slots()) {
@@ -955,6 +959,9 @@ bool export_forza_profile(const Imported& p, const std::filesystem::path& out_fo
             sqlite3_bind_int64(st, idx, g.car_id);
           } else if (col == "PerformanceIndex") {
             sqlite3_bind_double(st, idx, g.performance_index);
+          } else if (col == "MirroredPerformanceIndex") {
+            const auto it_r = g.reals.find(col);
+            sqlite3_bind_double(st, idx, it_r != g.reals.end() ? it_r->second : g.performance_index);
           } else if (col == "ClassID") {
             sqlite3_bind_int64(st, idx, g.class_id);
           } else if (col == "DefaultManufacturerColorIndex") {

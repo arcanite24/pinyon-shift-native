@@ -112,6 +112,10 @@ double EnginePlayer::expander_state(size_t group) const {
   return group < state_.size() ? state_[group].exp_state : 0.0;
 }
 
+double EnginePlayer::lowpass_cutoff_hz(size_t group) const {
+  return group < state_.size() ? state_[group].cur_lp_cutoff : 0.45 * double(rate_);
+}
+
 double EnginePlayer::peq_gain(size_t group) const {
   return group < state_.size() ? state_[group].cur_peq_gain : 1.0;
 }
@@ -325,6 +329,22 @@ void EnginePlayer::set(const Update& u) {
   thr_hist_head_ = (thr_hist_head_ + 1) % kThrottleHistSize;
   if (thr_hist_count_ < kThrottleHistSize) ++thr_hist_count_;
 
+  // Non-focus opponent/traffic Lowpass distance attenuation cutoff cap
+  // (SPEC-ENGINE-SOUND): min(curve_cutoff, max(min_cutoff, dist_cutoff)).
+  const double nyq_cap = 0.45 * double(rate_);
+  constexpr double kDistLpStartM = 15.0;
+  constexpr double kDistLpEndM = 150.0;
+  constexpr double kDistLpMaxHz = 22000.0;
+  const double min_cutoff = safe_clamp(dist_lowpass_min_hz, 100.0, nyq_cap, 1200.0);
+  double dist_cap = nyq_cap;
+  bool has_dist_cap = false;
+  if (positional && std::isfinite(u.distance_m) && u.distance_m > kDistLpStartM) {
+    const double t = std::clamp((u.distance_m - kDistLpStartM) / (kDistLpEndM - kDistLpStartM), 0.0, 1.0);
+    const double dist_cutoff = kDistLpMaxHz * std::pow(min_cutoff / kDistLpMaxHz, t);
+    dist_cap = std::max(min_cutoff, dist_cutoff);
+    has_dist_cap = dist_cap < nyq_cap - 1.0;
+  }
+
   for (size_t g = 0; g < state_.size(); ++g) {
     const Group& group = sound_.groups[g];
     GroupState& st = state_[g];
@@ -338,12 +358,20 @@ void EnginePlayer::set(const Update& u) {
     // 4-pole Butterworth prototype (damping 0.765367 and 1.847759), with each
     // section's damping divided by the resonance (1..10, default 1).
     if (group.lowpass) {
-      const double fc = safe_clamp(group.lowpass_cutoff.eval(in, neg_raises), 20.0, 0.45 * rate_, 0.45 * rate_);
+      const double curve_cutoff = safe_clamp(group.lowpass_cutoff.eval(in, neg_raises), 20.0, nyq_cap, nyq_cap);
+      const double fc = has_dist_cap ? std::min(curve_cutoff, dist_cap) : curve_cutoff;
       const double res =
           group.lowpass_resonance.present ? safe_clamp(group.lowpass_resonance.eval(in, neg_raises), 1.0, 10.0, 1.0) : 1.0;
+      st.cur_lp_cutoff = fc;
       st.lp.set_lowpass(fc, res / 0.765367, rate_);
       st.lp2.set_lowpass(fc, res / 1.847759, rate_);
+    } else if (has_dist_cap) {
+      const double fc = std::min(nyq_cap, dist_cap);
+      st.cur_lp_cutoff = fc;
+      st.lp.set_lowpass(fc, 1.0 / 0.765367, rate_);
+      st.lp2.set_lowpass(fc, 1.0 / 1.847759, rate_);
     } else {
+      st.cur_lp_cutoff = nyq_cap;
       st.lp.set_bypass();
       st.lp2.set_bypass();
     }

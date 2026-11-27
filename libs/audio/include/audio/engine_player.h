@@ -49,6 +49,7 @@ class EnginePlayer {
     double pos_torque = 0;
     double neg_torque = 0;
     View view = View::kFollow;
+    double distance_m = 0;  // listener distance (m) for non-focus positional Lowpass rolloff
   };
 
   // `pcm[g][i]`: group g's loop i (null: silent). `idle` and `redline`:
@@ -91,10 +92,13 @@ class EnginePlayer {
   // and the focus-car exhaust shaping (FocusPEQ, Distortion, TrashDSP) are the
   // focus car's alone (SPEC-ENGINE-SOUND, Mix basics and Focus DSP).
   bool positional = false;
+  // Minimum cutoff floor (Hz) for non-focus distance Lowpass rolloff (SPEC-ENGINE-SOUND).
+  double dist_lowpass_min_hz = 1200.0;
 
   double audio_rpm() const { return audio_rpm_; }
   int voices() const;
   double expander_state(size_t group) const;
+  double lowpass_cutoff_hz(size_t group) const;
   double peq_gain(size_t group) const;
   double load_peq_gain(size_t group) const;
   double focus_peq_gain() const { return cur_focus_peq_gain_; }
@@ -198,6 +202,7 @@ class EnginePlayer {
     double base_target_gain = 0;
     double left = 1, right = 1;
     Biquad lp, lp2, peq, load_peq;
+    double cur_lp_cutoff = 20000.0;
     double cur_peq_gain = 1.0, cur_load_peq_gain = 1.0;
     // Expander state (ms).
     bool exp_triggered = false;

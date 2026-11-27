@@ -530,6 +530,82 @@ void test_video_settings_round_trip() {
   std::filesystem::remove_all(dir, ec);
 }
 
+// ---- 11. P1-18: ForzaProfile radio persistence & Career_Garage cached stats round-trip.
+void test_radio_and_garage_stats_round_trip() {
+  const fs::path dir = scratch("radio_and_stats");
+  drive::DriveSave ds;
+  ds.car = "NIS_SkylineGTRVSpecII_02";
+  ds.credits = 50000;
+  ds.radio_station = "Radio3";
+  ds.radio_dj = false;
+  ds.radio_volume = 0.65;
+
+  garage::Garage g;
+  g.last_id = 1;
+  g.selected = 1;
+  garage::Car car;
+  car.id = 1;
+  car.car_id = 445;
+  car.performance_index = 0.725;
+  car.class_id = 5;
+  car.colour = 2;
+  car.cached_stats.curb_weight_kg = 1420.0;
+  car.cached_stats.weight_dist_front = 0.56;
+  car.cached_stats.speed_rating = 7.4;
+  car.cached_stats.handling_rating = 6.8;
+  car.cached_stats.accel_rating = 8.1;
+  car.cached_stats.launch_rating = 8.6;
+  car.cached_stats.braking_rating = 7.2;
+  car.cached_stats.peak_torque_nm = 520.0;
+  car.cached_stats.peak_power_kw = 345.0;
+  g.cars.push_back(car);
+
+  std::string err;
+  CHECK(profile::export_forza_profile(ds, g, dir, &err));
+
+  profile::Imported back;
+  CHECK(profile::import_profile(dir, back, &err));
+  CHECK(back.has_radio);
+  CHECK(back.radio_station == 2);  // Radio3
+  CHECK(!back.radio_dj);
+  CHECK(std::fabs(back.radio_volume - 0.65) < 1e-4);
+
+  drive::DriveSave ds_back;
+  profile::to_drive_save(back, no_media, ds_back, nullptr);
+  CHECK(ds_back.radio_station == "Radio3");
+  CHECK(!ds_back.radio_dj);
+  CHECK(std::fabs(ds_back.radio_volume - 0.65) < 1e-4);
+
+  CHECK(back.garage.size() == 1);
+  if (!back.garage.empty()) {
+    const auto& r = back.garage[0].reals;
+    CHECK(r.count("CurbWeight") && std::fabs(r.at("CurbWeight") - 14.20) < 1e-4);
+    CHECK(r.count("WeightDistribution") && std::fabs(r.at("WeightDistribution") - 0.56) < 1e-4);
+    CHECK(r.count("SpeedRating") && std::fabs(r.at("SpeedRating") - 7.4) < 1e-4);
+    CHECK(r.count("HandlingRating") && std::fabs(r.at("HandlingRating") - 6.8) < 1e-4);
+    CHECK(r.count("AccelerationRating") && std::fabs(r.at("AccelerationRating") - 8.1) < 1e-4);
+    CHECK(r.count("LaunchRating") && std::fabs(r.at("LaunchRating") - 8.6) < 1e-4);
+    CHECK(r.count("BrakingRating") && std::fabs(r.at("BrakingRating") - 7.2) < 1e-4);
+    CHECK(r.count("SimPeakTorque") && std::fabs(r.at("SimPeakTorque") - 5.20) < 1e-4);
+    CHECK(r.count("SimPeakPower") && std::fabs(r.at("SimPeakPower") - 3450.0) < 1e-2);
+    CHECK(r.count("MirroredPerformanceIndex") && std::fabs(r.at("MirroredPerformanceIndex") - 0.725) < 1e-6);
+  }
+  const garage::Garage g_back = profile::to_garage(back);
+  CHECK(g_back.cars.size() == 1 && std::fabs(g_back.cars[0].cached_stats.curb_weight_kg - 1420.0) < 1e-2);
+  CHECK(std::fabs(g_back.cars[0].cached_stats.peak_torque_nm - 520.0) < 1e-2);
+  CHECK(std::fabs(g_back.cars[0].cached_stats.peak_power_kw - 345.0) < 1e-2);
+
+  // Switch station to Radio4_Silent (off) using previous export as template and verify in-place update.
+  ds_back.radio_station = "Radio4_Silent";
+  ds_back.radio_dj = true;
+  ds_back.radio_volume = 0.25;
+  const fs::path dir2 = scratch("radio_and_stats_2");
+  CHECK(profile::export_forza_profile(ds_back, g_back, dir2, &err, {dir, nullptr, -1}));
+  profile::Imported back2;
+  CHECK(profile::import_profile(dir2, back2, &err));
+  CHECK(back2.has_radio && back2.radio_station == 3 && back2.radio_dj && std::fabs(back2.radio_volume - 0.25) < 1e-4);
+}
+
 }  // namespace
 
 int main() {
@@ -543,6 +619,7 @@ int main() {
   test_import_run_then_reload();
   test_engine_career_not_seeded();
   test_video_settings_round_trip();
+  test_radio_and_garage_stats_round_trip();
   if (g_failures) {
     std::printf("save_import_tests: %d failure(s)\n", g_failures);
     return 1;

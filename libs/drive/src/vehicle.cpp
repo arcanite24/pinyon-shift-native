@@ -363,38 +363,58 @@ Vehicle::Vehicle(const CarParams& params) : p_(params) {
     }
   }
   // Compute peak boosted power RPM (w_peak_power) for closed-throttle curve
-  // (SPEC-CAR-PHYSICS, Engine item 1).
+  // via the sequential P_prev turbo bin sweep (SPEC-CAR-PHYSICS, Engine items 1-2).
   {
     double best_p = -1.0, best_rpm = std::max(p_.idle_rpm + 500.0, 0.85 * p_.redline_rpm);
-    const double slots = p_.torque_curve_slots > 0
-                             ? p_.torque_curve_slots
-                             : (p_.torque_curve.size() > 1 ? double(p_.torque_curve.size() - 1) : 1.0);
-    for (int step = 10; step <= 200; ++step) {
-      const double r = p_.redline_rpm * double(step) / 200.0;
-      double base = 1.0;
-      if (p_.torque_curve.empty()) {
-        base = r < 2000 ? 0.6 + 0.4 * r / 2000 : r > 5500 ? 1.0 - 0.3 * ramp(r, 5500, p_.redline_rpm) : 1.0;
-      } else {
-        const double x = r / (p_.torque_curve_max_rpm / slots);
-        const size_t last = p_.torque_curve.size() - 1;
-        base = x >= double(last) ? p_.torque_curve[last]
-                                 : lerp(p_.torque_curve[size_t(x)], p_.torque_curve[size_t(x) + 1], x - double(size_t(x)));
+    const bool has_curve = !p_.torque_curve.empty();
+    const double slots = has_curve
+                             ? (p_.torque_curve_slots > 0
+                                    ? p_.torque_curve_slots
+                                    : (p_.torque_curve.size() > 1 ? double(p_.torque_curve.size() - 1) : 1.0))
+                             : 100.0;
+    const double d_rpm =
+        has_curve ? (p_.torque_curve_max_rpm / std::max(1.0, slots)) : (p_.redline_rpm / 100.0);
+    const double d_omega = d_rpm * (kPi / 30.0);
+    const double w_red = p_.redline_rpm * (kPi / 30.0);
+    const int max_bins = has_curve ? std::min(int(p_.torque_curve.size()), 186) : 101;
+    const int count =
+        std::clamp(int(std::llround(w_red / std::max(1e-9, d_omega))) + 1, 1, std::max(1, max_bins));
+    const double p_lo = std::min(p_.turbo_power_min, p_.turbo_power_max);
+    const double p_hi = std::max(p_.turbo_power_min, p_.turbo_power_max);
+    const double p_span = p_hi - p_lo;
+    double p_prev = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const double r = double(i) * d_rpm;
+      const double omega_i = double(i) * d_omega;
+      const double base =
+          has_curve ? p_.torque_curve[size_t(i)]
+                    : (r < 2000.0 ? 0.6 + 0.4 * r / 2000.0
+                                  : r > 5500.0 ? 1.0 - 0.3 * ramp(r, 5500.0, p_.redline_rpm) : 1.0);
+      double f_b = 1.0;
+      if (p_.has_turbo) {
+        const double u_p =
+            p_span > 1e-9 ? std::clamp((p_prev - p_lo) / p_span, 0.0, 1.0) : (p_prev >= p_hi ? 1.0 : 0.0);
+        f_b = lerp(p_.boost_scale_min, p_.boost_scale_max, u_p);
+        if (f_b > 1.0 && p_.turbo_dropoff_rpm0 != p_.turbo_dropoff_rpm1) {
+          const double u = ramp(r, std::min(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1),
+                                std::max(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1));
+          f_b = lerp(p_.turbo_dropoff_scale0 * (f_b - 1.0) + 1.0, p_.turbo_dropoff_scale1 * (f_b - 1.0) + 1.0, u);
+        }
       }
-      double f_b = p_.has_turbo ? p_.boost_scale_max : 1.0;
-      if (f_b > 1.0 && p_.turbo_dropoff_rpm0 != p_.turbo_dropoff_rpm1) {
-        const double u = ramp(r, std::min(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1),
-                              std::max(p_.turbo_dropoff_rpm0, p_.turbo_dropoff_rpm1));
-        f_b = lerp(p_.turbo_dropoff_scale0 * (f_b - 1.0) + 1.0, p_.turbo_dropoff_scale1 * (f_b - 1.0) + 1.0, u);
+      double f_s = 1.0;
+      if (p_.has_supercharger) {
+        f_s = lerp(p_.sc_scale_zero, p_.sc_scale_redline, ramp(r, 0.0, p_.redline_rpm));
+        if (f_s > 1.0 && p_.sc_dropoff_rpm0 != p_.sc_dropoff_rpm1) {
+          const double u = ramp(r, std::min(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1),
+                                std::max(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1));
+          f_s = lerp(p_.sc_dropoff_scale0 * (f_s - 1.0) + 1.0, p_.sc_dropoff_scale1 * (f_s - 1.0) + 1.0, u);
+        }
       }
-      double f_s = p_.has_supercharger ? lerp(p_.sc_scale_zero, p_.sc_scale_redline, ramp(r, 0, p_.redline_rpm)) : 1.0;
-      if (f_s > 1.0 && p_.sc_dropoff_rpm0 != p_.sc_dropoff_rpm1) {
-        const double u = ramp(r, std::min(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1),
-                              std::max(p_.sc_dropoff_rpm0, p_.sc_dropoff_rpm1));
-        f_s = lerp(p_.sc_dropoff_scale0 * (f_s - 1.0) + 1.0, p_.sc_dropoff_scale1 * (f_s - 1.0) + 1.0, u);
-      }
-      const double power = r * base * p_.torque_scale * (1.0 + (f_b - 1.0) + (f_s - 1.0));
-      if (power > best_p) {
-        best_p = power;
+      const double t_wot = base * p_.torque_scale * (1.0 + (f_b - 1.0) + (f_s - 1.0));
+      const double power_w = omega_i * t_wot;
+      p_prev = power_w;
+      if (power_w > best_p) {
+        best_p = power_w;
         best_rpm = r;
       }
     }
@@ -486,8 +506,8 @@ void Vehicle::init_brakes() {
   const double df_r_c = p_.aero_df_rear + p_.aero_part_df_rear;
 
   auto solve_decel = [&](double v, double& ff_out, double& fr_out) {
-    const double nf0 = p_.mass * p_.gravity * front_share + df_f_c * v * v;
-    const double nr0 = p_.mass * p_.gravity * (1.0 - front_share) + df_r_c * v * v;
+    const double nf0 = p_.mass * kKgf * front_share + df_f_c * v * v;
+    const double nr0 = p_.mass * kKgf * (1.0 - front_share) + df_r_c * v * v;
     double a = 0.0, ff = 0.0, fr = 0.0;
     for (int it = 0; it < 6; ++it) {
       const double dn = p_.mass * a * h_cg / L;
@@ -1927,7 +1947,7 @@ void Vehicle::substep(double dt, const Ground& ground) {
                            : lerp(p.no_abs_rear_no_steer, p.no_abs_rear_full_steer, stick);
           dur = p.no_abs_disable_time;
         }
-        if ((ai_ ? w.slip_ratio : mean) < -release) abs_timer_[i] = dur > 0 ? dur : dt;
+        if (mean < -release) abs_timer_[i] = dur > 0 ? dur : dt;
       }
       if (abs_timer_[i] > 0) {
         abs_scale_[i] = 0.0;
@@ -2274,12 +2294,12 @@ void Vehicle::substep(double dt, const Ground& ground) {
         const double u_x = ramp(std::fabs(vx[i]), surf[i].vel_peak0, surf[i].vel_peak);
         const double u_y = ramp(std::fabs(vy[i]), surf[i].vel_peak0, surf[i].vel_peak);
         const double cross_u = std::clamp(0.25 * (std::fabs(vx[i]) - 4.0), 0.0, 1.0);
-        const double tgt_long = lerp(surf[i].vel_long0, surf[i].vel_long, u_x);
-        const double tgt_lat = lerp(surf[i].vel_lat0, surf[i].vel_lat, u_y) * cross_u;
-        const double slew = p.max_vel_dep_coeff_vel * dt;
+        const double k_abs_off = (abs_off_boost && slowing[i]) ? p.abs_off_braking_friction_scale : 1.0;
+        const double load_scale = p.tire_mod_friction_scale * damage_.tyre_grip[size_t(i)] * k_abs_off;
+        const double tgt_long = lerp(surf[i].vel_long0, surf[i].vel_long, u_x) * load_scale;
+        const double tgt_lat = lerp(surf[i].vel_lat0, surf[i].vel_lat, u_y) * cross_u * load_scale;
         vel_dep_long_[i] = approach(vel_dep_long_[i], tgt_long, p.max_vel_dep_coeff_vel, dt);
         vel_dep_lat_[i] = approach(vel_dep_lat_[i], tgt_lat, p.max_vel_dep_coeff_vel, dt);
-        (void)slew;
         const double fx_vd = -sign(vx[i]) * std::min(1.0, std::fabs(vx[i]) / 0.2) * vel_dep_long_[i] * w.load;
         const double fy_vd = -sign(vy[i]) * std::min(1.0, std::fabs(vy[i]) / 0.2) * vel_dep_lat_[i] * w.load;
         fx += fx_vd;

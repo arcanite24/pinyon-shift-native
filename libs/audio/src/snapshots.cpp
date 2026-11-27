@@ -583,7 +583,9 @@ void CarBusEq::set_target(const GlobalDspBand& band) {
 void CarBusEq::update_coeffs() {
   const double fc = std::clamp(double(center_), 20.0, 0.45 * double(rate_));
   const double bw = std::clamp(double(bandwidth_), 0.1, 6.0);
-  const double A = std::sqrt(std::clamp(double(gain_), 0.05, 3.0));
+  // FMOD Ex ParamEQ takes linear Gain directly as RBJ A (peak = gain^2:
+  // -20.9 dB at Gain=0.30, -40.0 dB at Gain=0.10), matching FocusPEQ.
+  const double A = std::clamp(double(gain_), 0.05, 3.0);
   const double w0 = 2.0 * 3.14159265358979323846 * fc / double(rate_);
   const double sin_w0 = std::sin(w0);
   const double cos_w0 = std::cos(w0);

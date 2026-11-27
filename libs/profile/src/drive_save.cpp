@@ -1,6 +1,7 @@
 #include "profile/drive_save.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -66,6 +67,18 @@ Record* find_child_by_class(Record& parent, std::string_view class_name) {
   for (auto& c : parent.children)
     if (c.class_name == class_name) return &c;
   return nullptr;
+}
+
+int radio_station_index(std::string_view name) {
+  if (name.empty()) return -1;
+  std::string low;
+  low.reserve(name.size());
+  for (unsigned char ch : name) low.push_back(char(std::tolower(ch)));
+  if (low == "radio1" || low == "bass_arena") return 0;
+  if (low == "radio2" || low == "pulse") return 1;
+  if (low == "radio3" || low == "2_eleven" || low == "rocks") return 2;
+  if (low == "radio4_silent" || low == "radio_off" || low == "off") return 3;
+  return -1;
 }
 
 }  // namespace
@@ -249,6 +262,19 @@ garage::Garage to_garage(const Imported& p) {
     if (auto it = r.columns.find("WheelStyle"); it != r.columns.end()) c.slots["WheelStyle"] = it->second;
     if (auto it = r.texts.find("LiveryFileName"); it != r.texts.end() && !it->second.empty())
       c.livery_file = it->second;
+    if (auto it = r.reals.find("CurbWeight"); it != r.reals.end() && it->second > 0.0)
+      c.cached_stats.curb_weight_kg = it->second * 100.0;
+    if (auto it = r.reals.find("WeightDistribution"); it != r.reals.end() && it->second > 0.0)
+      c.cached_stats.weight_dist_front = it->second;
+    if (auto it = r.reals.find("SpeedRating"); it != r.reals.end()) c.cached_stats.speed_rating = it->second;
+    if (auto it = r.reals.find("HandlingRating"); it != r.reals.end()) c.cached_stats.handling_rating = it->second;
+    if (auto it = r.reals.find("AccelerationRating"); it != r.reals.end()) c.cached_stats.accel_rating = it->second;
+    if (auto it = r.reals.find("LaunchRating"); it != r.reals.end()) c.cached_stats.launch_rating = it->second;
+    if (auto it = r.reals.find("BrakingRating"); it != r.reals.end()) c.cached_stats.braking_rating = it->second;
+    if (auto it = r.reals.find("SimPeakTorque"); it != r.reals.end() && it->second > 0.0)
+      c.cached_stats.peak_torque_nm = it->second * 100.0;
+    if (auto it = r.reals.find("SimPeakPower"); it != r.reals.end() && it->second > 0.0)
+      c.cached_stats.peak_power_kw = it->second * 0.1;
     for (const auto& [col, val] : r.reals) {
       if (col.rfind("Tuning_", 0) == 0) {
         char kv[96];
@@ -311,6 +337,25 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
   set_field_double(out.body.fields, "Main/TimeInStreetRaces", save.time_street, Value::kFloat);
   set_field_double(out.body.fields, "Main/TimeInExhibitionRaces", save.time_exhibition, Value::kFloat);
   set_field_bool(out.body.fields, "Main/SatNav", save.satnav_enabled);
+  {
+    const int radio_idx = radio_station_index(save.radio_station);
+    const bool has_radio_field = find(out.body.fields, "Main/RadioStation") != nullptr ||
+                                 find(out.body.fields, "Main/RadioDJ") != nullptr ||
+                                 find(out.body.fields, "Main/RadioVolume") != nullptr;
+    const bool write_radio = has_radio_field || radio_idx >= 0 || !save.radio_dj ||
+                             (std::isfinite(save.radio_volume) && std::fabs(save.radio_volume - 1.0) > 1e-4);
+    if (write_radio) {
+      int eff_station = radio_idx;
+      if (eff_station < 0) {
+        if (const Field* rf = find(out.body.fields, "Main/RadioStation")) eff_station = int(rf->value.as_int());
+        else eff_station = 0;
+      }
+      set_field_int(out.body.fields, "Main/RadioStation", eff_station, Value::kU8);
+      set_field_bool(out.body.fields, "Main/RadioDJ", save.radio_dj);
+      const double rvol = std::isfinite(save.radio_volume) ? std::clamp(save.radio_volume, 0.0, 1.0) : 1.0;
+      set_field_double(out.body.fields, "Main/RadioVolume", rvol, Value::kFloat);
+    }
+  }
   if (find(out.body.fields, "Main/Gamma") != nullptr || save.brightness != 60) {
     set_field_double(out.body.fields, "Main/Gamma", double(std::clamp(save.brightness, 0, 100)) / 100.0, Value::kFloat);
   }
@@ -605,9 +650,21 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
     g.columns["Id"] = c.id;
     g.columns["CarId"] = c.car_id;
     g.reals["PerformanceIndex"] = c.performance_index;
+    g.reals["MirroredPerformanceIndex"] = c.performance_index;
     g.columns["ClassID"] = c.class_id;
     g.columns["PartsValue"] = c.parts_value;
     g.columns["DefaultManufacturerColorIndex"] = c.colour;
+    if (c.cached_stats.curb_weight_kg > 0.0) {
+      g.reals["CurbWeight"] = c.cached_stats.curb_weight_kg / 100.0;
+      g.reals["WeightDistribution"] = std::clamp(c.cached_stats.weight_dist_front, 0.0, 1.0);
+    }
+    if (c.cached_stats.speed_rating > 0.0) g.reals["SpeedRating"] = c.cached_stats.speed_rating;
+    if (c.cached_stats.handling_rating > 0.0) g.reals["HandlingRating"] = c.cached_stats.handling_rating;
+    if (c.cached_stats.accel_rating > 0.0) g.reals["AccelerationRating"] = c.cached_stats.accel_rating;
+    if (c.cached_stats.launch_rating > 0.0) g.reals["LaunchRating"] = c.cached_stats.launch_rating;
+    if (c.cached_stats.braking_rating > 0.0) g.reals["BrakingRating"] = c.cached_stats.braking_rating;
+    if (c.cached_stats.peak_torque_nm > 0.0) g.reals["SimPeakTorque"] = c.cached_stats.peak_torque_nm / 100.0;
+    if (c.cached_stats.peak_power_kw > 0.0) g.reals["SimPeakPower"] = c.cached_stats.peak_power_kw * 10.0;
     // Copy every fitted slot, including explicit -1 sentinels.
     for (const auto& [col, val] : c.slots) g.columns[col] = val;
     if (!c.livery_file.empty()) g.texts["LiveryFileName"] = c.livery_file;
@@ -690,6 +747,12 @@ void from_drive_save(const drive::DriveSave& save, const garage::Garage& garage,
   out.fast_travel_anywhere = save.fast_travel_anywhere;
   out.has_codriver = find(out.body.fields, "Main/CoDriver") != nullptr;
   out.codriver_on = save.codriver_enabled;
+  if (const Field* rs = find(out.body.fields, "Main/RadioStation")) {
+    out.has_radio = true;
+    out.radio_station = int(rs->value.as_int());
+    if (const Field* dj = find(out.body.fields, "Main/RadioDJ")) out.radio_dj = dj->value.as_int() != 0;
+    if (const Field* rv = find(out.body.fields, "Main/RadioVolume")) out.radio_volume = rv->value.as_double();
+  }
   out.road_discovery_nodes = save.road_discovery_nodes;
   out.road_discovery_words = save.road_discovery_words;
   out.outposts_discovered = save.discovered_outposts;

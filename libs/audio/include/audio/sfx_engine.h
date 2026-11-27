@@ -96,6 +96,8 @@ struct VehicleAudioState {
   Vec3f listener_pos{};
   Vec3f listener_vel{};
   Vec3f listener_right{1.0f, 0.0f, 0.0f};
+  Vec3f focus_car_pos{};  // focus car world position (drives IMPACT_LFE distance attenuation)
+  bool has_focus_car_pos = false;
   bool cockpit_view = false;
   bool in_race = false;
   bool rewinding = false;
@@ -167,6 +169,7 @@ struct CollisionHit {
   Vec3f pos{};
   bool is_car_on_car = false;
   bool is_break = false;
+  bool ai_only = false;      // true when neither colliding car is the focus car (AIOnlyCollision = 1)
   uint8_t surface_hint = 0;  // 0=Asphalt/Concrete, 1=Car, 2=Dirt/Grass, 3=Metal/Guardrail, 4=Wood/Prop
   SmashMaterial smash_material = SmashMaterial::kDefault;
 };
@@ -557,7 +560,8 @@ class SfxEngine {
     float gain = 0.0f;
     float pitch = 1.0f;
   };
-  int impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap);
+  int impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap,
+                         bool ai_only = false);
 
  private:
   // One Collisions.fev impact event, evaluated once when a hit starts it: every
@@ -577,7 +581,7 @@ class SfxEngine {
   };
   const ImpactEvent* find_impact_event(std::string_view path) const;
   int start_impact_event(const ImpactEvent& ie, float mph, float dist_m, float left, float right, SfxSoundId id,
-                         ImpactShot* out, int cap);
+                         ImpactShot* out, int cap, bool ai_only = false);
   // One FEV event played as loops: each layer instance is a voice whose level is
   // the event's own curves (evaluate_fev_event) and whose pitch is the event's
   // pitch and its layer's pitch envelope (SPEC-AUDIO-EVENTS, Q331).

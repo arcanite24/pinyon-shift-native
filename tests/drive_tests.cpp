@@ -2401,6 +2401,86 @@ int main() {
       CHECK(v_brk_dmg.speed() > v_brk_ok.speed() + 1.0);
     }
   }
+  // 14) WP-5 parity checks: 14 m curvature chords, ai_capacity aero lift + per-axle track + {1,1} cal,
+  //     NoABSSlipDefNoSteer/FullSteer INI keys, VelDepFriction ABS-off load_scale, and AI ABS 5-substep mean.
+  {
+    // P0-9: 14 m chords (i-7, i, i+7 at 2 m spacing) on a 90-deg corner vertex give kappa = 1/(7*sqrt(2)).
+    drive::RacingLine corner;
+    for (int i = 0; i <= 80; ++i) {
+      const float x = i <= 40 ? 0.0f : 2.0f * float(i - 40);
+      const float z = i <= 40 ? 2.0f * float(i) : 80.0f;
+      corner.x.push_back(x);
+      corner.z.push_back(z);
+      corner.dist.push_back(2.0f * float(i));
+      corner.speed.push_back(30.0f);
+    }
+    corner.plan_geometry();
+    const double expected_k = 1.0 / (7.0 * std::sqrt(2.0));
+    CHECK(std::fabs(std::fabs(double(corner.curvature[40])) - expected_k) < 0.005);
+
+    // P0-9 + P1-17: default ai_capacity matches {1.0, 1.0} calibration, takes negative aero lift whole,
+    // and uses per-axle track width for lateral load transfer.
+    auto p_base = test_car();
+    const auto cap_def = drive::ai_capacity(p_base);
+    const auto cap_one = drive::ai_capacity(p_base, {1.0, 1.0});
+    CHECK(std::fabs(cap_def.lateral[8] - cap_one.lateral[8]) < 1e-6f);
+    CHECK(std::fabs(cap_def.braking[8] - cap_one.braking[8]) < 1e-6f);
+
+    auto p_lift = p_base;
+    p_lift.aero_df_front = -0.35;
+    p_lift.aero_df_rear = -0.45;
+    const auto cap_lift = drive::ai_capacity(p_lift);
+    CHECK(cap_lift.lateral[24] < cap_def.lateral[24] - 0.5f);
+    CHECK(cap_lift.braking[24] < cap_def.braking[24] - 0.5f);
+
+    auto p_narrow_r = p_base;
+    p_narrow_r.centre_of_mass.z = -0.15;  // rear-heavy so rear axle isn't yaw-capped at static load
+    p_narrow_r.lat_curve_scale = {1.25, 0.75};  // realistic load sensitivity so lateral transfer reduces axle grip
+    p_narrow_r.wheel_centres[2].x = -0.55;
+    p_narrow_r.wheel_centres[3].x = 0.55;
+    auto p_wide_r = p_narrow_r;
+    p_wide_r.wheel_centres[2].x = -1.10;
+    p_wide_r.wheel_centres[3].x = 1.10;
+    const auto cap_nr = drive::ai_capacity(p_narrow_r);
+    const auto cap_wr = drive::ai_capacity(p_wide_r);
+    CHECK(cap_wr.lateral[8] > cap_nr.lateral[8] + 1e-4f);
+
+    // P3-1: retail NoABSSlipDefNoSteer / NoABSSlipDefFullSteer INI keys populate front & rear No-ABS thresholds.
+    {
+      cars::PhysicsSettings ps;
+      ps.values["NoABSSlipDefNoSteer"] = 1.15;
+      ps.values["NoABSSlipDefFullSteer"] = 0.62;
+      drive::CarParams p_ini = test_car();
+      drive::apply_physics(cars::CarPhysics{}, ps, p_ini);
+      CHECK(std::fabs(p_ini.no_abs_front_no_steer - 1.15) < 1e-9);
+      CHECK(std::fabs(p_ini.no_abs_rear_no_steer - 1.15) < 1e-9);
+      CHECK(std::fabs(p_ini.no_abs_front_full_steer - 0.62) < 1e-9);
+      CHECK(std::fabs(p_ini.no_abs_rear_full_steer - 0.62) < 1e-9);
+    }
+
+    // P2-7: VelDepFriction scales by load_scale (including ABS-off 1.05x braking scale).
+    {
+      auto p_vd = test_car();
+      p_vd.aero_drag_long = 0.35;
+      p_vd.front_brake_torque = 1200.0;
+      p_vd.rear_brake_torque = 1000.0;
+      p_vd.abs_off_braking_friction_scale = 1.05;
+      drive::Vehicle v_on(p_vd), v_off(p_vd);
+      drive::VehicleAssists a_on{}, a_off{};
+      a_on.braking = 1;
+      a_off.braking = 2;
+      v_on.set_assists(a_on);
+      v_off.set_assists(a_off);
+      const drive::FlatGround flat_g;
+      v_on.launch({0, 0, 0}, 0, 30.0);
+      v_off.launch({0, 0, 0}, 0, 30.0);
+      for (int i = 0; i < 60; ++i) {
+        v_on.step({0, 0, 0.5, false}, flat_g);
+        v_off.step({0, 0, 0.5, false}, flat_g);
+      }
+      CHECK(v_off.speed() < v_on.speed());
+    }
+  }
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

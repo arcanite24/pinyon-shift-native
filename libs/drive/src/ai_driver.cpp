@@ -60,9 +60,9 @@ void RacingLine::plan_geometry(std::span<const float> lateral_y) {
   curvature.assign(m, 0), curvature_v.assign(m, 0), bank_left.assign(m, 0), grade.assign(m, 0);
   if (m < 3) return;
   const bool has_y = y.size() == m;
-  // The circle through the points 7 m either side (the spec's points i - 7
+  // The circle through the points 14 m either side (the spec's points i - 7
   // and i + 7 at its 2 m spacing), by distance so any spacing works.
-  constexpr double kHalf = 7.0;
+  constexpr double kHalf = 14.0;
   std::vector<uint8_t> known(m, 0);
   size_t a = 0, b = 0;
   for (size_t i = 0; i < m; ++i) {
@@ -111,7 +111,10 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
   const double wb = std::max(0.5, std::fabs(zf - zr));
   const double share = std::fabs(zf - zr) > 0.1 ? std::clamp((p.centre_of_mass.z - zr) / (zf - zr), 0.05, 0.95) : 0.5;
   const double h = std::max(0.0, p.centre_of_mass.y);
-  const double track = std::max(0.5, std::fabs(wc[0].x - wc[1].x));
+  const double track[2] = {
+      std::max(0.5, std::fabs(wc[0].x - wc[1].x)),
+      std::max(0.5, std::fabs(wc[2].x - wc[3].x)),
+  };
   const double axle_w[2] = {W * share, W * (1 - share)};
   // An axle's force at its load: both wheels at half of it.
   auto axle = [&](int a, TyrePeak k, double load, double v) {
@@ -119,20 +122,19 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     return load * tyre_peak_mu(p, a, k, load / 2, v);
   };
   const bool driven[2] = {p.layout != CarParams::Layout::kRear, p.layout != CarParams::Layout::kFront};
-  // Calibrate to SPEC-RACE-AI measured tables: R34 (1531 kg) needs cal.lateral
-  // (16.01/14.6), while ultra-light cars (e.g. Mini 1566, 606 kg -> 16.24 lat,
-  // 19.12 brk) are already close to exact in the light-load tyre regime.
-  const double mass_blend = std::clamp((m - 600.0) / 500.0, 0.0, 1.0);
-  const double lat_cal = 1.02 + (cal.lateral - 1.02) * mass_blend;
-  const double brk_cal = 1.015 + (cal.braking - 1.015) * mass_blend;
+  const double lat_cal = cal.lateral;
+  const double brk_cal = cal.braking;
   for (int n = 0; n < AiCapacity::kEntries; ++n) {
     const double v = 2.5 * n;
-    // SPEC-RACE-AI: include aerodynamic downforce scaled by ai_aero_factor(v)
-    // so high-downforce cars carry authentic speed through fast sweepers.
+    // SPEC-RACE-AI: positive downforce scales by ai_aero_factor(v); negative
+    // aerodynamic lift is taken whole (never clamped to 0), then each axle
+    // normal load is floored at 0.
     const double aero_k = ai_aero_factor(v);
-    const double df_f = std::max(0.0, (p.aero_df_front + p.aero_part_df_front) * v * v * aero_k);
-    const double df_r = std::max(0.0, (p.aero_df_rear + p.aero_part_df_rear) * v * v * aero_k);
-    const double axle_v[2] = {axle_w[0] + df_f, axle_w[1] + df_r};
+    const double raw_df_f = (p.aero_df_front + p.aero_part_df_front) * v * v;
+    const double raw_df_r = (p.aero_df_rear + p.aero_part_df_rear) * v * v;
+    const double df_f = raw_df_f > 0.0 ? raw_df_f * aero_k : raw_df_f;
+    const double df_r = raw_df_r > 0.0 ? raw_df_r * aero_k : raw_df_r;
+    const double axle_v[2] = {std::max(0.0, axle_w[0] + df_f), std::max(0.0, axle_w[1] + df_r)};
     // Braking: load moves forwards by the deceleration x the height over
     // the wheelbase.
     double a = 0;
@@ -142,14 +144,14 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
     }
     c.braking[size_t(n)] = float(brk_cal * (a + p.drag_quadratic * v * v / m));
     // Lateral: each axle's force moves load inner to outer by the force x
-    // the CoM height / the track; the rear capped by the yaw balance.
+    // the CoM height / its own track; the rear capped by the yaw balance.
     double force[2] = {0, 0};
     for (int pass = 0; pass < 6; ++pass) {
       double next[2];
       for (int ax = 0; ax < 2; ++ax) {
         // At most the whole axle on the outer wheel (the inner lifts): past
         // that the transfer would make load from nothing.
-        const double dn = std::min(force[ax] * h / track, 0.5 * axle_v[ax]);
+        const double dn = std::min(force[ax] * h / track[ax], 0.5 * axle_v[ax]);
         double f = 0;
         for (double side : {0.5 * axle_v[ax] + dn, 0.5 * axle_v[ax] - dn}) {
           side = std::max(0.0, side);
@@ -175,8 +177,8 @@ AiCapacity ai_capacity(const CarParams& p, const AiCapacityCalibration& cal) {
                      p.lat_scale[size_t(ax)], p.lat_compound_scale, p.long_misc_scale, p.lat_curve_scale[0],
                      p.lat_curve_scale[1], p.lateral.blend(kgf), force[ax]);
       }
-      std::fprintf(stderr, "capacity: mass %.0f share %.3f h %.3f track %.3f raw %.2f cal %.3f -> %.2f m/s^2\n", m, share, h,
-                   track, (force[0] + force[1]) / m, cal.lateral, c.lateral[size_t(n)]);
+      std::fprintf(stderr, "capacity: mass %.0f share %.3f h %.3f track %.3f/%.3f raw %.2f cal %.3f -> %.2f m/s^2\n", m,
+                   share, h, track[0], track[1], (force[0] + force[1]) / m, lat_cal, c.lateral[size_t(n)]);
     }
     // Forward: the driven axles, load moving rearwards (tyre-limited only).
     a = 0;

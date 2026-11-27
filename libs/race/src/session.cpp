@@ -39,32 +39,14 @@ AiUpgradeScales ai_upgrade_scales(double t) {
 }
 
 void apply_ai_upgrade(drive::CarParams& params, double t, int tuning_level) {
+  // Retail AIAutoUpgrades modifies only mass, torque, and tyre friction (SPEC-RACE-AI).
+  (void)tuning_level;
   const AiUpgradeScales s = ai_upgrade_scales(t);
   params.mass *= s.mass_scale;
   params.torque_scale *= s.torque_scale;
   for (int a = 0; a < 2; ++a) {
     params.long_scale[size_t(a)] *= s.friction_scale;
     params.lat_scale[size_t(a)] *= s.friction_scale;
-  }
-  const int lvl = std::clamp(tuning_level, 0, 3);
-  if (lvl > 0) {
-    // EventParticipants.TuningLevel (1=street, 2=sport, 3=race): progressive suspension
-    // damping/antiroll stiffening and tighter shift/final-drive gearing polish.
-    const double spring_k = 1.0 + 0.05 * double(lvl);
-    const double damp_k = 1.0 + 0.08 * double(lvl);
-    const double arb_k = 1.0 + 0.10 * double(lvl);
-    const double shift_k = 1.0 - 0.12 * double(lvl);
-    for (int a = 0; a < 2; ++a) {
-      params.spring_rate[size_t(a)] *= spring_k;
-      params.bump_rate[size_t(a)] *= damp_k;
-      params.rebound_rate[size_t(a)] *= damp_k;
-      params.antiroll_rate[size_t(a)] *= arb_k;
-    }
-    params.gear_shift_time *= shift_k;
-    params.clutch_in_time *= shift_k;
-    params.clutch_out_time *= shift_k;
-    params.rev_match_time *= shift_k;
-    params.final_drive *= (1.0 + 0.015 * double(lvl));
   }
 }
 

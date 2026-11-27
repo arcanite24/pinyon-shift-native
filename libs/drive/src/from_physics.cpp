@@ -505,10 +505,14 @@ void apply_physics(const cars::CarPhysics& car, const cars::PhysicsSettings& s, 
   p.abs_duration = get("List_UpgradeBrakes.DurationABS", p.abs_duration);
   p.no_abs_brake_travel = s.get("NoABSBrakeTravel", p.no_abs_brake_travel);
   p.no_abs_disable_time = s.get("NoABSDisableTime", p.no_abs_disable_time);
-  p.no_abs_front_no_steer = s.get("NoABSSlipDefFrontNoSteer", p.no_abs_front_no_steer);
-  p.no_abs_front_full_steer = s.get("NoABSSlipDefFrontFullSteer", p.no_abs_front_full_steer);
-  p.no_abs_rear_no_steer = s.get("NoABSSlipDefRearNoSteer", p.no_abs_rear_no_steer);
-  p.no_abs_rear_full_steer = s.get("NoABSSlipDefRearFullSteer", p.no_abs_rear_full_steer);
+  p.no_abs_front_no_steer =
+      s.get("NoABSSlipDefNoSteer", s.get("NoABSSlipDefFrontNoSteer", p.no_abs_front_no_steer));
+  p.no_abs_front_full_steer =
+      s.get("NoABSSlipDefFullSteer", s.get("NoABSSlipDefFrontFullSteer", p.no_abs_front_full_steer));
+  p.no_abs_rear_no_steer =
+      s.get("NoABSSlipDefNoSteer", s.get("NoABSSlipDefRearNoSteer", p.no_abs_rear_no_steer));
+  p.no_abs_rear_full_steer =
+      s.get("NoABSSlipDefFullSteer", s.get("NoABSSlipDefRearFullSteer", p.no_abs_rear_full_steer));
   p.abs_off_braking_friction_scale = s.get("ABSOffBrakingFrictionScale", p.abs_off_braking_friction_scale);
 
   // TCS, STM, and Manual + Clutch settings (PhysicsSettings.ini).

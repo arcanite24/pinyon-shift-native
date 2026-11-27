@@ -51,39 +51,84 @@ bool xml_attr(std::string_view tag, std::string_view key, double& out) {
   return false;
 }
 
-// Engine WOT torque (N*m) at `rpm` with full boost (for PI & power stats).
-double engine_wot_torque(const drive::CarParams& p, double rpm) {
-  const double r = std::clamp(rpm, std::max(500.0, p.idle_rpm), p.redline_rpm);
-  double base = 1.0;
-  if (p.torque_curve.empty()) {
-    base = r < 2000.0 ? 0.6 + 0.4 * r / 2000.0 : r > 5500.0 ? 1.0 - 0.3 * ramp(r, 5500.0, p.redline_rpm) : 1.0;
-  } else {
-    const double slots = p.torque_curve_slots > 0
-                             ? p.torque_curve_slots
-                             : (p.torque_curve.size() > 1 ? double(p.torque_curve.size() - 1) : 1.0);
-    const double x = std::max(0.0, r / std::max(1.0, p.torque_curve_max_rpm / slots));
-    const size_t last = p.torque_curve.size() - 1;
-    if (x >= double(last)) {
-      base = p.torque_curve[last];
-    } else {
-      const size_t idx = size_t(x);
-      base = lerp(p.torque_curve[idx], p.torque_curve[idx + 1], x - double(idx));
+// Static WOT torque/power curve built via the sequential P_prev turbo bin sweep
+// (SPEC-CAR-PHYSICS, Engine item 2): sweeps bins i = 0 .. count - 1 up to
+// RedlineRPM carrying P_prev = omega_i * T_wot_boosted[i] into bin i + 1.
+struct StaticWotCurve {
+  std::vector<double> torque;  // boosted WOT engine torque (N*m, before GameTorqueScale)
+  double d_rpm = 100.0;
+  double peak_torque_nm = 0.0;
+  double peak_power_w = 0.0;
+
+  double torque_at(double rpm) const {
+    if (torque.empty()) return 0.0;
+    const double x = std::max(0.0, rpm / std::max(1e-6, d_rpm));
+    const size_t last = torque.size() - 1;
+    if (x >= double(last)) return torque[last];
+    const size_t idx = size_t(x);
+    return lerp(torque[idx], torque[idx + 1], x - double(idx));
+  }
+};
+
+StaticWotCurve build_static_wot_curve(const drive::CarParams& p) {
+  StaticWotCurve out;
+  const bool has_curve = !p.torque_curve.empty();
+  const double slots = has_curve
+                           ? (p.torque_curve_slots > 0
+                                  ? p.torque_curve_slots
+                                  : (p.torque_curve.size() > 1 ? double(p.torque_curve.size() - 1) : 1.0))
+                           : 100.0;
+  const double d_rpm =
+      has_curve ? (p.torque_curve_max_rpm / std::max(1.0, slots)) : (p.redline_rpm / 100.0);
+  const double d_omega = d_rpm * (kPi / 30.0);
+  const double w_red = p.redline_rpm * (kPi / 30.0);
+  const int max_bins = has_curve ? std::min(int(p.torque_curve.size()), 186) : 101;
+  const int count =
+      std::clamp(int(std::llround(w_red / std::max(1e-9, d_omega))) + 1, 1, std::max(1, max_bins));
+  out.d_rpm = d_rpm;
+  out.torque.resize(size_t(count), 0.0);
+
+  const double p_lo = std::min(p.turbo_power_min, p.turbo_power_max);
+  const double p_hi = std::max(p.turbo_power_min, p.turbo_power_max);
+  const double p_span = p_hi - p_lo;
+  double p_prev = 0.0;
+
+  for (int i = 0; i < count; ++i) {
+    const double r = double(i) * d_rpm;
+    const double omega_i = double(i) * d_omega;
+    const double base =
+        has_curve ? p.torque_curve[size_t(i)]
+                  : (r < 2000.0 ? 0.6 + 0.4 * r / 2000.0
+                                : r > 5500.0 ? 1.0 - 0.3 * ramp(r, 5500.0, p.redline_rpm) : 1.0);
+    const double base_tq = base * p.torque_scale;
+    double f_b = 1.0;
+    if (p.has_turbo) {
+      const double u_p =
+          p_span > 1e-9 ? std::clamp((p_prev - p_lo) / p_span, 0.0, 1.0) : (p_prev >= p_hi ? 1.0 : 0.0);
+      f_b = lerp(p.boost_scale_min, p.boost_scale_max, u_p);
+      if (f_b > 1.0 && p.turbo_dropoff_rpm0 != p.turbo_dropoff_rpm1) {
+        const double u = ramp(r, std::min(p.turbo_dropoff_rpm0, p.turbo_dropoff_rpm1),
+                              std::max(p.turbo_dropoff_rpm0, p.turbo_dropoff_rpm1));
+        f_b = lerp(p.turbo_dropoff_scale0 * (f_b - 1.0) + 1.0, p.turbo_dropoff_scale1 * (f_b - 1.0) + 1.0, u);
+      }
     }
+    double f_s = 1.0;
+    if (p.has_supercharger) {
+      f_s = lerp(p.sc_scale_zero, p.sc_scale_redline, ramp(r, 0.0, p.redline_rpm));
+      if (f_s > 1.0 && p.sc_dropoff_rpm0 != p.sc_dropoff_rpm1) {
+        const double u = ramp(r, std::min(p.sc_dropoff_rpm0, p.sc_dropoff_rpm1),
+                              std::max(p.sc_dropoff_rpm0, p.sc_dropoff_rpm1));
+        f_s = lerp(p.sc_dropoff_scale0 * (f_s - 1.0) + 1.0, p.sc_dropoff_scale1 * (f_s - 1.0) + 1.0, u);
+      }
+    }
+    const double t_wot = base_tq * (1.0 + (f_b - 1.0) + (f_s - 1.0));
+    const double power_w = omega_i * t_wot;
+    p_prev = power_w;
+    out.torque[size_t(i)] = t_wot;
+    out.peak_torque_nm = std::max(out.peak_torque_nm, t_wot);
+    out.peak_power_w = std::max(out.peak_power_w, power_w);
   }
-  const double base_tq = base * p.torque_scale;
-  double f_b = p.has_turbo ? p.boost_scale_max : 1.0;
-  if (f_b > 1.0 && p.turbo_dropoff_rpm0 != p.turbo_dropoff_rpm1) {
-    const double u = ramp(r, std::min(p.turbo_dropoff_rpm0, p.turbo_dropoff_rpm1),
-                          std::max(p.turbo_dropoff_rpm0, p.turbo_dropoff_rpm1));
-    f_b = lerp(p.turbo_dropoff_scale0 * (f_b - 1.0) + 1.0, p.turbo_dropoff_scale1 * (f_b - 1.0) + 1.0, u);
-  }
-  double f_s = p.has_supercharger ? lerp(p.sc_scale_zero, p.sc_scale_redline, ramp(r, 0.0, p.redline_rpm)) : 1.0;
-  if (f_s > 1.0 && p.sc_dropoff_rpm0 != p.sc_dropoff_rpm1) {
-    const double u = ramp(r, std::min(p.sc_dropoff_rpm0, p.sc_dropoff_rpm1),
-                          std::max(p.sc_dropoff_rpm0, p.sc_dropoff_rpm1));
-    f_s = lerp(p.sc_dropoff_scale0 * (f_s - 1.0) + 1.0, p.sc_dropoff_scale1 * (f_s - 1.0) + 1.0, u);
-  }
-  return base_tq * (1.0 + (f_b - 1.0) + (f_s - 1.0)) * p.game_torque_scale;
+  return out;
 }
 
 double aero_drag_force(const drive::CarParams& p, double v) {
@@ -163,7 +208,7 @@ double max_brake_decel(const drive::CarParams& p, double v) {
 // Longitudinal forward acceleration capacity (m/s^2) at speed v, using either the
 // PI.xml reference gear redline speeds or the car's own gears, with drive-type
 // grip scale `grip_scale` (1.0 straight AWD, etc.).
-double max_long_accel(const drive::CarParams& p, double v, double grip_scale,
+double max_long_accel(const drive::CarParams& p, const StaticWotCurve& wot, double v, double grip_scale,
                       const std::vector<double>* ref_redline_ms) {
   const double z_f = 0.5 * (p.wheel_centres[0].z + p.wheel_centres[1].z);
   const double z_r = 0.5 * (p.wheel_centres[2].z + p.wheel_centres[3].z);
@@ -185,8 +230,9 @@ double max_long_accel(const drive::CarParams& p, double v, double grip_scale,
     const double omega_w = std::max(0.1, v) / r_drive;
     const double rpm = omega_w * total_ratio * (60.0 / (2.0 * kPi));
     if (rpm > p.redline_rpm * 1.005) return;
-    const double eff_rpm = std::max(rpm, std::max(p.idle_rpm, p.launch_rpm * 0.6));
-    const double tq = engine_wot_torque(p, eff_rpm);
+    const double eff_rpm = std::clamp(std::max(rpm, std::max(p.idle_rpm, p.launch_rpm * 0.6)),
+                                      std::max(500.0, p.idle_rpm), p.redline_rpm);
+    const double tq = wot.torque_at(eff_rpm) * p.game_torque_scale;
     const double f_w = tq * total_ratio / r_drive;
     if (f_w > best_f_eng) {
       best_f_eng = f_w;
@@ -356,7 +402,8 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
   const double shift_time = 0.5 * (p.clutch_in_time + p.clutch_out_time) + p.gear_shift_time;
   const double coast_drag_ratio = 1.0 / std::max(1.0, p.mass);
 
-  // Build 26-bin speed table.
+  // Build static boosted WOT torque curve (sequential P_prev sweep) and 26-bin speed table.
+  const StaticWotCurve wot = build_static_wot_curve(p);
   SpeedTable tbl;
   for (int i = 0; i < kSpeedBins; ++i) {
     SpeedBin& b = tbl.bins[i];
@@ -373,7 +420,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
       b.brake_dx = (b.v - 0.5 * kDv) * b.brake_dt;
       b.brake_cum_dx = tbl.bins[i - 1].brake_cum_dx + b.brake_dx;
     }
-    b.a_accel = max_long_accel(p, b.v, straight_grip, ref_gears);
+    b.a_accel = max_long_accel(p, wot, b.v, straight_grip, ref_gears);
   }
 
   // Precompute max corner apex speed for each segment.
@@ -522,7 +569,7 @@ double run_single_lap(const drive::CarParams& p, const PiConfig& cfg, bool use_r
           dt = std::min(kStepDt, shift_rem);
           acc = -aero_drag_force(p, v) * coast_drag_ratio;
         } else {
-          acc = std::max(0.0, max_long_accel(p, v, avail_grip, ref_gears));
+          acc = std::max(0.0, max_long_accel(p, wot, v, avail_grip, ref_gears));
         }
         if (v + acc * dt > v_cap) {
           acc = std::max(0.0, (v_cap - v) / std::max(1e-4, dt));
@@ -754,14 +801,11 @@ CarStats compute_car_stats(const drive::CarParams& p, const cars::CarPhysics& ca
   s.curb_weight_kg = p.mass;
   s.weight_dist_front = car.get("List_UpgradeCarBodyWeight.CMBackFront", 0.5);
 
-  // Peak power (kW) & peak torque (N*m) over RPM sweep.
-  for (int i = 10; i <= 200; ++i) {
-    const double rpm = p.redline_rpm * double(i) / 200.0;
-    const double tq = engine_wot_torque(p, rpm);
-    const double kw = tq * (rpm * 2.0 * kPi / 60.0) / 1000.0;
-    s.peak_torque_nm = std::max(s.peak_torque_nm, tq);
-    s.peak_power_kw = std::max(s.peak_power_kw, kw);
-  }
+  // Peak power (kW) & peak torque (N*m) via sequential P_prev turbo bin sweep
+  // (SPEC-CAR-PHYSICS, Engine item 2: matches SimPeakTorque * 100 & SimPeakPower * 100).
+  const StaticWotCurve wot = build_static_wot_curve(p);
+  s.peak_torque_nm = wot.peak_torque_nm;
+  s.peak_power_kw = wot.peak_power_w / 1000.0;
 
   // Straight-line acceleration sweep: 0-60 mph (26.8224 m/s), 0-100 mph (44.704 m/s), top speed.
   const double dt = 0.05;
@@ -770,7 +814,7 @@ CarStats compute_car_stats(const drive::CarParams& p, const cars::CarPhysics& ca
   const double grip_straight = p.layout == drive::CarParams::Layout::kAll ? 1.0
                                : p.layout == drive::CarParams::Layout::kFront ? 0.955 : 0.925;
   for (int step = 0; step < 1200; ++step) {
-    const double a = max_long_accel(p, v, grip_straight, nullptr);
+    const double a = max_long_accel(p, wot, v, grip_straight, nullptr);
     if (a <= 0.02 && v > 15.0) break;
     v = std::max(0.5, v + a * dt);
     t += dt;

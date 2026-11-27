@@ -798,6 +798,7 @@ void DriveSession::run_window_loop() {
                   hit.rel_speed_mps = rel_mps;
                   hit.pos = {ipos[0], ipos[1], ipos[2]};
                   hit.is_car_on_car = (ev.slot != 0u);
+                  hit.ai_only = (ev.slot != 0u);
                   hit.surface_hint = 1;
                   app.audio_host.trigger_collision(hit);
                 }

@@ -2442,7 +2442,7 @@ const SfxEngine::ImpactEvent* SfxEngine::find_impact_event(std::string_view path
 }
 
 int SfxEngine::start_impact_event(const ImpactEvent& ie, float mph, float dist_m, float left, float right,
-                                  SfxSoundId id, ImpactShot* out, int cap) {
+                                  SfxSoundId id, ImpactShot* out, int cap, bool ai_only) {
   std::array<float, 16> raw{};
   const size_t np = std::min(ie.ev.params.size(), raw.size());
   for (size_t i = 0; i < np; ++i) raw[i] = ie.ev.params[i].min_val;
@@ -2451,7 +2451,7 @@ int SfxEngine::start_impact_event(const ImpactEvent& ie, float mph, float dist_m
   };
   set(ie.p_vel, mph);
   set(ie.p_dist, dist_m);
-  set(ie.p_ai, 0.0f);  // the focus car is in every hit it hears
+  set(ie.p_ai, ai_only ? 1.0f : 0.0f);
   std::array<FevInstanceLevel, kMaxEventVoices> lv{};
   const int n = std::min(evaluate_fev_event(ie.ev, raw.data(), np, lv.data(), kMaxEventVoices), ie.count);
   const float ev_pitch = std::exp2(ie.ev.pitch * kFevPitchOctaves);
@@ -2478,9 +2478,10 @@ int SfxEngine::start_impact_event(const ImpactEvent& ie, float mph, float dist_m
   return started;
 }
 
-int SfxEngine::impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap) {
+int SfxEngine::impact_event_shots(std::string_view event_path, float mph, float dist_m, ImpactShot* out, int cap,
+                                  bool ai_only) {
   const ImpactEvent* ie = find_impact_event(event_path);
-  return ie ? start_impact_event(*ie, mph, dist_m, 0.707f, 0.707f, SfxSoundId::kImpact3d, out, cap) : 0;
+  return ie ? start_impact_event(*ie, mph, dist_m, 0.707f, 0.707f, SfxSoundId::kImpact3d, out, cap, ai_only) : 0;
 }
 
 void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioState& st) {
@@ -2497,6 +2498,17 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
   compute_stereo_pan(st.listener_pos, st.listener_right, hit.pos, pl, pr);
   const float dx = hit.pos.x - st.listener_pos.x, dy = hit.pos.y - st.listener_pos.y, dz = hit.pos.z - st.listener_pos.z;
   const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+  // IMPACT_LFE fades out across 4..5 m (SPEC-AUDIO-EVENTS), so measure from
+  // the focus car rather than the chase camera (which sits > 5 m behind it).
+  float lfe_dist = 0.0f;
+  if (st.has_focus_car_pos) {
+    const float fdx = hit.pos.x - st.focus_car_pos.x;
+    const float fdy = hit.pos.y - st.focus_car_pos.y;
+    const float fdz = hit.pos.z - st.focus_car_pos.z;
+    lfe_dist = std::sqrt(fdx * fdx + fdy * fdy + fdz * fdz);
+  } else if (hit.ai_only) {
+    lfe_dist = dist;
+  }
   const float atten = car_rolloff_.chassis_ambient.eval(dist, 1.0f);
   const float pitch_var = 0.92f + 0.16f * float(std::uniform_real_distribution<double>(0.0, 1.0)(rng_));
   if (hit.is_break) {
@@ -2521,13 +2533,13 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
         find_impact_event(pair && !pair->impact3d.empty() ? std::string_view(pair->impact3d)
                                                           : std::string_view("Collisions/Collisions/Asphalt/CarAluminum/IMPACT_3D"));
     if (ie3d) {
-      start_impact_event(*ie3d, mph, dist, pl, pr, SfxSoundId::kImpact3d, nullptr, 0);
+      start_impact_event(*ie3d, mph, dist, pl, pr, SfxSoundId::kImpact3d, nullptr, 0, hit.ai_only);
       const bool lfe_none = pair && (pair->impact_lfe.empty() || lower_str(pair->impact_lfe) == "none" ||
                                      lower_str(pair->impact_lfe) == "silent");
       if (!lfe_none) {
         const ImpactEvent* lfe =
             find_impact_event(pair ? std::string_view(pair->impact_lfe) : std::string_view("Collisions/Collisions/LFE/IMPACT_LFE"));
-        if (lfe) start_impact_event(*lfe, mph, dist, 0.707f, 0.707f, SfxSoundId::kImpactLfe, nullptr, 0);
+        if (lfe) start_impact_event(*lfe, mph, lfe_dist, 0.707f, 0.707f, SfxSoundId::kImpactLfe, nullptr, 0, hit.ai_only);
       }
       return;
     }
@@ -2565,9 +2577,11 @@ void SfxEngine::trigger_collision(const CollisionHit& hit, const VehicleAudioSta
         imp_id = resolve_fallback(SfxSoundId::kImpactWood, SfxSoundId::kImpact3d);
       }
     }
-    spawn_one_shot(imp_id, Bus::kCollision, 0.85f * intensity * atten, pl, pr, pitch_var);
-    if (emit_lfe) {
-      spawn_one_shot(SfxSoundId::kImpactLfe, Bus::kCollision, 0.65f * intensity, 0.707f, 0.707f);
+    const float ai_3d_scale = hit.ai_only ? 0.31622777f : 1.0f;  // -10 dB for AI-only collisions
+    spawn_one_shot(imp_id, Bus::kCollision, 0.85f * intensity * atten * ai_3d_scale, pl, pr, pitch_var);
+    if (emit_lfe && !hit.ai_only && lfe_dist < 5.0f) {
+      const float lfe_atten = lfe_dist <= 4.0f ? 1.0f : std::clamp(5.0f - lfe_dist, 0.0f, 1.0f);
+      spawn_one_shot(SfxSoundId::kImpactLfe, Bus::kCollision, 0.65f * intensity * lfe_atten, 0.707f, 0.707f);
     }
   }
 }
@@ -3709,6 +3723,7 @@ void SfxEngine::render(const VehicleAudioState& st, float* const* buses, int fra
           u.rpm = car.rpm;
           u.throttle = car.throttle >= 0.0f ? std::clamp(double(car.throttle), 0.0, 1.0) : 0.5;
           u.view = View::kDefault;
+          u.distance_m = double(dist);
           own->pitch_scale = std::clamp(double(doppler), 0.5, 2.0);
           own->set(u);
           mix_other_engine(sl, *own, atten * view_other, pl, pr, other_bus, frames);

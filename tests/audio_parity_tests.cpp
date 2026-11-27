@@ -27,6 +27,7 @@
 #include "audio/fev.h"
 #include "audio/fsb4.h"
 #include "audio/sfx_engine.h"
+#include "audio/snapshots.h"
 #include "audio/sources.h"
 #include "cars/database.h"
 #include "cars/sources.h"
@@ -470,6 +471,138 @@ void test_focus_top_rolloff_and_downshift_boost() {
   CHECK(ep.shift_factor() < 0.75);  // boost_down_pct = 0.5
 }
 
+// WP-5 audio parity:
+// 1. P1-16 CarBusEq: FMOD Ex ParamEQ A = gain_ gives -20.9 dB at Gain=0.30 and -40.0 dB at Gain=0.10.
+// 2. P1-16 IMPACT_LFE: chase camera > 5 m behind focus car still fires focus-car LFE, while distant
+//    and AIOnlyCollision hits suppress LFE and attenuate 3D impact by -10 dB.
+// 3. P2-6 EnginePlayer: non-focus positional cars apply Lowpass distance cutoff cap
+//    min(curve_cutoff, max(min_cutoff, dist_cutoff)) without affecting focus cars.
+void test_wp5_audio_parity() {
+  // 1. CarBusEq exact FMOD Ex ParamEQ attenuation (-20.9 dB @ 0.30, -40.0 dB @ 0.10).
+  {
+    auto measure_eq_db = [](float gain) {
+      audio::CarBusEq eq;
+      eq.prepare(48000);
+      eq.set_target({false, gain, 3.36f, 3772.0f});
+      const int kFrames = 4800;
+      std::vector<float> dry(size_t(kFrames) * 2, 0.0f);
+      std::vector<float> wet(size_t(kFrames) * 2, 0.0f);
+      // Settle slew (0.3 s > 1.0 / 6.0 s).
+      for (int b = 0; b < 4; ++b) {
+        for (int i = 0; i < kFrames; ++i) {
+          const double t = double(b * kFrames + i) / 48000.0;
+          const float s = 0.5f * float(std::sin(2.0 * 3.14159265358979323846 * 3772.0 * t));
+          dry[size_t(2 * i)] = dry[size_t(2 * i + 1)] = s;
+          wet[size_t(2 * i)] = wet[size_t(2 * i + 1)] = s;
+        }
+        eq.process(wet.data(), kFrames);
+      }
+      return 20.0 * std::log10(std::max(1e-12, rms(wet)) / std::max(1e-12, rms(dry)));
+    };
+    const double db_rewind = measure_eq_db(0.30f);
+    const double db_countdown = measure_eq_db(0.10f);
+    std::printf("CarBusEq: Gain=0.30 -> %.2f dB (expect -20.92), Gain=0.10 -> %.2f dB (expect -40.00)\n", db_rewind,
+                db_countdown);
+    CHECK(db_rewind < -20.4 && db_rewind > -21.4);
+    CHECK(db_countdown < -39.5 && db_countdown > -40.5);
+  }
+
+  // 2. IMPACT_LFE focus-car distance (survives FollowHigh chase camera > 5 m) & AIOnlyCollision.
+  {
+    audio::SfxEngine sfx(48000);
+    sfx.set_sample(audio::SfxSoundId::kImpact3d, make_tone(180.0, 4800, 48000, 0.8f));
+    sfx.set_sample(audio::SfxSoundId::kImpactLfe, make_tone(50.0, 4800, 48000, 0.8f));
+    std::vector<float> col_bus(1024 * 2, 0.0f);
+    std::vector<float> lfe_out(1024, 0.0f);
+    float* buses[audio::kBuses]{};
+    buses[int(audio::Bus::kCollision)] = col_bus.data();
+
+    audio::VehicleAudioState st{};
+    st.listener_pos = {0.0f, 2.5f, -8.5f};  // FollowHigh chase camera > 8 m behind focus car
+    st.listener_right = {1.0f, 0.0f, 0.0f};
+    st.focus_car_pos = {0.0f, 0.0f, 0.0f};
+    st.has_focus_car_pos = true;
+    sfx.render(st, buses, 64, nullptr, lfe_out.data());  // drain samples
+
+    // Focus-car hit on front bumper (1.8 m from focus car, 10.6 m from chase camera): LFE MUST fire!
+    audio::CollisionHit focus_hit{};
+    focus_hit.rel_speed_mps = 18.0f;
+    focus_hit.pos = {0.0f, 0.5f, 1.8f};
+    focus_hit.ai_only = false;
+    sfx.trigger_collision(focus_hit, st);
+    CHECK(sfx.is_one_shot_active(audio::SfxSoundId::kImpactLfe));
+    std::fill(col_bus.begin(), col_bus.end(), 0.0f);
+    std::fill(lfe_out.begin(), lfe_out.end(), 0.0f);
+    sfx.render(st, buses, 1024, nullptr, lfe_out.data());
+    const double focus_3d_rms = rms(col_bus);
+    CHECK(rms(lfe_out) > 0.05);
+
+    // Advance past 75 ms collision rate limit and let prior one-shots finish.
+    for (int b = 0; b < 10; ++b) sfx.render(st, buses, 1024, nullptr, lfe_out.data());
+
+    // AIOnlyCollision at close range: LFE must stay silent and 3D impact drops ~10 dB.
+    audio::CollisionHit ai_hit = focus_hit;
+    ai_hit.ai_only = true;
+    sfx.trigger_collision(ai_hit, st);
+    CHECK(!sfx.is_one_shot_active(audio::SfxSoundId::kImpactLfe));
+    std::fill(col_bus.begin(), col_bus.end(), 0.0f);
+    std::fill(lfe_out.begin(), lfe_out.end(), 0.0f);
+    sfx.render(st, buses, 1024, nullptr, lfe_out.data());
+    const double ai_3d_rms = rms(col_bus);
+    CHECK(rms(lfe_out) < 1e-6);
+    CHECK(ai_3d_rms > 1e-4 && ai_3d_rms < focus_3d_rms * 0.40);
+  }
+
+  // 3. Non-focus EnginePlayer Lowpass distance cutoff cap: min(curve_cutoff, max(min_cutoff, dist_cutoff)).
+  {
+    audio::EngineSound es;
+    es.audio_rpm_idle = 800.0;
+    es.audio_rpm_redline = 7000.0;
+    audio::Group grp;
+    grp.name = "ExhaustL";
+    grp.lowpass = true;
+    grp.lowpass_cutoff.present = true;
+    grp.lowpass_cutoff.rpm = 1.0;
+    grp.lowpass_cutoff.x = {0.0, 0.5, 1.0};
+    grp.lowpass_cutoff.y = {12000.0, 12000.0, 12000.0};
+    audio::Loop lp;
+    lp.rpm_min = 500;
+    lp.rpm_sample = 3000;
+    lp.rpm_max = 9000;
+    grp.loops = {lp};
+    es.groups.push_back(grp);
+
+    audio::PcmSample hi_tone = make_tone(4000.0, 4800, 48000, 0.5f);
+    auto render_at = [&](bool positional, double dist_m, double* cutoff_out) {
+      audio::EnginePlayer ep(es, {{&hi_tone}}, 48000, 800.0, 7000.0);
+      ep.positional = positional;
+      std::vector<float> buf(4800 * 2, 0.0f);
+      audio::EnginePlayer::Update u{3000.0, 0.8, 0.5, 0.0, positional ? audio::View::kDefault : audio::View::kFollow,
+                                    dist_m};
+      for (int b = 0; b < 3; ++b) {
+        ep.set(u);
+        ep.render(buf.data(), 4800);
+      }
+      if (cutoff_out) *cutoff_out = ep.lowpass_cutoff_hz(0);
+      return rms(buf);
+    };
+    double fc_focus = 0.0, fc_near = 0.0, fc_far = 0.0;
+    (void)render_at(false, 120.0, &fc_focus);
+    const double r_near = render_at(true, 5.0, &fc_near);
+    const double r_far = render_at(true, 110.0, &fc_far);
+    CHECK(std::fabs(fc_focus - 12000.0) < 1.0);
+    CHECK(std::fabs(fc_near - 12000.0) < 1.0);
+    CHECK(fc_far < 4000.0 && fc_far >= 1200.0 - 1e-3);
+    CHECK(r_far < r_near * 0.5);
+
+    // When curve_cutoff < min_cutoff, min(curve_cutoff, max(min_cutoff, dist_cutoff)) keeps curve_cutoff (800 Hz).
+    es.groups[0].lowpass_cutoff.y = {800.0, 800.0, 800.0};
+    double fc_low_curve = 0.0;
+    (void)render_at(true, 200.0, &fc_low_curve);
+    CHECK(std::fabs(fc_low_curve - 800.0) < 1.0);
+  }
+}
+
 int run_unit() {
   test_title_snapshot_only_without_matrix();
   test_ambience_params();
@@ -477,6 +610,7 @@ int run_unit() {
   test_ui_catalog();
   test_other_car_engines();
   test_focus_top_rolloff_and_downshift_boost();
+  test_wp5_audio_parity();
   return failures;
 }
 
@@ -674,6 +808,7 @@ void corpus_ui_catalog(const std::filesystem::path& game) {
     CHECK(sfx.impact_event_shots(kWall, 40.0f, 60.0f, shots, 8) == 0);  // silent past 40 m
     CHECK(sfx.impact_event_shots("Collisions/Collisions/LFE/IMPACT_LFE", 5.0f, 1.0f, shots, 8) == 0);
     CHECK(sfx.impact_event_shots("Collisions/Collisions/LFE/IMPACT_LFE", 40.0f, 1.0f, shots, 8) == 1);
+    CHECK(sfx.impact_event_shots("Collisions/Collisions/LFE/IMPACT_LFE", 40.0f, 1.0f, shots, 8, true) == 0);
   }
   std::vector<float> ui(256 * 2, 0.0f);
   float* buses[audio::kBuses]{};
