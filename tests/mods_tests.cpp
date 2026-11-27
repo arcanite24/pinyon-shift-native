@@ -20,6 +20,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
 #include <stb_image_write.h>
+#include <algorithm>
 
 #include "cars/database.h"
 #include "cars/db_patch.h"

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <algorithm>
 
 #include "freeroam/collectibles.h"
 #include "freeroam/festival_ai.h"

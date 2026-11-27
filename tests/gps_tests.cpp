@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "audio/audio_engine.h"
 #include "audio/satnav_vo.h"

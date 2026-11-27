@@ -7,6 +7,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "cars/bake.h"
 #include "cars/database.h"

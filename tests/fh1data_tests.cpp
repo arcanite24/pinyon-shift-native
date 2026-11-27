@@ -10,6 +10,8 @@
 #include <utility>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cstdlib>
 
 #include "cars/bake.h"
 #include "cars/bake_format.h"

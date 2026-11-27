@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
 
 #include "audio/audio_engine.h"
 #include "drive/save.h"

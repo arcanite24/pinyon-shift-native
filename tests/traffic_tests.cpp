@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <algorithm>
 
 #include "drive/vehicle.h"
 #include "traffic/bodies.h"

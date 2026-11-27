@@ -1,6 +1,7 @@
 // Unit tests for drive::RewindBuffer (SPEC-REWIND, Tests 1-6).
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 
 #include "drive/ai_driver.h"
 #include "drive/rewind.h"

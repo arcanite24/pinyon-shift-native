@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "cars/physics.h"
 #include "cars/sources.h"

@@ -14,6 +14,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 
 #include "audio/fsb4.h"
 #include "audio/radio.h"

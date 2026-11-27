@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <cctype>
 
 #include "campaign_director.h"
 #include "first_time_career_ui.h"

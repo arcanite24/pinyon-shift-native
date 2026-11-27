@@ -5,6 +5,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "drive/mesh_ground.h"
 #include "drive/vehicle.h"

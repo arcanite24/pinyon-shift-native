@@ -23,6 +23,7 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <algorithm>
 #endif
 
 #include "cars/mod_manager.h"

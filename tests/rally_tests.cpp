@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "audio/audio_engine.h"
 #include "audio/codriver_vo.h"

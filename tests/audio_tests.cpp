@@ -11,6 +11,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <cctype>
 
 #include "audio/audio_engine.h"
 #include "audio/bake.h"
