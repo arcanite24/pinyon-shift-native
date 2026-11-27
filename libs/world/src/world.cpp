@@ -740,62 +740,79 @@ Surface classify(const std::string& object, const std::string& material) {
   return Surface::kOther;
 }
 
+std::shared_ptr<const SharedBundleMap> shared_bundle_textures(fh1::MemberSource& source) {
+  static std::mutex cache_mu;
+  static std::unordered_map<std::string, std::weak_ptr<const SharedBundleMap>> cache;
+
+  std::error_code ec;
+  const fs::path norm = fs::weakly_canonical(source.path(), ec);
+  const std::string key = lower((ec ? source.path() : norm).string());
+
+  {
+    std::lock_guard<std::mutex> lk(cache_mu);
+    if (auto it = cache.find(key); it != cache.end()) {
+      if (auto sp = it->second.lock()) return sp;
+    }
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  const auto names = source.with_suffix(".bundle");
+  auto out = std::make_shared<SharedBundleMap>();
+  std::mutex map_mu;
+  const size_t threads = std::min<size_t>(names.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
+  auto process_one = [&](const std::string& name, std::vector<uint8_t>& data,
+                         std::vector<fh1::BundleEntry>& entries) {
+    if (!source.read(name, data, nullptr) || !fh1::parse_bundle(data, entries, nullptr)) return;
+    std::lock_guard<std::mutex> lk(map_mu);
+    for (const auto& e : entries) {
+      if (!out->count(e.record)) {
+        (*out)[e.record] = {e.width, e.height, e.levels, e.format_word, {e.payload.begin(), e.payload.end()}};
+      }
+    }
+  };
+  if (threads > 1 && names.size() >= 4) {
+    std::atomic<size_t> next{0};
+    std::vector<std::thread> workers;
+    workers.reserve(threads);
+    for (size_t t = 0; t < threads; ++t) {
+      workers.emplace_back([&]() {
+        std::vector<uint8_t> data;
+        std::vector<fh1::BundleEntry> entries;
+        for (;;) {
+          const size_t i = next.fetch_add(1, std::memory_order_relaxed);
+          if (i >= names.size()) break;
+          process_one(names[i], data, entries);
+        }
+      });
+    }
+    for (auto& w : workers) w.join();
+  } else {
+    std::vector<uint8_t> data;
+    std::vector<fh1::BundleEntry> entries;
+    for (const auto& name : names) process_one(name, data, entries);
+  }
+  if (std::getenv("SHIFT_WORLD_DEBUG")) {
+    std::fprintf(stderr, "world: %zu bundle textures in %.0f ms\n", out->size(),
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+  }
+
+  std::lock_guard<std::mutex> lk(cache_mu);
+  if (auto it = cache.find(key); it != cache.end()) {
+    if (auto sp = it->second.lock()) return sp;
+  }
+  cache[key] = out;
+  return out;
+}
+
 struct World::Impl {
   fh1::MemberSource source;
-  // The `.bundle` members' entries by texture record (WORLD-MATERIALS,
-  // Small textures), read on the first bundle-only record. A record in
-  // several bundles has the same payload in all: the first is kept.
-  struct Small {
-    uint32_t width = 0, height = 0, levels = 0, format_word = 0;
-    std::vector<uint8_t> payload;
-  };
+  // Shared `.bundle` entries by texture record (WORLD-MATERIALS, Small textures),
+  // loaded once on the first bundle-only record and shared with SmashableWorld.
   std::mutex small_mutex;
-  bool small_read = false;
-  std::unordered_map<uint32_t, Small> small;
+  std::shared_ptr<const SharedBundleMap> small;
   void read_small() {
-    if (small_read) return;
-    small_read = true;
-    const auto start = std::chrono::steady_clock::now();
-    const auto names = source.with_suffix(".bundle");
-    struct BundleResult {
-      std::vector<uint8_t> data;
-      std::vector<fh1::BundleEntry> entries;
-      bool ok = false;
-    };
-    std::vector<BundleResult> results(names.size());
-    const size_t threads = std::min<size_t>(names.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-    if (threads > 1 && names.size() >= 4) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= names.size()) break;
-            auto& r = results[i];
-            if (source.read(names[i], r.data, nullptr) && fh1::parse_bundle(r.data, r.entries, nullptr)) {
-              r.ok = true;
-            }
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      for (size_t i = 0; i < names.size(); ++i) {
-        auto& r = results[i];
-        if (source.read(names[i], r.data, nullptr) && fh1::parse_bundle(r.data, r.entries, nullptr)) r.ok = true;
-      }
-    }
-    for (auto& r : results) {
-      if (!r.ok) continue;
-      for (const auto& e : r.entries)
-        if (!small.count(e.record))
-          small[e.record] = {e.width, e.height, e.levels, e.format_word, {e.payload.begin(), e.payload.end()}};
-    }
-    if (std::getenv("SHIFT_WORLD_DEBUG"))
-      std::fprintf(stderr, "world: %zu bundle textures in %.0f ms\n", small.size(),
-                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    if (small) return;
+    small = shared_bundle_textures(source);
   }
   fh1::PvsObjectTable table;
   fh1::PropWorld props;
@@ -833,10 +850,14 @@ bool World::read_texture(uint32_t record, fh1::WorldTexture& out, std::string* e
     ok = impl_->source.read(name, a, error) && fh1::decode_caff(a, out, error, &exact);
   } else {
     // Types 1 and 3: the bundle entry is the only copy.
-    std::lock_guard<std::mutex> lock(impl_->small_mutex);
-    impl_->read_small();
-    const auto it = impl_->small.find(record);
-    if (it == impl_->small.end()) {
+    std::shared_ptr<const SharedBundleMap> small;
+    {
+      std::lock_guard<std::mutex> lock(impl_->small_mutex);
+      impl_->read_small();
+      small = impl_->small;
+    }
+    const auto it = small->find(record);
+    if (it == small->end()) {
       if (error) *error = "texture record " + std::to_string(record) + " is in no bundle";
       return false;
     }
@@ -990,10 +1011,21 @@ bool World::open(const fs::path& colorado, const fs::path& cache, std::string* e
     fh1::PropLoadOptions options;
     options.census_first_rule = false;
     std::string e;
-    if (fh1::parse_object_table(pvs_bytes, impl_->table, &e) &&
-        fh1::load_props(impl_->source, impl_->props, &e, options)) {
-      impl_->prop_models = std::make_unique<fh1::PropModels>(impl_->source, model_prefix(colorado));
-      impl_->have_props = true;
+    const fs::path props_cache = cache.empty() ? fs::path{} : fs::path(cache.string() + ".props.bin");
+    if (fh1::parse_object_table(pvs_bytes, impl_->table, &e)) {
+      bool props_ok = !props_cache.empty() && fh1::load_props_cache(props_cache, zip_size, impl_->props);
+      if (!props_ok) {
+        props_ok = fh1::load_props(impl_->source, impl_->props, &e, options);
+        if (props_ok && !props_cache.empty()) {
+          fh1::save_props_cache(props_cache, zip_size, impl_->props);
+        }
+      }
+      if (props_ok) {
+        impl_->prop_models = std::make_unique<fh1::PropModels>(impl_->source, model_prefix(colorado));
+        impl_->have_props = true;
+      } else if (error) {
+        *error = "props: " + e;  // not fatal: the caller may go on without props
+      }
     } else if (error) {
       *error = "props: " + e;  // not fatal: the caller may go on without props
     }
@@ -1486,7 +1518,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
     for (const auto& t : impl_->props.trees) {
       const double dx = t.base[0] - x, dz = t.base[2] + z, d = std::sqrt(dx * dx + dz * dz);  // z: file frame here
       if (d > options.tree_radius || d > t.far) continue;
-      if (options.route >= 0 && !fh1::shown_on_route(t.routes, options.route)) {
+      if (options.route >= 0 && !impl_->props.shown_on_route(t.route_list, options.route)) {
         ++st.trees_off_route;
         continue;
       }
@@ -1553,8 +1585,8 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
         // that otherwise dump ~9,700 props / 11M triangles whenever within prop_radius of (0,0,0).
         if (std::fabs(t[0]) < 1e-3 && std::fabs(t[1]) < 1e-3 && std::fabs(t[2]) < 1e-3) continue;
         const double dx = t[0] - x, dz = t[2] - z;
-        if (dx * dx + dz * dz > tree_r2) continue;
-        if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) continue;
+        if (dx * dx + dz * dz > prop_r2) continue;
+        if (options.route >= 0 && !impl_->props.shown_on_route(p.route_list, options.route)) continue;
         const uint32_t m = impl_->table.objects[p.object_id].member;
         preload_members.push_back(m);
         if (m > 0) preload_members.push_back(m - 1);
@@ -1570,7 +1602,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       const double dx = t[0] - x, dz = t[2] - z, d2 = dx * dx + dz * dz;
       if (d2 > tree_r2) continue;
       const bool distant_tree_band = d2 > prop_r2;
-      if (options.route >= 0 && !fh1::shown_on_route(p.routes, options.route)) {
+      if (options.route >= 0 && !impl_->props.shown_on_route(p.route_list, options.route)) {
         ++st.props_off_route;
         continue;
       }
@@ -1816,6 +1848,11 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
       if (beacon) ++st.props_beacons;
       else if (!drawn) ++st.prop_unresolved;
     }
+#ifdef __ANDROID__
+    // Bound CPU-side parsed prop RenderModel cache on mobile so long drives
+    // across Colorado do not accumulate hundreds of MiB of old RMB meshes.
+    impl_->prop_models->trim(512);
+#endif
   }
   return true;
 }

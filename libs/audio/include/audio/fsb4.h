@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +28,11 @@ struct FsbSample {
 // large bank read in part); 0: `bank` is the whole bank.
 bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::string* error,
                uint64_t bank_size = 0);
+
+// Reads only the 48-byte bank header and sample header table from disk
+// without loading the sample payloads into memory.
+bool read_fsb4_file_headers(const std::filesystem::path& path, std::vector<FsbSample>& out,
+                            std::string* error = nullptr);
 
 // A RIFF WAVE with an XMA2WAVEFORMATEX header (format 0x166, one stream,
 // 2048-byte packets) around one sample's packets, which FFmpeg's xma2

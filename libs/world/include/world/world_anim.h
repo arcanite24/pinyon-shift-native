@@ -181,6 +181,7 @@ struct SpectatorCatalog {
   std::vector<SpectatorAsset> assets;
   std::vector<SpectatorAsset> sit_assets;
   std::vector<uint8_t> atlas_rgba;
+  bool atlas_loaded = false;
   bool has_impostor_sprites = false;
   std::array<SpectatorStandBone, kStandBoneCount> stand_skeleton{};
   bool has_stand_skeleton_data = false;
@@ -197,8 +198,9 @@ struct SpectatorCatalog {
   size_t animated_xds = 0;
 
   bool has_3d_spectators() const {
-    return !assets.empty() && atlas_rgba.size() == size_t(kAtlasSize) * kAtlasSize * 4;
+    return !assets.empty() && (atlas_loaded || atlas_rgba.size() == size_t(kAtlasSize) * kAtlasSize * 4);
   }
+  void release_atlas_rgba() { std::vector<uint8_t>().swap(atlas_rgba); }
   const AnimatedPgeoObject* find_pgeo(const std::string& name_substr) const;
   bool load_spectators_xml(const std::string& xml);
   bool load_from_media(const std::filesystem::path& media_dir, std::string* error = nullptr);

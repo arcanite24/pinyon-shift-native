@@ -46,10 +46,25 @@ class Archive {
  public:
   static constexpr uint64_t kMaximumMemberSize = 256ull * 1024 * 1024;
 
+  struct BaseNameIndex {
+    std::unordered_map<std::string, const ArchiveMember*> by_name;
+    std::vector<std::string> names;  // lower-case base names, sorted
+  };
+
+  ~Archive();
+
   // Opens the archive and reads its central directory. The directory is
   // walked by its byte size: the end record's 16-bit member count wraps on
   // the largest archives (Colorado's bin.zip has 230,057 members).
   static std::unique_ptr<Archive> open(const std::filesystem::path& path, std::string* error);
+
+  // Process-wide shared cache backed by weak pointers (keyed by path, size,
+  // and mtime) so multiple subsystems opening bin.zip share one central
+  // directory and one read-only descriptor instead of duplicating ~30 MiB each.
+  static std::shared_ptr<Archive> open_shared(const std::filesystem::path& path, std::string* error);
+
+  // Shared sorted lower-case base-name index for MemberSource callers.
+  std::shared_ptr<const BaseNameIndex> base_name_index() const;
 
   const std::vector<ArchiveMember>& members() const { return members_; }
   // Case-insensitive lookup, '/' and '\\' treated alike. Names can repeat
@@ -57,7 +72,8 @@ class Archive {
   const ArchiveMember* find(std::string_view name) const;
 
   // Reads, decompresses and CRC-checks one member. Thread-safe: disk range reads
-  // are serialized internally while decompression and CRC checks run concurrently.
+  // use lock-free pread on POSIX (serialized on Windows) while decompression and
+  // CRC checks run concurrently.
   ReadResult read(const ArchiveMember& member);
   ReadResult read(std::string_view name);
 
@@ -71,14 +87,18 @@ class Archive {
   uint64_t file_size() const { return file_size_; }
 
  private:
+  Archive() = default;
   bool read_range(uint64_t offset, size_t size, std::vector<uint8_t>& out);
 
   std::filesystem::path path_;
   mutable std::mutex io_mutex_;
   std::ifstream stream_;
+  int fd_ = -1;
   uint64_t file_size_ = 0;
   std::vector<ArchiveMember> members_;
   std::unordered_map<std::string, size_t> index_;
+  mutable std::mutex base_index_mutex_;
+  mutable std::shared_ptr<const BaseNameIndex> base_index_;
 };
 
 uint32_t crc32(std::span<const uint8_t> data);

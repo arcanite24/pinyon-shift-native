@@ -27,8 +27,10 @@
 #include <set>
 #include <tuple>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "fh1data/members.h"
 #include "fh1data/placements.h"
 #include "fh1data/world_texture.h"
 
@@ -225,9 +227,11 @@ struct MeshMaterial {
   std::array<int32_t, 3> slot_values{-2, -2, -2};
   std::array<int32_t, 3> slot_types{-1, -1, -1};
   auto key() const {
-    return std::make_tuple(effect, albedo, far, layer_b, splat, tiling, fade, light_map, ao_map, normal_map, layer_c,
-                           spec_map, tiling_c, emissive_force, is_emissive_map, is_water, anim_flag, is_grass, is_road,
-                           decal_noise_c4);
+    const uint8_t decal_flag = uint8_t(decal_effect(effect) ? 1 : 0);
+    const uint8_t interior_flag = uint8_t(effect.rfind("H_INT_", 0) == 0 ? 1 : 0);
+    return std::make_tuple(blend, layers, decal_flag, interior_flag, albedo, far, layer_b, splat, tiling, fade,
+                           light_map, ao_map, normal_map, layer_c, spec_map, tiling_c, emissive_force, is_emissive_map,
+                           is_water, anim_flag, is_grass, is_road, decal_noise_c4);
   }
 };
 
@@ -365,6 +369,16 @@ struct GatherStats {
 std::filesystem::path ribbon_file(const std::filesystem::path& world, const std::string& suffix);
 // Its render models' prefix: the folder name in lower case and "out".
 std::string model_prefix(const std::filesystem::path& world);
+
+// Shared `.bundle` small-texture index (keyed by archive path) so World and
+// SmashableWorld share one copy of small-texture payloads instead of reading
+// and holding every `.bundle` member twice.
+struct SharedBundleTex {
+  uint32_t width = 0, height = 0, levels = 0, format_word = 0;
+  std::vector<uint8_t> payload;
+};
+using SharedBundleMap = std::unordered_map<uint32_t, SharedBundleTex>;
+std::shared_ptr<const SharedBundleMap> shared_bundle_textures(fh1::MemberSource& source);
 
 class World {
  public:

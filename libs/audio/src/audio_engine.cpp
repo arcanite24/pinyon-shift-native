@@ -29,6 +29,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__ANDROID__) || defined(__linux__)
+#include <sys/resource.h>
 #endif
 
 namespace audio {
@@ -119,6 +121,11 @@ void enable_audio_thread_rt_mode() {
 #if defined(_MM_SET_DENORMALS_ZERO_MODE)
   _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
 #endif
+#elif defined(__aarch64__)
+  uint64_t fpcr = 0;
+  __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
+  fpcr |= (1ull << 24);  // FZ: flush subnormals to zero on ARM64
+  __asm__ __volatile__("msr fpcr, %0" : : "r"(fpcr));
 #endif
 #ifdef _WIN32
   // Keep audio synthesis ahead of background world texture/mesh decoding bursts
@@ -126,6 +133,9 @@ void enable_audio_thread_rt_mode() {
   if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
   }
+#elif defined(__ANDROID__) || defined(__linux__)
+  // Match Android THREAD_PRIORITY_AUDIO (-16) on a best-effort basis.
+  setpriority(PRIO_PROCESS, 0, -16);
 #endif
 }
 
@@ -191,100 +201,125 @@ void AudioEngine::drain_ui_music_loaded() {
   while (ui_music_q_.pop(lt)) {
     const size_t idx = size_t(lt.mode);
     if (idx < ui_tracks_.size()) {
-      delete ui_tracks_[idx];
+      if (ui_tracks_[idx]) retire_ptr(Retired::kUiTrack, ui_tracks_[idx], uint8_t(idx));
       ui_tracks_[idx] = lt.track;
+      ui_music_state_[idx].store(lt.track ? 2 : 0, std::memory_order_release);
     } else {
-      delete lt.track;
+      retire_ptr(Retired::kUiTrack, lt.track, 0);
     }
   }
 }
 
 void AudioEngine::init_ui_music(const std::filesystem::path& game_root, const std::filesystem::path& cache_dir) {
   stop_ui_music_worker();
+  ui_music_bank_path_.clear();
+  ui_music_cache_dir_ = cache_dir;
+  ui_music_subsounds_.fill(-1);
+  for (auto& st : ui_music_state_) st.store(0, std::memory_order_release);
   if (game_root.empty()) return;
   const auto bank_path = cars::mods::resolve(game_root / "media" / "audio" / "UI" / "UIInGame" / "UIInGame_Streams.fsb");
-  std::error_code ec;
-  if (!std::filesystem::exists(bank_path, ec)) return;
+  std::vector<FsbSample> samples;
+  if (!read_fsb4_file_headers(bank_path, samples, nullptr) || samples.empty()) return;
+  ui_music_bank_path_ = bank_path;
+  auto find_sub = [&](std::string_view needle) -> int {
+    std::string want(needle);
+    for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
+    for (size_t i = 0; i < samples.size(); ++i) {
+      std::string nm = samples[i].name;
+      for (char& c : nm) c = char(std::tolower(static_cast<unsigned char>(c)));
+      if (nm.find(want) != std::string::npos) return int(i);
+    }
+    return -1;
+  };
+  ui_music_subsounds_[size_t(UiMusicMode::kTitle)] = find_sub("pressstart_music");
+  ui_music_subsounds_[size_t(UiMusicMode::kHomespace)] = find_sub("multiplayer_autoshow_loop");
+  ui_music_subsounds_[size_t(UiMusicMode::kLoading)] = find_sub("01_loadingscreen_band");
+  ui_music_subsounds_[size_t(UiMusicMode::kMap)] = find_sub("map_ambientbackgroundloop");
+  ui_music_subsounds_[size_t(UiMusicMode::kPostRaceVictory)] = find_sub("cs_postrace_victory_cutscene");
+}
+
+void AudioEngine::request_ui_music_load(UiMusicMode mode) {
+  const size_t idx = size_t(mode);
+  if (mode == UiMusicMode::kNone || idx >= ui_music_subsounds_.size()) return;
+  const int sub = ui_music_subsounds_[idx];
+  if (sub < 0 || ui_music_bank_path_.empty()) return;
+  uint8_t expected = 0;
+  if (!ui_music_state_[idx].compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) return;
+  // Wait for any previous one-shot load before launching the next so only one
+  // background decode runs at a time.
+  if (ui_music_worker_.joinable()) {
+    stop_ui_music_.store(true, std::memory_order_release);
+    ui_music_worker_.join();
+  }
   stop_ui_music_.store(false, std::memory_order_release);
-  ui_music_worker_ = std::thread([this, bank_path, cache_dir]() {
-    std::ifstream bf(bank_path, std::ios::binary);
-    if (!bf) return;
-    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
-    std::vector<FsbSample> samples;
-    if (!read_fsb4(raw, samples, nullptr) || samples.empty()) return;
-    auto find_sub = [&](std::string_view needle) -> int {
-      std::string want(needle);
-      for (char& c : want) c = char(std::tolower(static_cast<unsigned char>(c)));
-      for (size_t i = 0; i < samples.size(); ++i) {
-        std::string nm = samples[i].name;
-        for (char& c : nm) c = char(std::tolower(static_cast<unsigned char>(c)));
-        if (nm.find(want) != std::string::npos) return int(i);
-      }
-      return -1;
-    };
-    struct Job {
-      UiMusicMode mode;
-      const char* name;
-      const char* cache_key;
-    };
-    static constexpr Job kJobs[] = {
-        {UiMusicMode::kTitle, "pressstart_music", "ui_title"},
-        {UiMusicMode::kHomespace, "multiplayer_autoshow_loop", "ui_homespace"},
-        {UiMusicMode::kLoading, "01_loadingscreen_band", "ui_loading"},
-        {UiMusicMode::kMap, "map_ambientbackgroundloop", "ui_map"},
-        {UiMusicMode::kPostRaceVictory, "cs_postrace_victory_cutscene", "ui_victory"},
-    };
-    const auto ff = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
+  const auto bank_path = ui_music_bank_path_;
+  const auto cache_dir = ui_music_cache_dir_;
+  static constexpr const char* kCacheKeys[6] = {
+      "", "ui_title", "ui_homespace", "ui_loading", "ui_map", "ui_victory",
+  };
+  const char* cache_key = kCacheKeys[idx];
+  ui_music_worker_ = std::thread([this, mode, idx, sub, bank_path, cache_dir, cache_key]() {
+#if defined(__ANDROID__) || defined(__linux__)
+    setpriority(PRIO_PROCESS, 0, 10);
+#endif
+    auto tr = std::make_unique<StereoTrack>();
+    bool ok = false;
     const auto music_cache = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "uimusic");
-    std::error_code tec;
-    if (!music_cache.empty()) std::filesystem::create_directories(music_cache, tec);
-    for (const auto& j : kJobs) {
-      if (stop_ui_music_.load(std::memory_order_acquire)) break;
-      const int sub = find_sub(j.name);
-      if (sub < 0) continue;
-      auto tr = std::make_unique<StereoTrack>();
-      bool ok = false;
-      const auto cf = music_cache.empty() ? std::filesystem::path{} : (music_cache / (std::string(j.cache_key) + ".s16st"));
-      if (!cf.empty()) {
-        std::ifstream cf_in(cf, std::ios::binary);
-        int32_t r = 0;
-        uint32_t n = 0;
-        if (cf_in.read(reinterpret_cast<char*>(&r), 4) && cf_in.read(reinterpret_cast<char*>(&n), 4) &&
-            r > 0 && n > 0 && n <= 48000u * 600u) {
-          std::vector<int16_t> s16(size_t(n) * 2);
-          if (cf_in.read(reinterpret_cast<char*>(s16.data()), std::streamsize(s16.size() * 2))) {
-            tr->rate = r;
-            tr->stereo.resize(s16.size());
-            for (size_t i = 0; i < s16.size(); ++i) tr->stereo[i] = float(s16[i]) / 32768.0f;
-            ok = true;
-          }
+    const auto cf = music_cache.empty() ? std::filesystem::path{} : (music_cache / (std::string(cache_key) + ".s16st"));
+    if (!cf.empty()) {
+      std::ifstream cf_in(cf, std::ios::binary);
+      int32_t r = 0;
+      uint32_t n = 0;
+      if (cf_in.read(reinterpret_cast<char*>(&r), 4) && cf_in.read(reinterpret_cast<char*>(&n), 4) &&
+          r > 0 && n > 0 && n <= 48000u * 600u) {
+        tr->stereo.resize(size_t(n) * 2);
+        if (cf_in.read(reinterpret_cast<char*>(tr->stereo.data()), std::streamsize(tr->stereo.size() * 2))) {
+          tr->rate = r;
+          ok = true;
+        } else {
+          tr->stereo.clear();
         }
       }
-      if (!ok) {
-        ok = decode_fsb_subsound_stereo(bank_path, uint32_t(sub), tr->stereo, tr->rate, ff, {});
-        if (ok && !cf.empty() && !tr->stereo.empty()) {
+    }
+    if (!ok && !stop_ui_music_.load(std::memory_order_acquire)) {
+      const auto ff = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
+      std::vector<float> f32;
+      if (decode_fsb_subsound_stereo(bank_path, uint32_t(sub), f32, tr->rate, ff, {}) && !f32.empty()) {
+        tr->stereo.resize(f32.size());
+        for (size_t i = 0; i < f32.size(); ++i) {
+          tr->stereo[i] = int16_t(std::clamp(std::lround(double(f32[i]) * 32767.0), -32768l, 32767l));
+        }
+        f32.clear();
+        f32.shrink_to_fit();
+        ok = true;
+        if (!cf.empty()) {
+          std::error_code tec;
+          std::filesystem::create_directories(music_cache, tec);
           std::ofstream cf_out(cf, std::ios::binary | std::ios::trunc);
           if (cf_out) {
             const int32_t r = tr->rate;
             const uint32_t n = uint32_t(tr->stereo.size() / 2);
             cf_out.write(reinterpret_cast<const char*>(&r), 4);
             cf_out.write(reinterpret_cast<const char*>(&n), 4);
-            std::vector<int16_t> s16(tr->stereo.size());
-            for (size_t i = 0; i < tr->stereo.size(); ++i)
-              s16[i] = int16_t(std::clamp(std::lround(double(tr->stereo[i]) * 32767.0), -32768l, 32767l));
-            cf_out.write(reinterpret_cast<const char*>(s16.data()), std::streamsize(s16.size() * 2));
+            cf_out.write(reinterpret_cast<const char*>(tr->stereo.data()), std::streamsize(tr->stereo.size() * 2));
           }
         }
       }
-      if (ok && !tr->stereo.empty()) {
-        StereoTrack* raw_t = tr.release();
-        if (!ui_music_q_.push({j.mode, raw_t})) delete raw_t;
+    }
+    if (ok && !tr->stereo.empty() && !stop_ui_music_.load(std::memory_order_acquire)) {
+      StereoTrack* raw_t = tr.release();
+      if (!ui_music_q_.push({mode, raw_t})) {
+        delete raw_t;
+        ui_music_state_[idx].store(0, std::memory_order_release);
       }
+    } else {
+      ui_music_state_[idx].store(0, std::memory_order_release);
     }
   });
 }
 
 void AudioEngine::set_ui_music(UiMusicMode mode) {
+  if (mode != UiMusicMode::kNone) request_ui_music_load(mode);
   Command c;
   c.kind = Command::kUiMusicMode;
   c.i0 = int(mode);
@@ -356,6 +391,7 @@ void AudioEngine::reclaim() {
       case Retired::kRadio: delete static_cast<RadioPlayer*>(r.ptr); break;
       case Retired::kRuntimeRadio: delete static_cast<RuntimeRadioPlayer*>(r.ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(r.ptr); break;
+      case Retired::kUiTrack: delete static_cast<StereoTrack*>(r.ptr); break;
     }
   }
 }
@@ -1063,9 +1099,9 @@ AudioTelemetry AudioEngine::telemetry() {
   return t;
 }
 
-void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
+void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr, uint8_t aux) {
   if (!ptr) return;
-  if (!retired_.push({kind, ptr})) {
+  if (!retired_.push({kind, aux, ptr})) {
     // Fallback only if main thread never reclaimed 64 swaps in a row.
     switch (kind) {
       case Retired::kEngine: delete static_cast<EnginePlayer*>(ptr); break;
@@ -1076,6 +1112,7 @@ void AudioEngine::retire_ptr(Retired::Kind kind, void* ptr) {
       case Retired::kRadio: delete static_cast<RadioPlayer*>(ptr); break;
       case Retired::kRuntimeRadio: delete static_cast<RuntimeRadioPlayer*>(ptr); break;
       case Retired::kUserMusic: delete static_cast<UserMusicPlayer*>(ptr); break;
+      case Retired::kUiTrack: delete static_cast<StereoTrack*>(ptr); break;
     }
   }
 }
@@ -1470,13 +1507,18 @@ void AudioEngine::render_block(float* out, int frames) {
       const double step = double(std::max(1, cur_track->rate)) / double(rate_);
       const float ramp = 1.0f / (0.25f * float(rate_));
       const float base_gain = (ui_music_cur_ == UiMusicMode::kMap) ? 0.50f : 0.72f;
+      constexpr float kInvS16 = 1.0f / 32768.0f;
       for (int i = 0; i < frames; ++i) {
         ui_music_gain_ = fading_out ? std::max(0.0f, ui_music_gain_ - ramp) : std::min(1.0f, ui_music_gain_ + ramp);
         const size_t k = size_t(ui_music_phase_) % total_f;
         const size_t k1 = (k + 1) % total_f;
         const float frac = float(ui_music_phase_ - std::floor(ui_music_phase_));
-        const float gl = cur_track->stereo[2 * k] + (cur_track->stereo[2 * k1] - cur_track->stereo[2 * k]) * frac;
-        const float gr = cur_track->stereo[2 * k + 1] + (cur_track->stereo[2 * k1 + 1] - cur_track->stereo[2 * k + 1]) * frac;
+        const float s0l = float(cur_track->stereo[2 * k]) * kInvS16;
+        const float s1l = float(cur_track->stereo[2 * k1]) * kInvS16;
+        const float s0r = float(cur_track->stereo[2 * k + 1]) * kInvS16;
+        const float s1r = float(cur_track->stereo[2 * k1 + 1]) * kInvS16;
+        const float gl = s0l + (s1l - s0l) * frac;
+        const float gr = s0r + (s1r - s0r) * frac;
         const float g = base_gain * ui_music_gain_;
         mbuf[2 * size_t(i)] += gl * g;
         mbuf[2 * size_t(i) + 1] += gr * g;
@@ -1494,6 +1536,18 @@ void AudioEngine::render_block(float* out, int frames) {
       ui_music_cur_ = want_ui_mode;
     }
   }
+#ifdef __ANDROID__
+  // Release inactive UI music tracks back to the control thread for freeing so
+  // decoded menu/title loops do not sit in RAM during open-world driving.
+  for (size_t i = 1; i < ui_tracks_.size(); ++i) {
+    if (ui_tracks_[i] && UiMusicMode(i) != ui_music_mode_ && UiMusicMode(i) != ui_music_cur_) {
+      StereoTrack* old = ui_tracks_[i];
+      ui_tracks_[i] = nullptr;
+      ui_music_state_[i].store(0, std::memory_order_release);
+      retire_ptr(Retired::kUiTrack, old, uint8_t(i));
+    }
+  }
+#endif
 
   const bool ui_music_active = homespace_radio_active || (want_ui_mode != UiMusicMode::kNone);
   if (!ui_music_active && !on_title && (user_music_on || runtime_radio_on || radio_player_)) {

@@ -1032,31 +1032,12 @@ struct SmashableWorld::Impl {
   std::string prefix = "coloradoout";
   std::unordered_map<uint32_t, DebrisModel> debris_models;
   mutable std::mutex tex_mutex;
-  bool small_read = false;
-  struct SmallTex {
-    uint32_t width = 0, height = 0, levels = 0, format_word = 0;
-    std::vector<uint8_t> payload;
-  };
-  mutable std::unordered_map<uint32_t, SmallTex> small_textures;
+  mutable std::shared_ptr<const SharedBundleMap> small_textures;
   bool source_ready = false;
 
   void ensure_small_textures_locked() const {
-    if (small_read || !source_ready) return;
-    const_cast<Impl*>(this)->small_read = true;
-    const auto names = const_cast<fh1::MemberSource&>(source).with_suffix(".bundle");
-    std::vector<uint8_t> buf;
-    std::vector<fh1::BundleEntry> entries;
-    for (const auto& name : names) {
-      if (const_cast<fh1::MemberSource&>(source).read(name, buf, nullptr) &&
-          fh1::parse_bundle(buf, entries, nullptr)) {
-        for (const auto& e : entries) {
-          if (!small_textures.count(e.record)) {
-            small_textures[e.record] = {e.width, e.height, e.levels, e.format_word,
-                                        {e.payload.begin(), e.payload.end()}};
-          }
-        }
-      }
-    }
+    if (small_textures || !source_ready) return;
+    small_textures = shared_bundle_textures(const_cast<fh1::MemberSource&>(source));
   }
 };
 
@@ -1222,8 +1203,12 @@ bool SmashableWorld::read_texture(uint32_t record, fh1::WorldTexture& out, std::
     ok = src.read(name, a, error) && fh1::decode_caff(a, out, error, &exact);
   } else {
     impl_->ensure_small_textures_locked();
-    const auto it = impl_->small_textures.find(record);
-    if (it == impl_->small_textures.end()) {
+    if (!impl_->small_textures) {
+      if (error) *error = "smashable bundle texture missing";
+      return false;
+    }
+    const auto it = impl_->small_textures->find(record);
+    if (it == impl_->small_textures->end()) {
       if (error) *error = "smashable bundle texture missing";
       return false;
     }

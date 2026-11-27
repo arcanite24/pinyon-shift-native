@@ -453,7 +453,7 @@ bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_r
     // Also check Rally DLC archive (`1600_pri_65.zip`) directly when XMLs are not unpacked loose.
     for (const auto& zp : zip_cands) {
       if (!std::filesystem::exists(zp, ec)) continue;
-      auto arc = fh1::Archive::open(zp, nullptr);
+      auto arc = fh1::Archive::open_shared(zp, nullptr);
       if (!arc) continue;
       for (const auto& m : arc->members()) {
         std::string low = lower_str(m.name);
@@ -490,7 +490,7 @@ bool WorldAcousticsData::load_rally_configs(const std::filesystem::path& rally_r
 int WorldAcousticsData::load_soundscapes_from_archive(const std::filesystem::path& bin_zip, int max_tiles) {
   std::error_code ec;
   if (bin_zip.empty() || !std::filesystem::exists(bin_zip, ec)) return 0;
-  auto arc = fh1::Archive::open(bin_zip, nullptr);
+  auto arc = fh1::Archive::open_shared(bin_zip, nullptr);
   if (!arc) return 0;
   int loaded = 0;
   for (const auto& m : arc->members()) {

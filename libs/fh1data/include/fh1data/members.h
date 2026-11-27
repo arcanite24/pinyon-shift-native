@@ -21,9 +21,9 @@ class MemberSource {
   bool open(const std::filesystem::path& path, std::string* error);
 
   // Lower-case base names, sorted.
-  const std::vector<std::string>& names() const { return names_; }
+  const std::vector<std::string>& names() const { return shared_index_ ? shared_index_->names : names_; }
   bool contains(const std::string& name) const;
-  // Reads a member by name (any case). Not thread-safe for archives.
+  // Reads a member by name (any case). Thread-safe for archives.
   bool read(const std::string& name, std::vector<uint8_t>& out, std::string* error);
   // The names ending in `suffix` (lower case).
   std::vector<std::string> with_suffix(const std::string& suffix) const;
@@ -33,9 +33,9 @@ class MemberSource {
 
  private:
   std::filesystem::path path_;
-  std::unique_ptr<Archive> archive_;
+  std::shared_ptr<Archive> archive_;
+  std::shared_ptr<const Archive::BaseNameIndex> shared_index_;
   std::map<std::string, std::filesystem::path> files_;
-  std::map<std::string, const ArchiveMember*> members_;
   std::vector<std::string> names_;
 };
 

@@ -309,14 +309,15 @@ class AudioEngine {
     std::array<char, 64> text{};
   };
   struct Retired {
-    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kCoDriver, kVo, kRadio, kRuntimeRadio, kUserMusic };
+    enum Kind : uint8_t { kEngine, kSfx, kSatNav, kCoDriver, kVo, kRadio, kRuntimeRadio, kUserMusic, kUiTrack };
     Kind kind = kEngine;
+    uint8_t aux = 0;
     void* ptr = nullptr;
   };
 
   void enqueue(const Command& c);
   void drain_commands();
-  void retire_ptr(Retired::Kind kind, void* ptr);
+  void retire_ptr(Retired::Kind kind, void* ptr, uint8_t aux = 0);
   void sanitize_output(float* out, int frames);
   void render_block(float* out, int frames);
   void publish_telemetry(double block_ms, double budget_ms);
@@ -385,10 +386,10 @@ class AudioEngine {
   float rally_hp_prev_in_[2]{0.0f, 0.0f};
   float rally_hp_prev_out_[2]{0.0f, 0.0f};
 
-  // Async in-process UIInGame_Streams.fsb music tracks (Title, Homespace, Loading, Map, PostRace).
+  // On-demand in-process UIInGame_Streams.fsb music tracks (Title, Homespace, Loading, Map, PostRace).
   struct StereoTrack {
     int rate = 48000;
-    std::vector<float> stereo;
+    std::vector<int16_t> stereo;
   };
   struct LoadedUiTrack {
     UiMusicMode mode = UiMusicMode::kNone;
@@ -396,6 +397,11 @@ class AudioEngine {
   };
   void stop_ui_music_worker();
   void drain_ui_music_loaded();
+  void request_ui_music_load(UiMusicMode mode);
+  std::filesystem::path ui_music_bank_path_;
+  std::filesystem::path ui_music_cache_dir_;
+  std::array<int, 6> ui_music_subsounds_{-1, -1, -1, -1, -1, -1};
+  std::array<std::atomic<uint8_t>, 6> ui_music_state_{};  // 0=unloaded, 1=loading, 2=loaded
   std::array<StereoTrack*, 6> ui_tracks_{};
   UiMusicMode ui_music_mode_ = UiMusicMode::kNone;
   UiMusicMode ui_music_cur_ = UiMusicMode::kNone;

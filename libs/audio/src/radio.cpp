@@ -753,31 +753,21 @@ struct RadioPlayer::Banks {
   ~Banks() { pool.reset(); }  // stop worker before vectors/paths destroy
 };
 
-namespace {
-bool read_bank_headers(const std::filesystem::path& p, std::vector<FsbSample>& out) {
-  std::ifstream f(p, std::ios::binary);
-  if (!f) return false;
-  uint8_t head[48];
-  if (!f.read(reinterpret_cast<char*>(head), 48)) return false;
-  const uint32_t header_bytes = uint32_t(head[8]) | uint32_t(head[9]) << 8 | uint32_t(head[10]) << 16 |
-                                uint32_t(head[11]) << 24;
-  std::vector<uint8_t> bytes(48 + size_t(header_bytes));
-  std::memcpy(bytes.data(), head, 48);
-  if (!f.read(reinterpret_cast<char*>(bytes.data() + 48), header_bytes)) return false;
-  std::error_code ec;
-  const uint64_t size = std::filesystem::file_size(p, ec);
-  return !ec && read_fsb4(bytes, out, nullptr, size);
-}
-}  // namespace
-
 RadioPlayer::RadioPlayer(Radio& radio, int out_rate, bool non_blocking)
     : banks_(std::make_unique<Banks>()), radio_(radio), rate_(std::max(1, out_rate)), non_blocking_(non_blocking) {
   banks_->music_bank = radio.data().music_bank;
   banks_->vo_bank = radio.data().vo_bank;
-  read_bank_headers(banks_->music_bank, banks_->music);
-  read_bank_headers(banks_->vo_bank, banks_->vo);
+  read_fsb4_file_headers(banks_->music_bank, banks_->music, nullptr);
+  read_fsb4_file_headers(banks_->vo_bank, banks_->vo, nullptr);
   Banks* b = banks_.get();
-  banks_->pool = std::make_unique<StreamPool>(16, 98304, [b](uint64_t key) -> std::unique_ptr<PcmSource> {
+#ifdef __ANDROID__
+  constexpr int kRadioPoolSlots = 6;
+  constexpr size_t kRadioPoolRingFrames = 49152;
+#else
+  constexpr int kRadioPoolSlots = 16;
+  constexpr size_t kRadioPoolRingFrames = 98304;
+#endif
+  banks_->pool = std::make_unique<StreamPool>(kRadioPoolSlots, kRadioPoolRingFrames, [b](uint64_t key) -> std::unique_ptr<PcmSource> {
     const bool is_music = (key >> 32) != 0;
     const uint32_t index = uint32_t(key & 0xFFFFFFFFu);
     const auto& samples = is_music ? b->music : b->vo;

@@ -8,9 +8,12 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "fh1data/members.h"
@@ -27,9 +30,9 @@ struct PropPlacement {
   bool has_object = true;  // false: a .pgeo model record with an empty list 0
   uint32_t container = 0;  // index into PropWorld::containers (tile or zone name)
   Placement placement;     // file frame
-  // The route list of its .pvsz record or .pgeo tile (empty: none; shown
-  // on every route). WORLD-GEOMETRY, "Which placements free roam draws".
-  std::vector<uint8_t> routes;
+  // Interned index into PropWorld::route_lists (0: empty list, shown on every
+  // route). WORLD-GEOMETRY, "Which placements free roam draws".
+  uint16_t route_list = 0;
   // The .pvsz record's name (its GameplayID, e.g. flyer_001), lower case;
   // empty for unnamed records and .pgeo placements.
   std::string name;
@@ -54,14 +57,22 @@ struct TreeSprite {
   float half_width = 0, height = 0, near = 0, far = 0;
   std::array<uint8_t, 4> tint{};  // R, G, B, A as stored
   uint32_t atlas = 0;             // texture record (the group's reference value)
-  std::vector<uint8_t> routes;    // its tile's route list (empty: none)
+  uint16_t route_list = 0;        // interned index into PropWorld::route_lists (0: empty)
 };
 
 struct PropWorld {
   std::vector<std::string> containers;
+  // Interned distinct route lists; index 0 is always empty (shown on every route).
+  std::vector<std::vector<uint8_t>> route_lists{{}};
   std::vector<PropPlacement> placements;  // every .pgeo instance, every distinct .pvsz object
   std::vector<TreeSprite> trees;          // every billboard record whose group names a reference
   uint64_t tree_unresolved = 0;           // records whose group key is past the reference list
+
+  uint16_t intern_routes(const std::vector<uint8_t>& routes);
+  bool shown_on_route(uint16_t list_idx, int route) const {
+    if (list_idx == 0 || list_idx >= route_lists.size()) return true;
+    return fh1::shown_on_route(route_lists[list_idx], route);
+  }
 
   // .pgeo census
   std::map<uint32_t, uint64_t> pgeo_kinds;
@@ -85,6 +96,10 @@ struct PropLoadOptions {
 // Reads every .pgeo and .pvsz member of `source`.
 bool load_props(MemberSource& source, PropWorld& out, std::string* error,
                 const PropLoadOptions& options = {});
+
+// Binary disk cache for PropWorld placements, trees, and interned route lists.
+bool load_props_cache(const std::filesystem::path& path, uint64_t zip_size, PropWorld& out);
+bool save_props_cache(const std::filesystem::path& path, uint64_t zip_size, const PropWorld& in);
 
 // Render models by member number, parsed once, with LOD sets: the run of
 // consecutive members whose first mesh names differ only in a "_LODnn"
@@ -116,12 +131,16 @@ class PropModels {
   // without one). False when the model is unavailable.
   bool first_name(uint32_t member, std::string& family, int& level);
 
- private:
+  // Evicts cached RenderModel meshes when the map exceeds `max_entries`
+  // (preserving lightweight first_name metadata so tree/marker checks stay O(1)).
+  void trim(size_t max_entries);
 
+ private:
   MemberSource& source_;
   std::string prefix_;
   std::map<uint32_t, std::unique_ptr<RenderModel>> models_;
   std::map<uint32_t, std::string> errors_;
+  std::unordered_map<uint32_t, std::pair<std::string, int>> first_name_cache_;
 };
 
 }  // namespace fh1

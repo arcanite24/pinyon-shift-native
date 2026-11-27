@@ -1,6 +1,8 @@
 #include "audio/fsb4.h"
 
 #include <cstring>
+#include <fstream>
+#include <system_error>
 
 namespace audio {
 namespace {
@@ -53,6 +55,33 @@ bool read_fsb4(std::span<const uint8_t> bank, std::vector<FsbSample>& out, std::
     at += record;
   }
   return true;
+}
+
+bool read_fsb4_file_headers(const std::filesystem::path& path, std::vector<FsbSample>& out, std::string* error) {
+  auto fail = [&](const char* what) {
+    if (error) *error = what;
+    return false;
+  };
+  out.clear();
+  std::error_code ec;
+  const uint64_t file_size = std::filesystem::file_size(path, ec);
+  if (ec || file_size < kBankHeader) return fail("cannot stat FSB4 bank");
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return fail("cannot open FSB4 bank");
+  uint8_t head[kBankHeader];
+  if (!f.read(reinterpret_cast<char*>(head), kBankHeader)) return fail("cannot read FSB4 header");
+  if (std::memcmp(head, "FSB4", 4) != 0) return fail("not an FSB4 bank");
+  const uint32_t header_bytes = u32(head, 8);
+  constexpr uint32_t kMaxHeaderBytes = 16u * 1024u * 1024u;
+  if (header_bytes > kMaxHeaderBytes || kBankHeader + uint64_t(header_bytes) > file_size) {
+    return fail("sample headers past the end");
+  }
+  std::vector<uint8_t> buf(kBankHeader + size_t(header_bytes));
+  std::memcpy(buf.data(), head, kBankHeader);
+  if (header_bytes > 0 && !f.read(reinterpret_cast<char*>(buf.data() + kBankHeader), header_bytes)) {
+    return fail("cannot read FSB4 sample headers");
+  }
+  return read_fsb4(buf, out, error, file_size);
 }
 
 std::vector<uint8_t> xma2_wave(const FsbSample& s, std::span<const uint8_t> data) {

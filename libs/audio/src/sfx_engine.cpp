@@ -26,6 +26,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__ANDROID__) || defined(__linux__)
+#include <sys/resource.h>
 #endif
 
 namespace audio {
@@ -38,6 +40,9 @@ inline float safe_clamp_f(float v, float lo, float hi, float fallback = 0.0f) {
 inline void lower_decoder_thread_priority() {
 #ifdef _WIN32
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(__ANDROID__) || defined(__linux__)
+  // Keep background audio decoders off the prime/render core on Android big.LITTLE SoCs.
+  setpriority(PRIO_PROCESS, 0, 10);
 #endif
 }
 

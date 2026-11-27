@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -54,6 +56,152 @@ bool lod_boxes_compatible(const RenderModel& a, const RenderModel& b) {
 }
 
 }  // namespace
+
+uint16_t PropWorld::intern_routes(const std::vector<uint8_t>& routes) {
+  if (routes.empty()) return 0;
+  if (route_lists.empty()) route_lists.emplace_back();
+  for (size_t i = 1; i < route_lists.size(); ++i) {
+    if (route_lists[i] == routes) return uint16_t(i);
+  }
+  if (route_lists.size() >= 65535u) return 0;
+  route_lists.push_back(routes);
+  return uint16_t(route_lists.size() - 1);
+}
+
+bool load_props_cache(const std::filesystem::path& path, uint64_t zip_size, PropWorld& out) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  auto rd = [&](void* dst, size_t n) -> bool {
+    return n == 0 || bool(in.read(reinterpret_cast<char*>(dst), std::streamsize(n)));
+  };
+  char magic[8]{};
+  uint64_t cached_zip_size = 0;
+  if (!rd(magic, 8) || std::memcmp(magic, "SHPR0001", 8) != 0) return false;
+  if (!rd(&cached_zip_size, 8) || cached_zip_size != zip_size) return false;
+
+  PropWorld tmp;
+  tmp.route_lists.clear();
+
+  uint32_t n_routes = 0;
+  if (!rd(&n_routes, 4) || n_routes == 0 || n_routes > 65535u) return false;
+  tmp.route_lists.resize(n_routes);
+  for (uint32_t i = 0; i < n_routes; ++i) {
+    uint16_t len = 0;
+    if (!rd(&len, 2) || len > 1024u) return false;
+    tmp.route_lists[i].resize(len);
+    if (!rd(tmp.route_lists[i].data(), len)) return false;
+  }
+
+  uint32_t n_containers = 0;
+  if (!rd(&n_containers, 4) || n_containers > 1000000u) return false;
+  tmp.containers.resize(n_containers);
+  for (uint32_t i = 0; i < n_containers; ++i) {
+    uint16_t len = 0;
+    if (!rd(&len, 2) || len > 4096u) return false;
+    tmp.containers[i].resize(len);
+    if (!rd(tmp.containers[i].data(), len)) return false;
+  }
+
+  uint32_t n_placements = 0;
+  if (!rd(&n_placements, 4) || n_placements > 10000000u) return false;
+  tmp.placements.resize(n_placements);
+  for (uint32_t i = 0; i < n_placements; ++i) {
+    auto& p = tmp.placements[i];
+    uint8_t flags = 0;
+    uint16_t name_len = 0;
+    if (!rd(&flags, 1) || !rd(&p.route_list, 2) || !rd(&name_len, 2) ||
+        !rd(&p.object_id, 4) || !rd(&p.container, 4) ||
+        !rd(&p.placement.linear, sizeof(p.placement.linear)) ||
+        !rd(&p.placement.offset, sizeof(p.placement.offset))) {
+      return false;
+    }
+    p.store = (flags & 1u) ? PropStore::kPvsz : PropStore::kPgeo;
+    p.has_object = (flags & 2u) != 0;
+    if (name_len > 0) {
+      if (name_len > 4096u) return false;
+      p.name.resize(name_len);
+      if (!rd(p.name.data(), name_len)) return false;
+    }
+  }
+
+  uint32_t n_trees = 0;
+  if (!rd(&n_trees, 4) || n_trees > 10000000u) return false;
+  tmp.trees.resize(n_trees);
+  for (uint32_t i = 0; i < n_trees; ++i) {
+    auto& t = tmp.trees[i];
+    if (!rd(&t.base, sizeof(t.base)) || !rd(&t.axis, sizeof(t.axis)) ||
+        !rd(&t.u0, 4) || !rd(&t.v0, 4) || !rd(&t.u1, 4) || !rd(&t.v1, 4) ||
+        !rd(&t.half_width, 4) || !rd(&t.height, 4) || !rd(&t.near, 4) || !rd(&t.far, 4) ||
+        !rd(&t.tint, sizeof(t.tint)) || !rd(&t.atlas, 4) || !rd(&t.route_list, 2)) {
+      return false;
+    }
+  }
+
+  if (tmp.placements.empty() && tmp.trees.empty()) return false;
+  out = std::move(tmp);
+  return true;
+}
+
+bool save_props_cache(const std::filesystem::path& path, uint64_t zip_size, const PropWorld& in) {
+  std::error_code ec;
+  if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
+  const auto tmp_path = path.string() + ".tmp";
+  std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  auto wr = [&](const void* src, size_t n) -> bool {
+    return n == 0 || bool(out.write(reinterpret_cast<const char*>(src), std::streamsize(n)));
+  };
+  if (!wr("SHPR0001", 8) || !wr(&zip_size, 8)) return false;
+
+  const uint32_t n_routes = uint32_t(in.route_lists.size());
+  if (!wr(&n_routes, 4)) return false;
+  for (const auto& rl : in.route_lists) {
+    const uint16_t len = uint16_t(rl.size());
+    if (!wr(&len, 2) || !wr(rl.data(), len)) return false;
+  }
+
+  const uint32_t n_containers = uint32_t(in.containers.size());
+  if (!wr(&n_containers, 4)) return false;
+  for (const auto& c : in.containers) {
+    const uint16_t len = uint16_t(c.size());
+    if (!wr(&len, 2) || !wr(c.data(), len)) return false;
+  }
+
+  const uint32_t n_placements = uint32_t(in.placements.size());
+  if (!wr(&n_placements, 4)) return false;
+  for (const auto& p : in.placements) {
+    const uint8_t flags = uint8_t((p.store == PropStore::kPvsz ? 1u : 0u) | (p.has_object ? 2u : 0u));
+    const uint16_t name_len = uint16_t(p.name.size());
+    if (!wr(&flags, 1) || !wr(&p.route_list, 2) || !wr(&name_len, 2) ||
+        !wr(&p.object_id, 4) || !wr(&p.container, 4) ||
+        !wr(&p.placement.linear, sizeof(p.placement.linear)) ||
+        !wr(&p.placement.offset, sizeof(p.placement.offset)) ||
+        !wr(p.name.data(), name_len)) {
+      return false;
+    }
+  }
+
+  const uint32_t n_trees = uint32_t(in.trees.size());
+  if (!wr(&n_trees, 4)) return false;
+  for (const auto& t : in.trees) {
+    if (!wr(&t.base, sizeof(t.base)) || !wr(&t.axis, sizeof(t.axis)) ||
+        !wr(&t.u0, 4) || !wr(&t.v0, 4) || !wr(&t.u1, 4) || !wr(&t.v1, 4) ||
+        !wr(&t.half_width, 4) || !wr(&t.height, 4) || !wr(&t.near, 4) || !wr(&t.far, 4) ||
+        !wr(&t.tint, sizeof(t.tint)) || !wr(&t.atlas, 4) || !wr(&t.route_list, 2)) {
+      return false;
+    }
+  }
+  out.flush();
+  if (!out) return false;
+  out.close();
+  std::filesystem::rename(tmp_path, path, ec);
+  if (ec) {
+    std::filesystem::remove(path, ec);
+    ec.clear();
+    std::filesystem::rename(tmp_path, path, ec);
+  }
+  return !ec;
+}
 
 bool load_props(MemberSource& source, PropWorld& out, std::string* error,
                 const PropLoadOptions& options) {
@@ -136,6 +284,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
     out.pgeo_trailing_matches += packed == tile.trailing_size;
     const uint32_t container = uint32_t(out.containers.size());
     out.containers.push_back(name);
+    const uint16_t tile_route_list = out.intern_routes(tile.routes);
     for (const auto& b : tile.billboards) {
       const uint32_t key = tile.groups[b.group].key;
       if (key >= tile.references.size()) {
@@ -149,7 +298,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       t.half_width = b.half_width, t.height = b.height, t.near = b.near, t.far = b.far;
       t.tint = b.tint;
       t.atlas = tile.references[key].first;
-      t.routes = tile.routes;
+      t.route_list = tile_route_list;
       out.trees.push_back(t);
     }
     for (const auto& g : tile.groups) {
@@ -161,7 +310,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
         p.object_id = p.has_object ? record.ids[0][0] : 0;
         p.container = container;
         p.placement = pgeo_placement(in);
-        p.routes = tile.routes;
+        p.route_list = tile_route_list;
         out.placements.push_back(p);
         ++out.pgeo_instances;
       }
@@ -253,7 +402,7 @@ bool load_props(MemberSource& source, PropWorld& out, std::string* error,
       p.object_id = id;
       p.container = container;
       p.placement = pvsz_placement(rec);
-      if (rec.extended) p.routes = rec.extra;
+      if (rec.extended) p.route_list = out.intern_routes(rec.extra);
       for (char ch : rec.name) p.name += char(std::tolower(static_cast<unsigned char>(ch)));
       out.placements.push_back(p);
     }
@@ -356,10 +505,40 @@ void PropModels::preload(const std::vector<uint32_t>& members) {
 }
 
 bool PropModels::first_name(uint32_t member, std::string& family, int& level) {
+  if (const auto it = first_name_cache_.find(member); it != first_name_cache_.end()) {
+    family = it->second.first;
+    level = it->second.second;
+    return !family.empty();
+  }
   const RenderModel* m = model(member);
-  if (!m || m->objects.empty()) return false;
+  if (!m || m->objects.empty()) {
+    first_name_cache_.emplace(member, std::pair<std::string, int>{});
+    return false;
+  }
   rmb_lod_part(m->objects.front().name, family, level);
+  first_name_cache_.emplace(member, std::pair<std::string, int>{family, level});
   return true;
+}
+
+void PropModels::trim(size_t max_entries) {
+  if (models_.size() <= max_entries) return;
+  for (auto it = models_.begin(); it != models_.end(); ) {
+    if (it->second) {
+      if (first_name_cache_.find(it->first) == first_name_cache_.end()) {
+        if (!it->second->objects.empty()) {
+          std::string fam;
+          int lvl = -1;
+          rmb_lod_part(it->second->objects.front().name, fam, lvl);
+          first_name_cache_.emplace(it->first, std::pair<std::string, int>{std::move(fam), lvl});
+        } else {
+          first_name_cache_.emplace(it->first, std::pair<std::string, int>{});
+        }
+      }
+      it = models_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 std::vector<uint32_t> PropModels::lod_set(uint32_t member) {

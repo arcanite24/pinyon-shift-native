@@ -22,8 +22,8 @@ std::string base_lower(const std::string& name) {
 bool MemberSource::open(const std::filesystem::path& path, std::string* error) {
   path_ = path;
   archive_.reset();
+  shared_index_.reset();
   files_.clear();
-  members_.clear();
   names_.clear();
   std::error_code ec;
   if (std::filesystem::is_directory(path, ec)) {
@@ -33,26 +33,26 @@ bool MemberSource::open(const std::filesystem::path& path, std::string* error) {
       if (e.is_regular_file(fec)) files_.emplace(base_lower(e.path().filename().string()), usable_path(e.path()));
       return true;
     });
+    names_.reserve(files_.size());
     for (const auto& [name, _] : files_) names_.push_back(name);
     return true;
   }
-  archive_ = Archive::open(path, error);
+  archive_ = Archive::open_shared(path, error);
   if (!archive_) return false;
-  for (const auto& m : archive_->members()) members_.emplace(base_lower(m.name), &m);
-  for (const auto& [name, _] : members_) names_.push_back(name);
+  shared_index_ = archive_->base_name_index();
   return true;
 }
 
 bool MemberSource::contains(const std::string& name) const {
   const std::string key = base_lower(name);
-  return archive_ ? members_.count(key) != 0 : files_.count(key) != 0;
+  return archive_ ? (shared_index_ && shared_index_->by_name.count(key) != 0) : files_.count(key) != 0;
 }
 
 bool MemberSource::read(const std::string& name, std::vector<uint8_t>& out, std::string* error) {
   const std::string key = base_lower(name);
   if (archive_) {
-    const auto it = members_.find(key);
-    if (it == members_.end()) {
+    const auto it = shared_index_->by_name.find(key);
+    if (it == shared_index_->by_name.end()) {
       if (error) *error = name + ": not in " + path_.string();
       return false;
     }
@@ -80,7 +80,7 @@ bool MemberSource::read(const std::string& name, std::vector<uint8_t>& out, std:
 
 std::vector<std::string> MemberSource::with_suffix(const std::string& suffix) const {
   std::vector<std::string> out;
-  for (const auto& n : names_)
+  for (const auto& n : names())
     if (n.size() >= suffix.size() && n.compare(n.size() - suffix.size(), suffix.size(), suffix) == 0)
       out.push_back(n);
   return out;

@@ -1145,6 +1145,7 @@ bool SpectatorCatalog::load_from_media(const std::filesystem::path& media_dir, s
       fill_atlas_cell_solid(tmp_atlas.data(), kAtlasSize, kBlackSlot, kAtlasGrid, kAtlasCell, 0, 0, 0, 255);
       if (!assets.empty()) {
         atlas_rgba = std::move(tmp_atlas);
+        atlas_loaded = true;
       }
     } else if (error) {
       *error = err;

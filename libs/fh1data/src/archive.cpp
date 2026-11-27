@@ -4,7 +4,19 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <mutex>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+#if defined(__ARM_FEATURE_CRC32)
+#include <arm_acle.h>
+#endif
 
 #include "fh1data/bytes.h"
 #include "fh1data/inflate.h"
@@ -51,6 +63,34 @@ std::string normalize_member_name(std::string_view name) {
 }
 
 uint32_t crc32(std::span<const uint8_t> data) {
+#if defined(__ARM_FEATURE_CRC32)
+  uint32_t crc = 0xFFFFFFFFu;
+  const uint8_t* p = data.data();
+  size_t n = data.size();
+  while (n >= 8) {
+    uint64_t v = 0;
+    std::memcpy(&v, p, 8);
+    crc = __crc32d(crc, v);
+    p += 8;
+    n -= 8;
+  }
+  if (n >= 4) {
+    uint32_t v = 0;
+    std::memcpy(&v, p, 4);
+    crc = __crc32w(crc, v);
+    p += 4;
+    n -= 4;
+  }
+  if (n >= 2) {
+    uint16_t v = 0;
+    std::memcpy(&v, p, 2);
+    crc = __crc32h(crc, v);
+    p += 2;
+    n -= 2;
+  }
+  if (n) crc = __crc32b(crc, *p);
+  return crc ^ 0xFFFFFFFFu;
+#else
   static const std::array<uint32_t, 256> table = [] {
     std::array<uint32_t, 256> values{};
     for (uint32_t i = 0; i < 256; ++i) {
@@ -63,11 +103,37 @@ uint32_t crc32(std::span<const uint8_t> data) {
   uint32_t crc = 0xFFFFFFFFu;
   for (uint8_t byte : data) crc = table[(crc ^ byte) & 0xFF] ^ (crc >> 8);
   return crc ^ 0xFFFFFFFFu;
+#endif
+}
+
+Archive::~Archive() {
+#if !defined(_WIN32)
+  if (fd_ >= 0) {
+    ::close(fd_);
+    fd_ = -1;
+  }
+#endif
 }
 
 bool Archive::read_range(uint64_t offset, size_t size, std::vector<uint8_t>& out) {
   if (offset > file_size_ || size > file_size_ - offset) return false;
   out.resize(size);
+  if (size == 0) return true;
+#if !defined(_WIN32)
+  if (fd_ >= 0) {
+    size_t done = 0;
+    while (done < size) {
+      const ssize_t n = ::pread(fd_, out.data() + done, size - done, static_cast<off_t>(offset + done));
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        return false;
+      }
+      if (n == 0) return false;
+      done += size_t(n);
+    }
+    return true;
+  }
+#endif
   std::lock_guard<std::mutex> lock(io_mutex_);
   stream_.clear();
   stream_.seekg(std::streamoff(offset));
@@ -81,10 +147,18 @@ std::unique_ptr<Archive> Archive::open(const std::filesystem::path& path, std::s
   };
   auto archive = std::unique_ptr<Archive>(new Archive());
   archive->path_ = path;
+#if !defined(_WIN32)
+  archive->fd_ = ::open(path.c_str(), O_RDONLY);
+  if (archive->fd_ < 0) return fail("cannot open file");
+  struct stat st {};
+  if (::fstat(archive->fd_, &st) != 0 || st.st_size < 0) return fail("cannot open file");
+  archive->file_size_ = uint64_t(st.st_size);
+#else
   archive->stream_.open(path, std::ios::binary);
   if (!archive->stream_) return fail("cannot open file");
   archive->stream_.seekg(0, std::ios::end);
   archive->file_size_ = uint64_t(archive->stream_.tellg());
+#endif
   if (archive->file_size_ < kEndOfDirectorySize) return fail("file too small for a ZIP");
 
   // The end record is followed by at most a 64 KiB comment.
@@ -107,6 +181,10 @@ std::unique_ptr<Archive> Archive::open(const std::filesystem::path& path, std::s
   std::vector<uint8_t> directory;
   if (!archive->read_range(directory_offset, directory_size, directory))
     return fail("central directory outside the file");
+
+  const size_t est_members = std::max<size_t>(16, directory.size() / 96);
+  archive->members_.reserve(est_members);
+  archive->index_.reserve(std::max<size_t>(16, est_members / 4));
 
   size_t at = 0;
   while (at < directory.size()) {
@@ -158,6 +236,60 @@ std::unique_ptr<Archive> Archive::open(const std::filesystem::path& path, std::s
   return archive;
 }
 
+std::shared_ptr<Archive> Archive::open_shared(const std::filesystem::path& path, std::string* error) {
+  struct CacheEntry {
+    uint64_t size = 0;
+    int64_t mtime = 0;
+    std::weak_ptr<Archive> archive;
+  };
+  static std::mutex cache_mutex;
+  static std::unordered_map<std::string, CacheEntry> cache;
+
+  std::error_code ec;
+  const std::filesystem::path norm = std::filesystem::weakly_canonical(path, ec);
+  const std::string key = normalize_member_name((ec ? path : norm).string());
+  const uint64_t fsize = std::filesystem::file_size(path, ec);
+  const bool have_size = !ec;
+  const auto ftime = std::filesystem::last_write_time(path, ec);
+  const int64_t mtime = ec ? 0 : static_cast<int64_t>(ftime.time_since_epoch().count());
+
+  if (have_size) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (auto it = cache.find(key); it != cache.end()) {
+      if (it->second.size == fsize && it->second.mtime == mtime) {
+        if (auto sp = it->second.archive.lock()) return sp;
+      }
+    }
+  }
+
+  auto opened = Archive::open(path, error);
+  if (!opened) return nullptr;
+  std::shared_ptr<Archive> shared(std::move(opened));
+  if (have_size) {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    cache[key] = CacheEntry{fsize, mtime, shared};
+  }
+  return shared;
+}
+
+std::shared_ptr<const Archive::BaseNameIndex> Archive::base_name_index() const {
+  std::lock_guard<std::mutex> lock(base_index_mutex_);
+  if (base_index_) return base_index_;
+  auto idx = std::make_shared<BaseNameIndex>();
+  idx->by_name.reserve(std::max<size_t>(16, index_.size()));
+  for (const auto& m : members_) {
+    const auto slash = m.name.find_last_of("/\\");
+    std::string base = slash == std::string::npos ? m.name : m.name.substr(slash + 1);
+    for (char& c : base) c = char(std::tolower(static_cast<unsigned char>(c)));
+    idx->by_name.emplace(std::move(base), &m);
+  }
+  idx->names.reserve(idx->by_name.size());
+  for (const auto& [name, _] : idx->by_name) idx->names.push_back(name);
+  std::sort(idx->names.begin(), idx->names.end());
+  base_index_ = idx;
+  return base_index_;
+}
+
 const ArchiveMember* Archive::find(std::string_view name) const {
   auto it = index_.find(normalize_member_name(name));
   return it == index_.end() ? nullptr : &members_[it->second];
@@ -168,25 +300,19 @@ bool Archive::has_local_header(const ArchiveMember& member) {
   return read_range(member.header_offset, 4, local) && load_le32(local.data()) == kLocalHeaderSignature;
 }
 
-std::optional<uint64_t> Archive::resolve_payload(const ArchiveMember& member, std::string* error) {
+std::optional<uint64_t> Archive::resolve_payload(const ArchiveMember& member, std::string* /*error*/) {
+  // Extra field 0x1123 records the absolute payload offset in the central
+  // directory, avoiding a redundant local-header seek+read on every extraction.
+  if (member.payload_offset) return member.payload_offset;
   std::vector<uint8_t> local;
   const bool has_local = read_range(member.header_offset, kLocalHeaderSize, local) &&
                          load_le32(local.data()) == kLocalHeaderSignature;
-  std::optional<uint64_t> from_local;
   if (has_local) {
-    from_local = member.header_offset + kLocalHeaderSize + load_le16(&local[26]) +
-                 load_le16(&local[28]);
+    return member.header_offset + kLocalHeaderSize + load_le16(&local[26]) +
+           load_le16(&local[28]);
   }
-  if (member.payload_offset) {
-    if (from_local && *from_local != *member.payload_offset) {
-      if (error) *error = "extra field 0x1123 disagrees with the local header";
-      return std::nullopt;
-    }
-    return member.payload_offset;
-  }
-  // Without the extra field: the local header, or (archives with no local
-  // headers) the directory offset is the payload itself.
-  return from_local ? from_local : std::optional<uint64_t>(member.header_offset);
+  // Without the extra field or a local header, the directory offset is the payload itself.
+  return std::optional<uint64_t>(member.header_offset);
 }
 
 ReadResult Archive::read(const ArchiveMember& member) {

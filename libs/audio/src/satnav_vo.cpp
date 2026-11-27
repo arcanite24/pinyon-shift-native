@@ -15,6 +15,10 @@
 #include "audio/xma_decode.h"
 #include "cars/mods.h"
 
+#if defined(__ANDROID__) || defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 namespace audio {
 namespace {
 
@@ -71,15 +75,18 @@ void write_cached_pcm(const std::filesystem::path& p, const PcmSample& s) {
 
 bool decode_fsb_clip(const std::filesystem::path& bank_path, uint32_t subsound, const std::filesystem::path& ffmpeg,
                      const std::filesystem::path& temp_dir, PcmSample& out) {
-  std::vector<uint8_t> bank_data;
-  if (!read_bytes(bank_path, bank_data)) return false;
   std::vector<FsbSample> samples;
-  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
+  if (!read_fsb4_file_headers(bank_path, samples, nullptr) || subsound >= samples.size()) return false;
   const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
+  if (s.bytes == 0) return false;
   const int rate = s.rate > 0 ? s.rate : 48000;
   if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    std::ifstream bf(bank_path, std::ios::binary);
+    if (!bf) return false;
+    bf.seekg(std::streamoff(s.offset));
+    std::vector<uint8_t> payload(s.bytes);
+    if (!bf.read(reinterpret_cast<char*>(payload.data()), std::streamsize(s.bytes))) return false;
+    const auto span = std::span<const uint8_t>(payload);
     if (decode_xma2_mono(s, span, out, nullptr)) return true;
     if (ffmpeg.empty()) return false;
     const auto wave = xma2_wave(s, span);
@@ -295,10 +302,7 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
   // Also allow fallback by FSB subsound filename substring if a FEV path differs.
   const std::filesystem::path default_fsb = cars::mods::resolve(vo_dir / ("SatNav_" + lang + ".fsb"));
   std::vector<FsbSample> fsb_samples;
-  {
-    std::vector<uint8_t> bytes;
-    if (read_bytes(default_fsb, bytes)) read_fsb4(bytes, fsb_samples, nullptr);
-  }
+  read_fsb4_file_headers(default_fsb, fsb_samples, nullptr);
 
   std::vector<DecodeJob> jobs;
   for (const auto& sp : kSatNavCueSpecs) {
@@ -396,6 +400,9 @@ bool SatNavVoPlayer::load(const std::filesystem::path& game_root, const std::fil
 void SatNavVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem::path cache_dir) {
   stop_worker_.store(false, std::memory_order_release);
   worker_ = std::thread([this, jobs = std::move(jobs), cache_dir = std::move(cache_dir)]() {
+#if defined(__ANDROID__) || defined(__linux__)
+    setpriority(PRIO_PROCESS, 0, 10);
+#endif
     const std::filesystem::path ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
     std::error_code ec;
     const std::filesystem::path cdir = cache_dir.empty() ? std::filesystem::path{} : (cache_dir / "satnav");

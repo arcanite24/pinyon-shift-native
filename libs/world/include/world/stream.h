@@ -7,7 +7,6 @@
 // Without one it falls back to the earlier stand-in: the gathered
 // world-space render triangles, with a placeholder grip per surface class.
 #pragma once
-#include <any>
 #include <functional>
 #include <future>
 #include <memory>
@@ -27,7 +26,7 @@ class Streamer {
   // Work done with each gather's mesh before it is handed over (for
   // instance building draw data), on the worker when async: its result is
   // `prepared()`.
-  using Prepare = std::function<std::any(const Mesh& mesh, double centre_x, double centre_z)>;
+  using Prepare = std::function<std::shared_ptr<void>(const Mesh& mesh, double centre_x, double centre_z)>;
 
   // `collision`: the ground source (null: the render-triangle stand-in),
   // loaded within `collision_radius` of the centre.
@@ -82,7 +81,7 @@ class Streamer {
   // immediately after prepare_() finishes, slashing peak RAM during GPU staging.
   void set_compact_mesh_after_prepare(bool on) { compact_after_prepare_ = on; }
   // The Prepare result of the mesh in use (moved out by the caller).
-  std::any& prepared() { return prepared_; }
+  std::shared_ptr<void>& prepared() { return prepared_; }
   bool gathering() const { return job_.valid(); }
   // Seconds the last gather took (on whichever thread ran it).
   double last_gather_seconds() const { return last_seconds_; }
@@ -125,7 +124,7 @@ class Streamer {
     std::unique_ptr<drive::MeshGround> ground;
     std::unique_ptr<drive::Ground> composite_ground;
     std::vector<uint32_t> ground_source;
-    std::any prepared;
+    std::shared_ptr<void> prepared;
     double x = 0, z = 0, seconds = 0;
     bool ok = false;
     std::string error;
@@ -159,7 +158,7 @@ class Streamer {
   bool lead_ = false;
   bool compact_after_prepare_ = false;
   Prepare prepare_;
-  std::any prepared_;
+  std::shared_ptr<void> prepared_;
   double last_seconds_ = 0;
   std::future<std::unique_ptr<Gathered>> job_;
   // The gather a swap replaced, freed on another thread (its meshes take
