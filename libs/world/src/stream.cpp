@@ -261,7 +261,43 @@ std::unique_ptr<Streamer::Gathered> Streamer::gather_now(double x, double z) con
     }
   }
   if (collision_) {
-    g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
+    // Consult local SHNC0001 NativeCache for pre-built SIMD BVH4 collision before rebuilding.
+    if (native_cache_ && !positions.empty()) {
+      uint64_t fp = fh1::native_cache_hash64(
+          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(positions.data()),
+                                   positions.size() * sizeof(std::array<float, 3>)));
+      fp = fh1::native_cache_hash64(
+          std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(grip.data()),
+                                   grip.size() * sizeof(float)),
+          fp);
+      if (!surface.empty()) {
+        fp = fh1::native_cache_hash64(
+            std::span<const uint8_t>(surface.data(), surface.size()), fp);
+      }
+      char kbuf[80];
+      std::snprintf(kbuf, sizeof(kbuf), "stream_bvh4_%d_%d_%016llx",
+                    static_cast<int>(std::floor(x / 64.0)),
+                    static_cast<int>(std::floor(z / 64.0)),
+                    static_cast<unsigned long long>(fp));
+      const std::string key(kbuf);
+      std::vector<uint8_t> cached;
+      if (native_cache_->get(fh1::NativeCacheKind::kCollisionBvh4, key, fp, cached)) {
+        g->ground = drive::MeshGround::deserialize_bvh4(cached);
+      }
+      if (!g->ground) {
+        g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
+        auto blob = std::make_shared<std::vector<uint8_t>>(g->ground->serialize_bvh4());
+        if (native_cache_writer_) {
+          native_cache_writer_->enqueue(
+              fh1::NativeCacheKind::kCollisionBvh4, key, fp,
+              [blob]() mutable { return std::move(*blob); });
+        } else {
+          native_cache_->put(fh1::NativeCacheKind::kCollisionBvh4, key, fp, *blob);
+        }
+      }
+    } else {
+      g->ground = std::make_unique<drive::MeshGround>(std::move(positions), std::move(grip), std::move(surface));
+    }
     std::vector<drive::SurfaceTyre> tyres;
     for (const auto& s : collision_->surfaces()) {
       drive::SurfaceTyre t;

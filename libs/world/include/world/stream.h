@@ -13,6 +13,7 @@
 #include <string>
 
 #include "drive/mesh_ground.h"
+#include "fh1data/native_cache.h"
 #include "world/collision.h"
 #include "world/world.h"
 
@@ -80,6 +81,12 @@ class Streamer {
   // When true, compacts g->mesh down to road-only positions inside gather_now()
   // immediately after prepare_() finishes, slashing peak RAM during GPU staging.
   void set_compact_mesh_after_prepare(bool on) { compact_after_prepare_ = on; }
+  // Optional local SHNC0001 NativeCache for pre-built MeshGround BVH4 collision tiles.
+  void set_native_cache(fh1::NativeCache* cache) {
+    native_cache_ = cache;
+    native_cache_writer_ = cache ? std::make_unique<fh1::AsyncNativeCacheWriter>(*cache) : nullptr;
+  }
+  fh1::NativeCache* native_cache() const noexcept { return native_cache_; }
   // The Prepare result of the mesh in use (moved out by the caller).
   std::shared_ptr<void>& prepared() { return prepared_; }
   bool gathering() const { return job_.valid(); }
@@ -157,6 +164,8 @@ class Streamer {
   bool async_ = false;
   bool lead_ = false;
   bool compact_after_prepare_ = false;
+  fh1::NativeCache* native_cache_ = nullptr;
+  mutable std::unique_ptr<fh1::AsyncNativeCacheWriter> native_cache_writer_;
   Prepare prepare_;
   std::shared_ptr<void> prepared_;
   double last_seconds_ = 0;

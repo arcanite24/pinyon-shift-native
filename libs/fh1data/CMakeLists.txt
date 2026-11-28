@@ -15,7 +15,8 @@ add_library(fh1data STATIC
   src/cjk_font.cpp
   src/ui_scene.cpp
   src/ui_overlay.cpp
-  src/spa.cpp)
+  src/spa.cpp
+  src/native_cache.cpp)
 target_include_directories(fh1data PUBLIC include)
 target_link_libraries(fh1data PRIVATE shift_mspack_lzxd)
 if(MSVC)
