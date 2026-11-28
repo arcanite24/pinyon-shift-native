@@ -1,6 +1,7 @@
 #include "traffic/bodies.h"
 
 #include "drive/contact.h"
+#include "fh1data/worker_pool.h"
 
 #include <algorithm>
 #include <cmath>
@@ -163,17 +164,17 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
   // recently struck or off-line traffic car into full physics so high-speed
   // pileups transfer momentum realistically instead of clipping kinematic cars.
   {
-    std::vector<P3> struck_positions;
+    struck_positions_scratch_.clear();
     for (const auto& c : cars) {
       const auto it = bodies_.find(c.id);
       const bool recently_struck = c.off_line || (it != bodies_.end() && it->second.since_contact < 2.5);
-      if (recently_struck) struck_positions.push_back(c.position);
+      if (recently_struck) struck_positions_scratch_.push_back(c.position);
     }
-    if (!struck_positions.empty()) {
+    if (!struck_positions_scratch_.empty()) {
       constexpr double kChainPromoteDistSq = 22.0 * 22.0;
       for (auto& c : cars) {
         if (c.physics) continue;
-        for (const auto& sp : struck_positions) {
+        for (const auto& sp : struck_positions_scratch_) {
           const double dx = c.position.x - sp.x, dz = c.position.z - sp.z;
           if (dx * dx + dz * dz <= kChainPromoteDistSq) {
             c.physics = true;
@@ -184,11 +185,13 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     }
   }
   // Drop the bodies of cars gone or back to kinematic.
-  std::set<uint32_t> wanted;
+  wanted_scratch_.clear();
   for (const auto& c : cars)
-    if (c.physics) wanted.insert(c.id);
+    if (c.physics) wanted_scratch_.push_back(c.id);
+  std::sort(wanted_scratch_.begin(), wanted_scratch_.end());
   for (auto it = bodies_.begin(); it != bodies_.end();)
-    it = wanted.count(it->first) ? std::next(it) : bodies_.erase(it);
+    it = std::binary_search(wanted_scratch_.begin(), wanted_scratch_.end(), it->first) ? std::next(it)
+                                                                                       : bodies_.erase(it);
   // Make the new ones on the move, from the lane pose (verify ground exists first so
   // Race AI promotions near streamed collision edges never drop a car through a hole).
   for (const auto& c : cars) {
@@ -204,11 +207,16 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     bodies_.emplace(c.id, std::move(b));
   }
   for (auto& c : cars) c.body = bodies_.count(c.id) > 0;
-  // Drive and step.
+  // Drive and step promoted traffic vehicles in parallel on the frame-critical job lane.
+  active_bodies_scratch_.clear();
+  active_bodies_scratch_.reserve(bodies_.size());
   for (const auto& c : cars) {
     const auto it = bodies_.find(c.id);
-    if (it == bodies_.end()) continue;
-    Body& b = it->second;
+    if (it != bodies_.end()) active_bodies_scratch_.push_back({&c, &it->second});
+  }
+  auto step_traffic_body = [&](size_t idx) {
+    const Car& c = *active_bodies_scratch_[idx].car;
+    Body& b = *active_bodies_scratch_[idx].body;
     b.since_contact += drive::Vehicle::kStep;
     if (!c.off_line && b.since_contact >= o_.hold_after_contact) {
       // Smooth pursuit chord along the lane so junctions never produce a 90-deg rail snap
@@ -254,16 +262,17 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
       w.z *= wd;
       b.v->set_velocity(v, w);
     }
-  }
+  };
+  fh1::parallel_for_frame(active_bodies_scratch_.size(), step_traffic_body);
   // Contacts: resolve player-vs-traffic first so struck traffic immediately receives
   // impact momentum, then run an iterative pairwise traffic-vs-traffic solver (up to
   // 3 passes) so multi-car pileups propagate momentum cleanly through secondary impacts.
-  std::vector<Body*> list;
-  list.reserve(bodies_.size());
-  for (auto& [id, b] : bodies_) list.push_back(&b);
+  body_list_scratch_.clear();
+  body_list_scratch_.reserve(bodies_.size());
+  for (auto& [id, b] : bodies_) body_list_scratch_.push_back(&b);
   step_player_ = 0;
   if (player) {
-    for (Body* b : list) {
+    for (Body* b : body_list_scratch_) {
       double j = 0;
       // SPEC-TRAFFIC / PhysicsSettings.ini [Collision]: PlayerTorqueScale = 0.0.
       if (collide(*player, 0.0, *b->v, o_.torque_scale, &j)) {
@@ -274,16 +283,21 @@ void Bodies::step(const drive::Ground& ground, drive::Vehicle* player) {
     }
   }
   constexpr int kMaxPileupPasses = 3;
-  std::set<std::pair<size_t, size_t>> counted_pairs;
+  counted_pairs_scratch_.clear();
   for (int pass = 0; pass < kMaxPileupPasses; ++pass) {
     bool any_hit = false;
-    for (size_t i = 0; i < list.size(); ++i) {
-      for (size_t k = i + 1; k < list.size(); ++k) {
-        if (collide(*list[i]->v, o_.torque_scale, *list[k]->v, o_.torque_scale)) {
+    for (size_t i = 0; i < body_list_scratch_.size(); ++i) {
+      for (size_t k = i + 1; k < body_list_scratch_.size(); ++k) {
+        if (collide(*body_list_scratch_[i]->v, o_.torque_scale, *body_list_scratch_[k]->v, o_.torque_scale)) {
           any_hit = true;
-          if (counted_pairs.insert({i, k}).second) ++contacts_;
-          list[i]->since_contact = 0.0;
-          list[k]->since_contact = 0.0;
+          const uint64_t pair_key = (uint64_t(i) << 32) | uint64_t(k);
+          if (std::find(counted_pairs_scratch_.begin(), counted_pairs_scratch_.end(), pair_key) ==
+              counted_pairs_scratch_.end()) {
+            counted_pairs_scratch_.push_back(pair_key);
+            ++contacts_;
+          }
+          body_list_scratch_[i]->since_contact = 0.0;
+          body_list_scratch_[k]->since_contact = 0.0;
         }
       }
     }

@@ -8,6 +8,7 @@
 #include <iterator>
 #include <mutex>
 #include <system_error>
+#include <unordered_map>
 
 #include "audio/stream.h"
 
@@ -49,6 +50,54 @@ bool read_file_all(const std::filesystem::path& p, std::vector<uint8_t>& out) {
   if (!f) return false;
   out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
   return !out.empty();
+}
+
+// Persistent per-bank FSB4 header index cache: parses each .fsb header once instead
+// of re-reading entire 50-200 MiB banks into RAM for every clip decode.
+struct CachedFsbBank {
+  uint64_t file_size = 0;
+  std::filesystem::file_time_type mtime{};
+  std::vector<FsbSample> samples;
+};
+
+bool get_cached_fsb4_sample(const std::filesystem::path& bank_path, uint32_t subsound, FsbSample& out_sample) {
+  std::error_code ec;
+  const uint64_t fsz = std::filesystem::file_size(bank_path, ec);
+  if (ec || fsz == 0) return false;
+  const auto mt = std::filesystem::last_write_time(bank_path, ec);
+  const std::string key = bank_path.lexically_normal().string();
+
+  static std::mutex s_bank_mu;
+  static std::unordered_map<std::string, CachedFsbBank> s_bank_cache;
+  {
+    std::lock_guard<std::mutex> lk(s_bank_mu);
+    auto it = s_bank_cache.find(key);
+    if (it != s_bank_cache.end() && it->second.file_size == fsz && it->second.mtime == mt) {
+      if (subsound >= it->second.samples.size()) return false;
+      out_sample = it->second.samples[subsound];
+      return true;
+    }
+  }
+
+  std::vector<FsbSample> parsed;
+  if (!read_fsb4_file_headers(bank_path, parsed, nullptr)) return false;
+  const bool valid = subsound < parsed.size();
+  if (valid) out_sample = parsed[subsound];
+  {
+    std::lock_guard<std::mutex> lk(s_bank_mu);
+    s_bank_cache[key] = CachedFsbBank{fsz, mt, std::move(parsed)};
+  }
+  return valid;
+}
+
+bool read_file_range(const std::filesystem::path& p, uint64_t offset, uint32_t bytes, std::vector<uint8_t>& out) {
+  if (bytes == 0) return false;
+  std::ifstream f(p, std::ios::binary);
+  if (!f) return false;
+  f.seekg(std::streamoff(offset), std::ios::beg);
+  if (!f) return false;
+  out.resize(bytes);
+  return bool(f.read(reinterpret_cast<char*>(out.data()), std::streamsize(bytes)));
 }
 
 bool write_file_all(const std::filesystem::path& p, const void* data, size_t n) {
@@ -139,9 +188,17 @@ bool decode_xma2_interleaved(const FsbSample& s, std::span<const uint8_t> raw_xm
     return false;
   }
 
-  // Build standard 34-byte XMA2WAVEFORMATEX extradata (matches xma2_wave()).
+  // Build standard 34-byte XMA2WAVEFORMATEX extradata (matches xma2_wave() speaker masks).
   const uint16_t num_streams = uint16_t((ch + 1) / 2);
-  const uint32_t channel_mask = (ch == 1) ? 0x4u : (ch == 2 ? 0x3u : ((1u << ch) - 1u));
+  uint32_t channel_mask = 0x3u;
+  switch (ch) {
+    case 1:  channel_mask = 0x4u; break;     // FC
+    case 2:  channel_mask = 0x3u; break;     // FL | FR
+    case 4:  channel_mask = 0x33u; break;    // FL | FR | BL | BR (quad)
+    case 6:  channel_mask = 0x3Fu; break;    // 5.1 (FL|FR|FC|LFE|BL|BR)
+    case 8:  channel_mask = 0x63Fu; break;   // 7.1
+    default: channel_mask = (1u << ch) - 1u; break;
+  }
   std::vector<uint8_t> extra;
   extra.reserve(34);
   put16_le(extra, num_streams);
@@ -238,7 +295,13 @@ bool decode_xma2_interleaved(const FsbSample& s, std::span<const uint8_t> raw_xm
     }
   };
 
-  if (s.frames > 0) interleaved_out.reserve(size_t(s.frames + 4096) * size_t(ch));
+  // Cap reserve/resize by a sane bound derived from decoded payload size (XMA2 max ~25:1 compression
+  // plus 64K frames slack) so malformed FSB headers cannot trigger multi-GB OOM allocations.
+  constexpr size_t kMaxSaneFrames = 48000ull * 900ull;  // 15 min @ 48 kHz
+  const size_t max_expected_frames = std::min<size_t>(kMaxSaneFrames, aligned_bytes * 16ull + 65536ull);
+  if (s.frames > 0 && size_t(s.frames) <= max_expected_frames) {
+    interleaved_out.reserve(size_t(s.frames + 4096) * size_t(ch));
+  }
 
   for (size_t off = 0; off + kXmaPacket <= aligned_bytes; off += kXmaPacket) {
     if (av_new_packet(pkt, int(kXmaPacket)) < 0) break;
@@ -268,7 +331,7 @@ bool decode_xma2_interleaved(const FsbSample& s, std::span<const uint8_t> raw_xm
     if (error) *error = "XMA2 decoder produced 0 frames";
     return false;
   }
-  if (s.frames > 0) {
+  if (s.frames > 0 && size_t(s.frames) <= max_expected_frames) {
     const size_t target = size_t(s.frames) * size_t(ch);
     interleaved_out.resize(target, 0.0f);
   }
@@ -300,15 +363,13 @@ bool decode_xma2_mono(const FsbSample& s, std::span<const uint8_t> raw_xma, PcmS
 
 bool decode_fsb_subsound_mono(const std::filesystem::path& bank_path, uint32_t subsound, PcmSample& out,
                               const std::filesystem::path& ffmpeg_fallback, const std::filesystem::path& temp_dir) {
-  std::vector<uint8_t> bank_data;
-  if (!read_file_all(bank_path, bank_data)) return false;
-  std::vector<FsbSample> samples;
-  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
-  const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
+  FsbSample s{};
+  if (!get_cached_fsb4_sample(bank_path, subsound, s) || s.bytes == 0) return false;
   const int rate = s.rate > 0 ? s.rate : 48000;
   if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    std::vector<uint8_t> clip_bytes;
+    if (!read_file_range(bank_path, s.offset, s.bytes, clip_bytes)) return false;
+    const auto span = std::span<const uint8_t>(clip_bytes);
     if (decode_xma2_mono(s, span, out, nullptr)) return true;
     std::vector<float> inter;
     int ch = 0, dr = 0;
@@ -344,15 +405,13 @@ bool decode_fsb_subsound_stereo(const std::filesystem::path& bank_path, uint32_t
                                 const std::filesystem::path& ffmpeg_fallback, const std::filesystem::path& temp_dir) {
   stereo_interleaved.clear();
   out_rate = 0;
-  std::vector<uint8_t> bank_data;
-  if (!read_file_all(bank_path, bank_data)) return false;
-  std::vector<FsbSample> samples;
-  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
-  const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
+  FsbSample s{};
+  if (!get_cached_fsb4_sample(bank_path, subsound, s) || s.bytes == 0) return false;
   const int rate = s.rate > 0 ? s.rate : 48000;
   if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
+    std::vector<uint8_t> clip_bytes;
+    if (!read_file_range(bank_path, s.offset, s.bytes, clip_bytes)) return false;
+    const auto span = std::span<const uint8_t>(clip_bytes);
     std::vector<float> inter;
     int ch = 0, dr = 0;
     if (!decode_xma2_interleaved(s, span, inter, ch, dr, nullptr) &&
@@ -361,16 +420,17 @@ bool decode_fsb_subsound_stereo(const std::filesystem::path& bank_path, uint32_t
     }
     const size_t frames = inter.size() / size_t(std::max(1, ch));
     out_rate = dr;
-    stereo_interleaved.resize(frames * 2);
     if (ch == 2) {
       stereo_interleaved = std::move(inter);
     } else if (ch == 1) {
+      stereo_interleaved.resize(frames * 2);
       for (size_t i = 0; i < frames; ++i) {
         stereo_interleaved[2 * i] = inter[i];
         stereo_interleaved[2 * i + 1] = inter[i];
       }
     } else if (ch >= 6) {
       // Standard 5.1 -> stereo fold (FL, FR, C, LFE, RL, RR).
+      stereo_interleaved.resize(frames * 2);
       constexpr float kFold = 0.70710678f;
       for (size_t i = 0; i < frames; ++i) {
         const float* f = &inter[i * size_t(ch)];
@@ -378,6 +438,7 @@ bool decode_fsb_subsound_stereo(const std::filesystem::path& bank_path, uint32_t
         stereo_interleaved[2 * i + 1] = std::clamp(f[1] + kFold * f[2] + kFold * f[5], -1.0f, 1.0f);
       }
     } else {
+      stereo_interleaved.resize(frames * 2);
       for (size_t i = 0; i < frames; ++i) {
         stereo_interleaved[2 * i] = inter[i * size_t(ch)];
         stereo_interleaved[2 * i + 1] = inter[i * size_t(ch) + 1];

@@ -1,14 +1,11 @@
-// A static triangle mesh as ground: a bounding-volume hierarchy over the
-// triangles, raycast by the suspension like any drive::Ground.
-//
-// M3 stand-in: until COLLISION.md says what the game collides with, the
-// engine drives on its render triangles (libs/world builds them). The mesh
-// is just another Ground, so the real collision source replaces it without
-// touching the vehicle. The grip per triangle is ours too (a placeholder
-// per surface class), until the spec names surfaces.
+// A static triangle mesh as ground: a 4-wide SIMD bounding-volume hierarchy
+// (BVH4) with inline SoA triangle packets, raycast by suspension and body
+// collision like any drive::Ground.
 #pragma once
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <span>
 #include <vector>
 
 #include "drive/vehicle.h"
@@ -34,24 +31,55 @@ class MeshGround : public Ground {
   void set_surface_tyres(std::vector<SurfaceTyre> tyres) { tyres_ = std::move(tyres); }
 
   size_t triangle_count() const { return positions_.size() / 3; }
-  size_t node_count() const { return nodes_.size(); }
+  size_t node_count() const { return bvh4_.size(); }
+  size_t packet_count() const { return packets_.size(); }
   int depth() const { return depth_; }
 
+  // Serializes the pre-built SIMD BVH4 + triangle packets + collision attributes
+  // into a compact little-endian blob so NativeCache can reload tiles without
+  // rebuilding the BVH at runtime.
+  std::vector<uint8_t> serialize_bvh4() const;
+
+  // Restores a MeshGround directly from a serialize_bvh4() blob.
+  // Returns nullptr if the header, bounds, or node/packet indices are invalid.
+  static std::unique_ptr<MeshGround> deserialize_bvh4(std::span<const uint8_t> bytes);
+
  private:
-  struct Node {
-    std::array<float, 3> lo, hi;
-    uint32_t first = 0, count = 0;  // leaf: triangles [first, first + count) of order_
-    uint32_t left = 0, right = 0;   // inner (count == 0): children
+  MeshGround() = default;
+  // 128-byte (2 cache lines) 4-wide SoA BVH4 node.
+  // child[c] >= 0: internal Bvh4Node index;
+  // child[c] < 0 and != INT32_MIN: leaf starting at packet -(child[c] + 1) with count[c] TriPacket4s;
+  // child[c] == INT32_MIN: empty slot (lo = +FLT_MAX, hi = -FLT_MAX).
+  struct alignas(64) Bvh4Node {
+    float lo_x[4];
+    float lo_y[4];
+    float lo_z[4];
+    float hi_x[4];
+    float hi_y[4];
+    float hi_z[4];
+    int32_t child[4];
+    uint16_t count[4];
+    uint32_t pad[2];
   };
-  uint32_t build(uint32_t first, uint32_t count, int depth);
+  static_assert(sizeof(Bvh4Node) == 128);
+
+  // 4 triangles packed contiguously in SoA layout for 4-wide SIMD Moller-Trumbore.
+  struct alignas(16) TriPacket4 {
+    float ax[4], ay[4], az[4];
+    float e1x[4], e1y[4], e1z[4];
+    float e2x[4], e2y[4], e2z[4];
+    uint32_t tri_idx[4];
+    uint32_t valid_mask;  // bits 0..3 indicate active lanes
+    uint32_t pad[3];
+  };
+  static_assert(sizeof(TriPacket4) == 176);
 
   std::vector<std::array<float, 3>> positions_;
   std::vector<float> grip_;
   std::vector<uint8_t> surface_;
   std::vector<SurfaceTyre> tyres_;
-  std::vector<uint32_t> order_;
-  std::vector<std::array<float, 3>> centroid_;
-  std::vector<Node> nodes_;
+  std::vector<Bvh4Node> bvh4_;
+  std::vector<TriPacket4> packets_;
   int depth_ = 0;
 };
 

@@ -383,6 +383,7 @@ std::string PropModels::member_name(uint32_t member, const std::string& prefix) 
 
 const RenderModel* PropModels::model(uint32_t member, std::string* error) {
   if (const auto it = models_.find(member); it != models_.end()) {
+    if (it->second) last_used_[member] = ++access_tick_;
     if (!it->second && error) *error = errors_[member];
     return it->second.get();
   }
@@ -399,6 +400,7 @@ const RenderModel* PropModels::model(uint32_t member, std::string* error) {
       std::string ignored;
       parse_render_materials(bytes, *m, &ignored);
       slot = std::move(m);
+      last_used_[member] = ++access_tick_;
     }
     else why = name + ": " + why;
   }
@@ -446,6 +448,7 @@ void PropModels::preload(const std::vector<uint32_t>& members) {
     const uint32_t m = todo[i];
     if (results[i].model) {
       models_[m] = std::move(results[i].model);
+      last_used_[m] = ++access_tick_;
     } else {
       models_[m] = nullptr;
       errors_[m] = std::move(results[i].why);
@@ -470,23 +473,33 @@ bool PropModels::first_name(uint32_t member, std::string& family, int& level) {
 }
 
 void PropModels::trim(size_t max_entries) {
-  if (models_.size() <= max_entries) return;
-  for (auto it = models_.begin(); it != models_.end(); ) {
-    if (it->second) {
-      if (first_name_cache_.find(it->first) == first_name_cache_.end()) {
-        if (!it->second->objects.empty()) {
-          std::string fam;
-          int lvl = -1;
-          rmb_lod_part(it->second->objects.front().name, fam, lvl);
-          first_name_cache_.emplace(it->first, std::pair<std::string, int>{std::move(fam), lvl});
-        } else {
-          first_name_cache_.emplace(it->first, std::pair<std::string, int>{});
-        }
+  std::vector<std::pair<uint64_t, uint32_t>> loaded;
+  loaded.reserve(models_.size());
+  for (const auto& [member, ptr] : models_) {
+    if (!ptr) continue;
+    const auto uit = last_used_.find(member);
+    loaded.emplace_back(uit != last_used_.end() ? uit->second : 0ull, member);
+  }
+  if (loaded.size() <= max_entries) return;
+  const size_t evict_count = loaded.size() - max_entries;
+  std::nth_element(loaded.begin(), loaded.begin() + ptrdiff_t(evict_count), loaded.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (size_t i = 0; i < evict_count; ++i) {
+    const uint32_t member = loaded[i].second;
+    const auto it = models_.find(member);
+    if (it == models_.end() || !it->second) continue;
+    if (first_name_cache_.find(member) == first_name_cache_.end()) {
+      if (!it->second->objects.empty()) {
+        std::string fam;
+        int lvl = -1;
+        rmb_lod_part(it->second->objects.front().name, fam, lvl);
+        first_name_cache_.emplace(member, std::pair<std::string, int>{std::move(fam), lvl});
+      } else {
+        first_name_cache_.emplace(member, std::pair<std::string, int>{});
       }
-      it = models_.erase(it);
-    } else {
-      ++it;
     }
+    models_.erase(it);
+    last_used_.erase(member);
   }
 }
 

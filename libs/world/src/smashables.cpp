@@ -17,6 +17,7 @@
 #include "fh1data/placements.h"
 #include "fh1data/props.h"
 #include "fh1data/rmb.h"
+#include "fh1data/worker_pool.h"
 #include "fh1data/world_texture.h"
 
 namespace world {
@@ -1344,68 +1345,54 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
       std::vector<std::vector<PvszStatic>> per_zone_static(pvsz_names.size());
       {
         const size_t n = pvsz_names.size();
-        const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
-        std::atomic<size_t> next{0};
-        auto worker = [&]() {
-          std::vector<uint8_t> bytes;
-          for (;;) {
-            const size_t zi = next.fetch_add(1, std::memory_order_relaxed);
-            if (zi >= n) break;
-            fh1::PvszZone zone;
-            if (!impl_->source.read(pvsz_names[zi], bytes, nullptr) ||
-                !fh1::parse_pvsz(bytes, zone, nullptr, fh1::PvszStartRule::kMostRigid))
+        fh1::parallel_for(n, [&](size_t zi) {
+          thread_local std::vector<uint8_t> bytes;
+          fh1::PvszZone zone;
+          if (!impl_->source.read(pvsz_names[zi], bytes, nullptr) ||
+              !fh1::parse_pvsz(bytes, zone, nullptr, fh1::PvszStartRule::kMostRigid))
+            return;
+          auto& dst = per_zone[zi];
+          auto& sdst = per_zone_static[zi];
+          for (size_t k = 0; k < zone.ids.size() && k < zone.records.size(); ++k) {
+            const auto& rec = zone.records[k];
+            if (std::fabs(rec.position[0]) < 1e-3f && std::fabs(rec.position[1]) < 1e-3f &&
+                std::fabs(rec.position[2]) < 1e-3f)
               continue;
-            auto& dst = per_zone[zi];
-            auto& sdst = per_zone_static[zi];
-            for (size_t k = 0; k < zone.ids.size() && k < zone.records.size(); ++k) {
-              const auto& rec = zone.records[k];
-              if (std::fabs(rec.position[0]) < 1e-3f && std::fabs(rec.position[1]) < 1e-3f &&
-                  std::fabs(rec.position[2]) < 1e-3f)
+            const uint32_t oid = fh1::pvsz_object_id(zone.ids[k]);
+            if (rec.extended && rec.word < max_g) {
+              PvszPlacement s;
+              s.object_id = oid;
+              s.global_index = rec.word;
+              if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
+              s.pos = rec.position;
+              // R_game = M * F (col0 = h0..2, col1 = h3..5, col2 = -h6..8 -> right-handed SO(3), det = +1).
+              s.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
+              s.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
+              s.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
+              s.routes = rec.extra;
+              s.name = to_lower(rec.name);
+              dst.push_back(std::move(s));
+            } else if (oid < impl_->table.objects.size()) {
+              const std::string low_name = rec.extended ? to_lower(rec.name) : std::string{};
+              if (low_name.rfind("bf_", 0) == 0 || low_name.rfind("flyer_", 0) == 0 ||
+                  low_name.rfind("speed_", 0) == 0 || low_name.rfind("average_", 0) == 0 ||
+                  low_name.rfind("barnfind_", 0) == 0 || low_name.rfind("e3_", 0) == 0 ||
+                  low_name.find("_node") != std::string::npos || low_name.find("_endnode") != std::string::npos) {
                 continue;
-              const uint32_t oid = fh1::pvsz_object_id(zone.ids[k]);
-              if (rec.extended && rec.word < max_g) {
-                PvszPlacement s;
-                s.object_id = oid;
-                s.global_index = rec.word;
-                if (oid < impl_->table.objects.size()) s.intact_member = int32_t(impl_->table.objects[oid].member);
-                s.pos = rec.position;
-                // R_game = M * F (col0 = h0..2, col1 = h3..5, col2 = -h6..8 -> right-handed SO(3), det = +1).
-                s.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
-                s.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
-                s.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
-                s.routes = rec.extra;
-                s.name = to_lower(rec.name);
-                dst.push_back(std::move(s));
-              } else if (oid < impl_->table.objects.size()) {
-                const std::string low_name = rec.extended ? to_lower(rec.name) : std::string{};
-                if (low_name.rfind("bf_", 0) == 0 || low_name.rfind("flyer_", 0) == 0 ||
-                    low_name.rfind("speed_", 0) == 0 || low_name.rfind("average_", 0) == 0 ||
-                    low_name.rfind("barnfind_", 0) == 0 || low_name.rfind("e3_", 0) == 0 ||
-                    low_name.find("_node") != std::string::npos || low_name.find("_endnode") != std::string::npos) {
-                  continue;
-                }
-                PvszStatic st;
-                st.object_id = oid;
-                st.member = impl_->table.objects[oid].member;
-                st.pos = rec.position;
-                st.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
-                st.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
-                st.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
-                if (rec.extended) st.routes = rec.extra;
-                st.name = low_name;
-                sdst.push_back(std::move(st));
               }
+              PvszStatic st;
+              st.object_id = oid;
+              st.member = impl_->table.objects[oid].member;
+              st.pos = rec.position;
+              st.x_axis = {rec.rotation[0], rec.rotation[1], rec.rotation[2]};
+              st.y_axis = {rec.rotation[3], rec.rotation[4], rec.rotation[5]};
+              st.z_axis = {-rec.rotation[6], -rec.rotation[7], -rec.rotation[8]};
+              if (rec.extended) st.routes = rec.extra;
+              st.name = low_name;
+              sdst.push_back(std::move(st));
             }
           }
-        };
-        if (threads > 1 && n >= 4) {
-          std::vector<std::thread> pool;
-          pool.reserve(threads);
-          for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
-          for (auto& w : pool) w.join();
-        } else {
-          worker();
-        }
+        });
       }
 
       // Deduplicate by object_id and link CollObjs.xml against .pvsz placements.
@@ -1445,41 +1432,29 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
         };
         std::vector<BarrierModelBox> scanned(static_members.size());
         {
-          const size_t n = static_members.size();
-          const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
-          std::atomic<size_t> next{0};
-          auto worker = [&]() {
-            std::vector<uint8_t> buf;
-            for (;;) {
-              const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-              if (i >= n) break;
-              const std::string mname = fh1::PropModels::member_name(static_members[i], impl_->prefix);
-              if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) continue;
-              std::array<float, 3> bmin{}, bmax{};
-              std::string obj_name;
-              if (!peek_rmb_barrier_info(buf, bmin, bmax, obj_name)) continue;
-              if (!is_solid_barrier_model(obj_name, bmin, bmax)) continue;
-              // Convert file-frame header box to local game frame (Z negated).
-              const float min_gz = -bmax[2];
-              const float max_gz = -bmin[2];
-              scanned[i].local_center = {0.5f * (bmin[0] + bmax[0]), 0.5f * (bmin[1] + bmax[1]),
-                                         0.5f * (min_gz + max_gz)};
-              scanned[i].half_extents = {
-                  std::max(0.18f, 0.5f * (bmax[0] - bmin[0])),
-                  std::max(0.35f, 0.5f * (bmax[1] - bmin[1])),
-                  std::max(0.18f, 0.5f * (max_gz - min_gz)),
-              };
-              scanned[i].is_barrier = true;
-            }
-          };
-          if (threads > 1 && n >= 8) {
-            std::vector<std::thread> pool;
-            pool.reserve(threads);
-            for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
-            for (auto& w : pool) w.join();
-          } else {
-            worker();
-          }
+          fh1::parallel_for_ex(
+              static_members.size(),
+              [&](size_t i) {
+                thread_local std::vector<uint8_t> buf;
+                const std::string mname = fh1::PropModels::member_name(static_members[i], impl_->prefix);
+                if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) return;
+                std::array<float, 3> bmin{}, bmax{};
+                std::string obj_name;
+                if (!peek_rmb_barrier_info(buf, bmin, bmax, obj_name)) return;
+                if (!is_solid_barrier_model(obj_name, bmin, bmax)) return;
+                // Convert file-frame header box to local game frame (Z negated).
+                const float min_gz = -bmax[2];
+                const float max_gz = -bmin[2];
+                scanned[i].local_center = {0.5f * (bmin[0] + bmax[0]), 0.5f * (bmin[1] + bmax[1]),
+                                           0.5f * (min_gz + max_gz)};
+                scanned[i].half_extents = {
+                    std::max(0.18f, 0.5f * (bmax[0] - bmin[0])),
+                    std::max(0.35f, 0.5f * (bmax[1] - bmin[1])),
+                    std::max(0.18f, 0.5f * (max_gz - min_gz)),
+                };
+                scanned[i].is_barrier = true;
+              },
+              fh1::JobLane::kBackground, 1, 8);
         }
         std::unordered_map<uint32_t, BarrierModelBox> barrier_models;
         for (size_t i = 0; i < static_members.size(); ++i) {
@@ -1553,34 +1528,19 @@ bool SmashableWorld::load(const std::filesystem::path& media_dir, const std::fil
       std::vector<DebrisModel> decoded(member_list.size());
       std::vector<uint8_t> decoded_ok(member_list.size(), 0);
       {
-        const size_t n = member_list.size();
-        const size_t threads = std::min<size_t>(n, std::max<size_t>(1, std::thread::hardware_concurrency()));
-        std::atomic<size_t> next{0};
-        auto worker = [&]() {
-          std::vector<uint8_t> buf;
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= n) break;
-            const uint32_t m = member_list[i];
-            const std::string mname = fh1::PropModels::member_name(m, impl_->prefix);
-            if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) continue;
-            fh1::RenderModel rm;
-            if (!fh1::parse_render_model(buf, rm, nullptr)) continue;
-            std::string ignored;
-            fh1::parse_render_materials(buf, rm, &ignored);
-            if (decode_rmb_to_debris_model(rm, m, impl_->table, decoded[i])) {
-              decoded_ok[i] = 1;
-            }
+        fh1::parallel_for(member_list.size(), [&](size_t i) {
+          thread_local std::vector<uint8_t> buf;
+          const uint32_t m = member_list[i];
+          const std::string mname = fh1::PropModels::member_name(m, impl_->prefix);
+          if (!impl_->source.contains(mname) || !impl_->source.read(mname, buf, nullptr)) return;
+          fh1::RenderModel rm;
+          if (!fh1::parse_render_model(buf, rm, nullptr)) return;
+          std::string ignored;
+          fh1::parse_render_materials(buf, rm, &ignored);
+          if (decode_rmb_to_debris_model(rm, m, impl_->table, decoded[i])) {
+            decoded_ok[i] = 1;
           }
-        };
-        if (threads > 1 && n >= 4) {
-          std::vector<std::thread> pool;
-          pool.reserve(threads);
-          for (size_t t = 0; t < threads; ++t) pool.emplace_back(worker);
-          for (auto& w : pool) w.join();
-        } else {
-          worker();
-        }
+        });
       }
       impl_->debris_models.reserve(member_list.size());
       for (size_t i = 0; i < member_list.size(); ++i) {

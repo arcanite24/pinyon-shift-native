@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <limits>
 
+#include "fh1data/worker_pool.h"
+
 namespace drive {
 
 RacingLine RacingLine::from_points(std::span<const float> xs, std::span<const float> zs, double lat_accel, double accel,
@@ -730,7 +732,7 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
   const size_t n = std::min({states.size(), inputs.size(), size()});
   if (L.size() < 2) return;
   const size_t last = L.size() - 2;
-  for (size_t i = 0; i < n; ++i) {
+  auto drive_car = [&](size_t i) {
     const AiCarState& c = states[i];
     // The projection: a hill climb from the last segment (a few steps a
     // frame), bounded by `search` metres.
@@ -906,7 +908,7 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       pi.edge = edge, pi.edge_rate = rate, pi.off_track = off_track, pi.heading_cos = hcos, pi.chi = chi_car;
       ai_pedals(pi, dt, ps, in.throttle, in.brake);
       abs_e_[i] = float(ae), chi_[i] = float(chi_car), prev_throttle_[i] = float(in.throttle);
-      continue;
+      return;
     }
     // Speed: the plan a little ahead. Past the line's end: stop.
     const double ahead = progress_[i] + o_.speed_lookahead_s * speed;
@@ -983,7 +985,8 @@ void AiField::drive(std::span<const AiCarState> states, std::span<Input> inputs)
       }
       abs_e_[i] = float(ae), chi_[i] = float(chi_car), prev_throttle_[i] = float(in.throttle);
     }
-  }
+  };
+  fh1::parallel_for_ex(n, drive_car, fh1::JobLane::kFrameCritical, 1, 3);
 }
 
 }  // namespace drive

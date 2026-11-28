@@ -324,7 +324,35 @@ class ParticleSystem {
     int grad_row = 0;
     bool world_ambient = false;
   };
+  struct PreparedEmitter {
+    size_t index = 0;
+    std::array<float, 3> pos{};
+    std::array<float, 3> spawn_pos{};
+    std::array<float, 3> spawn_dir{0, 1, 0};
+    WorldEmitterKind kind = WorldEmitterKind::kSimple;
+    WorldEmitterVolume volume = WorldEmitterVolume::kSuperspray;
+    float width = 0.0f;
+    float length = 0.0f;
+    float height = 0.0f;
+    float radius = 0.0f;
+    float trig_r2 = 16.0f;
+    float retrigger_delay = 2.0f;
+    std::vector<const ParticleEffectDef*> effects;
+  };
+  struct ChildSpawnReq {
+    std::string effect;
+    std::array<float, 3> pos{};
+    std::array<float, 3> vel{};
+    uint8_t depth = 0;
+    bool world_ambient = false;
+  };
+  struct KeyedSprite {
+    float dist2 = 0.0f;
+    ParticleSprite sprite{};
+  };
 
+  void rebuild_prepared_emitters();
+  std::pair<uint16_t, uint16_t> resolve_def_textures(const ParticleEffectDef& def);
   void spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                  const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
                  float intensity_scale, uint8_t child_depth = 0, bool world_ambient = false);
@@ -336,10 +364,19 @@ class ParticleSystem {
 
   const ParticleLibrary* lib_ = nullptr;
   std::vector<LiveParticle> particles_;
+  size_t evict_cursor_ = 0;
   std::unordered_map<uint64_t, float> accumulators_;
   std::unordered_map<size_t, float> trigger_cooldowns_;
   std::unordered_map<std::string, size_t> triggerable_by_name_;
   std::unordered_map<std::string, uint16_t> tex_slot_map_;
+  std::unordered_map<const ParticleEffectDef*, std::pair<uint16_t, uint16_t>> def_tex_cache_;
+  std::vector<PreparedEmitter> prepared_emitters_;
+  std::unordered_map<int64_t, std::vector<uint32_t>> emitter_grid_;
+  std::vector<uint32_t> trigger_zone_emitters_;
+  size_t prepared_emitter_count_ = 0;
+  size_t prepared_effect_count_ = 0;
+  std::vector<ChildSpawnReq> child_spawns_scratch_;
+  mutable std::vector<KeyedSprite> alpha_sorted_scratch_;
   std::vector<std::string> used_textures_;
   uint32_t rng_ = 0x51C4BEEFu;
   float fallback_backfire_cooldown_ = 0.0f;

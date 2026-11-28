@@ -29,19 +29,6 @@ std::string upper_str(std::string_view s) {
   return out;
 }
 
-bool read_bytes(const std::filesystem::path& p, std::vector<uint8_t>& out) {
-  std::ifstream f(p, std::ios::binary);
-  if (!f) return false;
-  out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-  return !out.empty();
-}
-
-bool write_bytes(const std::filesystem::path& p, const void* data, size_t n) {
-  std::ofstream f(p, std::ios::binary);
-  f.write(static_cast<const char*>(data), std::streamsize(n));
-  return bool(f);
-}
-
 bool read_cached_pcm(const std::filesystem::path& p, PcmSample& out) {
   std::ifstream f(p, std::ios::binary);
   if (!f) return false;
@@ -73,63 +60,6 @@ void write_cached_pcm(const std::filesystem::path& p, const PcmSample& s) {
   for (size_t i = 0; i < frames; ++i)
     s16[i] = int16_t(std::clamp(std::lround(double(s.data[i]) * 32767.0), -32768l, 32767l));
   f.write(reinterpret_cast<const char*>(s16.data()), std::streamsize(frames * 2));
-}
-
-bool decode_fsb_subsound(const std::vector<uint8_t>& bank_data, const std::vector<FsbSample>& samples,
-                         const std::filesystem::path& bank_path, uint32_t subsound,
-                         const std::filesystem::path& ffmpeg, const std::filesystem::path& temp_dir, PcmSample& out) {
-  if (subsound >= samples.size()) return false;
-  const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
-  const int rate = s.rate > 0 ? s.rate : 48000;
-  if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
-    if (decode_xma2_mono(s, span, out, nullptr)) return true;
-    if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, span);
-    const auto in_p = temp_dir / ("codriver_" + std::to_string(subsound) + ".wav");
-    const auto out_p = temp_dir / ("codriver_" + std::to_string(subsound) + ".s16");
-    std::error_code ec;
-    std::filesystem::remove(out_p, ec);
-    if (!write_bytes(in_p, wave.data(), wave.size())) return false;
-    std::string cmd = "\"" + ffmpeg.string() + "\" -hide_banner -nostdin -v error -y -i \"" + in_p.string() +
-                      "\" -f s16le -acodec pcm_s16le \"" + out_p.string() + "\"";
-#ifdef _WIN32
-    cmd = "\"" + cmd + "\"";
-#endif
-    if (std::system(cmd.c_str()) != 0) return false;
-    std::vector<uint8_t> raw;
-    if (!read_bytes(out_p, raw) || raw.size() < 2) return false;
-    const size_t ch = std::max<size_t>(1, s.channels);
-    const size_t frames = raw.size() / (2 * ch);
-    if (frames == 0) return false;
-    out.rate = rate;
-    out.data.resize(frames);
-    for (size_t i = 0; i < frames; ++i) {
-      double acc = 0.0;
-      for (size_t c = 0; c < ch; ++c) {
-        const size_t at = (i * ch + c) * 2;
-        acc += double(int16_t(raw[at] | raw[at + 1] << 8)) / 32768.0;
-      }
-      out.data[i] = float(acc / double(ch));
-    }
-    std::filesystem::remove(in_p, ec);
-    std::filesystem::remove(out_p, ec);
-    return true;
-  }
-  auto src = make_fsb_mpeg_source(bank_path, s.offset, s.bytes, rate);
-  if (src && src->open()) {
-    out.rate = src->rate();
-    out.data.clear();
-    float tmp[2048 * 2];
-    while (out.data.size() < size_t(out.rate) * 15) {
-      const int64_t got = src->read(tmp, 2048);
-      if (got <= 0) break;
-      for (int64_t i = 0; i < got; ++i) out.data.push_back(0.5f * (tmp[2 * i] + tmp[2 * i + 1]));
-    }
-    return !out.data.empty();
-  }
-  return false;
 }
 
 std::string strip_project_prefix(std::string_view full_path) {
@@ -234,10 +164,6 @@ void CoDriverVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem
     std::filesystem::create_directories(temp_dir, ec);
     const auto ffmpeg = has_inprocess_xma2_decoder() ? std::filesystem::path{} : find_ffmpeg();
 
-    std::filesystem::path cached_bank_path;
-    std::vector<uint8_t> bank_data;
-    std::vector<FsbSample> bank_samples;
-
     for (const auto& job : jobs) {
       if (stop_worker_.load(std::memory_order_acquire)) break;
       const auto cache_file = cache_dir.empty() ? std::filesystem::path{}
@@ -245,13 +171,7 @@ void CoDriverVoPlayer::start_worker(std::vector<DecodeJob> jobs, std::filesystem
       auto* pcm = new PcmSample();
       bool ok = !cache_file.empty() && read_cached_pcm(cache_file, *pcm);
       if (!ok) {
-        if (job.bank_path != cached_bank_path) {
-          cached_bank_path = job.bank_path;
-          bank_data.clear();
-          bank_samples.clear();
-          if (read_bytes(cached_bank_path, bank_data)) read_fsb4(bank_data, bank_samples, nullptr);
-        }
-        ok = decode_fsb_subsound(bank_data, bank_samples, job.bank_path, job.subsound, ffmpeg, temp_dir, *pcm);
+        ok = decode_fsb_subsound_mono(job.bank_path, job.subsound, *pcm, ffmpeg, temp_dir);
         if (ok && !cache_file.empty()) write_cached_pcm(cache_file, *pcm);
       }
       if (!ok) {

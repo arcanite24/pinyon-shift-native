@@ -142,6 +142,16 @@ class Bodies {
   Params params_;
   BodiesOptions o_;
   std::map<uint32_t, Body> bodies_;
+  struct ActiveTrafficBody {
+    const Car* car = nullptr;
+    Body* body = nullptr;
+  };
+  // Reusable 120 Hz step() scratch buffers (eliminates per-tick heap & RB-tree allocations).
+  std::vector<P3> struck_positions_scratch_;
+  std::vector<uint32_t> wanted_scratch_;
+  std::vector<ActiveTrafficBody> active_bodies_scratch_;
+  std::vector<Body*> body_list_scratch_;
+  std::vector<uint64_t> counted_pairs_scratch_;
   int contacts_ = 0, player_contacts_ = 0;
   double largest_ = 0, step_player_ = 0;
 };

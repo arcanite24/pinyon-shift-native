@@ -11,7 +11,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
+#include <thread>
 
 #include "cars/bake.h"
 #include "cars/bake_format.h"
@@ -25,6 +27,7 @@
 #include "fh1data/rmb.h"
 #include "fh1data/stringtables.h"
 #include "fh1data/vfont.h"
+#include "fh1data/worker_pool.h"
 #include "fh1data/world_texture.h"
 #include "fh1data/xds.h"
 #include "fh1data/xmem.h"
@@ -1469,6 +1472,49 @@ void test_reference() {
   CHECK(std::fabs(noisy.masked_psnr - 10 * std::log10(255.0 * 255.0 / (100.0 / 48.0))) < 1e-6);
 }
 
+void test_job_system() {
+  // 1. Nested parallel_for on background lane (must never deadlock or miss items).
+  constexpr size_t kOuter = 16;
+  constexpr size_t kInner = 32;
+  std::atomic<size_t> nested_sum{0};
+  fh1::parallel_for(kOuter, [&](size_t i) {
+    fh1::parallel_for(kInner, [&](size_t j) {
+      nested_sum.fetch_add(i * kInner + j + 1, std::memory_order_relaxed);
+    });
+  });
+  const size_t total_n = kOuter * kInner;
+  CHECK(nested_sum.load() == total_n * (total_n + 1) / 2);
+
+  // 2. Concurrent multi-caller parallel_for on the same lane simultaneously.
+  std::atomic<size_t> conc_count{0};
+  std::vector<std::thread> callers;
+  for (int c = 0; c < 4; ++c) {
+    callers.emplace_back([&]() {
+      fh1::parallel_for(64, [&](size_t) { conc_count.fetch_add(1, std::memory_order_relaxed); });
+    });
+  }
+  for (auto& t : callers) t.join();
+  CHECK(conc_count.load() == 256);
+
+  // 3. Low-latency frame-critical lane parallel_for_frame + chunking.
+  std::vector<int> out(128, 0);
+  fh1::parallel_for_frame(
+      out.size(), [&](size_t i) { out[i] = int(i * 3 + 1); }, 4);
+  bool ok = true;
+  for (size_t i = 0; i < out.size(); ++i) ok &= (out[i] == int(i * 3 + 1));
+  CHECK(ok);
+
+  // 4. Detached job submission.
+  std::atomic<int> detached_done{0};
+  for (int i = 0; i < 8; ++i) {
+    fh1::submit_job([&]() { detached_done.fetch_add(1, std::memory_order_release); });
+  }
+  for (int spins = 0; spins < 5000 && detached_done.load(std::memory_order_acquire) < 8; ++spins) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  CHECK(detached_done.load() == 8);
+}
+
 int main() {
   test_reference();
   test_bake_format();
@@ -1495,6 +1541,7 @@ int main() {
   test_pvsz_tilted();
   test_lod_part();
   test_prop_lod_set_suffix_matching();
+  test_job_system();
   if (failures) {
     std::printf("%d failure(s)\n", failures);
     return 1;

@@ -645,62 +645,7 @@ bool resolve_event_sample(const FevProject& proj, std::string_view event_path, s
 
 bool decode_fsb_subsound(const std::filesystem::path& bank_path, uint32_t subsound, const std::filesystem::path& ffmpeg,
                          const std::filesystem::path& temp_dir, PcmSample& out) {
-  std::vector<uint8_t> bank_data;
-  if (!read_bytes(bank_path, bank_data)) return false;
-  std::vector<FsbSample> samples;
-  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
-  const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
-  const int rate = s.rate > 0 ? s.rate : 48000;
-  if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
-    if (decode_xma2_mono(s, span, out, nullptr)) return true;
-    if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, span);
-    const auto in_p = temp_dir / ("sfx_" + std::to_string(subsound) + ".wav");
-    const auto out_p = temp_dir / ("sfx_" + std::to_string(subsound) + ".s16");
-    std::error_code ec;
-    std::filesystem::remove(out_p, ec);
-    if (!write_bytes(in_p, wave.data(), wave.size())) return false;
-    std::string cmd = "\"" + ffmpeg.string() + "\" -hide_banner -nostdin -v error -y -i \"" + in_p.string() +
-                      "\" -f s16le -acodec pcm_s16le \"" + out_p.string() + "\"";
-#ifdef _WIN32
-    cmd = "\"" + cmd + "\"";
-#endif
-    if (std::system(cmd.c_str()) != 0) return false;
-    std::vector<uint8_t> raw;
-    if (!read_bytes(out_p, raw) || raw.size() < 2) return false;
-    const size_t ch = std::max<size_t>(1, s.channels);
-    const size_t frames = raw.size() / (2 * ch);
-    if (frames == 0) return false;
-    out.rate = rate;
-    out.data.resize(frames);
-    for (size_t i = 0; i < frames; ++i) {
-      double acc = 0.0;
-      for (size_t c = 0; c < ch; ++c) {
-        const size_t at = (i * ch + c) * 2;
-        acc += double(int16_t(raw[at] | raw[at + 1] << 8)) / 32768.0;
-      }
-      out.data[i] = float(acc / double(ch));
-    }
-    std::filesystem::remove(in_p, ec);
-    std::filesystem::remove(out_p, ec);
-    return true;
-  }
-  // MPEG fallback (e.g. streaming SFX / VO bank).
-  auto src = make_fsb_mpeg_source(bank_path, s.offset, s.bytes, rate);
-  if (src && src->open()) {
-    out.rate = src->rate();
-    out.data.clear();
-    float tmp[2048 * 2];
-    while (out.data.size() < size_t(out.rate) * 15) {
-      const int64_t got = src->read(tmp, 2048);
-      if (got <= 0) break;
-      for (int64_t i = 0; i < got; ++i) out.data.push_back(0.5f * (tmp[2 * i] + tmp[2 * i + 1]));
-    }
-    return !out.data.empty();
-  }
-  return false;
+  return decode_fsb_subsound_mono(bank_path, subsound, out, ffmpeg, temp_dir);
 }
 
 }  // namespace
@@ -1175,9 +1120,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
         if (std::filesystem::is_directory(dir, ec)) {
           for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
             if (entry.is_regular_file(ec) && lower_str(entry.path().extension().string()) == ".fsb") {
-              std::vector<uint8_t> raw;
               std::vector<FsbSample> fsb_s;
-              const uint32_t n = (read_bytes(entry.path(), raw) && read_fsb4(raw, fsb_s, nullptr))
+              const uint32_t n = read_fsb4_file_headers(entry.path(), fsb_s, nullptr)
                                      ? std::min<uint32_t>(3u, uint32_t(fsb_s.size()))
                                      : 1u;
               for (uint32_t bi = 0; bi < n; ++bi) push_unique(entry.path(), bi);
@@ -1628,9 +1572,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       // Direct UIInGame.fsb lookup for core FH1 driving, skill, race, shop & photo stings.
       {
         const auto ui_fsb = cars::mods::resolve(audio_dir / "UI/UIInGame/UIInGame.fsb");
-        std::vector<uint8_t> raw;
         std::vector<FsbSample> fsb_s;
-        if (read_bytes(ui_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+        if (read_fsb4_file_headers(ui_fsb, fsb_s, nullptr)) {
           auto has_ui_job = [&](SfxSoundId id) {
             for (const auto& j : jobs)
               if (j.id == id) return true;
@@ -1672,9 +1615,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       {
         auto add_hub_amb = [&](SfxSoundId id, const char* rel_fsb, const char* prefer_substr) {
           const auto p = cars::mods::resolve(audio_dir / rel_fsb);
-          std::vector<uint8_t> raw;
           std::vector<FsbSample> fsb_s;
-          if (!read_bytes(p, raw) || !read_fsb4(raw, fsb_s, nullptr) || fsb_s.empty()) return;
+          if (!read_fsb4_file_headers(p, fsb_s, nullptr) || fsb_s.empty()) return;
           uint32_t pick = 0;
           const std::string want = lower_str(prefer_substr);
           for (uint32_t si = 0; si < fsb_s.size(); ++si) {
@@ -1761,10 +1703,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
       }
     }
     if (!bpath.empty()) {
-      std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
       const uint32_t total =
-          (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr)) ? uint32_t(fsb_s.size()) : 1u;
+          read_fsb4_file_headers(bpath, fsb_s, nullptr) ? uint32_t(fsb_s.size()) : 1u;
       std::vector<uint32_t> burble_subs;
       std::vector<uint32_t> backfire_subs;
       for (uint32_t si = 0; si < fsb_s.size(); ++si) {
@@ -1870,10 +1811,9 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
 
     auto queue_two_band_bank = [&](const std::filesystem::path& bank, SfxSoundId lo_id, SfxSoundId hi_id) {
       if (bank.empty()) return;
-      std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
       uint32_t n = 0;
-      if (read_bytes(bank, raw) && read_fsb4(raw, fsb_s, nullptr)) n = uint32_t(fsb_s.size());
+      if (read_fsb4_file_headers(bank, fsb_s, nullptr)) n = uint32_t(fsb_s.size());
       if (n == 0) {
         jobs.push_back({lo_id, bank, 0u});
         return;
@@ -1940,9 +1880,8 @@ bool SfxEngine::load(const std::filesystem::path& game_root, const std::filesyst
     const auto trig_fsb = cars::mods::resolve(trig_dir / "Triggerable_Events.fsb");
     std::error_code ec;
     if (std::filesystem::exists(trig_fsb, ec) && (!have_p51 || !have_bi || !have_heli || !have_bal || !have_jet)) {
-      std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
-      if (read_bytes(trig_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+      if (read_fsb4_file_headers(trig_fsb, fsb_s, nullptr)) {
         for (uint32_t i = 0; i < fsb_s.size(); ++i) {
           const std::string nm = lower_str(fsb_s[i].name);
           if (!have_p51 && nm.find("p51") != std::string::npos) {
@@ -2036,9 +1975,8 @@ bool SfxEngine::load_rally_sfx(const std::filesystem::path& rally_root_or_state_
       }
     }
     if (!fsb_path.empty() && std::filesystem::exists(fsb_path, ec)) {
-      std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
-      if (read_bytes(fsb_path, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+      if (read_fsb4_file_headers(fsb_path, fsb_s, nullptr)) {
         for (uint32_t i = 0; i < fsb_s.size(); ++i) {
           classify_fn(lower_str(fsb_s[i].name), fsb_path, i);
         }
@@ -2171,10 +2109,9 @@ void SfxEngine::reload_burble_bank(const std::filesystem::path& game_root, const
   if (!std::filesystem::exists(bpath, ec)) return;
 
   std::vector<DecodeJob> jobs;
-  std::vector<uint8_t> raw;
   std::vector<FsbSample> fsb_s;
   const uint32_t total =
-      (read_bytes(bpath, raw) && read_fsb4(raw, fsb_s, nullptr)) ? uint32_t(fsb_s.size()) : 1u;
+      read_fsb4_file_headers(bpath, fsb_s, nullptr) ? uint32_t(fsb_s.size()) : 1u;
 
   std::vector<uint32_t> burble_subs;
   std::vector<uint32_t> backfire_subs;

@@ -332,6 +332,8 @@ bool Collision::open(const fs::path& colorado, const fs::path& physics_zip, std:
   occupied_cells_.reserve(index_.records.size());
   for (const auto& rec : index_.records) occupied_cells_.insert(rec.cell);
   cache_.clear();
+  cache_epoch_.clear();
+  gather_epoch_ = 0;
 
   surfaces_.clear();
   surface_extras_ = {};
@@ -531,7 +533,9 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
     }
     for (size_t idx = 0; idx < missing.size(); ++idx) cache_.emplace(missing[idx], std::move(built[idx]));
   }
+  ++gather_epoch_;
   for (uint32_t k : hits) {
+    cache_epoch_[k] = gather_epoch_;
     auto it = cache_.find(k);
     out.positions.insert(out.positions.end(), it->second.positions.begin(), it->second.positions.end());
     out.surface.insert(out.surface.end(), it->second.surface.begin(), it->second.surface.end());
@@ -541,6 +545,28 @@ bool Collision::gather(double x, double z, double radius, CollisionMesh& out, st
     out.active.insert(out.active.end(), it->second.active.begin(), it->second.active.end());
     out.tile.insert(out.tile.end(), it->second.surface.size(), index_.records[k].tile);
     ++out.tiles;
+  }
+  if (cache_.size() > kMaxCachedTiles) {
+    std::vector<std::pair<uint64_t, uint32_t>> evictable;
+    evictable.reserve(cache_.size());
+    for (const auto& [k, _] : cache_) {
+      const auto eit = cache_epoch_.find(k);
+      const uint64_t ep = (eit != cache_epoch_.end()) ? eit->second : 0ull;
+      if (ep < gather_epoch_) evictable.emplace_back(ep, k);
+    }
+    const size_t excess = cache_.size() - kMaxCachedTiles;
+    const size_t to_evict = std::min(excess, evictable.size());
+    if (to_evict > 0) {
+      if (to_evict < evictable.size()) {
+        std::nth_element(evictable.begin(), evictable.begin() + ptrdiff_t(to_evict), evictable.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+      }
+      for (size_t i = 0; i < to_evict; ++i) {
+        const uint32_t k = evictable[i].second;
+        cache_.erase(k);
+        cache_epoch_.erase(k);
+      }
+    }
   }
   return true;
 }

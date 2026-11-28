@@ -1043,69 +1043,11 @@ void make_seamless_loop(PcmSample& pcm) {
 
 bool decode_amb_subsound(const std::filesystem::path& bank_path, uint32_t subsound, const std::filesystem::path& ffmpeg,
                          const std::filesystem::path& temp_dir, PcmSample& out) {
-  std::vector<uint8_t> bank_data;
-  if (!read_bytes_amb(bank_path, bank_data)) return false;
-  std::vector<FsbSample> samples;
-  if (!read_fsb4(bank_data, samples, nullptr) || subsound >= samples.size()) return false;
-  const FsbSample& s = samples[subsound];
-  if (s.offset + s.bytes > bank_data.size() || s.bytes == 0) return false;
-  const int rate = s.rate > 0 ? s.rate : 48000;
   constexpr size_t kMaxAmbFrames = 48000u * 25u;  // cap ambient bed decode to 25 s loop
-  if (s.xma()) {
-    const auto span = std::span<const uint8_t>(bank_data).subspan(size_t(s.offset), s.bytes);
-    if (decode_xma2_mono(s, span, out, nullptr)) {
-      if (out.data.size() > kMaxAmbFrames) out.data.resize(kMaxAmbFrames);
-      make_seamless_loop(out);
-      return true;
-    }
-    if (ffmpeg.empty()) return false;
-    const auto wave = xma2_wave(s, span);
-    const auto in_p = temp_dir / ("amb_" + std::to_string(subsound) + ".wav");
-    const auto out_p = temp_dir / ("amb_" + std::to_string(subsound) + ".s16");
-    std::error_code ec;
-    std::filesystem::remove(out_p, ec);
-    if (!write_bytes_amb(in_p, wave.data(), wave.size())) return false;
-    std::string cmd = "\"" + ffmpeg.string() + "\" -hide_banner -nostdin -v error -y -t 25 -i \"" + in_p.string() +
-                      "\" -f s16le -acodec pcm_s16le \"" + out_p.string() + "\"";
-#ifdef _WIN32
-    cmd = "\"" + cmd + "\"";
-#endif
-    if (std::system(cmd.c_str()) != 0) return false;
-    std::vector<uint8_t> raw;
-    if (!read_bytes_amb(out_p, raw) || raw.size() < 2) return false;
-    const size_t ch = std::max<size_t>(1, s.channels);
-    const size_t frames = std::min(kMaxAmbFrames, raw.size() / (2 * ch));
-    if (frames == 0) return false;
-    out.rate = rate;
-    out.data.resize(frames);
-    for (size_t i = 0; i < frames; ++i) {
-      double acc = 0.0;
-      for (size_t c = 0; c < ch; ++c) {
-        const size_t at = (i * ch + c) * 2;
-        acc += double(int16_t(raw[at] | raw[at + 1] << 8)) / 32768.0;
-      }
-      out.data[i] = float(acc / double(ch));
-    }
-    std::filesystem::remove(in_p, ec);
-    std::filesystem::remove(out_p, ec);
-    make_seamless_loop(out);
-    return true;
-  }
-  auto src = make_fsb_mpeg_source(bank_path, s.offset, s.bytes, rate);
-  if (src && src->open()) {
-    out.rate = src->rate();
-    out.data.clear();
-    float tmp[2048 * 2];
-    while (out.data.size() < kMaxAmbFrames) {
-      const int64_t got = src->read(tmp, 2048);
-      if (got <= 0) break;
-      for (int64_t i = 0; i < got && out.data.size() < kMaxAmbFrames; ++i)
-        out.data.push_back(0.5f * (tmp[2 * i] + tmp[2 * i + 1]));
-    }
-    if (!out.data.empty()) make_seamless_loop(out);
-    return !out.data.empty();
-  }
-  return false;
+  if (!decode_fsb_subsound_mono(bank_path, subsound, out, ffmpeg, temp_dir)) return false;
+  if (out.data.size() > kMaxAmbFrames) out.data.resize(kMaxAmbFrames);
+  make_seamless_loop(out);
+  return !out.data.empty();
 }
 
 bool pick_first_fev_sample(const FevProject& proj, const FevEvent& ev, std::filesystem::path& bank_out,
@@ -1473,9 +1415,8 @@ int AmbienceBedPlayer::load_from_disc(const std::filesystem::path& game_root, co
     const auto quad_fsb = cars::mods::resolve(amb_dir / "AMB_Quads_Stream.fsb");
     std::error_code ec;
     if (std::filesystem::exists(quad_fsb, ec)) {
-      std::vector<uint8_t> raw;
       std::vector<FsbSample> fsb_s;
-      if (read_bytes_amb(quad_fsb, raw) && read_fsb4(raw, fsb_s, nullptr)) {
+      if (read_fsb4_file_headers(quad_fsb, fsb_s, nullptr)) {
         for (uint32_t i = 0; i < fsb_s.size(); ++i) {
           const std::string nm = lower_str(fsb_s[i].name);
           if (nm.find("mountain") != std::string::npos) assign_slot(AmbienceBedSlot::kMountains, quad_fsb, i);

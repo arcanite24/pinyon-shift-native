@@ -114,7 +114,8 @@ void Population::check_overspawn(const P3& player) {
     stats_.overspawn_culled++;
     if (d >= config_.spawn_out) {
       stats_.despawned++;
-      stats_.despawn_distances.push_back(d);
+      constexpr size_t kMaxDistanceSamples = 4096;
+      if (stats_.despawn_distances.size() < kMaxDistanceSamples) stats_.despawn_distances.push_back(d);
     }
     cars_.erase(cars_.begin() + std::ptrdiff_t(best_idx));
   }
@@ -1105,7 +1106,8 @@ void Population::step(double dt, const P3& player, const P3& player_velocity, do
     if (cars_[i].road < 0 || d > despawn_distance(cars_[i])) {
       if (cars_[i].road >= 0) {
         stats_.despawned++;
-        stats_.despawn_distances.push_back(d);
+        constexpr size_t kMaxDistanceSamples = 4096;
+        if (stats_.despawn_distances.size() < kMaxDistanceSamples) stats_.despawn_distances.push_back(d);
       }
       cars_.erase(cars_.begin() + std::ptrdiff_t(i));
     }

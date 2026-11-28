@@ -612,10 +612,91 @@ void ParticleLibrary::add_effect(ParticleEffectDef def) {
   effects_[k] = std::move(def);
 }
 
+namespace {
+constexpr float kEmitterCellSize = 64.0f;
+inline int64_t emitter_cell_key(int32_t cx, int32_t cz) {
+  return (int64_t(uint32_t(cx)) << 32) | int64_t(uint32_t(cz));
+}
+}  // namespace
+
+void ParticleSystem::rebuild_prepared_emitters() {
+  prepared_emitters_.clear();
+  emitter_grid_.clear();
+  trigger_zone_emitters_.clear();
+  prepared_emitter_count_ = 0;
+  prepared_effect_count_ = 0;
+  if (!lib_) return;
+
+  const auto& emitters = lib_->world_emitters();
+  prepared_emitter_count_ = emitters.size();
+  prepared_effect_count_ = lib_->effects().size();
+  prepared_emitters_.reserve(emitters.size());
+
+  for (size_t i = 0; i < emitters.size(); ++i) {
+    const auto& em = emitters[i];
+    if (em.effect.empty() || em.effect == "AMB_Camera_Flash") continue;
+    if (em.kind == WorldEmitterKind::kTriggerable) continue;
+
+    PreparedEmitter pe;
+    pe.index = i;
+    pe.pos = em.pos;
+    pe.spawn_pos = em.pos;
+    pe.spawn_dir = em.y_axis;
+    pe.kind = em.kind;
+    pe.volume = em.volume;
+    pe.width = em.width;
+    pe.length = em.length;
+    pe.height = em.height;
+    pe.radius = em.radius;
+    pe.retrigger_delay = std::max(em.retrigger_delay, 2.0f);
+
+    std::string target_eff = em.effect;
+    if (em.kind == WorldEmitterKind::kTriggerZone) {
+      const float trig_r = std::clamp(std::max({em.radius, em.width * 0.5f, em.length * 0.5f}), 4.0f, 90.0f);
+      pe.trig_r2 = trig_r * trig_r;
+      if (const auto tit = triggerable_by_name_.find(to_lower(em.effect));
+          tit != triggerable_by_name_.end() && tit->second < emitters.size()) {
+        const auto& linked = emitters[tit->second];
+        if (!linked.effect.empty()) target_eff = linked.effect;
+        pe.spawn_pos = linked.pos;
+        pe.spawn_dir = linked.y_axis;
+      }
+    }
+
+    const auto expanded = expand_composite_effect(target_eff);
+    pe.effects.reserve(expanded.size());
+    for (const auto& ef_name : expanded) {
+      const auto* def = lib_->find_effect(ef_name);
+      if (!def && ef_name.rfind("amb_ground_flare_", 0) == 0) def = lib_->find_effect("amb_ground_flare");
+      if (def) pe.effects.push_back(def);
+    }
+    if (pe.effects.empty()) continue;
+
+    const uint32_t pe_idx = uint32_t(prepared_emitters_.size());
+    prepared_emitters_.push_back(std::move(pe));
+    if (em.kind == WorldEmitterKind::kTriggerZone) {
+      trigger_zone_emitters_.push_back(pe_idx);
+    } else {
+      const int32_t cx = int32_t(std::floor(em.pos[0] / kEmitterCellSize));
+      const int32_t cz = int32_t(std::floor(em.pos[2] / kEmitterCellSize));
+      emitter_grid_[emitter_cell_key(cx, cz)].push_back(pe_idx);
+    }
+  }
+}
+
+std::pair<uint16_t, uint16_t> ParticleSystem::resolve_def_textures(const ParticleEffectDef& def) {
+  if (const auto it = def_tex_cache_.find(&def); it != def_tex_cache_.end()) return it->second;
+  const std::pair<uint16_t, uint16_t> slots{resolve_texture_slot(def.texture_name),
+                                            resolve_texture_slot(def.texture2_name)};
+  def_tex_cache_.emplace(&def, slots);
+  return slots;
+}
+
 void ParticleSystem::set_library(const ParticleLibrary* lib) {
   lib_ = lib;
   clear();
   triggerable_by_name_.clear();
+  def_tex_cache_.clear();
   if (lib_) {
     const auto& ems = lib_->world_emitters();
     for (size_t i = 0; i < ems.size(); ++i) {
@@ -624,10 +705,12 @@ void ParticleSystem::set_library(const ParticleLibrary* lib) {
       if (!ems[i].gameplay_id.empty()) triggerable_by_name_[to_lower(ems[i].gameplay_id)] = i;
     }
   }
+  rebuild_prepared_emitters();
 }
 
 void ParticleSystem::clear() {
   particles_.clear();
+  evict_cursor_ = 0;
   accumulators_.clear();
   trigger_cooldowns_.clear();
   fallback_backfire_cooldown_ = 0.0f;
@@ -659,14 +742,11 @@ float ParticleSystem::rand_sym() { return rand01() * 2.0f - 1.0f; }
 void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<float, 3>& pos,
                                const std::array<float, 3>& emit_dir, const std::array<float, 3>& emitter_vel,
                                float intensity_scale, uint8_t child_depth, bool world_ambient) {
-  if (particles_.size() >= kMaxParticles) {
-    // FIFO oldest eviction so bursts never stall.
-    particles_.erase(particles_.begin());
-  }
   LiveParticle p;
   p.def = &def;
-  p.tex_slot = resolve_texture_slot(def.texture_name);
-  p.tex2_slot = resolve_texture_slot(def.texture2_name);
+  const auto [t0, t1] = resolve_def_textures(def);
+  p.tex_slot = t0;
+  p.tex2_slot = t1;
   p.child_depth = child_depth;
   p.world_ambient = world_ambient;
   p.pos = pos;
@@ -716,7 +796,14 @@ void ParticleSystem::spawn_one(const ParticleEffectDef& def, const std::array<fl
   if (def.num_gradient_rows > 1) {
     p.grad_row = int(rand01() * float(def.num_gradient_rows)) % def.num_gradient_rows;
   }
-  particles_.push_back(p);
+  if (particles_.size() >= kMaxParticles) {
+    // O(1) cyclic overwrite instead of O(N) front-erasure memmove at cap.
+    if (evict_cursor_ >= particles_.size()) evict_cursor_ = 0;
+    particles_[evict_cursor_] = p;
+    evict_cursor_ = (evict_cursor_ + 1) % kMaxParticles;
+  } else {
+    particles_.push_back(p);
+  }
 }
 
 void ParticleSystem::emit_world_continuous(const ParticleEffectDef& def, const std::array<float, 3>& pos,
@@ -1020,9 +1107,11 @@ void ParticleSystem::spawn_smashable_burst(std::string_view prop_stem, const std
 
 void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos, float tod_hour, float dt) {
   if (!lib_ || dt <= 0.0f) return;
+  if (lib_->world_emitters().size() != prepared_emitter_count_ || lib_->effects().size() != prepared_effect_count_) {
+    rebuild_prepared_emitters();
+  }
   constexpr float kMaxDist = 180.0f;
   constexpr float kMaxDist2 = kMaxDist * kMaxDist;
-  const auto& emitters = lib_->world_emitters();
 
   // Advance TriggerZone cooldown timers.
   for (auto it = trigger_cooldowns_.begin(); it != trigger_cooldowns_.end();) {
@@ -1031,68 +1120,64 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
     else ++it;
   }
 
-  for (size_t i = 0; i < emitters.size(); ++i) {
-    const auto& em = emitters[i];
-    if (em.effect.empty()) continue;
-    // Speed-camera flashes are triggered by gameplay events, not ambiently.
-    if (em.effect == "AMB_Camera_Flash") continue;
-    const float dx = em.pos[0] - focus_pos[0];
-    const float dz = em.pos[2] - focus_pos[2];
+  for (uint32_t pe_idx : trigger_zone_emitters_) {
+    const auto& pe = prepared_emitters_[pe_idx];
+    const float dx = pe.pos[0] - focus_pos[0];
+    const float dz = pe.pos[2] - focus_pos[2];
     const float d2 = dx * dx + dz * dz;
-    if (em.kind == WorldEmitterKind::kTriggerZone) {
-      const float trig_r = std::clamp(std::max({em.radius, em.width * 0.5f, em.length * 0.5f}), 4.0f, 90.0f);
-      if (d2 > trig_r * trig_r) continue;
-      if (trigger_cooldowns_.find(i) != trigger_cooldowns_.end()) continue;
-      trigger_cooldowns_[i] = std::max(em.retrigger_delay, 2.0f);
-      std::string target_eff = em.effect;
-      std::array<float, 3> spawn_p = em.pos;
-      std::array<float, 3> spawn_dir = em.y_axis;
-      if (const auto tit = triggerable_by_name_.find(to_lower(em.effect));
-          tit != triggerable_by_name_.end() && tit->second < emitters.size()) {
-        const auto& linked = emitters[tit->second];
-        if (!linked.effect.empty()) target_eff = linked.effect;
-        spawn_p = linked.pos;
-        spawn_dir = linked.y_axis;
+    if (d2 > pe.trig_r2) continue;
+    if (trigger_cooldowns_.find(pe.index) != trigger_cooldowns_.end()) continue;
+    trigger_cooldowns_[pe.index] = pe.retrigger_delay;
+    for (const auto* def : pe.effects) {
+      if (!def || !def->active_at_hour(tod_hour)) continue;
+      const int burst_n = std::clamp(int(std::lround(std::max(4.0f, def->quantity * 0.4f))), 4, 14);
+      for (int b = 0; b < burst_n; ++b) {
+        spawn_one(*def, pe.spawn_pos, pe.spawn_dir, {0, 0, 0}, 0.9f, 0, true);
       }
-      const auto expanded = expand_composite_effect(target_eff);
-      for (const auto& ef_name : expanded) {
-        const auto* def = lib_->find_effect(ef_name);
-        if (!def && ef_name.rfind("amb_ground_flare_", 0) == 0) def = lib_->find_effect("amb_ground_flare");
-        if (!def || !def->active_at_hour(tod_hour)) continue;
-        const int burst_n = std::clamp(int(std::lround(std::max(4.0f, def->quantity * 0.4f))), 4, 14);
-        for (int b = 0; b < burst_n; ++b) {
-          spawn_one(*def, spawn_p, spawn_dir, {0, 0, 0}, 0.9f, 0, true);
+    }
+  }
+
+  const int32_t min_cx = int32_t(std::floor((focus_pos[0] - kMaxDist) / kEmitterCellSize));
+  const int32_t max_cx = int32_t(std::floor((focus_pos[0] + kMaxDist) / kEmitterCellSize));
+  const int32_t min_cz = int32_t(std::floor((focus_pos[2] - kMaxDist) / kEmitterCellSize));
+  const int32_t max_cz = int32_t(std::floor((focus_pos[2] + kMaxDist) / kEmitterCellSize));
+
+  for (int32_t cz = min_cz; cz <= max_cz; ++cz) {
+    for (int32_t cx = min_cx; cx <= max_cx; ++cx) {
+      const auto git = emitter_grid_.find(emitter_cell_key(cx, cz));
+      if (git == emitter_grid_.end()) continue;
+      for (uint32_t pe_idx : git->second) {
+        const auto& pe = prepared_emitters_[pe_idx];
+        const float dx = pe.pos[0] - focus_pos[0];
+        const float dz = pe.pos[2] - focus_pos[2];
+        const float d2 = dx * dx + dz * dz;
+        if (d2 > kMaxDist2) continue;
+
+        const float dist_fade = 1.0f - std::clamp(std::sqrt(d2) / kMaxDist, 0.0f, 1.0f);
+        const float scale = std::clamp(0.35f + 0.65f * dist_fade, 0.25f, 1.0f);
+        const bool is_point = (pe.volume == WorldEmitterVolume::kSuperspray);
+
+        for (size_t k = 0; k < pe.effects.size(); ++k) {
+          const auto* def = pe.effects[k];
+          if (!def || !def->active_at_hour(tod_hour)) continue;
+          // Offset within emitter volume (Sphere / Box / Plane).
+          std::array<float, 3> spawn_p = pe.pos;
+          if (pe.volume == WorldEmitterVolume::kBox) {
+            spawn_p[0] += rand_sym() * pe.width * 0.5f;
+            spawn_p[1] += rand_sym() * pe.height * 0.5f;
+            spawn_p[2] += rand_sym() * pe.length * 0.5f;
+          } else if (pe.volume == WorldEmitterVolume::kPlane) {
+            spawn_p[0] += rand_sym() * pe.width * 0.5f;
+            spawn_p[2] += rand_sym() * pe.length * 0.5f;
+          } else if (pe.volume == WorldEmitterVolume::kSphere && pe.radius > 0.1f && pe.radius < 25.0f) {
+            spawn_p[0] += rand_sym() * pe.radius * 0.5f;
+            spawn_p[1] += rand_sym() * pe.radius * 0.35f;
+            spawn_p[2] += rand_sym() * pe.radius * 0.5f;
+          }
+          const uint64_t key = 0x100000ull + (uint64_t(pe.index) << 4) + uint64_t(k);
+          emit_world_continuous(*def, spawn_p, pe.spawn_dir, dt, scale, key, is_point);
         }
       }
-      continue;
-    }
-    if (em.kind == WorldEmitterKind::kTriggerable) continue;
-    if (d2 > kMaxDist2) continue;
-
-    const auto expanded = expand_composite_effect(em.effect);
-    for (size_t k = 0; k < expanded.size(); ++k) {
-      const auto* def = lib_->find_effect(expanded[k]);
-      if (!def && expanded[k].rfind("amb_ground_flare_", 0) == 0) def = lib_->find_effect("amb_ground_flare");
-      if (!def || !def->active_at_hour(tod_hour)) continue;
-      // Offset within emitter volume (Sphere / Box / Plane).
-      std::array<float, 3> spawn_p = em.pos;
-      if (em.volume == WorldEmitterVolume::kBox) {
-        spawn_p[0] += rand_sym() * em.width * 0.5f;
-        spawn_p[1] += rand_sym() * em.height * 0.5f;
-        spawn_p[2] += rand_sym() * em.length * 0.5f;
-      } else if (em.volume == WorldEmitterVolume::kPlane) {
-        spawn_p[0] += rand_sym() * em.width * 0.5f;
-        spawn_p[2] += rand_sym() * em.length * 0.5f;
-      } else if (em.volume == WorldEmitterVolume::kSphere && em.radius > 0.1f && em.radius < 25.0f) {
-        spawn_p[0] += rand_sym() * em.radius * 0.5f;
-        spawn_p[1] += rand_sym() * em.radius * 0.35f;
-        spawn_p[2] += rand_sym() * em.radius * 0.5f;
-      }
-      const float dist_fade = 1.0f - std::clamp(std::sqrt(d2) / kMaxDist, 0.0f, 1.0f);
-      const float scale = std::clamp(0.35f + 0.65f * dist_fade, 0.25f, 1.0f);
-      const uint64_t key = 0x100000ull + (uint64_t(i) << 4) + uint64_t(k);
-      const bool is_point = (em.volume == WorldEmitterVolume::kSuperspray);
-      emit_world_continuous(*def, spawn_p, em.y_axis, dt, scale, key, is_point);
     }
   }
 }
@@ -1100,21 +1185,15 @@ void ParticleSystem::update_world_emitters(const std::array<float, 3>& focus_pos
 void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float wind_speed) {
   if (dt <= 0.0f) return;
   const float step_dt = std::min(dt, 0.1f);
-  struct ChildSpawnReq {
-    std::string effect;
-    std::array<float, 3> pos;
-    std::array<float, 3> vel;
-    uint8_t depth;
-    bool world_ambient;
-  };
-  std::vector<ChildSpawnReq> child_spawns;
+  child_spawns_scratch_.clear();
   size_t write = 0;
   for (size_t i = 0; i < particles_.size(); ++i) {
     LiveParticle& p = particles_[i];
     p.age += step_dt;
     if (!p.def || p.age >= p.life) {
-      if (p.def && !p.def->child_spawn.empty() && p.child_depth < 2 && child_spawns.size() < 24) {
-        child_spawns.push_back({p.def->child_spawn, p.pos, p.vel, uint8_t(p.child_depth + 1), p.world_ambient});
+      if (p.def && !p.def->child_spawn.empty() && p.child_depth < 2 && child_spawns_scratch_.size() < 24) {
+        child_spawns_scratch_.push_back(
+            {p.def->child_spawn, p.pos, p.vel, uint8_t(p.child_depth + 1), p.world_ambient});
       }
       continue;
     }
@@ -1160,8 +1239,9 @@ void ParticleSystem::step(float dt, const std::array<float, 3>& wind_dir, float 
     ++write;
   }
   particles_.resize(write);
-  if (lib_ && !child_spawns.empty()) {
-    for (const auto& cs : child_spawns) {
+  if (evict_cursor_ >= particles_.size()) evict_cursor_ = 0;
+  if (lib_ && !child_spawns_scratch_.empty()) {
+    for (const auto& cs : child_spawns_scratch_) {
       const auto* cdef = lib_->find_effect(cs.effect);
       if (!cdef) continue;
       const int n = std::clamp(int(std::lround(std::max(3.0f, cdef->quantity * 0.25f))), 3, 12);
@@ -1178,12 +1258,8 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
   additive_out.clear();
   if (particles_.empty()) return;
 
-  struct KeyedSprite {
-    float dist2;
-    ParticleSprite sprite;
-  };
-  std::vector<KeyedSprite> alpha_sorted;
-  alpha_sorted.reserve(particles_.size());
+  alpha_sorted_scratch_.clear();
+  alpha_sorted_scratch_.reserve(particles_.size());
 
   for (const auto& p : particles_) {
     if (!p.def) continue;
@@ -1282,14 +1358,14 @@ void ParticleSystem::build_sprites(const std::array<float, 3>& eye_game, std::ve
       const float dx = p.pos[0] - eye_game[0];
       const float dy = p.pos[1] - eye_game[1];
       const float dz = p.pos[2] - eye_game[2];
-      alpha_sorted.push_back({dx * dx + dy * dy + dz * dz, sp});
+      alpha_sorted_scratch_.push_back({dx * dx + dy * dy + dz * dz, sp});
     }
   }
 
-  std::sort(alpha_sorted.begin(), alpha_sorted.end(),
+  std::sort(alpha_sorted_scratch_.begin(), alpha_sorted_scratch_.end(),
             [](const KeyedSprite& a, const KeyedSprite& b) { return a.dist2 > b.dist2; });
-  alpha_out.reserve(alpha_sorted.size());
-  for (auto& ks : alpha_sorted) alpha_out.push_back(ks.sprite);
+  alpha_out.reserve(alpha_sorted_scratch_.size());
+  for (auto& ks : alpha_sorted_scratch_) alpha_out.push_back(ks.sprite);
 }
 
 // ---------------------------------------------------------------------------

@@ -24,22 +24,72 @@ if(SHIFT_EMBED_XMA2)
   set(SHIFT_FFMPEG_OVERLAY "${CMAKE_BINARY_DIR}/ffmpeg_xma2_overlay")
   file(MAKE_DIRECTORY "${SHIFT_FFMPEG_OVERLAY}/libavcodec")
 
-  file(WRITE "${SHIFT_FFMPEG_OVERLAY}/libavcodec/codec_list.c"
-    "static const AVCodec * const codec_list[] = {\n"
-    "    &ff_xma2_decoder,\n"
-    "    &ff_wmapro_decoder,\n"
-    "    &ff_xmaframes_decoder,\n"
-    "    NULL\n"
-    "};\n")
-  file(WRITE "${SHIFT_FFMPEG_OVERLAY}/libavcodec/parser_list.c"
-    "static const AVCodecParser * const parser_list[] = { NULL };\n")
-  file(WRITE "${SHIFT_FFMPEG_OVERLAY}/libavcodec/bsf_list.c"
-    "static const AVBitStreamFilter * const bitstream_filters[] = {\n"
-    "#if CONFIG_NULL_BSF\n"
-    "    &ff_null_bsf,\n"
-    "#endif\n"
-    "    NULL\n"
-    "};\n")
+  function(_shift_write_if_changed _path _content)
+    if(EXISTS "${_path}")
+      file(READ "${_path}" _existing)
+      if(_existing STREQUAL "${_content}")
+        return()
+      endif()
+    endif()
+    file(WRITE "${_path}" "${_content}")
+  endfunction()
+
+  _shift_write_if_changed("${SHIFT_FFMPEG_OVERLAY}/libavcodec/codec_list.c"
+"static const AVCodec * const codec_list[] = {
+    &ff_xma2_decoder,
+    &ff_wmapro_decoder,
+    &ff_xmaframes_decoder,
+    NULL
+};
+")
+  _shift_write_if_changed("${SHIFT_FFMPEG_OVERLAY}/libavcodec/parser_list.c"
+"static const AVCodecParser * const parser_list[] = { NULL };
+")
+  _shift_write_if_changed("${SHIFT_FFMPEG_OVERLAY}/libavcodec/bsf_list.c"
+"static const AVBitStreamFilter * const bitstream_filters[] = {
+#if CONFIG_NULL_BSF
+    &ff_null_bsf,
+#endif
+    NULL
+};
+")
+  _shift_write_if_changed("${SHIFT_FFMPEG_OVERLAY}/debug_deadcode_stubs.c"
+"/* Stubs for compile-time-disabled FFmpeg cross-arch/encoder branches under -O0 / /Od. */
+int shift_ffmpeg_debug_stubs_anchor(void) { return 0; }
+#if !defined(NDEBUG)
+#include <stddef.h>
+int ff_frame_thread_encoder_init(void *a, void *b) { (void)a; (void)b; return -1; }
+void ff_frame_thread_encoder_free(void *a) { (void)a; }
+int ff_thread_video_encode_frame(void *a, void *b, const void *c, int *d) { (void)a; (void)b; (void)c; (void)d; return -1; }
+#if !defined(__aarch64__) && !defined(_M_ARM64)
+void ff_fft_init_aarch64(void *s) { (void)s; }
+void ff_float_dsp_init_aarch64(void *s) { (void)s; }
+int ff_get_cpu_flags_aarch64(void) { return 0; }
+size_t ff_get_cpu_max_align_aarch64(void) { return 8; }
+#endif
+#if !defined(__arm__) && !defined(_M_ARM)
+void ff_fft_init_arm(void *s) { (void)s; }
+void ff_float_dsp_init_arm(void *s) { (void)s; }
+int ff_get_cpu_flags_arm(void) { return 0; }
+size_t ff_get_cpu_max_align_arm(void) { return 8; }
+#endif
+#if !defined(__mips__)
+void ff_fft_init_mips(void *s) { (void)s; }
+void ff_float_dsp_init_mips(void *s) { (void)s; }
+int ff_get_cpu_flags_mips(void) { return 0; }
+size_t ff_get_cpu_max_align_mips(void) { return 8; }
+#endif
+#if !defined(__powerpc__) && !defined(__ppc__)
+void ff_fft_init_ppc(void *s) { (void)s; }
+void ff_float_dsp_init_ppc(void *s) { (void)s; }
+int ff_get_cpu_flags_ppc(void) { return 0; }
+size_t ff_get_cpu_max_align_ppc(void) { return 8; }
+#endif
+#if !defined(__SSE4_1__)
+void ff_image_copy_plane_uc_from_sse4(void *a, ptrdiff_t b, const void *c, ptrdiff_t d, ptrdiff_t e, int f) { (void)a; (void)b; (void)c; (void)d; (void)e; (void)f; }
+#endif
+#endif
+")
 
   if(APPLE AND CMAKE_OSX_ARCHITECTURES)
     if("arm64" IN_LIST CMAKE_OSX_ARCHITECTURES)
@@ -146,7 +196,8 @@ if(SHIFT_EMBED_XMA2)
     "${SHIFT_FFMPEG_DIR}/libavutil/utils.c"
     "${SHIFT_FFMPEG_DIR}/libavutil/video_enc_params.c"
     "${SHIFT_FFMPEG_DIR}/libavutil/xga_font_data.c"
-    "${SHIFT_FFMPEG_DIR}/libavutil/xtea.c")
+    "${SHIFT_FFMPEG_DIR}/libavutil/xtea.c"
+    "${SHIFT_FFMPEG_OVERLAY}/debug_deadcode_stubs.c")
 
   if(_shift_ff_x86_64)
     target_sources(shift_ffmpeg_avutil PRIVATE

@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -119,7 +120,10 @@ class Collision {
   // The active route number R (free roam: 0; an event: its TrackRoute
   // number, probable). Applies to the next gather.
   void set_active_route(int route) {
-    if (route != route_) cache_.clear();
+    if (route != route_) {
+      cache_.clear();
+      cache_epoch_.clear();
+    }
     route_ = route;
   }
   int active_route() const { return route_; }
@@ -146,7 +150,10 @@ class Collision {
   std::unordered_set<uint32_t> occupied_cells_;
   std::vector<fh1::SurfaceType> surfaces_;
   SurfaceTableExtras surface_extras_;
+  static constexpr size_t kMaxCachedTiles = 512;
   std::map<uint32_t, Core> cache_;  // by record position
+  std::unordered_map<uint32_t, uint64_t> cache_epoch_;
+  uint64_t gather_epoch_ = 0;
 };
 
 // The measured free-roam spawn (COLLISION.md spawn point): the body
