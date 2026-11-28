@@ -1,0 +1,130 @@
+#version 460
+// 2-Phase GPU Meshlet Frustum + Backface Normal Cone + Hi-Z Occlusion Culling.
+// Emits VkDrawIndexedIndirectCommand / D3D12_DRAW_INDEXED_ARGUMENTS + visible
+// draw metadata + atomic draw count + telemetry stats.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct MeshletInstance {
+  mat4 model;
+  mat4 prev_model;
+  uint first_meshlet;
+  uint meshlet_count;
+  uint material_class;
+  uint material_id;
+};
+
+struct Meshlet {
+  vec4 bound_sphere;    // xyz = local center, w = radius
+  vec4 cone_apex_cut;   // xyz = cone apex, w = cone_cutoff (>= 1.0 disables)
+  vec3 cone_axis;
+  uint index_offset;
+  uint vertex_offset;
+  uint triangle_count;
+  uint vertex_count;
+  uint material_id;
+};
+
+struct DrawIndexedIndirect {
+  uint index_count;
+  uint instance_count;
+  uint first_index;
+  int vertex_offset;
+  uint first_instance;
+};
+
+struct VisibleDraw {
+  uint instance_id;
+  uint meshlet_id;
+  uint material_class;
+  uint material_id;
+};
+
+layout(set = 0, binding = 0) uniform CullParams {
+  mat4 view_proj;
+  vec4 frustum_planes[6];
+  vec4 camera_pos_pad;
+  uint work_item_count;
+  uint max_draws;
+  uint enable_cone_cull;
+  uint pad;
+} u;
+
+layout(set = 0, binding = 1) readonly buffer InstanceBuf {
+  MeshletInstance instances[];
+};
+
+layout(set = 0, binding = 2) readonly buffer MeshletBuf {
+  Meshlet meshlets[];
+};
+
+layout(set = 0, binding = 3) readonly buffer WorkItemBuf {
+  uvec2 work_items[];  // x = instance_id, y = meshlet_id
+};
+
+layout(set = 0, binding = 4) writeonly buffer DrawCmdBuf {
+  DrawIndexedIndirect draw_cmds[];
+};
+
+layout(set = 0, binding = 5) writeonly buffer VisibleDrawBuf {
+  VisibleDraw visible_draws[];
+};
+
+layout(set = 0, binding = 6) buffer StatsBuf {
+  uint stats[];  // [0]=visible_count, [1]=frustum_culled, [2]=cone_culled, [3]=tested
+};
+
+void main() {
+  uint tid = gl_GlobalInvocationID.x;
+  if (tid >= u.work_item_count) return;
+  atomicAdd(stats[3], 1u);
+
+  uvec2 item = work_items[tid];
+  MeshletInstance inst = instances[item.x];
+  Meshlet m = meshlets[item.y];
+
+  // Transform bounding sphere into world space (uniform/max-axis scale).
+  vec3 world_center = (inst.model * vec4(m.bound_sphere.xyz, 1.0)).xyz;
+  float sx = length(inst.model[0].xyz);
+  float sy = length(inst.model[1].xyz);
+  float sz = length(inst.model[2].xyz);
+  float max_scale = max(sx, max(sy, sz));
+  float world_radius = m.bound_sphere.w * max_scale;
+
+  // 1. Frustum cull (6 Gribb-Hartmann planes).
+  for (uint p = 0u; p < 6u; ++p) {
+    vec4 pl = u.frustum_planes[p];
+    if (dot(pl.xyz, world_center) + pl.w < -world_radius) {
+      atomicAdd(stats[1], 1u);
+      return;
+    }
+  }
+
+  // 2. Backface normal cone cull (cluster-level orientation reject).
+  if (u.enable_cone_cull != 0u && m.cone_apex_cut.w < 0.999) {
+    vec3 world_axis = normalize(mat3(inst.model) * m.cone_axis);
+    vec3 view_vec = world_center - u.camera_pos_pad.xyz;
+    float dist = length(view_vec);
+    if (dist > world_radius && dot(view_vec, world_axis) >= m.cone_apex_cut.w * dist + world_radius) {
+      atomicAdd(stats[2], 1u);
+      return;
+    }
+  }
+
+  uint slot = atomicAdd(stats[0], 1u);
+  if (slot >= u.max_draws) return;
+
+  DrawIndexedIndirect cmd;
+  cmd.index_count = m.triangle_count * 3u;
+  cmd.instance_count = 1u;
+  cmd.first_index = m.index_offset;
+  cmd.vertex_offset = int(m.vertex_offset);
+  cmd.first_instance = slot;
+  draw_cmds[slot] = cmd;
+
+  VisibleDraw vd;
+  vd.instance_id = item.x;
+  vd.meshlet_id = item.y;
+  vd.material_class = inst.material_class;
+  vd.material_id = inst.material_id;
+  visible_draws[slot] = vd;
+}

@@ -135,6 +135,7 @@ VkFormat to_vk_format(Format fmt) noexcept {
     case Format::R32Sfloat:    return VK_FORMAT_R32_SFLOAT;
     case Format::R32Uint:      return VK_FORMAT_R32_UINT;
     case Format::Rg32Sfloat:   return VK_FORMAT_R32G32_SFLOAT;
+    case Format::Rg32Uint:     return VK_FORMAT_R32G32_UINT;
     case Format::Rgb32Sfloat:  return VK_FORMAT_R32G32B32_SFLOAT;
     case Format::Rgba32Sfloat: return VK_FORMAT_R32G32B32A32_SFLOAT;
     case Format::Rgba32Uint:   return VK_FORMAT_R32G32B32A32_UINT;
@@ -170,6 +171,7 @@ Format from_vk_format(VkFormat fmt) noexcept {
     case VK_FORMAT_R32_SFLOAT:               return Format::R32Sfloat;
     case VK_FORMAT_R32_UINT:                 return Format::R32Uint;
     case VK_FORMAT_R32G32_SFLOAT:            return Format::Rg32Sfloat;
+    case VK_FORMAT_R32G32_UINT:              return Format::Rg32Uint;
     case VK_FORMAT_R32G32B32_SFLOAT:         return Format::Rgb32Sfloat;
     case VK_FORMAT_R32G32B32A32_SFLOAT:      return Format::Rgba32Sfloat;
     case VK_FORMAT_R32G32B32A32_UINT:        return Format::Rgba32Uint;
@@ -655,6 +657,11 @@ VkDeviceImpl::~VkDeviceImpl() {
       std::vector<QueryPoolHandle> leftover_qp;
       query_pools_.for_each_alive([&](QueryPoolHandle h, QueryPoolEntry&) { leftover_qp.push_back(h); });
       for (QueryPoolHandle h : leftover_qp) destroy_query_pool(h);
+
+      std::vector<TimelineSemaphoreHandle> leftover_ts;
+      timeline_semaphores_.for_each_alive(
+          [&](TimelineSemaphoreHandle h, TimelineSemaphoreEntry&) { leftover_ts.push_back(h); });
+      for (TimelineSemaphoreHandle h : leftover_ts) destroy_timeline_semaphore(h);
     }
 
     std::string cache_err;
@@ -668,7 +675,7 @@ VkDeviceImpl::~VkDeviceImpl() {
       if (p) vkDestroyCommandPool(device_, p, nullptr);
     }
     all_cmd_pools_.clear();
-    free_cmd_pools_.clear();
+    for (auto& fp : free_cmd_pools_) fp.clear();
 
     if (allocator_) {
       vmaDestroyAllocator(allocator_);
@@ -883,7 +890,10 @@ bool VkDeviceImpl::pick_physical_device(const DeviceDesc&, std::string& error) {
   VkPhysicalDeviceDepthStencilResolveProperties ds_resolve{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
   VkPhysicalDeviceDriverProperties drv_props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+  VkPhysicalDeviceSubgroupProperties subgroup_props{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
   ds_resolve.pNext = &drv_props;
+  drv_props.pNext = &subgroup_props;
   VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
   props2.pNext = &ds_resolve;
   vkGetPhysicalDeviceProperties2(physical_, &props2);
@@ -929,6 +939,9 @@ bool VkDeviceImpl::pick_physical_device(const DeviceDesc&, std::string& error) {
 
   caps_.dynamic_rendering = true;
   caps_.synchronization2 = true;
+  caps_.subgroup_ops =
+      (subgroup_props.supportedOperations & VK_SUBGROUP_FEATURE_BALLOT_BIT) != 0 &&
+      (subgroup_props.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
   caps_.depth_resolve_sample_zero =
       (ds_resolve.supportedDepthResolveModes & VK_RESOLVE_MODE_SAMPLE_ZERO_BIT) != 0;
   caps_.supported_msaa_mask =
@@ -957,15 +970,80 @@ bool VkDeviceImpl::create_logical_device(const DeviceDesc& desc, std::string& er
   std::vector<VkQueueFamilyProperties> fams(fam_count);
   vkGetPhysicalDeviceQueueFamilyProperties(physical_, &fam_count, fams.data());
 
-  uint32_t queue_count = 1;
-  if (desc.enable_transfer_queue && queue_family_ < fam_count && fams[queue_family_].queueCount >= 2) {
-    queue_count = 2;
+  // Discover dedicated async compute (COMPUTE && !GRAPHICS) and dedicated DMA
+  // transfer (TRANSFER && !GRAPHICS && !COMPUTE) queue families.
+  compute_family_ = queue_family_;
+  transfer_family_ = queue_family_;
+  if (desc.enable_async_compute) {
+    for (uint32_t i = 0; i < fam_count; ++i) {
+      if ((fams[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+          !(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+          fams[i].queueCount > 0) {
+        compute_family_ = i;
+        break;
+      }
+    }
   }
-  const float priorities[2] = {1.0f, 0.5f};
-  VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-  qci.queueFamilyIndex = queue_family_;
-  qci.queueCount = queue_count;
-  qci.pQueuePriorities = priorities;
+  if (desc.enable_transfer_queue) {
+    for (uint32_t i = 0; i < fam_count; ++i) {
+      if ((fams[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+          !(fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+          !(fams[i].queueFlags & VK_QUEUE_COMPUTE_BIT) &&
+          fams[i].queueCount > 0) {
+        transfer_family_ = i;
+        break;
+      }
+    }
+    if (transfer_family_ == queue_family_) {
+      for (uint32_t i = 0; i < fam_count; ++i) {
+        if (i != queue_family_ && i != compute_family_ &&
+            (fams[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && fams[i].queueCount > 0) {
+          transfer_family_ = i;
+          break;
+        }
+      }
+    }
+  }
+
+  // Allocate queue indices per family while respecting queueCount limits.
+  std::vector<uint32_t> fam_alloc(fam_count, 0u);
+  auto alloc_queue_slot = [&](uint32_t fam) -> uint32_t {
+    const uint32_t cur = fam_alloc[fam];
+    if (cur < fams[fam].queueCount) {
+      fam_alloc[fam] = cur + 1u;
+      return cur;
+    }
+    return 0u;  // share queue 0 in this family
+  };
+
+  const uint32_t graphics_queue_idx = alloc_queue_slot(queue_family_);
+  const uint32_t compute_queue_idx =
+      desc.enable_async_compute ? alloc_queue_slot(compute_family_) : graphics_queue_idx;
+  const uint32_t transfer_queue_idx =
+      desc.enable_transfer_queue ? alloc_queue_slot(transfer_family_) : graphics_queue_idx;
+
+  unique_queue_families_.clear();
+  std::vector<std::vector<float>> queue_priorities;
+  std::vector<VkDeviceQueueCreateInfo> queue_cis;
+  for (uint32_t fam = 0; fam < fam_count; ++fam) {
+    if (fam_alloc[fam] == 0u) continue;
+    unique_queue_families_.push_back(fam);
+    queue_priorities.emplace_back(fam_alloc[fam], 0.5f);
+    if (fam == queue_family_) queue_priorities.back()[0] = 1.0f;
+    if (fam == compute_family_ && compute_queue_idx < fam_alloc[fam]) {
+      queue_priorities.back()[compute_queue_idx] = 0.8f;
+    }
+    VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    qci.queueFamilyIndex = fam;
+    qci.queueCount = fam_alloc[fam];
+    queue_cis.push_back(qci);
+  }
+  for (size_t i = 0; i < queue_cis.size(); ++i) {
+    queue_cis[i].pQueuePriorities = queue_priorities[i].data();
+  }
+
+  caps_.dedicated_async_compute = (compute_family_ != queue_family_);
+  caps_.dedicated_transfer_queue = (transfer_family_ != queue_family_);
 
   // Query core Vulkan 1.0 / 1.2 / 1.3 offered features & descriptor indexing limits.
   VkPhysicalDeviceVulkan13Features o13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -1046,6 +1124,10 @@ bool VkDeviceImpl::create_logical_device(const DeviceDesc& desc, std::string& er
   }
   if (o12.scalarBlockLayout) {
     f12.scalarBlockLayout = VK_TRUE;
+  }
+  if (o12.timelineSemaphore) {
+    f12.timelineSemaphore = VK_TRUE;
+    caps_.timeline_semaphores = true;
   }
 
   // Enumerate device extensions.
@@ -1179,8 +1261,8 @@ bool VkDeviceImpl::create_logical_device(const DeviceDesc& desc, std::string& er
 
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   dci.pNext = &f2;
-  dci.queueCreateInfoCount = 1;
-  dci.pQueueCreateInfos = &qci;
+  dci.queueCreateInfoCount = static_cast<uint32_t>(queue_cis.size());
+  dci.pQueueCreateInfos = queue_cis.data();
   dci.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
   dci.ppEnabledExtensionNames = extensions.data();
 
@@ -1191,10 +1273,9 @@ bool VkDeviceImpl::create_logical_device(const DeviceDesc& desc, std::string& er
   }
   volkLoadDevice(device_);
 
-  vkGetDeviceQueue(device_, queue_family_, 0, &graphics_queue_);
-  if (queue_count > 1) {
-    vkGetDeviceQueue(device_, queue_family_, 1, &transfer_queue_);
-  }
+  vkGetDeviceQueue(device_, queue_family_, graphics_queue_idx, &graphics_queue_);
+  vkGetDeviceQueue(device_, compute_family_, compute_queue_idx, &compute_queue_);
+  vkGetDeviceQueue(device_, transfer_family_, transfer_queue_idx, &transfer_queue_);
 
   // VMA allocator (with BDA enabled whenever bufferDeviceAddress is active).
   VmaVulkanFunctions vma_funcs{};
@@ -1325,9 +1406,34 @@ VramStats VkDeviceImpl::vram_stats() const {
   return out;
 }
 
+uint32_t VkDeviceImpl::vk_queue_family(QueueKind kind) const noexcept {
+  switch (kind) {
+    case QueueKind::AsyncCompute: return compute_family_;
+    case QueueKind::Transfer: return transfer_family_;
+    case QueueKind::Graphics:
+    default: return queue_family_;
+  }
+}
+
+VkQueue VkDeviceImpl::vk_queue(QueueKind kind) const noexcept {
+  switch (kind) {
+    case QueueKind::AsyncCompute: return compute_queue_ ? compute_queue_ : graphics_queue_;
+    case QueueKind::Transfer: return transfer_queue_ ? transfer_queue_ : graphics_queue_;
+    case QueueKind::Graphics:
+    default: return graphics_queue_;
+  }
+}
+
+std::mutex& VkDeviceImpl::queue_mutex_for(QueueKind kind) noexcept {
+  const VkQueue q = vk_queue(kind);
+  if (q == graphics_queue_) return graphics_queue_mutex_;
+  if (q == compute_queue_) return compute_queue_mutex_;
+  return transfer_queue_mutex_;
+}
+
 void VkDeviceImpl::wait_idle() {
   if (!device_) return;
-  std::lock_guard<std::mutex> lock(queue_mutex_);
+  std::scoped_lock lock(graphics_queue_mutex_, compute_queue_mutex_, transfer_queue_mutex_);
   vkDeviceWaitIdle(device_);
 }
 
@@ -1374,6 +1480,11 @@ const AccelStructEntry* VkDeviceImpl::lookup_accel_struct(AccelStructHandle h) c
   std::lock_guard<std::mutex> lock(resource_mutex_);
   return accel_structs_.get(h);
 }
+const TimelineSemaphoreEntry* VkDeviceImpl::lookup_timeline_semaphore(
+    TimelineSemaphoreHandle h) const {
+  std::lock_guard<std::mutex> lock(resource_mutex_);
+  return timeline_semaphores_.get(h);
+}
 
 // -----------------------------------------------------------------------------
 // Buffers
@@ -1386,7 +1497,13 @@ BufferHandle VkDeviceImpl::create_buffer(const BufferDesc& desc, std::string& er
   VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   bci.size = desc.size;
   bci.usage = to_vk_buffer_usage(desc.usage, caps_.buffer_device_address, caps_.ray_query);
-  bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (unique_queue_families_.size() > 1) {
+    bci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    bci.queueFamilyIndexCount = static_cast<uint32_t>(unique_queue_families_.size());
+    bci.pQueueFamilyIndices = unique_queue_families_.data();
+  } else {
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
 
   VmaAllocationCreateInfo aci{};
   switch (desc.memory) {
@@ -1486,7 +1603,13 @@ TextureHandle VkDeviceImpl::create_texture(const TextureDesc& desc, std::string&
   ici.samples = to_vk_sample_count(desc.sample_count);
   ici.tiling = VK_IMAGE_TILING_OPTIMAL;
   ici.usage = to_vk_image_usage(desc.usage);
-  ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (unique_queue_families_.size() > 1 && desc.sample_count <= 1 && !format_is_depth(desc.format)) {
+    ici.sharingMode = VK_SHARING_MODE_CONCURRENT;
+    ici.queueFamilyIndexCount = static_cast<uint32_t>(unique_queue_families_.size());
+    ici.pQueueFamilyIndices = unique_queue_families_.data();
+  } else {
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  }
   ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
   VmaAllocationCreateInfo aci{};
@@ -2333,22 +2456,188 @@ bool VkDeviceImpl::get_query_pool_results(QueryPoolHandle pool, uint32_t first, 
 }
 
 // -----------------------------------------------------------------------------
+// Timeline Semaphores (Vulkan 1.2 Core)
+// -----------------------------------------------------------------------------
+TimelineSemaphoreHandle VkDeviceImpl::create_timeline_semaphore(uint64_t initial_value,
+                                                                std::string& error) {
+  if (!caps_.timeline_semaphores) {
+    error = "create_timeline_semaphore: device does not support Vulkan timeline semaphores";
+    return {};
+  }
+  VkSemaphoreTypeCreateInfo tci{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+  tci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+  tci.initialValue = initial_value;
+
+  VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+  sci.pNext = &tci;
+
+  TimelineSemaphoreEntry entry{};
+  const VkResult r = vkCreateSemaphore(device_, &sci, nullptr, &entry.semaphore);
+  if (r != VK_SUCCESS) {
+    error = vk_err("vkCreateSemaphore(timeline)", r);
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(resource_mutex_);
+  return timeline_semaphores_.allocate(std::move(entry));
+}
+
+void VkDeviceImpl::destroy_timeline_semaphore(TimelineSemaphoreHandle handle) {
+  TimelineSemaphoreEntry entry{};
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    if (!timeline_semaphores_.remove(handle, &entry)) return;
+  }
+  if (entry.semaphore) {
+    vkDestroySemaphore(device_, entry.semaphore, nullptr);
+  }
+}
+
+uint64_t VkDeviceImpl::timeline_semaphore_value(TimelineSemaphoreHandle handle) const {
+  const TimelineSemaphoreEntry* e = lookup_timeline_semaphore(handle);
+  if (!e || !e->semaphore) return 0ull;
+  uint64_t val = 0ull;
+  if (vkGetSemaphoreCounterValue(device_, e->semaphore, &val) != VK_SUCCESS) return 0ull;
+  return val;
+}
+
+bool VkDeviceImpl::wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                                           uint64_t timeout_ns) {
+  const TimelineSemaphoreEntry* e = lookup_timeline_semaphore(handle);
+  if (!e || !e->semaphore) return false;
+  VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+  wi.semaphoreCount = 1;
+  wi.pSemaphores = &e->semaphore;
+  wi.pValues = &value;
+  return vkWaitSemaphores(device_, &wi, timeout_ns) == VK_SUCCESS;
+}
+
+bool VkDeviceImpl::signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) {
+  const TimelineSemaphoreEntry* e = lookup_timeline_semaphore(handle);
+  if (!e || !e->semaphore) return false;
+  VkSemaphoreSignalInfo si{VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+  si.semaphore = e->semaphore;
+  si.value = value;
+  return vkSignalSemaphore(device_, &si) == VK_SUCCESS;
+}
+
+// -----------------------------------------------------------------------------
+// Reusable Per-Queue Command Lists & Multi-Queue Sync2 Batch Submission
+// -----------------------------------------------------------------------------
+std::unique_ptr<CommandList> VkDeviceImpl::create_command_list(QueueKind queue,
+                                                               std::string& error) {
+  VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pci.queueFamilyIndex = vk_queue_family(queue);
+  VkCommandPool pool = VK_NULL_HANDLE;
+  VkResult r = vkCreateCommandPool(device_, &pci, nullptr, &pool);
+  if (r != VK_SUCCESS) {
+    error = vk_err("vkCreateCommandPool(create_command_list)", r);
+    return nullptr;
+  }
+
+  VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  cbai.commandPool = pool;
+  cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cbai.commandBufferCount = 1;
+  VkCommandBuffer cmd = VK_NULL_HANDLE;
+  r = vkAllocateCommandBuffers(device_, &cbai, &cmd);
+  if (r != VK_SUCCESS) {
+    vkDestroyCommandPool(device_, pool, nullptr);
+    error = vk_err("vkAllocateCommandBuffers(create_command_list)", r);
+    return nullptr;
+  }
+
+  return std::make_unique<VkCommandListImpl>(*this, cmd, queue, pool);
+}
+
+bool VkDeviceImpl::submit(QueueKind queue,
+                          std::span<CommandList* const> lists,
+                          std::span<const TimelineWait> waits,
+                          std::span<const TimelineSignal> signals,
+                          std::string& error) {
+  std::vector<VkCommandBufferSubmitInfo> cmd_infos;
+  cmd_infos.reserve(lists.size());
+  for (CommandList* cl : lists) {
+    if (!cl) continue;
+    auto* vk_cl = static_cast<VkCommandListImpl*>(cl);
+    if (!vk_cl->native_cmd()) continue;
+    VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cbi.commandBuffer = vk_cl->native_cmd();
+    cmd_infos.push_back(cbi);
+  }
+
+  std::vector<VkSemaphoreSubmitInfo> wait_infos;
+  wait_infos.reserve(waits.size());
+  for (const TimelineWait& w : waits) {
+    const TimelineSemaphoreEntry* e = lookup_timeline_semaphore(w.semaphore);
+    if (!e || !e->semaphore) {
+      error = "submit: invalid TimelineWait semaphore handle";
+      return false;
+    }
+    VkSemaphoreSubmitInfo ssi{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    ssi.semaphore = e->semaphore;
+    ssi.value = w.value;
+    ssi.stageMask = any_flag(w.stage) ? to_vk_stage2(w.stage) : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    wait_infos.push_back(ssi);
+  }
+
+  std::vector<VkSemaphoreSubmitInfo> signal_infos;
+  signal_infos.reserve(signals.size());
+  for (const TimelineSignal& s : signals) {
+    const TimelineSemaphoreEntry* e = lookup_timeline_semaphore(s.semaphore);
+    if (!e || !e->semaphore) {
+      error = "submit: invalid TimelineSignal semaphore handle";
+      return false;
+    }
+    VkSemaphoreSubmitInfo ssi{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    ssi.semaphore = e->semaphore;
+    ssi.value = s.value;
+    ssi.stageMask = any_flag(s.stage) ? to_vk_stage2(s.stage) : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    signal_infos.push_back(ssi);
+  }
+
+  VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  si.waitSemaphoreInfoCount = static_cast<uint32_t>(wait_infos.size());
+  si.pWaitSemaphoreInfos = wait_infos.empty() ? nullptr : wait_infos.data();
+  si.commandBufferInfoCount = static_cast<uint32_t>(cmd_infos.size());
+  si.pCommandBufferInfos = cmd_infos.empty() ? nullptr : cmd_infos.data();
+  si.signalSemaphoreInfoCount = static_cast<uint32_t>(signal_infos.size());
+  si.pSignalSemaphoreInfos = signal_infos.empty() ? nullptr : signal_infos.data();
+
+  VkQueue target_queue = vk_queue(queue);
+  VkResult r = VK_SUCCESS;
+  {
+    std::lock_guard<std::mutex> lock(queue_mutex_for(queue));
+    r = vkQueueSubmit2(target_queue, 1, &si, VK_NULL_HANDLE);
+  }
+  if (r != VK_SUCCESS) {
+    error = vk_err("vkQueueSubmit2", r);
+    return false;
+  }
+  return true;
+}
+
+// -----------------------------------------------------------------------------
 // Immediate submission (submit_once)
 // -----------------------------------------------------------------------------
 bool VkDeviceImpl::submit_once(const std::function<void(CommandList&)>& record_fn,
                                std::string& error, bool prefer_transfer_queue) {
+  const QueueKind qk =
+      (prefer_transfer_queue && transfer_queue_) ? QueueKind::Transfer : QueueKind::Graphics;
+  const size_t cache_idx = static_cast<size_t>(qk);
+
   VkCommandPool pool = VK_NULL_HANDLE;
   {
     std::lock_guard<std::mutex> lock(pool_mutex_);
-    if (!free_cmd_pools_.empty()) {
-      pool = free_cmd_pools_.back();
-      free_cmd_pools_.pop_back();
+    if (!free_cmd_pools_[cache_idx].empty()) {
+      pool = free_cmd_pools_[cache_idx].back();
+      free_cmd_pools_[cache_idx].pop_back();
     }
   }
   if (!pool) {
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pci.queueFamilyIndex = queue_family_;
+    pci.queueFamilyIndex = vk_queue_family(qk);
     const VkResult r = vkCreateCommandPool(device_, &pci, nullptr, &pool);
     if (r != VK_SUCCESS) {
       error = vk_err("vkCreateCommandPool(submit_once)", r);
@@ -2361,7 +2650,7 @@ bool VkDeviceImpl::submit_once(const std::function<void(CommandList&)>& record_f
   auto recycle_pool = [&]() {
     vkResetCommandPool(device_, pool, 0);
     std::lock_guard<std::mutex> lock(pool_mutex_);
-    free_cmd_pools_.push_back(pool);
+    free_cmd_pools_[cache_idx].push_back(pool);
   };
 
   VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -2376,7 +2665,7 @@ bool VkDeviceImpl::submit_once(const std::function<void(CommandList&)>& record_f
     return false;
   }
 
-  VkCommandListImpl cmd_list(*this, cmd);
+  VkCommandListImpl cmd_list(*this, cmd, qk);
   cmd_list.begin();
   record_fn(cmd_list);
   cmd_list.end();
@@ -2391,14 +2680,16 @@ bool VkDeviceImpl::submit_once(const std::function<void(CommandList&)>& record_f
     return false;
   }
 
-  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.commandBufferCount = 1;
-  si.pCommandBuffers = &cmd;
+  VkCommandBufferSubmitInfo cbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  cbi.commandBuffer = cmd;
+  VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  si.commandBufferInfoCount = 1;
+  si.pCommandBufferInfos = &cbi;
 
-  VkQueue target_queue = (prefer_transfer_queue && transfer_queue_) ? transfer_queue_ : graphics_queue_;
+  VkQueue target_queue = vk_queue(qk);
   {
-    std::lock_guard<std::mutex> lock(queue_mutex_);
-    r = vkQueueSubmit(target_queue, 1, &si, fence);
+    std::lock_guard<std::mutex> lock(queue_mutex_for(qk));
+    r = vkQueueSubmit2(target_queue, 1, &si, fence);
   }
   if (r == VK_SUCCESS) {
     r = vkWaitForFences(device_, 1, &fence, VK_TRUE, UINT64_MAX);

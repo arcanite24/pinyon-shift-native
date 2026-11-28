@@ -93,6 +93,10 @@ struct AccelStructEntry {
   AccelStructKind kind = AccelStructKind::BottomLevel;
 };
 
+struct TimelineSemaphoreEntry {
+  VkSemaphore semaphore = VK_NULL_HANDLE;
+};
+
 // -----------------------------------------------------------------------------
 // Format & flag translation helpers
 // -----------------------------------------------------------------------------
@@ -161,8 +165,12 @@ class VkBindlessTableImpl final : public BindlessTable {
 
 class VkCommandListImpl final : public CommandList {
  public:
-  VkCommandListImpl(VkDeviceImpl& device, VkCommandBuffer cmd);
-  ~VkCommandListImpl() override = default;
+  VkCommandListImpl(VkDeviceImpl& device, VkCommandBuffer cmd,
+                    QueueKind queue_kind = QueueKind::Graphics,
+                    VkCommandPool owned_pool = VK_NULL_HANDLE);
+  ~VkCommandListImpl() override;
+
+  QueueKind queue_kind() const override { return queue_kind_; }
 
   void reset_handle(VkCommandBuffer cmd) {
     cmd_ = cmd;
@@ -205,6 +213,7 @@ class VkCommandListImpl final : public CommandList {
                                    uint32_t max_draw_count, uint32_t stride) override;
 
   void dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
+  void dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) override;
 
   void update_buffer(BufferHandle dst, uint64_t offset, uint64_t size, const void* data) override;
   void fill_buffer(BufferHandle dst, uint64_t offset, uint64_t size, uint32_t value) override;
@@ -229,6 +238,8 @@ class VkCommandListImpl final : public CommandList {
  private:
   VkDeviceImpl& device_;
   VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+  QueueKind queue_kind_ = QueueKind::Graphics;
+  VkCommandPool owned_pool_ = VK_NULL_HANDLE;
   VkPipelineLayout current_layout_ = VK_NULL_HANDLE;
   VkPipelineBindPoint current_bind_point_ = VK_PIPELINE_BIND_POINT_GRAPHICS;
 };
@@ -343,6 +354,22 @@ class VkDeviceImpl final : public Device {
   void destroy_accel_struct(AccelStructHandle handle) override;
   uint64_t accel_struct_device_address(AccelStructHandle handle) const override;
 
+  TimelineSemaphoreHandle create_timeline_semaphore(uint64_t initial_value,
+                                                    std::string& error) override;
+  void destroy_timeline_semaphore(TimelineSemaphoreHandle handle) override;
+  uint64_t timeline_semaphore_value(TimelineSemaphoreHandle handle) const override;
+  bool wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                               uint64_t timeout_ns) override;
+  bool signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) override;
+
+  std::unique_ptr<CommandList> create_command_list(QueueKind queue,
+                                                   std::string& error) override;
+  bool submit(QueueKind queue,
+              std::span<CommandList* const> lists,
+              std::span<const TimelineWait> waits,
+              std::span<const TimelineSignal> signals,
+              std::string& error) override;
+
   bool submit_once(const std::function<void(CommandList&)>& record_fn,
                    std::string& error, bool prefer_transfer_queue) override;
   std::unique_ptr<Swapchain> create_swapchain(const SwapchainDesc& desc, std::string& error) override;
@@ -353,10 +380,13 @@ class VkDeviceImpl final : public Device {
   VkDevice vk_device() const noexcept { return device_; }
   VmaAllocator vma_allocator() const noexcept { return allocator_; }
   uint32_t queue_family() const noexcept { return queue_family_; }
+  uint32_t vk_queue_family(QueueKind kind) const noexcept;
   VkQueue graphics_queue() const noexcept { return graphics_queue_; }
+  VkQueue vk_queue(QueueKind kind) const noexcept;
   VkSurfaceKHR probe_surface() const noexcept { return probe_surface_; }
   bool hdr_colorspace_ext() const noexcept { return hdr_colorspace_ext_; }
-  std::mutex& queue_mutex() noexcept { return queue_mutex_; }
+  std::mutex& queue_mutex() noexcept { return graphics_queue_mutex_; }
+  std::mutex& queue_mutex_for(QueueKind kind) noexcept;
 
   const BufferEntry* lookup_buffer(BufferHandle h) const;
   const TextureEntry* lookup_texture(TextureHandle h) const;
@@ -368,6 +398,7 @@ class VkDeviceImpl final : public Device {
   const PipelineEntry* lookup_pipeline(PipelineHandle h) const;
   const QueryPoolEntry* lookup_query_pool(QueryPoolHandle h) const;
   const AccelStructEntry* lookup_accel_struct(AccelStructHandle h) const;
+  const TimelineSemaphoreEntry* lookup_timeline_semaphore(TimelineSemaphoreHandle h) const;
 
   // Swapchain external-image registration helpers (non-owning handles).
   TextureHandle register_external_texture(VkImage image, VkFormat fmt, uint32_t w, uint32_t h);
@@ -400,11 +431,17 @@ class VkDeviceImpl final : public Device {
   VkPipelineCache pipeline_cache_ = VK_NULL_HANDLE;
 
   uint32_t queue_family_ = 0;
+  uint32_t compute_family_ = 0;
+  uint32_t transfer_family_ = 0;
+  std::vector<uint32_t> unique_queue_families_;
   VkQueue graphics_queue_ = VK_NULL_HANDLE;
+  VkQueue compute_queue_ = VK_NULL_HANDLE;
   VkQueue transfer_queue_ = VK_NULL_HANDLE;
-  mutable std::mutex queue_mutex_;
+  mutable std::mutex graphics_queue_mutex_;
+  mutable std::mutex compute_queue_mutex_;
+  mutable std::mutex transfer_queue_mutex_;
   std::mutex pool_mutex_;
-  std::vector<VkCommandPool> free_cmd_pools_;
+  std::array<std::vector<VkCommandPool>, 3> free_cmd_pools_;
   std::vector<VkCommandPool> all_cmd_pools_;
 
   VkPhysicalDeviceMemoryProperties mem_props_{};
@@ -428,6 +465,7 @@ class VkDeviceImpl final : public Device {
   HandlePool<PipelineHandle, PipelineEntry> pipelines_;
   HandlePool<QueryPoolHandle, QueryPoolEntry> query_pools_;
   HandlePool<AccelStructHandle, AccelStructEntry> accel_structs_;
+  HandlePool<TimelineSemaphoreHandle, TimelineSemaphoreEntry> timeline_semaphores_;
 };
 
 // Shared Volk loader bootstrap helper (used by both create_device & enumerate_adapters).

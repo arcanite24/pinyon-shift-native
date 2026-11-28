@@ -16,8 +16,9 @@ namespace shift::rhi::mtl {
 // -----------------------------------------------------------------------------
 // MetalCommandListImpl
 // -----------------------------------------------------------------------------
-MetalCommandListImpl::MetalCommandListImpl(MetalDeviceImpl& device, id<MTLCommandBuffer> cmd_buf)
-    : device_(device), cmd_buf_(cmd_buf) {
+MetalCommandListImpl::MetalCommandListImpl(MetalDeviceImpl& device, id<MTLCommandBuffer> cmd_buf,
+                                           QueueKind queue_kind, bool reusable)
+    : device_(device), queue_kind_(queue_kind), reusable_(reusable), cmd_buf_(cmd_buf) {
   if (device_.mtl_device()) {
     barrier_fence_ = [device_.mtl_device() newFence];
   }
@@ -50,6 +51,12 @@ void MetalCommandListImpl::reset_command_buffer(id<MTLCommandBuffer> cmd_buf) {
 }
 
 void MetalCommandListImpl::begin() {
+  if (reusable_) {
+    id<MTLCommandQueue> q = device_.mtl_queue(queue_kind_);
+    id<MTLCommandBuffer> fresh = q ? [q commandBuffer] : nil;
+    reset_command_buffer(fresh);
+    return;
+  }
   end_active_encoder();
   current_pipeline_ = {};
   current_pipeline_is_compute_ = false;
@@ -678,6 +685,22 @@ void MetalCommandListImpl::dispatch(uint32_t group_x, uint32_t group_y, uint32_t
       threadsPerThreadgroup:current_compute_tg_];
 }
 
+void MetalCommandListImpl::dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) {
+  BufferEntry ab{};
+  if (!device_.lookup_buffer_copy(arg_buffer, ab) || !ab.buffer) return;
+  const bool opening_new = (active_encoder_ != EncoderKind::Compute);
+  id<MTLComputeCommandEncoder> enc = ensure_compute_encoder();
+  if (!enc) return;
+  if (opening_new) {
+    compute_pipeline_dirty_ = true;
+    push_const_compute_dirty_ = (push_const_size_ > 0);
+  }
+  flush_pending_compute_state();
+  [enc dispatchThreadgroupsWithIndirectBuffer:ab.buffer
+                         indirectBufferOffset:arg_offset
+                        threadsPerThreadgroup:current_compute_tg_];
+}
+
 // -----------------------------------------------------------------------------
 // Transfers, Clears, Blits, and Depth Resolve
 // -----------------------------------------------------------------------------
@@ -914,6 +937,10 @@ void MetalCommandListImpl::blit(TextureHandle src, TextureHandle dst,
 
       id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:rpd];
       if (!enc) continue;
+      if (fence_wait_pending_ && barrier_fence_) {
+        [enc waitForFence:barrier_fence_ beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+        fence_wait_pending_ = false;
+      }
       MTLViewport vp{static_cast<double>(dx0), static_cast<double>(dy0),
                      static_cast<double>(d_w), static_cast<double>(d_h), 0.0, 1.0};
       [enc setViewport:vp];
@@ -929,6 +956,10 @@ void MetalCommandListImpl::blit(TextureHandle src, TextureHandle dst,
       [enc setFragmentTexture:src_view atIndex:0];
       [enc setFragmentSamplerState:samp atIndex:0];
       [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      if (barrier_fence_) {
+        [enc updateFence:barrier_fence_ afterStages:MTLRenderStageFragment];
+        fence_updated_ = true;
+      }
       [enc endEncoding];
     }
   }
@@ -952,7 +983,17 @@ void MetalCommandListImpl::clear_color_texture(TextureHandle dst, const float rg
         rpd.colorAttachments[0].clearColor =
             MTLClearColorMake(rgba[0], rgba[1], rgba[2], rgba[3]);
         id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:rpd];
-        if (enc) [enc endEncoding];
+        if (enc) {
+          if (fence_wait_pending_ && barrier_fence_) {
+            [enc waitForFence:barrier_fence_ beforeStages:MTLRenderStageFragment];
+            fence_wait_pending_ = false;
+          }
+          if (barrier_fence_) {
+            [enc updateFence:barrier_fence_ afterStages:MTLRenderStageFragment];
+            fence_updated_ = true;
+          }
+          [enc endEncoding];
+        }
       }
     }
   }
@@ -975,7 +1016,17 @@ void MetalCommandListImpl::clear_depth_texture(TextureHandle dst, float depth) {
         rpd.depthAttachment.storeAction = MTLStoreActionStore;
         rpd.depthAttachment.clearDepth = static_cast<double>(depth);
         id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:rpd];
-        if (enc) [enc endEncoding];
+        if (enc) {
+          if (fence_wait_pending_ && barrier_fence_) {
+            [enc waitForFence:barrier_fence_ beforeStages:MTLRenderStageFragment];
+            fence_wait_pending_ = false;
+          }
+          if (barrier_fence_) {
+            [enc updateFence:barrier_fence_ afterStages:MTLRenderStageFragment];
+            fence_updated_ = true;
+          }
+          [enc endEncoding];
+        }
       }
     }
   }
@@ -1003,7 +1054,17 @@ void MetalCommandListImpl::resolve_depth(TextureViewHandle msaa_depth,
     rpd.depthAttachment.depthResolveFilter =
         to_mtl_depth_resolve_filter(mode == ResolveMode::None ? ResolveMode::SampleZero : mode);
     id<MTLRenderCommandEncoder> enc = [cmd_buf_ renderCommandEncoderWithDescriptor:rpd];
-    if (enc) [enc endEncoding];
+    if (enc) {
+      if (fence_wait_pending_ && barrier_fence_) {
+        [enc waitForFence:barrier_fence_ beforeStages:MTLRenderStageFragment];
+        fence_wait_pending_ = false;
+      }
+      if (barrier_fence_) {
+        [enc updateFence:barrier_fence_ afterStages:MTLRenderStageFragment];
+        fence_updated_ = true;
+      }
+      [enc endEncoding];
+    }
   }
 }
 

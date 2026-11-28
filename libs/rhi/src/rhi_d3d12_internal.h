@@ -76,10 +76,48 @@ class DescriptorAllocator {
 };
 
 // -----------------------------------------------------------------------------
+// Placed-Heap Transient Sub-Allocator (ID3D12Heap + CreatePlacedResource)
+// Avoids per-resource CreateCommittedResource kernel calls for transient buffers
+// and render targets while respecting D3D12 Heap Tier 1/2 alignment rules.
+// -----------------------------------------------------------------------------
+class PlacedHeapPool {
+ public:
+  struct Allocation {
+    uint32_t heap_index = UINT32_MAX;
+    uint64_t offset = 0;
+    uint64_t size = 0;
+    ID3D12Heap* heap = nullptr;
+    bool valid() const noexcept { return heap != nullptr; }
+  };
+
+  void shutdown();
+  Allocation allocate(ID3D12Device* device, D3D12_HEAP_FLAGS flags,
+                      uint64_t size, uint64_t alignment);
+  void free(const Allocation& alloc);
+
+  uint32_t heap_count() const noexcept;
+
+ private:
+  struct FreeBlock {
+    uint64_t offset = 0;
+    uint64_t size = 0;
+  };
+  struct HeapBlock {
+    ComPtr<ID3D12Heap> heap;
+    D3D12_HEAP_FLAGS flags = D3D12_HEAP_FLAG_NONE;
+    uint64_t capacity = 0;
+    std::vector<FreeBlock> free_list;
+  };
+  mutable std::mutex mutex_;
+  std::vector<HeapBlock> heaps_;
+};
+
+// -----------------------------------------------------------------------------
 // Resource pool entries
 // -----------------------------------------------------------------------------
 struct BufferEntry {
   ComPtr<ID3D12Resource> resource;
+  PlacedHeapPool::Allocation placed_alloc{};
   uint64_t size = 0;            // logical size requested by caller
   uint64_t allocated_size = 0;  // aligned size allocated in D3D12
   BufferUsage usage = BufferUsage::None;
@@ -94,6 +132,7 @@ struct BufferEntry {
 
 struct TextureEntry {
   ComPtr<ID3D12Resource> resource;
+  PlacedHeapPool::Allocation placed_alloc{};
   DXGI_FORMAT resource_format = DXGI_FORMAT_UNKNOWN;
   DXGI_FORMAT copy_format = DXGI_FORMAT_UNKNOWN;
   Format format = Format::Undefined;
@@ -210,6 +249,11 @@ struct AccelStructEntry {
   AccelStructKind kind = AccelStructKind::BottomLevel;
 };
 
+struct TimelineSemaphoreEntry {
+  ComPtr<ID3D12Fence> fence;
+  HANDLE event = nullptr;
+};
+
 // -----------------------------------------------------------------------------
 // Format & flag translation helpers
 // -----------------------------------------------------------------------------
@@ -277,13 +321,17 @@ class D3D12BindlessTableImpl final : public BindlessTable {
 class D3D12CommandListImpl final : public CommandList {
  public:
   D3D12CommandListImpl(D3D12DeviceImpl& device, ComPtr<ID3D12CommandAllocator> allocator,
-                       ComPtr<ID3D12GraphicsCommandList4> cmd);
+                       ComPtr<ID3D12GraphicsCommandList4> cmd,
+                       QueueKind queue_kind = QueueKind::Graphics);
   ~D3D12CommandListImpl() override = default;
+
+  QueueKind queue_kind() const override { return queue_kind_; }
 
   void reset_for_recording();
   void release_transients() { transient_resources_.clear(); }
   ID3D12GraphicsCommandList4* native_cmd() const noexcept { return cmd_.Get(); }
   ID3D12CommandAllocator* native_allocator() const noexcept { return allocator_.Get(); }
+  HRESULT last_close_hr() const noexcept { return close_hr_; }
 
   void begin() override;
   void end() override;
@@ -320,6 +368,7 @@ class D3D12CommandListImpl final : public CommandList {
                                    uint32_t max_draw_count, uint32_t stride) override;
 
   void dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
+  void dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) override;
 
   void update_buffer(BufferHandle dst, uint64_t offset, uint64_t size, const void* data) override;
   void fill_buffer(BufferHandle dst, uint64_t offset, uint64_t size, uint32_t value) override;
@@ -365,6 +414,7 @@ class D3D12CommandListImpl final : public CommandList {
                                                    D3D12_RESOURCE_STATES init_state);
 
   D3D12DeviceImpl& device_;
+  QueueKind queue_kind_ = QueueKind::Graphics;
   ComPtr<ID3D12CommandAllocator> allocator_;
   ComPtr<ID3D12GraphicsCommandList4> cmd_;
   ComPtr<ID3D12GraphicsCommandList5> cmd5_;
@@ -372,6 +422,7 @@ class D3D12CommandListImpl final : public CommandList {
   ComPtr<ID3D12GraphicsCommandList7> cmd7_;
 #endif
   bool recording_ = false;
+  HRESULT close_hr_ = S_OK;
   bool heaps_bound_ = false;
   PipelineHandle current_pipeline_;
   PipelineLayoutHandle current_layout_;
@@ -500,6 +551,22 @@ class D3D12DeviceImpl final : public Device {
   void destroy_accel_struct(AccelStructHandle handle) override;
   uint64_t accel_struct_device_address(AccelStructHandle handle) const override;
 
+  TimelineSemaphoreHandle create_timeline_semaphore(uint64_t initial_value,
+                                                    std::string& error) override;
+  void destroy_timeline_semaphore(TimelineSemaphoreHandle handle) override;
+  uint64_t timeline_semaphore_value(TimelineSemaphoreHandle handle) const override;
+  bool wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                               uint64_t timeout_ns) override;
+  bool signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) override;
+
+  std::unique_ptr<CommandList> create_command_list(QueueKind queue,
+                                                   std::string& error) override;
+  bool submit(QueueKind queue,
+              std::span<CommandList* const> lists,
+              std::span<const TimelineWait> waits,
+              std::span<const TimelineSignal> signals,
+              std::string& error) override;
+
   bool submit_once(const std::function<void(CommandList&)>& record_fn,
                    std::string& error, bool prefer_transfer_queue) override;
   std::unique_ptr<Swapchain> create_swapchain(const SwapchainDesc& desc,
@@ -514,11 +581,14 @@ class D3D12DeviceImpl final : public Device {
 #endif
   ID3D12CommandQueue* direct_queue() const noexcept { return direct_queue_.Get(); }
   ID3D12CommandQueue* copy_queue() const noexcept { return copy_queue_.Get(); }
+  ID3D12CommandQueue* compute_queue() const noexcept { return compute_queue_.Get(); }
+  ID3D12CommandQueue* queue_for(QueueKind kind) const noexcept;
   bool allow_tearing() const noexcept { return allow_tearing_; }
   bool enhanced_barriers_enabled() const noexcept { return enhanced_barriers_enabled_; }
   bool sm66_dynamic_resources() const noexcept { return sm66_dynamic_resources_; }
   bool dxcompiler_available() const noexcept { return dxcompiler_available_; }
-  std::mutex& queue_mutex() noexcept { return queue_mutex_; }
+  std::mutex& queue_mutex() noexcept { return direct_queue_mutex_; }
+  std::mutex& queue_mutex_for(QueueKind kind) noexcept;
 
   DescriptorAllocator& rtv_heap() noexcept { return rtv_heap_; }
   DescriptorAllocator& dsv_heap() noexcept { return dsv_heap_; }
@@ -551,8 +621,9 @@ class D3D12DeviceImpl final : public Device {
   void write_accel_struct_srv(uint32_t heap_slot, AccelStructHandle as_h);
   void write_sampler(uint32_t sampler_slot, SamplerHandle samp_h);
 
-  // Command signature cache for ExecuteIndirect (keyed by (is_indexed << 32) | stride)
+  // Command signature cache for ExecuteIndirect (keyed by (kind << 32) | stride)
   ID3D12CommandSignature* get_or_create_indirect_signature(bool indexed, uint32_t stride);
+  ID3D12CommandSignature* get_or_create_dispatch_indirect_signature();
 
   // Dynamic depth-bias PSO variant lookup/creation
   ID3D12PipelineState* get_or_create_bias_pso(PipelineEntry& pe, float constant_factor,
@@ -610,12 +681,16 @@ class D3D12DeviceImpl final : public Device {
   ComPtr<ID3D12Fence> idle_fence_;
   HANDLE idle_fence_event_ = nullptr;
   uint64_t idle_fence_value_ = 0;
-  mutable std::mutex queue_mutex_;
+  std::mutex idle_fence_mutex_;
+  mutable std::mutex direct_queue_mutex_;
+  mutable std::mutex compute_queue_mutex_;
+  mutable std::mutex copy_queue_mutex_;
 
   DescriptorAllocator rtv_heap_;
   DescriptorAllocator dsv_heap_;
   DescriptorAllocator cbv_srv_uav_heap_;
   DescriptorAllocator sampler_heap_;
+  PlacedHeapPool transient_heap_pool_;
 
   std::mutex sig_mutex_;
   std::unordered_map<uint64_t, ComPtr<ID3D12CommandSignature>> indirect_sigs_;
@@ -645,6 +720,7 @@ class D3D12DeviceImpl final : public Device {
   HandlePool<PipelineHandle, PipelineEntry> pipelines_;
   HandlePool<QueryPoolHandle, QueryPoolEntry> query_pools_;
   HandlePool<AccelStructHandle, AccelStructEntry> accel_structs_;
+  HandlePool<TimelineSemaphoreHandle, TimelineSemaphoreEntry> timeline_semaphores_;
 };
 
 }  // namespace shift::rhi::d3d12

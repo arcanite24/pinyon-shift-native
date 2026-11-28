@@ -1,7 +1,13 @@
 option(SHIFT_RHI_VULKAN "Compile the Vulkan 1.3 reference RHI backend" ON)
 
 set(SHIFT_RHI_SOURCES
-  src/rhi_factory.cpp)
+  src/rhi_factory.cpp
+  src/rhi_render_graph.cpp
+  src/rhi_meshlet.cpp
+  src/rhi_clustered_lights.cpp
+  src/rhi_vis_buffer.cpp
+  src/rhi_xenos_detile_gpu.cpp
+  src/rhi_post_fx_compute.cpp)
 
 set(SHIFT_RHI_USE_VK OFF)
 if(SHIFT_RHI_VULKAN AND TARGET shift_volk AND TARGET shift_vma)

@@ -241,7 +241,7 @@ SpvReflection reflect_spirv_words(std::span<const uint32_t> words) {
     const uint32_t wc = hdr >> 16;
     const uint32_t op = hdr & 0xFFFFu;
     if (wc == 0 || pos + wc > words.size()) return r;
-    const uint32_t* ops = &words[pos + 1];
+    const uint32_t* ops = (wc > 1) ? &words[pos + 1] : nullptr;
     const size_t nops = wc - 1;
     pos += wc;
 

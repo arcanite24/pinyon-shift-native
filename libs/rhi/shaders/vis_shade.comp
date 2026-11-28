@@ -1,0 +1,298 @@
+#version 460
+// Tile-Classified Visibility Buffer Compute Material Shader + Analytic
+// Barycentric Derivatives + 3D Froxel Clustered Forward+ Lighting.
+// Dispatched via dispatch_indirect() once per active VisMaterialClass.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+struct VisVertex {
+  vec4 pos_u;     // xyz = pos, w = u
+  vec4 norm_v;    // xyz = normal, w = v
+  vec4 color;
+};
+
+struct Meshlet {
+  vec4 bound_sphere;
+  vec4 cone_apex_cut;
+  vec3 cone_axis;
+  uint index_offset;
+  uint vertex_offset;
+  uint triangle_count;
+  uint vertex_count;
+  uint material_id;
+};
+
+struct MeshletInstance {
+  mat4 model;
+  mat4 prev_model;
+  uint first_meshlet;
+  uint meshlet_count;
+  uint material_class;
+  uint material_id;
+};
+
+struct VisibleDraw {
+  uint instance_id;
+  uint meshlet_id;
+  uint material_class;
+  uint material_id;
+};
+
+struct VisMaterial {
+  vec4 base_color;
+  vec4 emissive_rough;  // rgb = emissive, w = roughness
+  float metallic;
+  float clearcoat;
+  uint material_class;
+  uint albedo_tex_slot;
+};
+
+struct ClusterLight {
+  vec4 pos_radius;
+  vec4 color_intensity;
+  vec4 dir_cos_outer;
+  float cos_inner;
+  uint type;
+  uint pad0;
+  uint pad1;
+};
+
+struct ClusterCell {
+  uint offset;
+  uint count;
+};
+
+layout(push_constant) uniform ShadePush {
+  uint active_material_class;
+  uint max_tiles_per_class;
+} pc;
+
+layout(set = 0, binding = 0) uniform ShadeParams {
+  mat4 view;
+  mat4 view_proj;
+  mat4 prev_view_proj;
+  vec4 camera_pos_znear;   // xyz = camera world pos, w = z_near
+  vec4 sun_dir_zfar;       // xyz = dir toward sun, w = z_far
+  vec4 sun_color_intensity;
+  uvec4 viewport_grid;     // x = width, y = height, z = grid_x, w = grid_y
+  uvec4 grid_z_pad;        // x = grid_z
+} u;
+
+layout(set = 0, binding = 1, rg32ui) uniform readonly uimage2D vis_buf;
+layout(set = 0, binding = 2) readonly buffer TileListBuf { uint tile_lists[]; };
+layout(set = 0, binding = 3) readonly buffer VertexBuf { VisVertex vertices[]; };
+layout(set = 0, binding = 4) readonly buffer IndexBuf { uint indices[]; };
+layout(set = 0, binding = 5) readonly buffer MeshletBuf { Meshlet meshlets[]; };
+layout(set = 0, binding = 6) readonly buffer InstanceBuf { MeshletInstance instances[]; };
+layout(set = 0, binding = 7) readonly buffer VisibleDrawBuf { VisibleDraw visible_draws[]; };
+layout(set = 0, binding = 8) readonly buffer MaterialBuf { VisMaterial materials[]; };
+layout(set = 0, binding = 9) readonly buffer LightBuf { ClusterLight lights[]; };
+layout(set = 0, binding = 10) readonly buffer CellBuf { ClusterCell cells[]; };
+layout(set = 0, binding = 11) readonly buffer LightIdxBuf { uint light_indices[]; };
+layout(set = 0, binding = 12, rgba16f) uniform writeonly image2D out_hdr;
+layout(set = 0, binding = 13, rgba16f) uniform writeonly image2D out_gbuf;
+layout(set = 0, binding = 14, rg16f) uniform writeonly image2D out_velocity;
+
+vec2 encode_octahedral(vec3 n) {
+  n /= (abs(n.x) + abs(n.y) + abs(n.z) + 1e-6);
+  if (n.z < 0.0) {
+    vec2 sgn = vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+    n.xy = (1.0 - abs(n.yx)) * sgn;
+  }
+  return n.xy * 0.5 + 0.5;
+}
+
+vec3 eval_ggx_brdf(vec3 N, vec3 V, vec3 L, vec3 albedo, float roughness, float metallic, float clearcoat) {
+  float ndotl = max(dot(N, L), 0.0);
+  if (ndotl <= 0.0) return vec3(0.0);
+  vec3 H = normalize(V + L);
+  float ndotv = max(dot(N, V), 1e-4);
+  float ndoth = max(dot(N, H), 0.0);
+  float vdoth = max(dot(V, H), 0.0);
+
+  float a = max(roughness * roughness, 0.04);
+  float a2 = a * a;
+  float denom = ndoth * ndoth * (a2 - 1.0) + 1.0;
+  float D = a2 / (3.14159265 * denom * denom + 1e-6);
+
+  float k = (roughness + 1.0);
+  k = (k * k) * 0.125;
+  float Gv = ndotv / (ndotv * (1.0 - k) + k);
+  float Gl = ndotl / (ndotl * (1.0 - k) + k);
+  float G = Gv * Gl;
+
+  vec3 F0 = mix(vec3(0.04), albedo, metallic);
+  vec3 F = F0 + (1.0 - F0) * pow(1.0 - vdoth, 5.0);
+
+  vec3 spec = (D * G * F) / (4.0 * ndotv * ndotl + 1e-5);
+  vec3 kd = (vec3(1.0) - F) * (1.0 - metallic);
+  vec3 diff = kd * albedo * (1.0 / 3.14159265);
+
+  vec3 result = (diff + spec) * ndotl;
+
+  // CarPaint dual-lobe clearcoat highlight.
+  if (clearcoat > 0.01) {
+    float ca = 0.06;
+    float ca2 = ca * ca;
+    float cden = ndoth * ndoth * (ca2 - 1.0) + 1.0;
+    float cD = ca2 / (3.14159265 * cden * cden + 1e-6);
+    float cF = 0.04 + 0.96 * pow(1.0 - vdoth, 5.0);
+    result += vec3(cD * cF * 0.25 * clearcoat * ndotl);
+  }
+  return result;
+}
+
+void main() {
+  uint tile_packed = tile_lists[pc.active_material_class * pc.max_tiles_per_class + gl_WorkGroupID.x];
+  uvec2 tile_xy = uvec2(tile_packed & 0xFFFFu, tile_packed >> 16u);
+  uvec2 px = tile_xy * 8u + gl_LocalInvocationID.xy;
+  if (px.x >= u.viewport_grid.x || px.y >= u.viewport_grid.y) return;
+
+  uvec2 vis = imageLoad(vis_buf, ivec2(px)).xy;
+  if (vis.x == 0u) return;
+  uint mat_class = vis.y >> 16u;
+  if (mat_class != pc.active_material_class) return;
+
+  uint draw_id = (vis.x >> 8u) - 1u;
+  uint tri_id = vis.x & 0xFFu;
+
+  VisibleDraw vd = visible_draws[draw_id];
+  MeshletInstance inst = instances[vd.instance_id];
+  Meshlet m = meshlets[vd.meshlet_id];
+  VisMaterial mat = materials[vd.material_id];
+
+  uint idx_base = m.index_offset + tri_id * 3u;
+  uint i0 = indices[idx_base + 0u] + m.vertex_offset;
+  uint i1 = indices[idx_base + 1u] + m.vertex_offset;
+  uint i2 = indices[idx_base + 2u] + m.vertex_offset;
+
+  VisVertex v0 = vertices[i0];
+  VisVertex v1 = vertices[i1];
+  VisVertex v2 = vertices[i2];
+
+  vec3 wp0 = (inst.model * vec4(v0.pos_u.xyz, 1.0)).xyz;
+  vec3 wp1 = (inst.model * vec4(v1.pos_u.xyz, 1.0)).xyz;
+  vec3 wp2 = (inst.model * vec4(v2.pos_u.xyz, 1.0)).xyz;
+
+  vec4 c0 = u.view_proj * vec4(wp0, 1.0);
+  vec4 c1 = u.view_proj * vec4(wp1, 1.0);
+  vec4 c2 = u.view_proj * vec4(wp2, 1.0);
+
+  vec3 inv_w = vec3(1.0 / max(abs(c0.w), 1e-6),
+                    1.0 / max(abs(c1.w), 1e-6),
+                    1.0 / max(abs(c2.w), 1e-6));
+  vec2 ndc0 = c0.xy * inv_w.x;
+  vec2 ndc1 = c1.xy * inv_w.y;
+  vec2 ndc2 = c2.xy * inv_w.z;
+
+  // Pixel center in NDC (Vulkan & DX12 viewport Y-down -> NDC Y-up).
+  vec2 res = vec2(u.viewport_grid.xy);
+  vec2 uv_screen = (vec2(px) + 0.5) / res;
+  vec2 ndc_p = vec2(uv_screen.x * 2.0 - 1.0, 1.0 - uv_screen.y * 2.0);
+
+  // Analytic perspective-correct barycentrics + partial derivatives (dB/dx, dB/dy).
+  vec2 e10 = ndc1 - ndc0;
+  vec2 e20 = ndc2 - ndc0;
+  float area = e10.x * e20.y - e10.y * e20.x;
+  float inv_area = (abs(area) > 1e-10) ? (1.0 / area) : 0.0;
+
+  vec2 d = ndc_p - ndc0;
+  float l1_s = (d.x * e20.y - d.y * e20.x) * inv_area;
+  float l2_s = (e10.x * d.y - e10.y * d.x) * inv_area;
+  float l0_s = 1.0 - l1_s - l2_s;
+
+  vec3 w_bary = vec3(l0_s * inv_w.x, l1_s * inv_w.y, l2_s * inv_w.z);
+  float w_sum = w_bary.x + w_bary.y + w_bary.z;
+  vec3 bary = (abs(w_sum) > 1e-10) ? (w_bary / w_sum) : vec3(1.0 / 3.0);
+
+  // Analytic screen-space UV derivatives (dUV/dx, dUV/dy) for anisotropic filtering.
+  vec2 d_ndc_dx = vec2(2.0 / res.x, 0.0);
+  vec2 d_ndc_dy = vec2(0.0, -2.0 / res.y);
+  vec2 uv0 = vec2(v0.pos_u.w, v0.norm_v.w);
+  vec2 uv1 = vec2(v1.pos_u.w, v1.norm_v.w);
+  vec2 uv2 = vec2(v2.pos_u.w, v2.norm_v.w);
+  vec2 uv_interp = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+
+  float dl1_dx = (d_ndc_dx.x * e20.y - d_ndc_dx.y * e20.x) * inv_area;
+  float dl2_dx = (e10.x * d_ndc_dx.y - e10.y * d_ndc_dx.x) * inv_area;
+  vec2 duv_dx = (uv1 - uv0) * dl1_dx + (uv2 - uv0) * dl2_dx;
+  float mip_hint = clamp(length(duv_dx) * 8.0, 0.0, 1.0);
+
+  vec3 local_pos = v0.pos_u.xyz * bary.x + v1.pos_u.xyz * bary.y + v2.pos_u.xyz * bary.z;
+  vec3 world_pos = wp0 * bary.x + wp1 * bary.y + wp2 * bary.z;
+  mat3 nmat = mat3(inst.model);
+  vec3 N = normalize(nmat * (v0.norm_v.xyz * bary.x + v1.norm_v.xyz * bary.y + v2.norm_v.xyz * bary.z));
+  vec4 vcol = v0.color * bary.x + v1.color * bary.y + v2.color * bary.z;
+  vec3 V = normalize(u.camera_pos_znear.xyz - world_pos);
+
+  // Material-class specialized surface parameters (no uber-shader mega-branching).
+  vec3 albedo = mat.base_color.rgb * vcol.rgb;
+  float roughness = mat.emissive_rough.w;
+  float metallic = mat.metallic;
+  float clearcoat = mat.clearcoat;
+  if (pc.active_material_class == 0u) {
+    // Terrain: subtle procedural micro-variation from analytic UV & mip hint.
+    float grain = 0.92 + 0.08 * sin(uv_interp.x * 12.0) * cos(uv_interp.y * 12.0) * (1.0 - mip_hint);
+    albedo *= grain;
+    roughness = clamp(roughness + 0.12, 0.25, 0.98);
+  } else if (pc.active_material_class == 1u) {
+    // Road asphalt: crisp grazing sheen.
+    roughness = clamp(roughness, 0.18, 0.85);
+  } else if (pc.active_material_class == 2u) {
+    // Foliage: soft wrap diffuse scatter.
+    metallic = 0.0;
+    clearcoat = 0.0;
+  } else if (pc.active_material_class == 3u) {
+    // CarPaint: glossy dual-lobe clearcoat.
+    clearcoat = max(clearcoat, 0.85);
+  }
+
+  // Directional Sun lighting + hemisphere ambient.
+  vec3 sun_L = normalize(u.sun_dir_zfar.xyz);
+  vec3 lit = eval_ggx_brdf(N, V, sun_L, albedo, roughness, metallic, clearcoat) *
+             u.sun_color_intensity.rgb * u.sun_color_intensity.w;
+  vec3 sky_amb = mix(vec3(0.06, 0.05, 0.04), vec3(0.12, 0.16, 0.22), N.y * 0.5 + 0.5);
+  lit += albedo * sky_amb * (1.0 - 0.5 * metallic) + mat.emissive_rough.rgb;
+
+  // Clustered Forward+ 3D Froxel dynamic lighting lookup.
+  vec3 view_pos = (u.view * vec4(world_pos, 1.0)).xyz;
+  float view_depth = max(-view_pos.z, u.camera_pos_znear.w);
+  float z_ratio = max(u.sun_dir_zfar.w / max(u.camera_pos_znear.w, 1e-4), 1.001);
+  uint cz = uint(clamp(floor(log(view_depth / max(u.camera_pos_znear.w, 1e-4)) /
+                             log(z_ratio) * float(u.grid_z_pad.x)),
+                       0.0, float(u.grid_z_pad.x - 1u)));
+  uint cx = min(uint(uv_screen.x * float(u.viewport_grid.z)), u.viewport_grid.z - 1u);
+  uint cy = min(uint(uv_screen.y * float(u.viewport_grid.w)), u.viewport_grid.w - 1u);
+  uint cluster_idx = cx + cy * u.viewport_grid.z + cz * (u.viewport_grid.z * u.viewport_grid.w);
+
+  ClusterCell cell = cells[cluster_idx];
+  for (uint i = 0u; i < cell.count; ++i) {
+    uint light_id = light_indices[cell.offset + i];
+    ClusterLight l = lights[light_id];
+    vec3 to_l = l.pos_radius.xyz - world_pos;
+    float dist = length(to_l);
+    float radius = max(l.pos_radius.w, 1e-3);
+    if (dist < radius && dist > 1e-4) {
+      vec3 L = to_l / dist;
+      float atten = clamp(1.0 - dist / radius, 0.0, 1.0);
+      atten = atten * atten / (dist * dist + 1.0);
+      if (l.type == 1u) {
+        float cos_ang = dot(-L, normalize(l.dir_cos_outer.xyz));
+        float spot = clamp((cos_ang - l.dir_cos_outer.w) /
+                           max(l.cos_inner - l.dir_cos_outer.w, 1e-4), 0.0, 1.0);
+        atten *= spot * spot;
+      }
+      lit += eval_ggx_brdf(N, V, L, albedo, roughness, metallic, clearcoat) *
+             l.color_intensity.rgb * (l.color_intensity.w * atten);
+    }
+  }
+
+  // Exact per-pixel screen-space motion vector from prev_view_proj * prev_model.
+  vec4 prev_clip = u.prev_view_proj * (inst.prev_model * vec4(local_pos, 1.0));
+  vec2 prev_ndc = prev_clip.xy / max(abs(prev_clip.w), 1e-6);
+  vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
+  vec2 velocity = uv_screen - prev_uv;
+
+  imageStore(out_hdr, ivec2(px), vec4(lit, 1.0));
+  imageStore(out_gbuf, ivec2(px), vec4(encode_octahedral(N), roughness, metallic));
+  imageStore(out_velocity, ivec2(px), vec4(velocity, 0.0, 0.0));
+}

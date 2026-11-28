@@ -101,6 +101,7 @@ MTLPixelFormat to_mtl_pixel_format(Format fmt, bool bc_supported) noexcept {
     case Format::R32Sfloat:    return MTLPixelFormatR32Float;
     case Format::R32Uint:      return MTLPixelFormatR32Uint;
     case Format::Rg32Sfloat:   return MTLPixelFormatRG32Float;
+    case Format::Rg32Uint:     return MTLPixelFormatRG32Uint;
     case Format::Rgb32Sfloat:  return MTLPixelFormatInvalid;  // vertex/RT attribute format only in Metal
     case Format::Rgba32Sfloat: return MTLPixelFormatRGBA32Float;
     case Format::Rgba32Uint:   return MTLPixelFormatRGBA32Uint;
@@ -149,6 +150,7 @@ Format from_mtl_pixel_format(MTLPixelFormat fmt) noexcept {
     case MTLPixelFormatR32Float:        return Format::R32Sfloat;
     case MTLPixelFormatR32Uint:         return Format::R32Uint;
     case MTLPixelFormatRG32Float:       return Format::Rg32Sfloat;
+    case MTLPixelFormatRG32Uint:        return Format::Rg32Uint;
     case MTLPixelFormatRGBA32Float:     return Format::Rgba32Sfloat;
     case MTLPixelFormatRGBA32Uint:      return Format::Rgba32Uint;
     case MTLPixelFormatDepth32Float:    return Format::D32Sfloat;
@@ -182,6 +184,7 @@ MTLVertexFormat to_mtl_vertex_format(Format fmt) noexcept {
     case Format::R32Sfloat:    return MTLVertexFormatFloat;
     case Format::R32Uint:      return MTLVertexFormatUInt;
     case Format::Rg32Sfloat:   return MTLVertexFormatFloat2;
+    case Format::Rg32Uint:     return MTLVertexFormatUInt2;
     case Format::Rgb32Sfloat:  return MTLVertexFormatFloat3;
     case Format::Rgba32Sfloat: return MTLVertexFormatFloat4;
     case Format::Rgba32Uint:   return MTLVertexFormatUInt4;
@@ -401,7 +404,12 @@ MetalBindlessTableImpl::MetalBindlessTableImpl(MetalDeviceImpl& device,
       has_residency_set_ = true;
       [residency_set_ addAllocation:arg_buffer_];
       [residency_set_ commit];
-      [device_.mtl_queue() addResidencySet:residency_set_];
+      id<MTLCommandQueue> gq = device_.mtl_queue(QueueKind::Graphics);
+      id<MTLCommandQueue> cq = device_.mtl_queue(QueueKind::AsyncCompute);
+      id<MTLCommandQueue> tq = device_.mtl_queue(QueueKind::Transfer);
+      if (gq) [gq addResidencySet:residency_set_];
+      if (cq && cq != gq) [cq addResidencySet:residency_set_];
+      if (tq && tq != gq && tq != cq) [tq addResidencySet:residency_set_];
     }
   }
 }
@@ -409,7 +417,12 @@ MetalBindlessTableImpl::MetalBindlessTableImpl(MetalDeviceImpl& device,
 MetalBindlessTableImpl::~MetalBindlessTableImpl() {
   if (@available(macOS 15.0, iOS 18.0, *)) {
     if (has_residency_set_ && residency_set_) {
-      [device_.mtl_queue() removeResidencySet:residency_set_];
+      id<MTLCommandQueue> gq = device_.mtl_queue(QueueKind::Graphics);
+      id<MTLCommandQueue> cq = device_.mtl_queue(QueueKind::AsyncCompute);
+      id<MTLCommandQueue> tq = device_.mtl_queue(QueueKind::Transfer);
+      if (gq) [gq removeResidencySet:residency_set_];
+      if (cq && cq != gq) [cq removeResidencySet:residency_set_];
+      if (tq && tq != gq && tq != cq) [tq removeResidencySet:residency_set_];
       residency_set_ = nil;
     }
   }
@@ -569,6 +582,7 @@ MetalDeviceImpl::~MetalDeviceImpl() {
       textures_.clear();
       buffers_.clear();
       query_pools_.clear();
+      timeline_semaphores_.clear();
       live_alloc_count_ = 0;
       live_alloc_bytes_ = 0;
     }
@@ -578,6 +592,9 @@ MetalDeviceImpl::~MetalDeviceImpl() {
     blit_lib_ = nil;
     binary_archive_ = nil;
     timestamp_counter_set_ = nil;
+    shared_event_listener_ = nil;
+    transfer_queue_ = nil;
+    compute_queue_ = nil;
     queue_ = nil;
     device_ = nil;
   }
@@ -596,6 +613,15 @@ bool MetalDeviceImpl::init(const DeviceDesc& desc, std::string& error) {
       error = "failed to create MTLCommandQueue";
       return false;
     }
+    if (desc.enable_async_compute) {
+      compute_queue_ = [device_ newCommandQueue];
+    }
+    if (desc.enable_transfer_queue) {
+      transfer_queue_ = [device_ newCommandQueue];
+    }
+    dispatch_queue_t ev_q =
+        dispatch_queue_create("shift.rhi.metal.timeline", DISPATCH_QUEUE_SERIAL);
+    shared_event_listener_ = [[MTLSharedEventListener alloc] initWithDispatchQueue:ev_q];
 
     pipeline_cache_path_ = desc.pipeline_cache_path;
     probe_capabilities();
@@ -664,6 +690,11 @@ void MetalDeviceImpl::probe_capabilities() {
   // Modern rendering features
   caps_.dynamic_rendering = true;
   caps_.synchronization2 = true;
+  caps_.timeline_semaphores = true;
+  caps_.dedicated_async_compute = (compute_queue_ != nil);
+  caps_.dedicated_transfer_queue = (transfer_queue_ != nil);
+  caps_.subgroup_ops = true;
+  caps_.mesh_shaders = [device_ supportsFamily:MTLGPUFamilyMetal3];
   caps_.buffer_device_address = true;  // Metal 3 MTLBuffer.gpuAddress
   caps_.depth_resolve_sample_zero = true;
   caps_.max_anisotropy = 16.0f;
@@ -673,7 +704,10 @@ void MetalDeviceImpl::probe_capabilities() {
   caps_.bindless = tier2_args;
   caps_.max_bindless_textures = tier2_args ? 500000u : 0u;
 
-  caps_.indirect_count = false;  // GPU-driven Metal ICB path used for WorldGpu
+  // Metal lacks a single native GPU-driven drawIndexedIndirectCount inside an active
+  // render encoder without a pre-pass compute->ICB encode; keep indirect_count=false
+  // until pre-pass ICB encoding is wired into draw_indexed_indirect_count().
+  caps_.indirect_count = false;
   caps_.multi_draw_indirect = true;
   caps_.fragment_shading_rate = [device_ supportsRasterizationRateMapWithLayerCount:1];
 
@@ -874,13 +908,29 @@ VramStats MetalDeviceImpl::vram_stats() const {
   return out;
 }
 
+id<MTLCommandQueue> MetalDeviceImpl::mtl_queue(QueueKind kind) const noexcept {
+  switch (kind) {
+    case QueueKind::AsyncCompute: return compute_queue_ ? compute_queue_ : queue_;
+    case QueueKind::Transfer: return transfer_queue_ ? transfer_queue_ : queue_;
+    case QueueKind::Graphics:
+    default: return queue_;
+  }
+}
+
 void MetalDeviceImpl::wait_idle() {
-  if (!queue_) return;
   @autoreleasepool {
-    id<MTLCommandBuffer> fence_cb = [queue_ commandBuffer];
-    if (fence_cb) {
-      [fence_cb commit];
-      [fence_cb waitUntilCompleted];
+    auto drain = [](id<MTLCommandQueue> q) {
+      if (!q) return;
+      id<MTLCommandBuffer> fence_cb = [q commandBuffer];
+      if (fence_cb) {
+        [fence_cb commit];
+        [fence_cb waitUntilCompleted];
+      }
+    };
+    drain(queue_);
+    if (compute_queue_ && compute_queue_ != queue_) drain(compute_queue_);
+    if (transfer_queue_ && transfer_queue_ != queue_ && transfer_queue_ != compute_queue_) {
+      drain(transfer_queue_);
     }
   }
 }
@@ -1514,13 +1564,18 @@ std::unique_ptr<BindlessTable> MetalDeviceImpl::create_bindless_table(const Bind
 id<MTLFunction> MetalDeviceImpl::compile_shader_function(const ShaderModuleDesc& sm,
                                                          MTLSize* out_compute_tg,
                                                          std::string& error) {
-  if (sm.spirv.empty()) {
+  const uint8_t* bytes = nullptr;
+  size_t byte_len = 0;
+  if (!sm.msl.empty()) {
+    bytes = sm.msl.data();
+    byte_len = sm.msl.size();
+  } else if (!sm.spirv.empty()) {
+    bytes = reinterpret_cast<const uint8_t*>(sm.spirv.data());
+    byte_len = sm.spirv.size_bytes();
+  } else {
     error = "Metal shader payload is empty";
     return nil;
   }
-
-  const uint8_t* bytes = reinterpret_cast<const uint8_t*>(sm.spirv.data());
-  size_t byte_len = sm.spirv.size_bytes();
 
   id<MTLLibrary> lib = nil;
   NSError* ns_err = nil;
@@ -1656,7 +1711,7 @@ PipelineHandle MetalDeviceImpl::create_graphics_pipeline(const GraphicsPipelineD
     id<MTLFunction> vert_fn = compile_shader_function(desc.vertex_shader, nullptr, error);
     if (!vert_fn) return {};
     id<MTLFunction> frag_fn = nil;
-    if (!desc.fragment_shader.spirv.empty()) {
+    if (desc.fragment_shader.has_payload()) {
       frag_fn = compile_shader_function(desc.fragment_shader, nullptr, error);
       if (!frag_fn) return {};
     }
@@ -1666,6 +1721,7 @@ PipelineHandle MetalDeviceImpl::create_graphics_pipeline(const GraphicsPipelineD
     rpd.fragmentFunction = frag_fn;
     rpd.rasterSampleCount = std::max(desc.raster.sample_count, 1u);
     rpd.alphaToCoverageEnabled = desc.raster.alpha_to_coverage ? YES : NO;
+    rpd.supportIndirectCommandBuffers = caps_.indirect_count ? YES : NO;
 
     // Vertex descriptor (mapped to buffer indices kVertexBufferBaseIndex + binding)
     if (!desc.vertex_bindings.empty() || !desc.vertex_attributes.empty()) {
@@ -1957,25 +2013,268 @@ id<MTLSamplerState> MetalDeviceImpl::get_or_create_blit_sampler(Filter filter) {
   return blit_sampler_linear_;
 }
 
+id<MTLIndirectCommandBuffer> MetalDeviceImpl::allocate_icb(uint32_t max_draws) {
+  if (!device_ || max_draws == 0) return nil;
+  MTLIndirectCommandBufferDescriptor* desc = [MTLIndirectCommandBufferDescriptor new];
+  desc.commandTypes = MTLIndirectCommandTypeDrawIndexed;
+  desc.inheritBuffers = YES;
+  desc.inheritPipelineState = YES;
+  desc.maxVertexBufferBindCount = 0;
+  desc.maxFragmentBufferBindCount = 0;
+  return [device_ newIndirectCommandBufferWithDescriptor:desc
+                                         maxCommandCount:max_draws
+                                                 options:MTLResourceStorageModePrivate];
+}
+
+id<MTLComputePipelineState> MetalDeviceImpl::get_or_create_icb_encode_pipeline() {
+  std::lock_guard<std::mutex> lock(blit_mutex_);
+  if (icb_encode_pso_) return icb_encode_pso_;
+  static NSString* const kIcbMsl = @R"(
+#include <metal_stdlib>
+using namespace metal;
+struct DrawIndexedArgs {
+  uint index_count;
+  uint instance_count;
+  uint first_index;
+  int base_vertex;
+  uint base_instance;
+};
+struct IcbArg {
+  command_buffer cmd_buf [[id(0)]];
+};
+struct IcbParams {
+  uint max_draws;
+  uint stride_words;
+  uint is_u16;
+  uint index_base_bytes;
+};
+kernel void shift_encode_icb_indexed(constant IcbArg& icb [[buffer(0)]],
+                                     device const uint* raw_args [[buffer(1)]],
+                                     device const uint* count_buf [[buffer(2)]],
+                                     device const uint* idx32 [[buffer(3)]],
+                                     device const ushort* idx16 [[buffer(4)]],
+                                     constant IcbParams& pc [[buffer(5)]],
+                                     uint tid [[thread_position_in_grid]]) {
+  if (tid >= pc.max_draws) return;
+  render_command cmd(icb.cmd_buf, tid);
+  const uint active_count = min(count_buf[0], pc.max_draws);
+  if (tid >= active_count) {
+    cmd.reset();
+    return;
+  }
+  const uint off = tid * pc.stride_words;
+  const uint index_count = raw_args[off + 0u];
+  const uint instance_count = raw_args[off + 1u];
+  const uint first_index = raw_args[off + 2u];
+  const int base_vertex = as_type<int>(raw_args[off + 3u]);
+  const uint base_instance = raw_args[off + 4u];
+  if (index_count == 0u || instance_count == 0u) {
+    cmd.reset();
+    return;
+  }
+  if (pc.is_u16 != 0u) {
+    cmd.draw_indexed_primitives(primitive_type::triangle, index_count,
+                                idx16 + (pc.index_base_bytes >> 1u) + first_index,
+                                instance_count, base_vertex, base_instance);
+  } else {
+    cmd.draw_indexed_primitives(primitive_type::triangle, index_count,
+                                idx32 + (pc.index_base_bytes >> 2u) + first_index,
+                                instance_count, base_vertex, base_instance);
+  }
+}
+)";
+  NSError* err = nil;
+  id<MTLLibrary> lib = [device_ newLibraryWithSource:kIcbMsl options:nil error:&err];
+  if (!lib) return nil;
+  id<MTLFunction> fn = [lib newFunctionWithName:@"shift_encode_icb_indexed"];
+  if (!fn) return nil;
+  icb_encode_pso_ = [device_ newComputePipelineStateWithFunction:fn error:&err];
+  return icb_encode_pso_;
+}
+
+// -----------------------------------------------------------------------------
+// Timeline Semaphores (MTLSharedEvent) & Multi-Queue Batch Submission
+// -----------------------------------------------------------------------------
+TimelineSemaphoreHandle MetalDeviceImpl::create_timeline_semaphore(uint64_t initial_value,
+                                                                   std::string& error) {
+  @autoreleasepool {
+    id<MTLSharedEvent> ev = [device_ newSharedEvent];
+    if (!ev) {
+      error = "create_timeline_semaphore: MTLDevice newSharedEvent returned nil";
+      return {};
+    }
+    ev.signaledValue = initial_value;
+    TimelineSemaphoreEntry entry{};
+    entry.event = ev;
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    return timeline_semaphores_.allocate(std::move(entry));
+  }
+}
+
+void MetalDeviceImpl::destroy_timeline_semaphore(TimelineSemaphoreHandle handle) {
+  std::lock_guard<std::mutex> lock(resource_mutex_);
+  timeline_semaphores_.remove(handle);
+}
+
+uint64_t MetalDeviceImpl::timeline_semaphore_value(TimelineSemaphoreHandle handle) const {
+  id<MTLSharedEvent> ev = nil;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->event) return 0ull;
+    ev = e->event;
+  }
+  return static_cast<uint64_t>(ev.signaledValue);
+}
+
+bool MetalDeviceImpl::wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                                              uint64_t timeout_ns) {
+  id<MTLSharedEvent> ev = nil;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->event) return false;
+    ev = e->event;
+  }
+  if (ev.signaledValue >= value) return true;
+  if (!shared_event_listener_) return false;
+  @autoreleasepool {
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [ev notifyListener:shared_event_listener_
+               atValue:value
+                 block:^(id<MTLSharedEvent>, uint64_t) {
+                   dispatch_semaphore_signal(sem);
+                 }];
+    const dispatch_time_t wait_t =
+        (timeout_ns == UINT64_MAX) ? DISPATCH_TIME_FOREVER
+                                   : dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(timeout_ns));
+    return dispatch_semaphore_wait(sem, wait_t) == 0;
+  }
+}
+
+bool MetalDeviceImpl::signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) {
+  id<MTLSharedEvent> ev = nil;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->event) return false;
+    ev = e->event;
+  }
+  ev.signaledValue = value;
+  return true;
+}
+
+std::unique_ptr<CommandList> MetalDeviceImpl::create_command_list(QueueKind queue,
+                                                                  std::string& error) {
+  if (!mtl_queue(queue)) {
+    error = "create_command_list: Metal command queue is null";
+    return nullptr;
+  }
+  return std::make_unique<MetalCommandListImpl>(*this, nil, queue, true);
+}
+
+bool MetalDeviceImpl::submit(QueueKind queue,
+                             std::span<CommandList* const> lists,
+                             std::span<const TimelineWait> waits,
+                             std::span<const TimelineSignal> signals,
+                             std::string& error) {
+  id<MTLCommandQueue> target_queue = mtl_queue(queue);
+  if (!target_queue) {
+    error = "submit: Metal command queue is null";
+    return false;
+  }
+
+  std::vector<std::pair<id<MTLSharedEvent>, uint64_t>> wait_events;
+  wait_events.reserve(waits.size());
+  std::vector<std::pair<id<MTLSharedEvent>, uint64_t>> signal_events;
+  signal_events.reserve(signals.size());
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    for (const TimelineWait& w : waits) {
+      const TimelineSemaphoreEntry* e = timeline_semaphores_.get(w.semaphore);
+      if (!e || !e->event) {
+        error = "submit: invalid TimelineWait semaphore handle";
+        return false;
+      }
+      wait_events.emplace_back(e->event, w.value);
+    }
+    for (const TimelineSignal& s : signals) {
+      const TimelineSemaphoreEntry* e = timeline_semaphores_.get(s.semaphore);
+      if (!e || !e->event) {
+        error = "submit: invalid TimelineSignal semaphore handle";
+        return false;
+      }
+      signal_events.emplace_back(e->event, s.value);
+    }
+  }
+
+  @autoreleasepool {
+    // Encode waits on a dedicated leading command buffer so they execute strictly
+    // before any encoders already recorded on the submitted command buffers.
+    if (!wait_events.empty()) {
+      id<MTLCommandBuffer> wait_cb = [target_queue commandBuffer];
+      if (!wait_cb) {
+        error = "submit: failed to allocate Metal wait command buffer";
+        return false;
+      }
+      for (const auto& [ev, val] : wait_events) {
+        [wait_cb encodeWaitForEvent:ev value:val];
+      }
+      [wait_cb commit];
+    }
+
+    id<MTLCommandBuffer> last_cb = nil;
+    for (CommandList* cl : lists) {
+      if (!cl) continue;
+      auto* mcl = static_cast<MetalCommandListImpl*>(cl);
+      mcl->end_active_encoder();
+      id<MTLCommandBuffer> cb = mcl->native_cmd_buf();
+      if (!cb) continue;
+      if (last_cb) [last_cb commit];
+      last_cb = cb;
+    }
+
+    if (last_cb) {
+      for (const auto& [ev, val] : signal_events) {
+        [last_cb encodeSignalEvent:ev value:val];
+      }
+      [last_cb commit];
+    } else if (!signal_events.empty()) {
+      id<MTLCommandBuffer> sig_cb = [target_queue commandBuffer];
+      if (!sig_cb) {
+        error = "submit: failed to allocate Metal signal command buffer";
+        return false;
+      }
+      for (const auto& [ev, val] : signal_events) {
+        [sig_cb encodeSignalEvent:ev value:val];
+      }
+      [sig_cb commit];
+    }
+  }
+  return true;
+}
+
 // -----------------------------------------------------------------------------
 // Immediate submission (submit_once) & Swapchain factory
 // -----------------------------------------------------------------------------
 bool MetalDeviceImpl::submit_once(const std::function<void(CommandList&)>& record_fn,
-                                  std::string& error, bool /*prefer_transfer_queue*/) {
-  if (!queue_) {
+                                  std::string& error, bool prefer_transfer_queue) {
+  const QueueKind qk = prefer_transfer_queue ? QueueKind::Transfer : QueueKind::Graphics;
+  id<MTLCommandQueue> target_queue = mtl_queue(qk);
+  if (!target_queue) {
     error = "submit_once: Metal command queue is null";
     return false;
   }
   @autoreleasepool {
     MTLCommandBufferDescriptor* cb_desc = [MTLCommandBufferDescriptor new];
     cb_desc.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
-    id<MTLCommandBuffer> cb = [queue_ commandBufferWithDescriptor:cb_desc];
+    id<MTLCommandBuffer> cb = [target_queue commandBufferWithDescriptor:cb_desc];
     if (!cb) {
       error = "submit_once: MTLCommandQueue commandBuffer returned nil";
       return false;
     }
 
-    MetalCommandListImpl cmd_list(*this, cb);
+    MetalCommandListImpl cmd_list(*this, cb, qk, false);
     cmd_list.begin();
     record_fn(cmd_list);
     cmd_list.end();

@@ -1,0 +1,115 @@
+#version 460
+// 3D Froxel Clustered Forward+ Light Culling (16 x 9 x 24 = 3,456 froxels).
+// Runs on AsyncCompute; each thread owns one froxel, builds its view-space AABB
+// from exponential depth slices, tests up to 256 point/spot lights, and writes
+// fixed-stride per-froxel light index slices (zero global atomic contention).
+layout(local_size_x = 8, local_size_y = 4, local_size_z = 2) in;
+
+struct ClusterLight {
+  vec4 pos_radius;
+  vec4 color_intensity;
+  vec4 dir_cos_outer;
+  float cos_inner;
+  uint type;
+  uint pad0;
+  uint pad1;
+};
+
+struct ClusterCell {
+  uint offset;
+  uint count;
+};
+
+layout(set = 0, binding = 0) uniform CullParams {
+  mat4 view;
+  mat4 inv_proj;
+  float z_near;
+  float z_far;
+  uint light_count;
+  uint grid_x;
+  uint grid_y;
+  uint grid_z;
+  uint max_lights_per_cluster;
+  uint pad;
+} u;
+
+layout(set = 0, binding = 1) readonly buffer LightBuf {
+  ClusterLight lights[];
+};
+
+layout(set = 0, binding = 2) writeonly buffer CellBuf {
+  ClusterCell cells[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer IndexBuf {
+  uint light_indices[];
+};
+
+vec3 screen_to_view(vec2 uv, float ndc_z) {
+  // Match vis_shade.comp top-down screen convention: uv.y = 0 -> NDC +1 (top), uv.y = 1 -> NDC -1 (bottom).
+  vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, ndc_z, 1.0);
+  vec4 v = u.inv_proj * clip;
+  return v.xyz / max(abs(v.w), 1e-6);
+}
+
+vec3 ray_to_z_plane(vec3 ray_dir, float z_plane) {
+  float t = z_plane / (abs(ray_dir.z) > 1e-6 ? ray_dir.z : -1e-6);
+  return ray_dir * t;
+}
+
+bool sphere_aabb_overlap(vec3 center, float radius, vec3 bmin, vec3 bmax) {
+  vec3 closest = clamp(center, bmin, bmax);
+  vec3 d = center - closest;
+  return dot(d, d) <= radius * radius;
+}
+
+void main() {
+  uvec3 id = gl_GlobalInvocationID;
+  if (id.x >= u.grid_x || id.y >= u.grid_y || id.z >= u.grid_z) return;
+
+  uint cluster_idx = id.x + id.y * u.grid_x + id.z * (u.grid_x * u.grid_y);
+  uint base_offset = cluster_idx * u.max_lights_per_cluster;
+
+  vec2 uv_min = vec2(id.xy) / vec2(u.grid_x, u.grid_y);
+  vec2 uv_max = vec2(id.xy + uvec2(1u)) / vec2(u.grid_x, u.grid_y);
+
+  // View-space rays toward the 4 corners of this 2D screen tile.
+  vec3 c00 = screen_to_view(vec2(uv_min.x, uv_min.y), 0.5);
+  vec3 c10 = screen_to_view(vec2(uv_max.x, uv_min.y), 0.5);
+  vec3 c01 = screen_to_view(vec2(uv_min.x, uv_max.y), 0.5);
+  vec3 c11 = screen_to_view(vec2(uv_max.x, uv_max.y), 0.5);
+
+  // Exponential view-space Z slice bounds (right-handed -Z forward).
+  float ratio = u.z_far / max(u.z_near, 1e-4);
+  float slice_near = -u.z_near * pow(ratio, float(id.z) / float(u.grid_z));
+  float slice_far  = -u.z_near * pow(ratio, float(id.z + 1u) / float(u.grid_z));
+
+  vec3 p0 = ray_to_z_plane(c00, slice_near);
+  vec3 p1 = ray_to_z_plane(c10, slice_near);
+  vec3 p2 = ray_to_z_plane(c01, slice_near);
+  vec3 p3 = ray_to_z_plane(c11, slice_near);
+  vec3 p4 = ray_to_z_plane(c00, slice_far);
+  vec3 p5 = ray_to_z_plane(c10, slice_far);
+  vec3 p6 = ray_to_z_plane(c01, slice_far);
+  vec3 p7 = ray_to_z_plane(c11, slice_far);
+
+  vec3 aabb_min = min(min(min(p0, p1), min(p2, p3)), min(min(p4, p5), min(p6, p7)));
+  vec3 aabb_max = max(max(max(p0, p1), max(p2, p3)), max(max(p4, p5), max(p6, p7)));
+
+  uint count = 0u;
+  uint n_lights = min(u.light_count, 256u);
+  for (uint i = 0u; i < n_lights; ++i) {
+    ClusterLight l = lights[i];
+    vec3 lpos_view = (u.view * vec4(l.pos_radius.xyz, 1.0)).xyz;
+    float radius = l.pos_radius.w;
+    if (sphere_aabb_overlap(lpos_view, radius, aabb_min, aabb_max)) {
+      if (count < u.max_lights_per_cluster) {
+        light_indices[base_offset + count] = i;
+        ++count;
+      }
+    }
+  }
+
+  cells[cluster_idx].offset = base_offset;
+  cells[cluster_idx].count = count;
+}

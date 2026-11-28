@@ -1,0 +1,105 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// Single-Pass LDS Hierarchical-Z (SPD Hi-Z) Pyramid Downsampler.
+// Reduces a 16x16 source tile across up to 4 mip levels in a single AsyncCompute
+// dispatch using LDS (min depth for Reverse-Z, max depth for Standard-Z).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform HizSpdParams {
+  uint src_width;
+  uint src_height;
+  uint num_mips;      // 1..4 output mip levels produced by this dispatch
+  uint is_reverse_z;  // 1 = Reverse-Z (min conservative depth), 0 = Standard-Z (max)
+} pc;
+
+layout(set = 0, binding = 0) uniform texture2D src_depth;
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D dst_mip0;
+layout(set = 0, binding = 2, r32f) writeonly uniform image2D dst_mip1;
+layout(set = 0, binding = 3, r32f) writeonly uniform image2D dst_mip2;
+layout(set = 0, binding = 4, r32f) writeonly uniform image2D dst_mip3;
+
+shared float s_tile[8][8];
+
+float reduce2(float a, float b) {
+  return (pc.is_reverse_z != 0u) ? min(a, b) : max(a, b);
+}
+
+float reduce4(float a, float b, float c, float d) {
+  return reduce2(reduce2(a, b), reduce2(c, d));
+}
+
+float load_src(ivec2 p) {
+  ivec2 clamped = clamp(p, ivec2(0), ivec2(int(pc.src_width) - 1, int(pc.src_height) - 1));
+  return texelFetch(src_depth, clamped, 0).x;
+}
+
+void main() {
+  uvec2 lid = gl_LocalInvocationID.xy;
+  uvec2 gid = gl_WorkGroupID.xy;
+
+  // Mip 0 (half-res): each thread reduces a 2x2 quad from src_depth,
+  // folding the trailing odd column/row conservatively on odd dimensions.
+  ivec2 base = ivec2((gid * 8u + lid) * 2u);
+  ivec2 dst0_size = max(ivec2(pc.src_width >> 1u, pc.src_height >> 1u), ivec2(1));
+  ivec2 p0 = ivec2(gid * 8u + lid);
+  float d00 = load_src(base + ivec2(0, 0));
+  float d10 = load_src(base + ivec2(1, 0));
+  float d01 = load_src(base + ivec2(0, 1));
+  float d11 = load_src(base + ivec2(1, 1));
+  float m0 = reduce4(d00, d10, d01, d11);
+  bool extra_x = ((pc.src_width & 1u) != 0u) && (p0.x == dst0_size.x - 1);
+  bool extra_y = ((pc.src_height & 1u) != 0u) && (p0.y == dst0_size.y - 1);
+  if (extra_x) {
+    m0 = reduce2(m0, reduce2(load_src(base + ivec2(2, 0)), load_src(base + ivec2(2, 1))));
+  }
+  if (extra_y) {
+    m0 = reduce2(m0, reduce2(load_src(base + ivec2(0, 2)), load_src(base + ivec2(1, 2))));
+  }
+  if (extra_x && extra_y) {
+    m0 = reduce2(m0, load_src(base + ivec2(2, 2)));
+  }
+
+  if (pc.num_mips >= 1u && p0.x < dst0_size.x && p0.y < dst0_size.y) {
+    imageStore(dst_mip0, p0, vec4(m0, 0.0, 0.0, 0.0));
+  }
+  s_tile[lid.y][lid.x] = m0;
+  barrier();
+
+  // Mip 1 (quarter-res): 4x4 threads reduce 8x8 -> 4x4.
+  if (pc.num_mips >= 2u && lid.x < 4u && lid.y < 4u) {
+    uvec2 q = lid * 2u;
+    float m1 = reduce4(s_tile[q.y][q.x], s_tile[q.y][q.x + 1u],
+                       s_tile[q.y + 1u][q.x], s_tile[q.y + 1u][q.x + 1u]);
+    ivec2 dst1_size = max(dst0_size >> 1, ivec2(1));
+    ivec2 p1 = ivec2(gid * 4u + lid);
+    if (p1.x < dst1_size.x && p1.y < dst1_size.y) {
+      imageStore(dst_mip1, p1, vec4(m1, 0.0, 0.0, 0.0));
+    }
+    s_tile[lid.y][lid.x] = m1;
+  }
+  barrier();
+
+  // Mip 2 (eighth-res): 2x2 threads reduce 4x4 -> 2x2.
+  if (pc.num_mips >= 3u && lid.x < 2u && lid.y < 2u) {
+    uvec2 q = lid * 2u;
+    float m2 = reduce4(s_tile[q.y][q.x], s_tile[q.y][q.x + 1u],
+                       s_tile[q.y + 1u][q.x], s_tile[q.y + 1u][q.x + 1u]);
+    ivec2 dst2_size = max(dst0_size >> 2, ivec2(1));
+    ivec2 p2 = ivec2(gid * 2u + lid);
+    if (p2.x < dst2_size.x && p2.y < dst2_size.y) {
+      imageStore(dst_mip2, p2, vec4(m2, 0.0, 0.0, 0.0));
+    }
+    s_tile[lid.y][lid.x] = m2;
+  }
+  barrier();
+
+  // Mip 3 (sixteenth-res): thread (0,0) reduces 2x2 -> 1x1.
+  if (pc.num_mips >= 4u && lid.x == 0u && lid.y == 0u) {
+    float m3 = reduce4(s_tile[0][0], s_tile[0][1], s_tile[1][0], s_tile[1][1]);
+    ivec2 dst3_size = max(dst0_size >> 3, ivec2(1));
+    ivec2 p3 = ivec2(gid);
+    if (p3.x < dst3_size.x && p3.y < dst3_size.y) {
+      imageStore(dst_mip3, p3, vec4(m3, 0.0, 0.0, 0.0));
+    }
+  }
+}

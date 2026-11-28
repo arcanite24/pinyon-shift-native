@@ -1,0 +1,62 @@
+#version 460
+// 8x8 LDS Tile Material Classifier for Visibility Buffer compute shading.
+// Scans the 64-bit Visibility Buffer per 8x8 tile, builds a shared bitmask of
+// active material classes, and appends tiles to per-material indirect dispatch
+// lists so specialized compute material shaders run with zero wasted waves.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform ClassifyParams {
+  uint width;
+  uint height;
+  uint tiles_x;
+  uint tiles_y;
+  uint max_tiles_per_class;
+  uint material_class_count;
+  uint pad0;
+  uint pad1;
+} u;
+
+layout(set = 0, binding = 1, rg32ui) uniform readonly uimage2D vis_buf;
+
+layout(set = 0, binding = 2) buffer IndirectArgsBuf {
+  // 3 uints per material class: (group_x, group_y=1, group_z=1)
+  uint indirect_args[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer TileListBuf {
+  uint tile_lists[];
+};
+
+shared uint s_tile_mask;
+
+void main() {
+  if (gl_LocalInvocationIndex == 0u) {
+    s_tile_mask = 0u;
+  }
+  barrier();
+
+  uvec2 px = gl_GlobalInvocationID.xy;
+  if (px.x < u.width && px.y < u.height) {
+    uvec2 vis = imageLoad(vis_buf, ivec2(px)).xy;
+    if (vis.x != 0u) {
+      uint mat_class = vis.y >> 16u;
+      if (mat_class < u.material_class_count) {
+        atomicOr(s_tile_mask, 1u << mat_class);
+      }
+    }
+  }
+  barrier();
+
+  if (gl_LocalInvocationIndex == 0u && s_tile_mask != 0u) {
+    uint tile_packed = (gl_WorkGroupID.x & 0xFFFFu) | ((gl_WorkGroupID.y & 0xFFFFu) << 16u);
+    uint mask = s_tile_mask;
+    for (uint c = 0u; c < u.material_class_count; ++c) {
+      if ((mask & (1u << c)) != 0u) {
+        uint slot = atomicAdd(indirect_args[c * 3u], 1u);
+        if (slot < u.max_tiles_per_class) {
+          tile_lists[c * u.max_tiles_per_class + slot] = tile_packed;
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,125 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// Pre-Tonemap Linear HDR TAA-U + Exposure/Bloom Composite + ACES Tonemap.
+// Uses Reverse-Z 3x3 closest-velocity dilation and YCoCg variance clipping
+// in linear HDR space BEFORE tonemapping (eliminating 8-bit SDR ghosting/clamping).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform TaaParams {
+  uint width;
+  uint height;
+  uint history_valid;
+  float blend_alpha;    // e.g. 0.10
+  float bloom_strength; // e.g. 0.08
+  float manual_exposure;// > 0 overrides auto-exposure buffer
+  uint bloom_width;     // active DRS bloom width
+  uint bloom_height;    // active DRS bloom height
+} pc;
+
+layout(set = 0, binding = 0) uniform texture2D curr_hdr;
+layout(set = 0, binding = 1) uniform texture2D prev_history;
+layout(set = 0, binding = 2) uniform texture2D velocity_tex;
+layout(set = 0, binding = 3) uniform texture2D depth_tex;
+layout(set = 0, binding = 4) uniform texture2D bloom_tex;
+layout(set = 0, binding = 5) readonly buffer ExposureBuf {
+  float adapted_exposure;
+  float avg_luminance;
+  uint total_pixels;
+  uint pad;
+} exp_buf;
+layout(set = 0, binding = 6, rgba16f) writeonly uniform image2D out_history;
+layout(set = 0, binding = 7, rgba8) writeonly uniform image2D out_ldr;
+
+vec3 rgb_to_ycocg(vec3 c) {
+  float y = 0.25 * c.r + 0.5 * c.g + 0.25 * c.b;
+  float co = 0.5 * c.r - 0.5 * c.b;
+  float cg = -0.25 * c.r + 0.5 * c.g - 0.25 * c.b;
+  return vec3(y, co, cg);
+}
+
+vec3 ycocg_to_rgb(vec3 ycc) {
+  return vec3(ycc.x + ycc.y - ycc.z,
+              ycc.x + ycc.z,
+              ycc.x - ycc.y - ycc.z);
+}
+
+vec3 aces_tonemap(vec3 x) {
+  const float a = 2.51;
+  const float b = 0.03;
+  const float c = 2.43;
+  const float d = 0.59;
+  const float e = 0.14;
+  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+vec3 sample_history_bilinear(vec2 uv) {
+  vec2 fpx = uv * vec2(float(pc.width), float(pc.height)) - vec2(0.5);
+  ivec2 p0 = ivec2(floor(fpx));
+  vec2 f = clamp(fpx - vec2(p0), vec2(0.0), vec2(1.0));
+  ivec2 mx = ivec2(int(pc.width) - 1, int(pc.height) - 1);
+  vec3 c00 = texelFetch(prev_history, clamp(p0 + ivec2(0, 0), ivec2(0), mx), 0).rgb;
+  vec3 c10 = texelFetch(prev_history, clamp(p0 + ivec2(1, 0), ivec2(0), mx), 0).rgb;
+  vec3 c01 = texelFetch(prev_history, clamp(p0 + ivec2(0, 1), ivec2(0), mx), 0).rgb;
+  vec3 c11 = texelFetch(prev_history, clamp(p0 + ivec2(1, 1), ivec2(0), mx), 0).rgb;
+  return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  if (px.x >= int(pc.width) || px.y >= int(pc.height)) return;
+  ivec2 mx = ivec2(int(pc.width) - 1, int(pc.height) - 1);
+
+  vec3 curr = texelFetch(curr_hdr, px, 0).rgb;
+
+  // 3x3 neighborhood YCoCg moments + Reverse-Z closest-depth velocity dilation.
+  vec3 m1 = vec3(0.0);
+  vec3 m2 = vec3(0.0);
+  float best_z = -1.0;
+  ivec2 best_px = px;
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      ivec2 sp = clamp(px + ivec2(dx, dy), ivec2(0), mx);
+      vec3 ycc = rgb_to_ycocg(texelFetch(curr_hdr, sp, 0).rgb);
+      m1 += ycc;
+      m2 += ycc * ycc;
+      float z = texelFetch(depth_tex, sp, 0).x;
+      if (z > best_z) {
+        best_z = z;
+        best_px = sp;
+      }
+    }
+  }
+  vec3 mean = m1 / 9.0;
+  vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3(0.0)));
+  vec3 box_min = mean - 1.25 * sigma;
+  vec3 box_max = mean + 1.25 * sigma;
+
+  vec2 vel = texelFetch(velocity_tex, best_px, 0).xy;
+  vec2 uv = (vec2(px) + vec2(0.5)) / vec2(float(pc.width), float(pc.height));
+  vec2 prev_uv = uv - vel;
+
+  vec3 resolved = curr;
+  if (pc.history_valid != 0u && prev_uv.x >= 0.0 && prev_uv.x <= 1.0 && prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
+    vec3 hist = sample_history_bilinear(prev_uv);
+    vec3 hist_ycc = clamp(rgb_to_ycocg(hist), box_min, box_max);
+    vec3 hist_clamped = max(ycocg_to_rgb(hist_ycc), vec3(0.0));
+    // Karis-style inverse-luma weighting to avoid HDR highlight flickering.
+    float w_curr = pc.blend_alpha / (1.0 + dot(curr, vec3(0.2126, 0.7152, 0.0722)));
+    float w_hist = (1.0 - pc.blend_alpha) / (1.0 + dot(hist_clamped, vec3(0.2126, 0.7152, 0.0722)));
+    resolved = (curr * w_curr + hist_clamped * w_hist) / max(w_curr + w_hist, 1e-4);
+  }
+
+  imageStore(out_history, px, vec4(resolved, 1.0));
+
+  // Bloom composite + exposure + ACES tonemap + sRGB encode (DRS-aware bloom extent).
+  ivec2 bsz = (pc.bloom_width > 0u && pc.bloom_height > 0u)
+                  ? ivec2(int(pc.bloom_width), int(pc.bloom_height))
+                  : textureSize(bloom_tex, 0);
+  ivec2 bpx = clamp(ivec2(uv * vec2(bsz)), ivec2(0), max(bsz - ivec2(1), ivec2(0)));
+  vec3 bloom = texelFetch(bloom_tex, bpx, 0).rgb;
+  float exposure = (pc.manual_exposure > 0.0) ? pc.manual_exposure : max(exp_buf.adapted_exposure, 0.15);
+  vec3 hdr_lit = (resolved + bloom * pc.bloom_strength) * exposure;
+  vec3 ldr = aces_tonemap(hdr_lit);
+  vec3 srgb = pow(ldr, vec3(1.0 / 2.2));
+  imageStore(out_ldr, px, vec4(srgb, 1.0));
+}

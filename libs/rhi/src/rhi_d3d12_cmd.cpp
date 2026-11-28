@@ -31,8 +31,12 @@ UINT calc_subresource(UINT mip_slice, UINT array_slice, UINT plane_slice,
 // -----------------------------------------------------------------------------
 D3D12CommandListImpl::D3D12CommandListImpl(D3D12DeviceImpl& device,
                                            ComPtr<ID3D12CommandAllocator> allocator,
-                                           ComPtr<ID3D12GraphicsCommandList4> cmd)
-    : device_(device), allocator_(std::move(allocator)), cmd_(std::move(cmd)) {
+                                           ComPtr<ID3D12GraphicsCommandList4> cmd,
+                                           QueueKind queue_kind)
+    : device_(device),
+      queue_kind_(queue_kind),
+      allocator_(std::move(allocator)),
+      cmd_(std::move(cmd)) {
   if (cmd_) {
     cmd_.As(&cmd5_);
 #ifdef __ID3D12GraphicsCommandList7_INTERFACE_DEFINED__
@@ -55,6 +59,7 @@ void D3D12CommandListImpl::reset_for_recording() {
 
 void D3D12CommandListImpl::begin() {
   if (recording_) return;
+  transient_resources_.clear();
   allocator_->Reset();
   cmd_->Reset(allocator_.Get(), nullptr);
   recording_ = true;
@@ -65,12 +70,14 @@ void D3D12CommandListImpl::begin() {
   bound_vb_mask_ = 0;
   vb_dirty_ = false;
   active_resolves_.clear();
-  bind_global_heaps();
+  if (queue_kind_ != QueueKind::Transfer) {
+    bind_global_heaps();
+  }
 }
 
 void D3D12CommandListImpl::end() {
   if (!recording_) return;
-  cmd_->Close();
+  close_hr_ = cmd_->Close();
   recording_ = false;
 }
 
@@ -122,7 +129,74 @@ ComPtr<ID3D12Resource> D3D12CommandListImpl::allocate_transient_buffer(
 }
 
 void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
+  // COPY command lists implicitly promote from COMMON on first copy and decay back
+  // to COMMON at ExecuteCommandLists completion; non-copy resource transitions are
+  // invalid on COPY queues in DirectX 12.
+  if (queue_kind_ == QueueKind::Transfer) {
+    for (const BufferBarrier& b : desc.buffers) {
+      if (BufferEntry* be = device_.lookup_buffer(b.buffer)) {
+        if (!be->fixed_state) be->current_state = D3D12_RESOURCE_STATE_COMMON;
+      }
+    }
+    for (const TextureBarrier& t : desc.textures) {
+      if (TextureEntry* te = device_.lookup_texture(t.texture)) {
+        te->current_state = D3D12_RESOURCE_STATE_COMMON;
 #ifdef __ID3D12GraphicsCommandList7_INTERFACE_DEFINED__
+        te->current_layout = D3D12_BARRIER_LAYOUT_COMMON;
+#endif
+      }
+    }
+    return;
+  }
+
+  auto sanitize_legacy_state = [&](D3D12_RESOURCE_STATES st) -> D3D12_RESOURCE_STATES {
+    if (queue_kind_ == QueueKind::AsyncCompute) {
+      st &= ~D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+      if (st == D3D12_RESOURCE_STATE_RENDER_TARGET ||
+          st == D3D12_RESOURCE_STATE_DEPTH_WRITE ||
+          st == D3D12_RESOURCE_STATE_DEPTH_READ) {
+        st = D3D12_RESOURCE_STATE_COMMON;
+      }
+    }
+    return st;
+  };
+
+#ifdef __ID3D12GraphicsCommandList7_INTERFACE_DEFINED__
+  auto sanitize_sync = [&](D3D12_BARRIER_SYNC sync) -> D3D12_BARRIER_SYNC {
+    if (queue_kind_ == QueueKind::AsyncCompute) {
+      if (sync & D3D12_BARRIER_SYNC_ALL_SHADING) {
+        sync &= ~D3D12_BARRIER_SYNC_ALL_SHADING;
+        sync |= D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+      }
+      constexpr D3D12_BARRIER_SYNC kGfxOnly =
+          D3D12_BARRIER_SYNC_DRAW | D3D12_BARRIER_SYNC_INDEX_INPUT |
+          D3D12_BARRIER_SYNC_VERTEX_SHADING | D3D12_BARRIER_SYNC_PIXEL_SHADING |
+          D3D12_BARRIER_SYNC_DEPTH_STENCIL | D3D12_BARRIER_SYNC_RENDER_TARGET |
+          D3D12_BARRIER_SYNC_RESOLVE | D3D12_BARRIER_SYNC_ALL_SHADING;
+      const D3D12_BARRIER_SYNC orig = sync;
+      sync &= ~kGfxOnly;
+      if (orig != D3D12_BARRIER_SYNC_NONE && sync == D3D12_BARRIER_SYNC_NONE) {
+        sync = D3D12_BARRIER_SYNC_COMPUTE_SHADING;
+      }
+    }
+    return sync;
+  };
+  auto sanitize_access = [&](D3D12_BARRIER_ACCESS acc, D3D12_BARRIER_SYNC& sync) -> D3D12_BARRIER_ACCESS {
+    if (queue_kind_ == QueueKind::AsyncCompute) {
+      constexpr D3D12_BARRIER_ACCESS kGfxOnly =
+          D3D12_BARRIER_ACCESS_VERTEX_BUFFER | D3D12_BARRIER_ACCESS_INDEX_BUFFER |
+          D3D12_BARRIER_ACCESS_RENDER_TARGET | D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE |
+          D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ;
+      const D3D12_BARRIER_ACCESS orig = acc;
+      acc &= ~kGfxOnly;
+      if (orig != D3D12_BARRIER_ACCESS_COMMON && acc == D3D12_BARRIER_ACCESS_COMMON) {
+        acc = D3D12_BARRIER_ACCESS_NO_ACCESS;
+        sync = D3D12_BARRIER_SYNC_NONE;
+      }
+    }
+    return acc;
+  };
+
   if (device_.enhanced_barriers_enabled() && cmd7_) {
     std::vector<D3D12_GLOBAL_BARRIER> globals;
     std::vector<D3D12_BUFFER_BARRIER> buf_barriers;
@@ -159,17 +233,17 @@ void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
       if (!be || !be->resource) continue;
       if (be->fixed_state) continue;
       D3D12_BUFFER_BARRIER bb{};
-      bb.SyncBefore = to_d3d12_barrier_sync(b.before, b.src_stage);
-      bb.SyncAfter = to_d3d12_barrier_sync(b.after, b.dst_stage);
-      bb.AccessBefore = to_d3d12_barrier_access(b.before, b.src_access, false);
-      bb.AccessAfter = to_d3d12_barrier_access(b.after, b.dst_access, false);
+      bb.SyncBefore = sanitize_sync(to_d3d12_barrier_sync(b.before, b.src_stage));
+      bb.SyncAfter = sanitize_sync(to_d3d12_barrier_sync(b.after, b.dst_stage));
+      bb.AccessBefore = sanitize_access(to_d3d12_barrier_access(b.before, b.src_access, false), bb.SyncBefore);
+      bb.AccessAfter = sanitize_access(to_d3d12_barrier_access(b.after, b.dst_access, false), bb.SyncAfter);
       if (bb.SyncBefore == D3D12_BARRIER_SYNC_NONE) bb.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
       if (bb.SyncAfter == D3D12_BARRIER_SYNC_NONE) bb.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
       bb.pResource = be->resource.Get();
       bb.Offset = 0;
       bb.Size = UINT64_MAX;
       buf_barriers.push_back(bb);
-      be->current_state = to_d3d12_resource_state(b.after, false);
+      be->current_state = sanitize_legacy_state(to_d3d12_resource_state(b.after, false));
     }
 
     for (const TextureBarrier& t : desc.textures) {
@@ -177,27 +251,101 @@ void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
       if (!te || !te->resource) continue;
       const bool is_depth = t.is_depth || format_is_depth(te->format);
       if (te->enhanced_barrier_compatible) {
-        const D3D12_BARRIER_LAYOUT after_layout = to_d3d12_barrier_layout(t.after, is_depth);
-        D3D12_BARRIER_LAYOUT before_layout =
-            (t.before == ResourceState::Undefined) ? te->current_layout
-                                                   : to_d3d12_barrier_layout(t.before, is_depth);
-        // Always trust tracked layout so repeated transitions never desync.
-        before_layout = te->current_layout;
+        D3D12_BARRIER_LAYOUT after_layout = to_d3d12_barrier_layout(t.after, is_depth);
+        D3D12_BARRIER_LAYOUT before_layout = te->current_layout;
+        if (queue_kind_ == QueueKind::AsyncCompute) {
+          if (after_layout == D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ) {
+            after_layout = D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
+          } else if (after_layout == D3D12_BARRIER_LAYOUT_RENDER_TARGET ||
+                     after_layout == D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE) {
+            after_layout = D3D12_BARRIER_LAYOUT_COMMON;
+          }
+          if (before_layout == D3D12_BARRIER_LAYOUT_RENDER_TARGET ||
+              before_layout == D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE ||
+              before_layout == D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ) {
+            before_layout = D3D12_BARRIER_LAYOUT_COMMON;
+          }
+        }
+
+        auto default_sync_access_for_layout = [&](D3D12_BARRIER_LAYOUT lay,
+                                                  D3D12_BARRIER_SYNC& out_sync,
+                                                  D3D12_BARRIER_ACCESS& out_acc) {
+          switch (lay) {
+            case D3D12_BARRIER_LAYOUT_UNDEFINED:
+              out_sync = D3D12_BARRIER_SYNC_NONE;
+              out_acc = D3D12_BARRIER_ACCESS_NO_ACCESS;
+              break;
+            case D3D12_BARRIER_LAYOUT_RENDER_TARGET:
+              out_sync = D3D12_BARRIER_SYNC_RENDER_TARGET;
+              out_acc = D3D12_BARRIER_ACCESS_RENDER_TARGET;
+              break;
+            case D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS:
+              out_sync = D3D12_BARRIER_SYNC_ALL;
+              out_acc = D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
+              break;
+            case D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE:
+              out_sync = D3D12_BARRIER_SYNC_DEPTH_STENCIL;
+              out_acc = D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+              break;
+            case D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ:
+              out_sync = D3D12_BARRIER_SYNC_DEPTH_STENCIL;
+              out_acc = D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ;
+              break;
+            case D3D12_BARRIER_LAYOUT_SHADER_RESOURCE:
+              out_sync = D3D12_BARRIER_SYNC_ALL_SHADING;
+              out_acc = D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+              break;
+            case D3D12_BARRIER_LAYOUT_COPY_SOURCE:
+              out_sync = D3D12_BARRIER_SYNC_COPY;
+              out_acc = D3D12_BARRIER_ACCESS_COPY_SOURCE;
+              break;
+            case D3D12_BARRIER_LAYOUT_COPY_DEST:
+              out_sync = D3D12_BARRIER_SYNC_COPY;
+              out_acc = D3D12_BARRIER_ACCESS_COPY_DEST;
+              break;
+            case D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE:
+              out_sync = D3D12_BARRIER_SYNC_RESOLVE;
+              out_acc = D3D12_BARRIER_ACCESS_RESOLVE_SOURCE;
+              break;
+            case D3D12_BARRIER_LAYOUT_RESOLVE_DEST:
+              out_sync = D3D12_BARRIER_SYNC_RESOLVE;
+              out_acc = D3D12_BARRIER_ACCESS_RESOLVE_DEST;
+              break;
+            case D3D12_BARRIER_LAYOUT_COMMON:
+            default:
+              out_sync = D3D12_BARRIER_SYNC_ALL;
+              out_acc = D3D12_BARRIER_ACCESS_COMMON;
+              break;
+          }
+        };
 
         D3D12_TEXTURE_BARRIER tb{};
-        tb.SyncBefore = (t.before == ResourceState::Undefined)
-                            ? D3D12_BARRIER_SYNC_ALL
-                            : to_d3d12_barrier_sync(t.before, t.src_stage);
-        tb.SyncAfter = to_d3d12_barrier_sync(t.after, t.dst_stage);
-        tb.AccessBefore = (t.before == ResourceState::Undefined)
-                              ? D3D12_BARRIER_ACCESS_COMMON
-                              : to_d3d12_barrier_access(t.before, t.src_access, is_depth);
-        tb.AccessAfter = to_d3d12_barrier_access(t.after, t.dst_access, is_depth);
+        if (t.before == ResourceState::Undefined) {
+          default_sync_access_for_layout(before_layout, tb.SyncBefore, tb.AccessBefore);
+        } else {
+          tb.SyncBefore = to_d3d12_barrier_sync(t.before, t.src_stage);
+          tb.AccessBefore = to_d3d12_barrier_access(t.before, t.src_access, is_depth);
+        }
+        tb.SyncBefore = sanitize_sync(tb.SyncBefore);
+        tb.SyncAfter = sanitize_sync(to_d3d12_barrier_sync(t.after, t.dst_stage));
+        tb.AccessBefore = sanitize_access(tb.AccessBefore, tb.SyncBefore);
+        tb.AccessAfter = sanitize_access(to_d3d12_barrier_access(t.after, t.dst_access, is_depth),
+                                         tb.SyncAfter);
         if (tb.SyncBefore == D3D12_BARRIER_SYNC_NONE) tb.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
         if (tb.SyncAfter == D3D12_BARRIER_SYNC_NONE) tb.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
-        if (before_layout == D3D12_BARRIER_LAYOUT_COMMON &&
-            tb.AccessBefore == D3D12_BARRIER_ACCESS_NO_ACCESS) {
+        if (tb.AccessBefore == D3D12_BARRIER_ACCESS_NO_ACCESS) tb.SyncBefore = D3D12_BARRIER_SYNC_NONE;
+        if (tb.AccessAfter == D3D12_BARRIER_ACCESS_NO_ACCESS) tb.SyncAfter = D3D12_BARRIER_SYNC_NONE;
+        if (before_layout == D3D12_BARRIER_LAYOUT_UNDEFINED) {
           tb.SyncBefore = D3D12_BARRIER_SYNC_NONE;
+          tb.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+        }
+        if (tb.AccessBefore == D3D12_BARRIER_ACCESS_COMMON &&
+            tb.SyncBefore != D3D12_BARRIER_SYNC_ALL) {
+          tb.SyncBefore = D3D12_BARRIER_SYNC_ALL;
+        }
+        if (tb.AccessAfter == D3D12_BARRIER_ACCESS_COMMON &&
+            tb.SyncAfter != D3D12_BARRIER_SYNC_ALL) {
+          tb.SyncAfter = D3D12_BARRIER_SYNC_ALL;
         }
         tb.LayoutBefore = before_layout;
         tb.LayoutAfter = after_layout;
@@ -214,9 +362,10 @@ void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
                        : D3D12_TEXTURE_BARRIER_FLAG_NONE;
         tex_barriers.push_back(tb);
         te->current_layout = after_layout;
-        te->current_state = to_d3d12_resource_state(t.after, is_depth);
+        te->current_state = sanitize_legacy_state(to_d3d12_resource_state(t.after, is_depth));
       } else {
-        const D3D12_RESOURCE_STATES after_state = to_d3d12_resource_state(t.after, is_depth);
+        const D3D12_RESOURCE_STATES after_state =
+            sanitize_legacy_state(to_d3d12_resource_state(t.after, is_depth));
         if (te->current_state != after_state) {
           D3D12_RESOURCE_BARRIER rb{};
           rb.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -275,7 +424,8 @@ void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
     BufferEntry* be = device_.lookup_buffer(b.buffer);
     if (!be || !be->resource) continue;
     if (be->fixed_state) continue;
-    const D3D12_RESOURCE_STATES after_state = to_d3d12_resource_state(b.after, false);
+    const D3D12_RESOURCE_STATES after_state =
+        sanitize_legacy_state(to_d3d12_resource_state(b.after, false));
     if (be->current_state == after_state) {
       if (after_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
         D3D12_RESOURCE_BARRIER uav{};
@@ -299,7 +449,8 @@ void D3D12CommandListImpl::barrier(const BarrierDesc& desc) {
     TextureEntry* te = device_.lookup_texture(t.texture);
     if (!te || !te->resource) continue;
     const bool is_depth = t.is_depth || format_is_depth(te->format);
-    const D3D12_RESOURCE_STATES after_state = to_d3d12_resource_state(t.after, is_depth);
+    const D3D12_RESOURCE_STATES after_state =
+        sanitize_legacy_state(to_d3d12_resource_state(t.after, is_depth));
     if (te->current_state == after_state) {
       if (after_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
         D3D12_RESOURCE_BARRIER uav{};
@@ -694,6 +845,14 @@ void D3D12CommandListImpl::dispatch(uint32_t group_x, uint32_t group_y, uint32_t
   cmd_->Dispatch(group_x, group_y, group_z);
 }
 
+void D3D12CommandListImpl::dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) {
+  const BufferEntry* arg = device_.lookup_buffer(arg_buffer);
+  if (!arg || !arg->resource) return;
+  ID3D12CommandSignature* sig = device_.get_or_create_dispatch_indirect_signature();
+  if (!sig) return;
+  cmd_->ExecuteIndirect(sig, 1, arg->resource.Get(), arg_offset, nullptr, 0);
+}
+
 // -----------------------------------------------------------------------------
 // Transfers, clears, blits, and explicit depth resolve
 // -----------------------------------------------------------------------------
@@ -718,8 +877,11 @@ void D3D12CommandListImpl::fill_buffer(BufferHandle dst, uint64_t offset,
                                        uint64_t size, uint32_t value) {
   if (size == 0) return;
   const BufferEntry* dst_e = device_.lookup_buffer(dst);
-  if (!dst_e || !dst_e->resource) return;
-  const uint64_t aligned_size = align_up(size, 4ull);
+  if (!dst_e || !dst_e->resource || offset >= dst_e->allocated_size) return;
+  const uint64_t max_bytes = dst_e->allocated_size - offset;
+  const uint64_t eff_size = (size == UINT64_MAX) ? max_bytes : std::min(size, max_bytes);
+  if (eff_size == 0) return;
+  const uint64_t aligned_size = align_up(eff_size, 4ull);
   ComPtr<ID3D12Resource> staging = allocate_transient_buffer(
       aligned_size, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
   if (!staging) return;
@@ -730,7 +892,7 @@ void D3D12CommandListImpl::fill_buffer(BufferHandle dst, uint64_t offset,
     const size_t count = static_cast<size_t>(aligned_size / 4ull);
     for (size_t i = 0; i < count; ++i) words[i] = value;
     staging->Unmap(0, nullptr);
-    cmd_->CopyBufferRegion(dst_e->resource.Get(), offset, staging.Get(), 0, size);
+    cmd_->CopyBufferRegion(dst_e->resource.Get(), offset, staging.Get(), 0, eff_size);
   }
 }
 
@@ -1018,8 +1180,68 @@ void D3D12CommandListImpl::resolve_depth(TextureViewHandle msaa_depth,
   const DXGI_FORMAT fmt = to_dxgi_srv_format(dst_t->format);
   const D3D12_RESOLVE_MODE rm = (mode == ResolveMode::Average) ? D3D12_RESOLVE_MODE_AVERAGE
                                                                : D3D12_RESOLVE_MODE_MIN;
+#ifdef __ID3D12GraphicsCommandList7_INTERFACE_DEFINED__
+  if (device_.enhanced_barriers_enabled() && cmd7_ &&
+      src_t->enhanced_barrier_compatible && dst_t->enhanced_barrier_compatible) {
+    D3D12_TEXTURE_BARRIER tb[2]{};
+    tb[0].SyncBefore = D3D12_BARRIER_SYNC_ALL;
+    tb[0].SyncAfter = D3D12_BARRIER_SYNC_RESOLVE;
+    tb[0].AccessBefore = D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+    tb[0].AccessAfter = D3D12_BARRIER_ACCESS_RESOLVE_SOURCE;
+    tb[0].LayoutBefore = src_t->current_layout;
+    tb[0].LayoutAfter = D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE;
+    tb[0].pResource = src_t->resource.Get();
+    tb[0].Subresources.IndexOrFirstMipLevel = 0xffffffff;
+
+    tb[1].SyncBefore = (dst_t->current_layout == D3D12_BARRIER_LAYOUT_COMMON)
+                           ? D3D12_BARRIER_SYNC_ALL
+                           : D3D12_BARRIER_SYNC_NONE;
+    tb[1].SyncAfter = D3D12_BARRIER_SYNC_RESOLVE;
+    tb[1].AccessBefore = (dst_t->current_layout == D3D12_BARRIER_LAYOUT_COMMON)
+                             ? D3D12_BARRIER_ACCESS_COMMON
+                             : D3D12_BARRIER_ACCESS_NO_ACCESS;
+    tb[1].AccessAfter = D3D12_BARRIER_ACCESS_RESOLVE_DEST;
+    tb[1].LayoutBefore = dst_t->current_layout;
+    tb[1].LayoutAfter = D3D12_BARRIER_LAYOUT_RESOLVE_DEST;
+    tb[1].pResource = dst_t->resource.Get();
+    tb[1].Subresources.IndexOrFirstMipLevel = 0xffffffff;
+
+    D3D12_BARRIER_GROUP bg{D3D12_BARRIER_TYPE_TEXTURE, 2};
+    bg.pTextureBarriers = tb;
+    cmd7_->Barrier(1, &bg);
+
+    cmd_->ResolveSubresourceRegion(dst_t->resource.Get(), dst_sub, 0, 0,
+                                   src_t->resource.Get(), src_sub, nullptr, fmt, rm);
+
+    tb[0].SyncBefore = D3D12_BARRIER_SYNC_RESOLVE;
+    tb[0].SyncAfter = D3D12_BARRIER_SYNC_ALL;
+    tb[0].AccessBefore = D3D12_BARRIER_ACCESS_RESOLVE_SOURCE;
+    tb[0].AccessAfter = D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
+    tb[0].LayoutAfter = src_t->current_layout;
+    tb[0].LayoutBefore = D3D12_BARRIER_LAYOUT_RESOLVE_SOURCE;
+
+    tb[1].SyncBefore = D3D12_BARRIER_SYNC_RESOLVE;
+    tb[1].SyncAfter = (dst_t->current_layout == D3D12_BARRIER_LAYOUT_COMMON)
+                          ? D3D12_BARRIER_SYNC_ALL
+                          : D3D12_BARRIER_SYNC_NONE;
+    tb[1].AccessBefore = D3D12_BARRIER_ACCESS_RESOLVE_DEST;
+    tb[1].AccessAfter = (dst_t->current_layout == D3D12_BARRIER_LAYOUT_COMMON)
+                            ? D3D12_BARRIER_ACCESS_COMMON
+                            : D3D12_BARRIER_ACCESS_NO_ACCESS;
+    tb[1].LayoutAfter = dst_t->current_layout;
+    tb[1].LayoutBefore = D3D12_BARRIER_LAYOUT_RESOLVE_DEST;
+    cmd7_->Barrier(1, &bg);
+    return;
+  }
+#endif
+  const D3D12_RESOURCE_STATES prev_src = src_t->current_state;
+  const D3D12_RESOURCE_STATES prev_dst = dst_t->current_state;
+  transition_resource_legacy(src_t->resource.Get(), prev_src, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
+  transition_resource_legacy(dst_t->resource.Get(), prev_dst, D3D12_RESOURCE_STATE_RESOLVE_DEST);
   cmd_->ResolveSubresourceRegion(dst_t->resource.Get(), dst_sub, 0, 0,
                                  src_t->resource.Get(), src_sub, nullptr, fmt, rm);
+  transition_resource_legacy(src_t->resource.Get(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, prev_src);
+  transition_resource_legacy(dst_t->resource.Get(), D3D12_RESOURCE_STATE_RESOLVE_DEST, prev_dst);
 }
 
 void D3D12CommandListImpl::cmd_build_blas(const BlasBuildDesc& desc) {
@@ -1041,20 +1263,126 @@ void D3D12CommandListImpl::cmd_build_tlas(const TlasBuildDesc& desc) {
 }
 
 // -----------------------------------------------------------------------------
-// D3D12DeviceImpl::submit_once & create_swapchain
+// D3D12DeviceImpl::create_command_list, submit, submit_once & create_swapchain
 // -----------------------------------------------------------------------------
+namespace {
+
+D3D12_COMMAND_LIST_TYPE d3d12_cmd_list_type(QueueKind queue, bool has_compute, bool has_copy) noexcept {
+  if (queue == QueueKind::Transfer && has_copy) return D3D12_COMMAND_LIST_TYPE_COPY;
+  if (queue == QueueKind::AsyncCompute && has_compute) return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  return D3D12_COMMAND_LIST_TYPE_DIRECT;
+}
+
+}  // namespace
+
+std::unique_ptr<CommandList> D3D12DeviceImpl::create_command_list(QueueKind queue,
+                                                                  std::string& error) {
+  const D3D12_COMMAND_LIST_TYPE list_type =
+      d3d12_cmd_list_type(queue, compute_queue_ != nullptr, copy_queue_ != nullptr);
+  const QueueKind eff_kind = (list_type == D3D12_COMMAND_LIST_TYPE_COPY)      ? QueueKind::Transfer
+                             : (list_type == D3D12_COMMAND_LIST_TYPE_COMPUTE) ? QueueKind::AsyncCompute
+                                                                              : QueueKind::Graphics;
+
+  ComPtr<ID3D12CommandAllocator> alloc;
+  HRESULT hr = device_->CreateCommandAllocator(list_type, IID_PPV_ARGS(&alloc));
+  if (FAILED(hr)) {
+    error = hr_err("CreateCommandAllocator(create_command_list)", hr) +
+            " (removed_reason=" + hr_err("", device_->GetDeviceRemovedReason()) + ")";
+    return nullptr;
+  }
+  ComPtr<ID3D12GraphicsCommandList4> raw_cmd;
+  hr = device_->CreateCommandList(0, list_type, alloc.Get(), nullptr, IID_PPV_ARGS(&raw_cmd));
+  if (FAILED(hr)) {
+    error = hr_err("CreateCommandList(create_command_list)", hr);
+    return nullptr;
+  }
+  raw_cmd->Close();
+  return std::make_unique<D3D12CommandListImpl>(*this, std::move(alloc), std::move(raw_cmd), eff_kind);
+}
+
+bool D3D12DeviceImpl::submit(QueueKind queue,
+                             std::span<CommandList* const> lists,
+                             std::span<const TimelineWait> waits,
+                             std::span<const TimelineSignal> signals,
+                             std::string& error) {
+  ID3D12CommandQueue* target_queue = queue_for(queue);
+  if (!target_queue) {
+    error = "submit: target D3D12 command queue is null";
+    return false;
+  }
+
+  std::vector<ID3D12CommandList*> raw_lists;
+  raw_lists.reserve(lists.size());
+  for (CommandList* cl : lists) {
+    if (!cl) continue;
+    auto* dcl = static_cast<D3D12CommandListImpl*>(cl);
+    if (FAILED(dcl->last_close_hr())) {
+      error = hr_err("ID3D12GraphicsCommandList::Close", dcl->last_close_hr());
+      return false;
+    }
+    if (dcl->native_cmd()) raw_lists.push_back(dcl->native_cmd());
+  }
+
+  std::vector<std::pair<ComPtr<ID3D12Fence>, uint64_t>> wait_fences;
+  wait_fences.reserve(waits.size());
+  std::vector<std::pair<ComPtr<ID3D12Fence>, uint64_t>> signal_fences;
+  signal_fences.reserve(signals.size());
+  {
+    std::lock_guard<std::mutex> rlock(resource_mutex_);
+    for (const TimelineWait& w : waits) {
+      const TimelineSemaphoreEntry* e = timeline_semaphores_.get(w.semaphore);
+      if (!e || !e->fence) {
+        error = "submit: invalid TimelineWait semaphore handle";
+        return false;
+      }
+      wait_fences.emplace_back(e->fence, w.value);
+    }
+    for (const TimelineSignal& s : signals) {
+      const TimelineSemaphoreEntry* e = timeline_semaphores_.get(s.semaphore);
+      if (!e || !e->fence) {
+        error = "submit: invalid TimelineSignal semaphore handle";
+        return false;
+      }
+      signal_fences.emplace_back(e->fence, s.value);
+    }
+  }
+
+  std::lock_guard<std::mutex> qlock(queue_mutex_for(queue));
+  for (const auto& [fence, val] : wait_fences) {
+    const HRESULT hr = target_queue->Wait(fence.Get(), val);
+    if (FAILED(hr)) {
+      error = hr_err("ID3D12CommandQueue::Wait", hr);
+      return false;
+    }
+  }
+  if (!raw_lists.empty()) {
+    target_queue->ExecuteCommandLists(static_cast<UINT>(raw_lists.size()), raw_lists.data());
+  }
+  for (const auto& [fence, val] : signal_fences) {
+    const HRESULT hr = target_queue->Signal(fence.Get(), val);
+    if (FAILED(hr)) {
+      error = hr_err("ID3D12CommandQueue::Signal", hr);
+      return false;
+    }
+  }
+  return true;
+}
+
 bool D3D12DeviceImpl::submit_once(const std::function<void(CommandList&)>& record_fn,
                                   std::string& error, bool prefer_transfer_queue) {
-  (void)prefer_transfer_queue;
+  const QueueKind qk =
+      (prefer_transfer_queue && copy_queue_) ? QueueKind::Transfer : QueueKind::Graphics;
+  const D3D12_COMMAND_LIST_TYPE list_type =
+      (qk == QueueKind::Transfer) ? D3D12_COMMAND_LIST_TYPE_COPY : D3D12_COMMAND_LIST_TYPE_DIRECT;
+
   ComPtr<ID3D12CommandAllocator> alloc;
-  HRESULT hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc));
+  HRESULT hr = device_->CreateCommandAllocator(list_type, IID_PPV_ARGS(&alloc));
   if (FAILED(hr)) {
     error = hr_err("CreateCommandAllocator(submit_once)", hr);
     return false;
   }
   ComPtr<ID3D12GraphicsCommandList4> raw_cmd;
-  hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(),
-                                  nullptr, IID_PPV_ARGS(&raw_cmd));
+  hr = device_->CreateCommandList(0, list_type, alloc.Get(), nullptr, IID_PPV_ARGS(&raw_cmd));
   if (FAILED(hr)) {
     error = hr_err("CreateCommandList(submit_once)", hr);
     return false;
@@ -1062,16 +1390,17 @@ bool D3D12DeviceImpl::submit_once(const std::function<void(CommandList&)>& recor
   // Close immediately because begin() resets allocator + command list cleanly.
   raw_cmd->Close();
 
-  D3D12CommandListImpl cmd(*this, alloc, raw_cmd);
+  D3D12CommandListImpl cmd(*this, alloc, raw_cmd, qk);
   cmd.begin();
   record_fn(cmd);
   cmd.end();
 
   ID3D12CommandList* lists[1] = {cmd.native_cmd()};
+  ID3D12CommandQueue* target_queue = queue_for(qk);
   {
-    std::lock_guard<std::mutex> lock(queue_mutex_);
-    direct_queue_->ExecuteCommandLists(1, lists);
-    signal_and_wait_queue(direct_queue_.Get());
+    std::lock_guard<std::mutex> lock(queue_mutex_for(qk));
+    target_queue->ExecuteCommandLists(1, lists);
+    signal_and_wait_queue(target_queue);
   }
   cmd.release_transients();
   return true;

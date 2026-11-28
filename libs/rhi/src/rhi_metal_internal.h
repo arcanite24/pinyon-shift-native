@@ -133,6 +133,10 @@ struct AccelStructEntry {
   NSArray<id<MTLAccelerationStructure>>* instanced_blases = nil;
 };
 
+struct TimelineSemaphoreEntry {
+  id<MTLSharedEvent> event = nil;
+};
+
 // -----------------------------------------------------------------------------
 // Format & flag translation helpers
 // -----------------------------------------------------------------------------
@@ -215,8 +219,12 @@ class MetalBindlessTableImpl final : public BindlessTable {
 // -----------------------------------------------------------------------------
 class MetalCommandListImpl final : public CommandList {
  public:
-  MetalCommandListImpl(MetalDeviceImpl& device, id<MTLCommandBuffer> cmd_buf);
+  MetalCommandListImpl(MetalDeviceImpl& device, id<MTLCommandBuffer> cmd_buf,
+                       QueueKind queue_kind = QueueKind::Graphics,
+                       bool reusable = false);
   ~MetalCommandListImpl() override;
+
+  QueueKind queue_kind() const override { return queue_kind_; }
 
   void reset_command_buffer(id<MTLCommandBuffer> cmd_buf);
   id<MTLCommandBuffer> native_cmd_buf() const noexcept { return cmd_buf_; }
@@ -262,6 +270,7 @@ class MetalCommandListImpl final : public CommandList {
                                    uint32_t max_draw_count, uint32_t stride) override;
 
   void dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) override;
+  void dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) override;
 
   void update_buffer(BufferHandle dst, uint64_t offset, uint64_t size, const void* data) override;
   void fill_buffer(BufferHandle dst, uint64_t offset, uint64_t size, uint32_t value) override;
@@ -297,6 +306,8 @@ class MetalCommandListImpl final : public CommandList {
   void flush_pending_compute_state();
 
   MetalDeviceImpl& device_;
+  QueueKind queue_kind_ = QueueKind::Graphics;
+  bool reusable_ = false;
   id<MTLCommandBuffer> cmd_buf_ = nil;
 
   EncoderKind active_encoder_ = EncoderKind::None;
@@ -452,6 +463,22 @@ class MetalDeviceImpl final : public Device {
   void destroy_accel_struct(AccelStructHandle handle) override;
   uint64_t accel_struct_device_address(AccelStructHandle handle) const override;
 
+  TimelineSemaphoreHandle create_timeline_semaphore(uint64_t initial_value,
+                                                    std::string& error) override;
+  void destroy_timeline_semaphore(TimelineSemaphoreHandle handle) override;
+  uint64_t timeline_semaphore_value(TimelineSemaphoreHandle handle) const override;
+  bool wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                               uint64_t timeout_ns) override;
+  bool signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) override;
+
+  std::unique_ptr<CommandList> create_command_list(QueueKind queue,
+                                                   std::string& error) override;
+  bool submit(QueueKind queue,
+              std::span<CommandList* const> lists,
+              std::span<const TimelineWait> waits,
+              std::span<const TimelineSignal> signals,
+              std::string& error) override;
+
   bool submit_once(const std::function<void(CommandList&)>& record_fn,
                    std::string& error, bool prefer_transfer_queue) override;
   std::unique_ptr<Swapchain> create_swapchain(const SwapchainDesc& desc, std::string& error) override;
@@ -459,6 +486,7 @@ class MetalDeviceImpl final : public Device {
   // Internal accessors
   id<MTLDevice> mtl_device() const noexcept { return device_; }
   id<MTLCommandQueue> mtl_queue() const noexcept { return queue_; }
+  id<MTLCommandQueue> mtl_queue(QueueKind kind) const noexcept;
   id<MTLCounterSet> timestamp_counter_set() const noexcept { return timestamp_counter_set_; }
   bool supports_stage_boundary_counters() const noexcept { return supports_stage_boundary_counters_; }
   bool supports_blit_boundary_counters() const noexcept { return supports_blit_boundary_counters_; }
@@ -486,6 +514,9 @@ class MetalDeviceImpl final : public Device {
   // Internal blit pipeline cache (used by cmd.blit() for scaled/filtered texture blits).
   id<MTLRenderPipelineState> get_or_create_blit_pipeline(MTLPixelFormat dst_fmt);
   id<MTLSamplerState> get_or_create_blit_sampler(Filter filter);
+  // Metal 3 Indirect Command Buffer (ICB) helper for GPU-driven draw_indexed_indirect_count.
+  id<MTLIndirectCommandBuffer> allocate_icb(uint32_t max_draws);
+  id<MTLComputePipelineState> get_or_create_icb_encode_pipeline();
 
   // RT command helpers (defined in rhi_metal_rt.mm).
   AccelStructHandle create_accel_struct_impl(const AccelStructDesc& desc, std::string& error);
@@ -506,6 +537,9 @@ class MetalDeviceImpl final : public Device {
 
   id<MTLDevice> device_ = nil;
   id<MTLCommandQueue> queue_ = nil;
+  id<MTLCommandQueue> compute_queue_ = nil;
+  id<MTLCommandQueue> transfer_queue_ = nil;
+  MTLSharedEventListener* shared_event_listener_ = nil;
   id<MTLBinaryArchive> binary_archive_ = nil;
   id<MTLCounterSet> timestamp_counter_set_ = nil;
   bool supports_stage_boundary_counters_ = false;
@@ -528,6 +562,7 @@ class MetalDeviceImpl final : public Device {
   std::unordered_map<uint32_t, id<MTLRenderPipelineState>> blit_pipelines_;
   id<MTLSamplerState> blit_sampler_nearest_ = nil;
   id<MTLSamplerState> blit_sampler_linear_ = nil;
+  id<MTLComputePipelineState> icb_encode_pso_ = nil;
 
   // Resource pools & allocation accounting
   mutable std::mutex resource_mutex_;
@@ -541,6 +576,7 @@ class MetalDeviceImpl final : public Device {
   HandlePool<PipelineHandle, PipelineEntry> pipelines_;
   HandlePool<QueryPoolHandle, QueryPoolEntry> query_pools_;
   HandlePool<AccelStructHandle, AccelStructEntry> accel_structs_;
+  HandlePool<TimelineSemaphoreHandle, TimelineSemaphoreEntry> timeline_semaphores_;
   std::unordered_map<uint64_t, AccelStructHandle> as_address_map_;
 
   uint32_t live_alloc_count_ = 0;

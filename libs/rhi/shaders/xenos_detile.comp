@@ -1,0 +1,133 @@
+#version 460
+// GPU Compute Xenos 2D Texture Detiler + Endian Byte-Swap + Atomic Cutout Alpha Probe.
+// Matches fh1::xenos_tiled_offset_2d bit-for-bit for 4B (RGBA8), 8B (BC1/BC4), and
+// 16B (BC2/BC3/BC5) blocks across all 4 Xenos endian modes and packed mip tails.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform DetileParams {
+  uint width_blocks;
+  uint height_blocks;
+  uint pitch_blocks;       // storage pitch in blocks (aligned to 32)
+  uint block_offset_x;     // packed mip-tail X block offset (0 for base/normal mips)
+  uint block_offset_y;     // packed mip-tail Y block offset (0 for base/normal mips)
+  uint block_bytes;        // 4, 8, or 16
+  uint log2_block_bytes;   // 2, 3, or 4
+  uint endian_mask;        // 0=none, 1=8-in-16, 3=8-in-32, 2=16-in-32
+  uint src_byte_offset;    // start byte offset in src tiled buffer
+  uint dst_byte_offset;    // start byte offset in dst linear buffer
+  uint tiled;              // 1=Xenos 2D tiled, 0=linear
+  uint format_kind;        // 0=RGBA8, 1=BC1, 2=BC2, 3=BC3, 4=BC4/BC5 (cutout check mode)
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer SrcTiledBuf {
+  uint src_words[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer DstLinearBuf {
+  uint dst_words[];
+};
+
+layout(set = 0, binding = 2) buffer CutoutFlagBuf {
+  uint cutout_flag[];  // [0] set to 1 if any texel has alpha < 128
+};
+
+uint xenos_tiled_offset_2d(uint x, uint y, uint pitch, uint log2_bb) {
+  uint p = (pitch + 31u) & ~31u;
+  uint macro = ((x >> 5u) + (y >> 5u) * (p >> 5u)) << (log2_bb + 7u);
+  uint micro = ((x & 7u) + ((y & 0xEu) << 2u)) << log2_bb;
+  uint offset = macro + ((micro & ~0xFu) << 1u) + (micro & 0xFu) + ((y & 1u) << 4u);
+  return ((offset & ~0x1FFu) << 3u) + ((y & 16u) << 7u) + ((offset & 0x1C0u) << 2u) +
+         (((((y & 8u) >> 2u) + (x >> 3u)) & 3u) << 6u) + (offset & 0x3Fu);
+}
+
+uint swap_word_by_endian_mask(uint w, uint mask) {
+  if (mask == 0u) return w;
+  if (mask == 1u) {
+    // 8-in-16 swap: [b0, b1, b2, b3] -> [b1, b0, b3, b2]
+    return ((w & 0x00FF00FFu) << 8u) | ((w & 0xFF00FF00u) >> 8u);
+  }
+  if (mask == 3u) {
+    // 8-in-32 swap: [b0, b1, b2, b3] -> [b3, b2, b1, b0]
+    return ((w & 0x000000FFu) << 24u) | ((w & 0x0000FF00u) << 8u) |
+           ((w & 0x00FF0000u) >> 8u)  | ((w & 0xFF000000u) >> 24u);
+  }
+  // mask == 2u: 16-in-32 swap: [b0, b1, b2, b3] -> [b2, b3, b0, b1]
+  return (w << 16u) | (w >> 16u);
+}
+
+void main() {
+  uint bx = gl_GlobalInvocationID.x;
+  uint by = gl_GlobalInvocationID.y;
+  if (bx >= pc.width_blocks || by >= pc.height_blocks) return;
+
+  uint sx = bx + pc.block_offset_x;
+  uint sy = by + pc.block_offset_y;
+  uint src_off = pc.src_byte_offset +
+      ((pc.tiled != 0u)
+          ? xenos_tiled_offset_2d(sx, sy, pc.pitch_blocks, pc.log2_block_bytes)
+          : (sy * pc.pitch_blocks + sx) * pc.block_bytes);
+  uint dst_off = pc.dst_byte_offset + (by * pc.width_blocks + bx) * pc.block_bytes;
+
+  uint words_per_block = pc.block_bytes >> 2u;
+  uint sw = src_off >> 2u;
+  uint dw = dst_off >> 2u;
+
+  uint w0 = swap_word_by_endian_mask(src_words[sw + 0u], pc.endian_mask);
+  dst_words[dw + 0u] = w0;
+  uint w1 = 0u;
+  if (words_per_block >= 2u) {
+    w1 = swap_word_by_endian_mask(src_words[sw + 1u], pc.endian_mask);
+    dst_words[dw + 1u] = w1;
+  }
+  if (words_per_block >= 4u) {
+    dst_words[dw + 2u] = swap_word_by_endian_mask(src_words[sw + 2u], pc.endian_mask);
+    dst_words[dw + 3u] = swap_word_by_endian_mask(src_words[sw + 3u], pc.endian_mask);
+  }
+
+  // Optional single-pass cutout alpha detection (replaces 2x CPU mip-0 scans).
+  bool has_cutout = false;
+  if (pc.format_kind == 0u) {
+    // RGBA8: alpha is top byte of little-endian uint32.
+    has_cutout = ((w0 >> 24u) < 128u);
+  } else if (pc.format_kind == 1u) {
+    // BC1/DXT1: 3-color mode (c0 <= c1) with any 2-bit index == 3.
+    uint c0 = w0 & 0xFFFFu;
+    uint c1 = w0 >> 16u;
+    if (c0 <= c1) {
+      uint both_bits = (w1 & 0x55555555u) & ((w1 >> 1u) & 0x55555555u);
+      has_cutout = (both_bits != 0u);
+    }
+  } else if (pc.format_kind == 2u) {
+    // BC2/DXT3: 16x 4-bit explicit alpha nibbles in w0, w1 (< 8 means < 128).
+    for (uint i = 0u; i < 8u; ++i) {
+      if (((w0 >> (i * 4u)) & 0xFu) < 8u || ((w1 >> (i * 4u)) & 0xFu) < 8u) {
+        has_cutout = true;
+        break;
+      }
+    }
+  } else if (pc.format_kind == 3u) {
+    // BC3/DXT5: endpoints a0, a1 in low 16 bits of w0; conservative fast check + exact decode.
+    uint a0 = w0 & 0xFFu;
+    uint a1 = (w0 >> 8u) & 0xFFu;
+    if (a0 < 128u || a1 < 128u) {
+      has_cutout = true;
+    } else if (a0 <= a1) {
+      // 6-value mode includes literal 0 at palette index 6.
+      uint lo = (w0 >> 16u) | (w1 << 16u);
+      uint hi = w1 >> 16u;
+      for (uint t = 0u; t < 16u; ++t) {
+        uint bit_off = t * 3u;
+        uint idx = (bit_off < 30u) ? ((lo >> bit_off) & 7u)
+                 : (bit_off == 30u) ? (((lo >> 30u) & 3u) | ((hi & 1u) << 2u))
+                                    : ((hi >> (bit_off - 32u)) & 7u);
+        if (idx == 6u) {
+          has_cutout = true;
+          break;
+        }
+      }
+    }
+  }
+  if (has_cutout) {
+    atomicOr(cutout_flag[0], 1u);
+  }
+}

@@ -1,0 +1,83 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// Async Compute 256-Bin Log-Luminance Auto-Exposure Histogram + Temporal Adaptation.
+// Mode 0: 16x16 workgroup builds local 256-bin LDS histogram, commits once per bin.
+// Mode 1: Single 256-thread workgroup reduces histogram to adapted linear exposure.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform ExposureParams {
+  uint width;
+  uint height;
+  uint mode;           // 0 = build histogram, 1 = adapt exposure
+  float min_log_lum;   // e.g. -8.0
+  float inv_log_range; // 1.0 / (max_log_lum - min_log_lum)
+  float dt;            // frame delta seconds
+  float adapt_speed;   // e.g. 2.5
+  float target_key;    // e.g. 0.18
+} pc;
+
+layout(set = 0, binding = 0) uniform texture2D hdr_tex;
+layout(set = 0, binding = 1) buffer HistBuf { uint bins[256]; };
+layout(set = 0, binding = 2) buffer ExposureBuf {
+  float adapted_exposure;
+  float avg_luminance;
+  uint total_pixels;
+  uint pad;
+};
+
+shared uint s_hist[256];
+shared float s_weighted[256];
+shared uint s_counts[256];
+
+void main() {
+  uint lidx = gl_LocalInvocationIndex;
+
+  if (pc.mode == 0u) {
+    s_hist[lidx] = 0u;
+    barrier();
+
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x < int(pc.width) && px.y < int(pc.height)) {
+      vec3 hdr = texelFetch(hdr_tex, px, 0).rgb;
+      float lum = dot(hdr, vec3(0.2126, 0.7152, 0.0722));
+      uint bin = 0u;
+      if (lum > 1e-4) {
+        float t = clamp((log2(lum) - pc.min_log_lum) * pc.inv_log_range, 0.0, 1.0);
+        bin = uint(clamp(t * 254.0 + 1.0, 1.0, 255.0));
+      }
+      atomicAdd(s_hist[bin], 1u);
+    }
+    barrier();
+
+    uint c = s_hist[lidx];
+    if (c > 0u) atomicAdd(bins[lidx], c);
+  } else {
+    uint count = bins[lidx];
+    bins[lidx] = 0u;  // auto-clear for next frame
+    // Ignore bin 0 (pitch black sky/border) in average luminance.
+    s_weighted[lidx] = (lidx > 0u) ? (float(count) * float(lidx)) : 0.0;
+    s_counts[lidx] = (lidx > 0u) ? count : 0u;
+    barrier();
+
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+      if (lidx < stride) {
+        s_weighted[lidx] += s_weighted[lidx + stride];
+        s_counts[lidx] += s_counts[lidx + stride];
+      }
+      barrier();
+    }
+
+    if (lidx == 0u) {
+      uint valid = max(s_counts[0], 1u);
+      float avg_bin = s_weighted[0] / float(valid);
+      float log_lum = (max(avg_bin - 1.0, 0.0) / 254.0) / max(pc.inv_log_range, 1e-5) + pc.min_log_lum;
+      float lum = clamp(exp2(log_lum), 0.01, 64.0);
+      float target_exp = clamp(pc.target_key / max(lum, 0.01), 0.15, 8.0);
+      float prev = (adapted_exposure > 1e-4) ? adapted_exposure : target_exp;
+      float k = 1.0 - exp(-pc.dt * pc.adapt_speed);
+      adapted_exposure = mix(prev, target_exp, clamp(k, 0.0, 1.0));
+      avg_luminance = lum;
+      total_pixels = valid;
+    }
+  }
+}

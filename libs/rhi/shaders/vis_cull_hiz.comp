@@ -1,0 +1,185 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// 2-Phase GPU Meshlet Frustum + Backface Normal Cone + Hi-Z Occlusion Culling.
+// Phase 0: tests all work items against frustum, cone, and prev-frame Hi-Z.
+//          Items occluded by prev-frame Hi-Z are appended to occluded_items[].
+// Phase 1: re-tests ONLY occluded_items[] against current-frame SPD Hi-Z so
+//          newly disoccluded meshlets are rasterized in Pass 2 with zero 1-frame pops.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+struct MeshletInstance {
+  mat4 model;
+  mat4 prev_model;
+  uint first_meshlet;
+  uint meshlet_count;
+  uint material_class;
+  uint material_id;
+};
+
+struct Meshlet {
+  vec4 bound_sphere;    // xyz = local center, w = radius
+  vec4 cone_apex_cut;   // xyz = cone apex, w = cone_cutoff (>= 1.0 disables)
+  vec3 cone_axis;
+  uint index_offset;
+  uint vertex_offset;
+  uint triangle_count;
+  uint vertex_count;
+  uint material_id;
+};
+
+struct DrawIndexedIndirect {
+  uint index_count;
+  uint instance_count;
+  uint first_index;
+  int vertex_offset;
+  uint first_instance;
+};
+
+struct VisibleDraw {
+  uint instance_id;
+  uint meshlet_id;
+  uint material_class;
+  uint material_id;
+};
+
+layout(set = 0, binding = 0) uniform HizCullParams {
+  mat4 view_proj;
+  vec4 frustum_planes[6];
+  vec4 camera_pos_znear;
+  uint work_item_count;
+  uint max_draws;
+  uint enable_cone_cull;
+  uint enable_hiz_cull;
+  uint phase;            // 0 = phase1 (all items vs prev Hi-Z), 1 = phase2 (occluded vs curr Hi-Z)
+  uint hiz_width;        // mip 0 width of Hi-Z pyramid
+  uint hiz_height;       // mip 0 height of Hi-Z pyramid
+  uint hiz_mip_count;    // number of mip levels in hiz_tex
+} u;
+
+layout(set = 0, binding = 1) readonly buffer InstanceBuf { MeshletInstance instances[]; };
+layout(set = 0, binding = 2) readonly buffer MeshletBuf { Meshlet meshlets[]; };
+layout(set = 0, binding = 3) readonly buffer WorkItemBuf { uvec2 work_items[]; };
+layout(set = 0, binding = 4) writeonly buffer DrawCmdBuf { DrawIndexedIndirect draw_cmds[]; };
+layout(set = 0, binding = 5) writeonly buffer VisibleDrawBuf { VisibleDraw visible_draws[]; };
+layout(set = 0, binding = 6) buffer OccludedBuf { uvec2 occluded_items[]; };
+layout(set = 0, binding = 7) buffer StatsBuf {
+  // [0]=phase1_visible, [1]=frustum_culled, [2]=cone_culled, [3]=tested,
+  // [4]=hiz_occluded_p1, [5]=phase2_visible, [6]=total_visible, [7]=hiz_culled_final
+  uint stats[];
+};
+layout(set = 0, binding = 8) uniform texture2D hiz_tex;
+
+bool test_hiz_occluded(vec3 world_center, float world_radius) {
+  if (u.enable_hiz_cull == 0u || u.hiz_width == 0u || u.hiz_height == 0u) return false;
+
+  // Project bounding sphere's 8 world AABB corners to clip space for conservative NDC rect + nearest Reverse-Z depth.
+  vec2 ndc_min = vec2(1e9);
+  vec2 ndc_max = vec2(-1e9);
+  float nearest_z = 0.0;
+  for (uint c = 0u; c < 8u; ++c) {
+    vec3 off = vec3(((c & 1u) != 0u) ? world_radius : -world_radius,
+                    ((c & 2u) != 0u) ? world_radius : -world_radius,
+                    ((c & 4u) != 0u) ? world_radius : -world_radius);
+    vec4 clip = u.view_proj * vec4(world_center + off, 1.0);
+    if (clip.w <= 1e-4) return false;  // crosses near plane -> conservatively visible
+    vec3 ndc = clip.xyz / clip.w;
+    ndc_min = min(ndc_min, ndc.xy);
+    ndc_max = max(ndc_max, ndc.xy);
+    nearest_z = max(nearest_z, ndc.z);  // Reverse-Z: larger Z = closer to camera
+  }
+
+  vec2 uv_min = clamp(ndc_min * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+  vec2 uv_max = clamp(ndc_max * 0.5 + 0.5, vec2(0.0), vec2(1.0));
+  // Vulkan clip Y is inverted during rasterization; flip V to match framebuffer rows.
+  float v0 = 1.0 - uv_max.y;
+  float v1 = 1.0 - uv_min.y;
+  uv_min.y = v0;
+  uv_max.y = v1;
+
+  vec2 px_span = (uv_max - uv_min) * vec2(float(u.hiz_width), float(u.hiz_height));
+  float max_span = max(px_span.x, px_span.y);
+  int mip = clamp(int(ceil(log2(max(max_span, 1.0)))), 0, int(max(u.hiz_mip_count, 1u) - 1u));
+  ivec2 mip_sz = max(ivec2(u.hiz_width >> mip, u.hiz_height >> mip), ivec2(1));
+
+  ivec2 tmin = clamp(ivec2(floor(uv_min * vec2(mip_sz))), ivec2(0), mip_sz - ivec2(1));
+  ivec2 tmax = clamp(ivec2(floor(uv_max * vec2(mip_sz))), ivec2(0), mip_sz - ivec2(1));
+
+  // Reverse-Z conservative occluder depth = minimum depth across covered Hi-Z texels.
+  float d00 = texelFetch(hiz_tex, ivec2(tmin.x, tmin.y), mip).x;
+  float d10 = texelFetch(hiz_tex, ivec2(tmax.x, tmin.y), mip).x;
+  float d01 = texelFetch(hiz_tex, ivec2(tmin.x, tmax.y), mip).x;
+  float d11 = texelFetch(hiz_tex, ivec2(tmax.x, tmax.y), mip).x;
+  float hiz_min = min(min(d00, d10), min(d01, d11));
+
+  // Reverse-Z: if sphere's closest Z is strictly farther (smaller) than Hi-Z min depth, it is occluded.
+  return (nearest_z + 1e-4) < hiz_min;
+}
+
+void emit_draw(uvec2 item, MeshletInstance inst, Meshlet m, uint draw_slot) {
+  if (draw_slot >= u.max_draws) return;
+  DrawIndexedIndirect cmd;
+  cmd.index_count = m.triangle_count * 3u;
+  cmd.instance_count = 1u;
+  cmd.first_index = m.index_offset;
+  cmd.vertex_offset = int(m.vertex_offset);
+  cmd.first_instance = draw_slot;
+  draw_cmds[draw_slot] = cmd;
+
+  VisibleDraw vd;
+  vd.instance_id = item.x;
+  vd.meshlet_id = item.y;
+  vd.material_class = inst.material_class;
+  vd.material_id = inst.material_id;
+  visible_draws[draw_slot] = vd;
+}
+
+void main() {
+  uint tid = gl_GlobalInvocationID.x;
+  uint count = (u.phase == 0u) ? u.work_item_count : min(stats[4], u.max_draws);
+  if (tid >= count) return;
+
+  uvec2 item = (u.phase == 0u) ? work_items[tid] : occluded_items[tid];
+  MeshletInstance inst = instances[item.x];
+  Meshlet m = meshlets[item.y];
+
+  vec3 world_center = (inst.model * vec4(m.bound_sphere.xyz, 1.0)).xyz;
+  float max_scale = max(length(inst.model[0].xyz), max(length(inst.model[1].xyz), length(inst.model[2].xyz)));
+  float world_radius = m.bound_sphere.w * max_scale;
+
+  if (u.phase == 0u) {
+    atomicAdd(stats[3], 1u);
+    for (uint p = 0u; p < 6u; ++p) {
+      vec4 pl = u.frustum_planes[p];
+      if (dot(pl.xyz, world_center) + pl.w < -world_radius) {
+        atomicAdd(stats[1], 1u);
+        return;
+      }
+    }
+    if (u.enable_cone_cull != 0u && m.cone_apex_cut.w < 0.999) {
+      vec3 world_axis = normalize(mat3(inst.model) * m.cone_axis);
+      vec3 view_vec = world_center - u.camera_pos_znear.xyz;
+      float dist = length(view_vec);
+      if (dist > world_radius && dot(view_vec, world_axis) >= m.cone_apex_cut.w * dist + world_radius) {
+        atomicAdd(stats[2], 1u);
+        return;
+      }
+    }
+    if (test_hiz_occluded(world_center, world_radius)) {
+      uint oslot = atomicAdd(stats[4], 1u);
+      if (oslot < u.max_draws) occluded_items[oslot] = item;
+      return;
+    }
+    uint slot = atomicAdd(stats[0], 1u);
+    atomicAdd(stats[6], 1u);
+    emit_draw(item, inst, m, slot);
+  } else {
+    // Phase 2: re-test previously Hi-Z-occluded candidates against current-frame Hi-Z.
+    if (test_hiz_occluded(world_center, world_radius)) {
+      atomicAdd(stats[7], 1u);
+      return;
+    }
+    atomicAdd(stats[5], 1u);
+    uint global_slot = atomicAdd(stats[6], 1u);
+    emit_draw(item, inst, m, global_slot);
+  }
+}

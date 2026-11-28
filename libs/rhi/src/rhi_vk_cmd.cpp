@@ -16,15 +16,71 @@ std::string vk_err(const char* what, VkResult r) {
   return std::string(what) + " failed (" + std::to_string(static_cast<int>(r)) + ")";
 }
 
+void sanitize_stage_access_for_queue(QueueKind qk,
+                                     VkPipelineStageFlags2& stage,
+                                     VkAccessFlags2& access) noexcept {
+  if (qk == QueueKind::Graphics) return;
+  if (qk == QueueKind::Transfer) {
+    constexpr VkPipelineStageFlags2 kTransferStages =
+        VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT | VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT |
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT |
+        VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT |
+        VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT |
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    constexpr VkAccessFlags2 kTransferAccess =
+        VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
+        VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_HOST_WRITE_BIT |
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    const VkPipelineStageFlags2 orig = stage;
+    stage &= kTransferStages;
+    if (orig != VK_PIPELINE_STAGE_2_NONE && stage == VK_PIPELINE_STAGE_2_NONE) {
+      stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    }
+    access &= kTransferAccess;
+    if (stage == VK_PIPELINE_STAGE_2_NONE) access = VK_ACCESS_2_NONE;
+    return;
+  }
+  // AsyncCompute: strip graphics-only stages & accesses.
+  constexpr VkPipelineStageFlags2 kGraphicsOnlyStages =
+      VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+      VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT |
+      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+  constexpr VkAccessFlags2 kGraphicsOnlyAccess =
+      VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+      VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  const VkPipelineStageFlags2 orig = stage;
+  stage &= ~kGraphicsOnlyStages;
+  if (orig != VK_PIPELINE_STAGE_2_NONE && stage == VK_PIPELINE_STAGE_2_NONE) {
+    stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  }
+  access &= ~kGraphicsOnlyAccess;
+  if (stage == VK_PIPELINE_STAGE_2_NONE) access = VK_ACCESS_2_NONE;
+}
+
 }  // namespace
 
 // -----------------------------------------------------------------------------
 // VkCommandListImpl
 // -----------------------------------------------------------------------------
-VkCommandListImpl::VkCommandListImpl(VkDeviceImpl& device, VkCommandBuffer cmd)
-    : device_(device), cmd_(cmd) {}
+VkCommandListImpl::VkCommandListImpl(VkDeviceImpl& device, VkCommandBuffer cmd,
+                                     QueueKind queue_kind, VkCommandPool owned_pool)
+    : device_(device), cmd_(cmd), queue_kind_(queue_kind), owned_pool_(owned_pool) {}
+
+VkCommandListImpl::~VkCommandListImpl() {
+  if (owned_pool_ && device_.vk_device()) {
+    vkDestroyCommandPool(device_.vk_device(), owned_pool_, nullptr);
+    owned_pool_ = VK_NULL_HANDLE;
+    cmd_ = VK_NULL_HANDLE;
+  }
+}
 
 void VkCommandListImpl::begin() {
+  if (owned_pool_) {
+    vkResetCommandPool(device_.vk_device(), owned_pool_, 0);
+  }
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   vkBeginCommandBuffer(cmd_, &bi);
@@ -79,6 +135,8 @@ void VkCommandListImpl::barrier(const BarrierDesc& desc) {
     vb.srcAccessMask = any_flag(b.src_access) ? to_vk_access2(b.src_access) : src.access;
     vb.dstStageMask = any_flag(b.dst_stage) ? to_vk_stage2(b.dst_stage) : dst.stage;
     vb.dstAccessMask = any_flag(b.dst_access) ? to_vk_access2(b.dst_access) : dst.access;
+    sanitize_stage_access_for_queue(queue_kind_, vb.srcStageMask, vb.srcAccessMask);
+    sanitize_stage_access_for_queue(queue_kind_, vb.dstStageMask, vb.dstAccessMask);
     vb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vb.buffer = be->buffer;
@@ -99,6 +157,8 @@ void VkCommandListImpl::barrier(const BarrierDesc& desc) {
     vi.srcAccessMask = any_flag(t.src_access) ? to_vk_access2(t.src_access) : src.access;
     vi.dstStageMask = any_flag(t.dst_stage) ? to_vk_stage2(t.dst_stage) : dst.stage;
     vi.dstAccessMask = any_flag(t.dst_access) ? to_vk_access2(t.dst_access) : dst.access;
+    sanitize_stage_access_for_queue(queue_kind_, vi.srcStageMask, vi.srcAccessMask);
+    sanitize_stage_access_for_queue(queue_kind_, vi.dstStageMask, vi.dstAccessMask);
     vi.oldLayout = src.layout;
     vi.newLayout = dst.layout;
     vi.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -302,6 +362,12 @@ void VkCommandListImpl::draw_indexed_indirect_count(BufferHandle arg_buffer, uin
 
 void VkCommandListImpl::dispatch(uint32_t group_x, uint32_t group_y, uint32_t group_z) {
   vkCmdDispatch(cmd_, group_x, group_y, group_z);
+}
+
+void VkCommandListImpl::dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) {
+  const BufferEntry* ab = device_.lookup_buffer(arg_buffer);
+  if (!ab) return;
+  vkCmdDispatchIndirect(cmd_, ab->buffer, arg_offset);
 }
 
 void VkCommandListImpl::update_buffer(BufferHandle dst, uint64_t offset, uint64_t size, const void* data) {
@@ -814,23 +880,32 @@ bool VkSwapchainImpl::submit_and_present(const SwapchainFrame& frame, bool& out_
   FrameSync& fs = frames_[frame.frame_slot % frames_.size()];
   VkSemaphore signal_sem = render_done_[frame.image_index];
 
-  const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  si.waitSemaphoreCount = 1;
-  si.pWaitSemaphores = &fs.image_ready;
-  si.pWaitDstStageMask = &wait_stage;
-  si.commandBufferCount = 1;
-  si.pCommandBuffers = &fs.cmd;
-  si.signalSemaphoreCount = 1;
-  si.pSignalSemaphores = &signal_sem;
+  VkSemaphoreSubmitInfo wait_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  wait_info.semaphore = fs.image_ready;
+  wait_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+  VkCommandBufferSubmitInfo cmd_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+  cmd_info.commandBuffer = fs.cmd;
+
+  VkSemaphoreSubmitInfo signal_info{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  signal_info.semaphore = signal_sem;
+  signal_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+  VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  si.waitSemaphoreInfoCount = 1;
+  si.pWaitSemaphoreInfos = &wait_info;
+  si.commandBufferInfoCount = 1;
+  si.pCommandBufferInfos = &cmd_info;
+  si.signalSemaphoreInfoCount = 1;
+  si.pSignalSemaphoreInfos = &signal_info;
 
   VkResult r = VK_SUCCESS;
   {
     std::lock_guard<std::mutex> lock(device_.queue_mutex());
-    r = vkQueueSubmit(device_.graphics_queue(), 1, &si, fs.in_flight);
+    r = vkQueueSubmit2(device_.graphics_queue(), 1, &si, fs.in_flight);
   }
   if (r != VK_SUCCESS) {
-    error = vk_err("vkQueueSubmit(present)", r);
+    error = vk_err("vkQueueSubmit2(present)", r);
     return false;
   }
 

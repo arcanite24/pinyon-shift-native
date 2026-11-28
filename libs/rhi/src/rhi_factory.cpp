@@ -35,6 +35,15 @@ const char* backend_kind_name(BackendKind kind) noexcept {
   return "auto";
 }
 
+const char* queue_kind_name(QueueKind kind) noexcept {
+  switch (kind) {
+    case QueueKind::Graphics: return "graphics";
+    case QueueKind::AsyncCompute: return "async_compute";
+    case QueueKind::Transfer: return "transfer";
+  }
+  return "graphics";
+}
+
 bool try_parse_backend_kind(std::string_view text, BackendKind& out) noexcept {
   // Trim leading/trailing ASCII whitespace.
   while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) text.remove_prefix(1);
@@ -156,6 +165,7 @@ static constexpr FormatInfo kFormatTable[kFormatCount] = {
     {"R32Sfloat",    4,  1, false, false, false},  // R32Sfloat
     {"R32Uint",      4,  1, false, false, false},  // R32Uint
     {"Rg32Sfloat",   8,  1, false, false, false},  // Rg32Sfloat
+    {"Rg32Uint",     8,  1, false, false, false},  // Rg32Uint
     {"Rgb32Sfloat",  12, 1, false, false, false},  // Rgb32Sfloat
     {"Rgba32Sfloat", 16, 1, false, false, false},  // Rgba32Sfloat
     {"Rgba32Uint",   16, 1, false, false, false},  // Rgba32Uint

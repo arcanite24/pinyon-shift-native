@@ -131,18 +131,31 @@ struct PipelineTag {};
 struct QueryPoolTag {};
 struct AccelStructTag {};
 struct FenceTag {};
+struct TimelineSemaphoreTag {};
 
-using BufferHandle          = Handle<BufferTag>;
-using TextureHandle         = Handle<TextureTag>;
-using TextureViewHandle     = Handle<TextureViewTag>;
-using SamplerHandle         = Handle<SamplerTag>;
-using BindGroupLayoutHandle = Handle<BindGroupLayoutTag>;
-using BindGroupHandle       = Handle<BindGroupTag>;
-using PipelineLayoutHandle  = Handle<PipelineLayoutTag>;
-using PipelineHandle        = Handle<PipelineTag>;
-using QueryPoolHandle       = Handle<QueryPoolTag>;
-using AccelStructHandle     = Handle<AccelStructTag>;
-using FenceHandle           = Handle<FenceTag>;
+using BufferHandle            = Handle<BufferTag>;
+using TextureHandle           = Handle<TextureTag>;
+using TextureViewHandle       = Handle<TextureViewTag>;
+using SamplerHandle           = Handle<SamplerTag>;
+using BindGroupLayoutHandle   = Handle<BindGroupLayoutTag>;
+using BindGroupHandle         = Handle<BindGroupTag>;
+using PipelineLayoutHandle    = Handle<PipelineLayoutTag>;
+using PipelineHandle          = Handle<PipelineTag>;
+using QueryPoolHandle         = Handle<QueryPoolTag>;
+using AccelStructHandle       = Handle<AccelStructTag>;
+using FenceHandle             = Handle<FenceTag>;
+using TimelineSemaphoreHandle = Handle<TimelineSemaphoreTag>;
+
+// -----------------------------------------------------------------------------
+// Hardware command queue classes
+// -----------------------------------------------------------------------------
+enum class QueueKind : uint8_t {
+  Graphics = 0,      // Direct / Graphics + Compute + Transfer + Present
+  AsyncCompute = 1,  // Dedicated async compute queue (falls back to Graphics)
+  Transfer = 2,      // Dedicated DMA copy queue (falls back to Graphics)
+};
+
+const char* queue_kind_name(QueueKind kind) noexcept;
 
 // Reusable dense generational slot pool (header-only so unit tests and all
 // backends share identical handle generation semantics).
@@ -243,6 +256,7 @@ enum class Format : uint8_t {
   R32Sfloat,
   R32Uint,
   Rg32Sfloat,
+  Rg32Uint,
   Rgb32Sfloat,
   Rgba32Sfloat,
   Rgba32Uint,
@@ -622,6 +636,11 @@ struct BackendCaps {
 
   bool dynamic_rendering = false;
   bool synchronization2 = false;
+  bool timeline_semaphores = false;
+  bool dedicated_async_compute = false;
+  bool dedicated_transfer_queue = false;
+  bool subgroup_ops = false;
+  bool mesh_shaders = false;
   bool bindless = false;
   uint32_t max_bindless_textures = 0;
   bool indirect_count = false;

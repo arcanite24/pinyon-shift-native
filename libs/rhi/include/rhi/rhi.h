@@ -26,6 +26,7 @@ struct DeviceDesc {
   bool enable_validation = false;
   bool enable_ray_tracing = true;
   bool enable_bindless = true;
+  bool enable_async_compute = true;
   bool enable_transfer_queue = true;
   float max_anisotropy = 16.0f;
   // Optional SDL3 window used when probing surface/present support on the device.
@@ -174,10 +175,15 @@ struct SpecConstantEntry {
 
 struct ShaderModuleDesc {
   ShaderStage stage = ShaderStage::Vertex;
-  // SPIR-V words (Vulkan), MSL text/metallib (Metal), or DXIL bytes (D3D12).
+  // SPIR-V words (Vulkan), or legacy packed MSL text/metallib or DXIL/HLSL payload.
   std::span<const uint32_t> spirv;
   const char* entry_point = "main";
   std::span<const SpecConstantEntry> spec_constants;
+  // Optional explicit multi-target native payloads (checked before falling back to spirv).
+  std::span<const uint8_t> dxil;
+  std::span<const uint8_t> msl;
+
+  bool has_payload() const noexcept { return !spirv.empty() || !dxil.empty() || !msl.empty(); }
 };
 
 struct VertexBindingDesc {
@@ -279,6 +285,19 @@ struct BarrierDesc {
   bool global_compute_uav = false;  // Compute write -> Compute read/write
   bool global_as_build_to_read = false;  // AS build -> Compute/AS read
   bool global_host_read = false;    // Transfer write -> Host read
+};
+
+// Cross-queue timeline semaphore synchronization descriptors
+struct TimelineWait {
+  TimelineSemaphoreHandle semaphore;
+  uint64_t value = 0;
+  PipelineStage stage = PipelineStage::AllCommands;
+};
+
+struct TimelineSignal {
+  TimelineSemaphoreHandle semaphore;
+  uint64_t value = 0;
+  PipelineStage stage = PipelineStage::AllCommands;
 };
 
 // -----------------------------------------------------------------------------
@@ -446,6 +465,8 @@ class CommandList {
  public:
   virtual ~CommandList() = default;
 
+  virtual QueueKind queue_kind() const { return QueueKind::Graphics; }
+
   virtual void begin() = 0;
   virtual void end() = 0;
 
@@ -491,6 +512,7 @@ class CommandList {
 
   // Compute
   virtual void dispatch(uint32_t group_x, uint32_t group_y = 1, uint32_t group_z = 1) = 0;
+  virtual void dispatch_indirect(BufferHandle arg_buffer, uint64_t arg_offset) = 0;
 
   // Transfers, clears, blits, and explicit depth resolve
   virtual void update_buffer(BufferHandle dst, uint64_t offset, uint64_t size, const void* data) = 0;
@@ -608,6 +630,25 @@ class Device {
   virtual AccelStructHandle create_tlas(const AccelStructDesc& desc, std::string& error) = 0;
   virtual void destroy_accel_struct(AccelStructHandle handle) = 0;
   virtual uint64_t accel_struct_device_address(AccelStructHandle handle) const = 0;
+
+  // Timeline semaphores (Vulkan 1.2 timeline / D3D12 ID3D12Fence / Metal MTLSharedEvent)
+  virtual TimelineSemaphoreHandle create_timeline_semaphore(uint64_t initial_value,
+                                                            std::string& error) = 0;
+  virtual void destroy_timeline_semaphore(TimelineSemaphoreHandle handle) = 0;
+  virtual uint64_t timeline_semaphore_value(TimelineSemaphoreHandle handle) const = 0;
+  virtual bool wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                                       uint64_t timeout_ns = UINT64_MAX) = 0;
+  virtual bool signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) = 0;
+
+  // Reusable per-queue command lists (thread-safe parallel recording) and
+  // asynchronous multi-queue batch submission with timeline synchronization.
+  virtual std::unique_ptr<CommandList> create_command_list(QueueKind queue,
+                                                           std::string& error) = 0;
+  virtual bool submit(QueueKind queue,
+                      std::span<CommandList* const> lists,
+                      std::span<const TimelineWait> waits,
+                      std::span<const TimelineSignal> signals,
+                      std::string& error) = 0;
 
   // Immediate command submission (thread-safe; supports offscreen & staging uploads)
   virtual bool submit_once(const std::function<void(CommandList&)>& record_fn,

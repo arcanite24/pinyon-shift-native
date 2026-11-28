@@ -1,0 +1,43 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// Async Compute McGuire Motion-Blur Tile-Max Velocity Reduction (16x16 tiles in LDS).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(push_constant) uniform MblurTileParams {
+  uint width;
+  uint height;
+  uint tiles_x;
+  uint tiles_y;
+} pc;
+
+layout(set = 0, binding = 0) uniform texture2D velocity_tex;
+layout(set = 0, binding = 1, rg16f) writeonly uniform image2D tile_max_img;
+
+shared vec2 s_vel[256];
+
+void main() {
+  uint lidx = gl_LocalInvocationIndex;
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  vec2 v = vec2(0.0);
+  if (px.x < int(pc.width) && px.y < int(pc.height)) {
+    v = texelFetch(velocity_tex, px, 0).xy;
+  }
+  s_vel[lidx] = v;
+  barrier();
+
+  for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+    if (lidx < stride) {
+      vec2 a = s_vel[lidx];
+      vec2 b = s_vel[lidx + stride];
+      s_vel[lidx] = (dot(b, b) > dot(a, a)) ? b : a;
+    }
+    barrier();
+  }
+
+  if (lidx == 0u) {
+    ivec2 tile = ivec2(gl_WorkGroupID.xy);
+    if (tile.x < int(pc.tiles_x) && tile.y < int(pc.tiles_y)) {
+      imageStore(tile_max_img, tile, vec4(s_vel[0], 0.0, 0.0));
+    }
+  }
+}

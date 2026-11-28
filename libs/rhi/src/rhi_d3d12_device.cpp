@@ -1,6 +1,7 @@
 #include "rhi_d3d12_internal.h"
 
 #include <d3dcompiler.h>
+#include <dxcapi.h>
 
 #include <algorithm>
 #include <cmath>
@@ -208,6 +209,92 @@ void DescriptorAllocator::free(uint32_t base, uint32_t count) {
 }
 
 // -----------------------------------------------------------------------------
+// PlacedHeapPool (ID3D12Heap + CreatePlacedResource for transient resources)
+// -----------------------------------------------------------------------------
+void PlacedHeapPool::shutdown() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  heaps_.clear();
+}
+
+uint32_t PlacedHeapPool::heap_count() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return static_cast<uint32_t>(heaps_.size());
+}
+
+PlacedHeapPool::Allocation PlacedHeapPool::allocate(ID3D12Device* device,
+                                                    D3D12_HEAP_FLAGS flags,
+                                                    uint64_t size,
+                                                    uint64_t alignment) {
+  if (!device || size == 0) return {};
+  constexpr uint64_t kDefaultHeapBytes = 64ull << 20;  // 64 MiB placed heap slabs
+  alignment = std::max<uint64_t>(alignment, 65536ull);
+  const uint64_t aligned_size = align_up(size, alignment);
+  if (aligned_size > kDefaultHeapBytes) return {};
+
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto try_from_heap = [&](uint32_t idx) -> Allocation {
+    HeapBlock& hb = heaps_[idx];
+    if (hb.flags != flags) return {};
+    for (size_t i = 0; i < hb.free_list.size(); ++i) {
+      const uint64_t block_start = hb.free_list[i].offset;
+      const uint64_t block_end = block_start + hb.free_list[i].size;
+      const uint64_t aligned_off = align_up(block_start, alignment);
+      if (aligned_off + aligned_size <= block_end) {
+        const uint64_t prefix = aligned_off - block_start;
+        const uint64_t suffix = block_end - (aligned_off + aligned_size);
+        hb.free_list.erase(hb.free_list.begin() + static_cast<ptrdiff_t>(i));
+        if (prefix > 0) hb.free_list.push_back({block_start, prefix});
+        if (suffix > 0) hb.free_list.push_back({aligned_off + aligned_size, suffix});
+        return Allocation{idx, aligned_off, aligned_size, hb.heap.Get()};
+      }
+    }
+    return {};
+  };
+
+  for (uint32_t i = 0; i < static_cast<uint32_t>(heaps_.size()); ++i) {
+    Allocation a = try_from_heap(i);
+    if (a.valid()) return a;
+  }
+
+  D3D12_HEAP_DESC hd{};
+  hd.SizeInBytes = kDefaultHeapBytes;
+  hd.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+  hd.Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+  hd.Flags = flags;
+  ComPtr<ID3D12Heap> heap;
+  if (FAILED(device->CreateHeap(&hd, IID_PPV_ARGS(&heap)))) return {};
+
+  HeapBlock hb{};
+  hb.heap = std::move(heap);
+  hb.flags = flags;
+  hb.capacity = kDefaultHeapBytes;
+  hb.free_list.push_back({0ull, kDefaultHeapBytes});
+  const uint32_t idx = static_cast<uint32_t>(heaps_.size());
+  heaps_.push_back(std::move(hb));
+  return try_from_heap(idx);
+}
+
+void PlacedHeapPool::free(const Allocation& alloc) {
+  if (!alloc.valid()) return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (alloc.heap_index >= heaps_.size()) return;
+  auto& fl = heaps_[alloc.heap_index].free_list;
+  fl.push_back({alloc.offset, alloc.size});
+  std::sort(fl.begin(), fl.end(),
+            [](const FreeBlock& a, const FreeBlock& b) { return a.offset < b.offset; });
+  std::vector<FreeBlock> merged;
+  merged.reserve(fl.size());
+  for (const FreeBlock& fb : fl) {
+    if (!merged.empty() && merged.back().offset + merged.back().size == fb.offset) {
+      merged.back().size += fb.size;
+    } else {
+      merged.push_back(fb);
+    }
+  }
+  fl = std::move(merged);
+}
+
+// -----------------------------------------------------------------------------
 // Format & state translators (all 28 concrete engine formats)
 // -----------------------------------------------------------------------------
 DXGI_FORMAT to_dxgi_format(Format fmt) noexcept {
@@ -228,6 +315,7 @@ DXGI_FORMAT to_dxgi_format(Format fmt) noexcept {
     case Format::R32Sfloat:    return DXGI_FORMAT_R32_FLOAT;
     case Format::R32Uint:      return DXGI_FORMAT_R32_UINT;
     case Format::Rg32Sfloat:   return DXGI_FORMAT_R32G32_FLOAT;
+    case Format::Rg32Uint:     return DXGI_FORMAT_R32G32_UINT;
     case Format::Rgb32Sfloat:  return DXGI_FORMAT_R32G32B32_FLOAT;
     case Format::Rgba32Sfloat: return DXGI_FORMAT_R32G32B32A32_FLOAT;
     case Format::Rgba32Uint:   return DXGI_FORMAT_R32G32B32A32_UINT;
@@ -284,6 +372,7 @@ Format from_dxgi_format(DXGI_FORMAT fmt) noexcept {
     case DXGI_FORMAT_R32_FLOAT:              return Format::R32Sfloat;
     case DXGI_FORMAT_R32_UINT:               return Format::R32Uint;
     case DXGI_FORMAT_R32G32_FLOAT:           return Format::Rg32Sfloat;
+    case DXGI_FORMAT_R32G32_UINT:            return Format::Rg32Uint;
     case DXGI_FORMAT_R32G32B32_FLOAT:        return Format::Rgb32Sfloat;
     case DXGI_FORMAT_R32G32B32A32_FLOAT:     return Format::Rgba32Sfloat;
     case DXGI_FORMAT_R32G32B32A32_UINT:      return Format::Rgba32Uint;
@@ -484,6 +573,7 @@ D3D12_RAYTRACING_GEOMETRY_FLAGS to_d3d12_geometry_flags(GeometryFlags flags) noe
 
 #ifdef __ID3D12GraphicsCommandList7_INTERFACE_DEFINED__
 D3D12_BARRIER_LAYOUT to_d3d12_barrier_layout(ResourceState state, bool is_depth) noexcept {
+  (void)is_depth;
   switch (state) {
     case ResourceState::Undefined:        return D3D12_BARRIER_LAYOUT_UNDEFINED;
     case ResourceState::Common:           return D3D12_BARRIER_LAYOUT_COMMON;
@@ -494,9 +584,7 @@ D3D12_BARRIER_LAYOUT to_d3d12_barrier_layout(ResourceState state, bool is_depth)
     case ResourceState::StorageReadWrite: return D3D12_BARRIER_LAYOUT_UNORDERED_ACCESS;
     case ResourceState::CopySrc:          return D3D12_BARRIER_LAYOUT_COPY_SOURCE;
     case ResourceState::CopyDst:          return D3D12_BARRIER_LAYOUT_COPY_DEST;
-    case ResourceState::ShaderRead:
-      return is_depth ? D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_READ
-                      : D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
+    case ResourceState::ShaderRead:       return D3D12_BARRIER_LAYOUT_SHADER_RESOURCE;
     default:
       if (has_flag(state, ResourceState::RenderTarget)) return D3D12_BARRIER_LAYOUT_RENDER_TARGET;
       if (has_flag(state, ResourceState::DepthWrite)) return D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE;
@@ -545,7 +633,7 @@ D3D12_BARRIER_SYNC to_d3d12_barrier_sync(ResourceState state, PipelineStage over
     case ResourceState::Present:          return D3D12_BARRIER_SYNC_NONE;
     case ResourceState::RenderTarget:     return D3D12_BARRIER_SYNC_RENDER_TARGET;
     case ResourceState::DepthWrite:       return D3D12_BARRIER_SYNC_DEPTH_STENCIL;
-    case ResourceState::DepthRead:        return D3D12_BARRIER_SYNC_DEPTH_STENCIL | D3D12_BARRIER_SYNC_ALL_SHADING;
+    case ResourceState::DepthRead:        return D3D12_BARRIER_SYNC_DEPTH_STENCIL;
     case ResourceState::StorageReadWrite: return D3D12_BARRIER_SYNC_ALL_SHADING;
     case ResourceState::ShaderRead:       return D3D12_BARRIER_SYNC_ALL_SHADING;
     case ResourceState::CopySrc:
@@ -563,6 +651,7 @@ D3D12_BARRIER_SYNC to_d3d12_barrier_sync(ResourceState state, PipelineStage over
 
 D3D12_BARRIER_ACCESS to_d3d12_barrier_access(ResourceState state, AccessFlags override_access,
                                              bool is_depth) noexcept {
+  (void)is_depth;
   if (any_flag(override_access)) {
     D3D12_BARRIER_ACCESS acc = D3D12_BARRIER_ACCESS_COMMON;
     bool set = false;
@@ -597,9 +686,7 @@ D3D12_BARRIER_ACCESS to_d3d12_barrier_access(ResourceState state, AccessFlags ov
     case ResourceState::DepthWrite:       return D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
     case ResourceState::DepthRead:        return D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ;
     case ResourceState::StorageReadWrite: return D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    case ResourceState::ShaderRead:
-      return is_depth ? (D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ | D3D12_BARRIER_ACCESS_SHADER_RESOURCE)
-                      : D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
+    case ResourceState::ShaderRead:       return D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
     case ResourceState::CopySrc:          return D3D12_BARRIER_ACCESS_COPY_SOURCE;
     case ResourceState::CopyDst:          return D3D12_BARRIER_ACCESS_COPY_DEST;
     case ResourceState::VertexBuffer:     return D3D12_BARRIER_ACCESS_VERTEX_BUFFER;
@@ -685,11 +772,20 @@ D3D12DeviceImpl::~D3D12DeviceImpl() {
     buffers_.clear();
     query_pools_.clear();
     accel_structs_.clear();
+    timeline_semaphores_.for_each_alive([](TimelineSemaphoreHandle, TimelineSemaphoreEntry& e) {
+      if (e.event) {
+        CloseHandle(e.event);
+        e.event = nullptr;
+      }
+      e.fence.Reset();
+    });
+    timeline_semaphores_.clear();
   }
   rtv_heap_.shutdown();
   dsv_heap_.shutdown();
   cbv_srv_uav_heap_.shutdown();
   sampler_heap_.shutdown();
+  transient_heap_pool_.shutdown();
   pipeline_library_.Reset();
   if (idle_fence_event_) {
     CloseHandle(idle_fence_event_);
@@ -887,6 +983,16 @@ bool D3D12DeviceImpl::probe_capabilities(const DeviceDesc& desc, std::string& er
     caps_.fragment_shading_rate = (opt6.VariableShadingRateTier >= D3D12_VARIABLE_SHADING_RATE_TIER_1);
   }
 
+  // Wave ops (subgroups) & Mesh Shader tier probes.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 opt1{};
+  if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &opt1, sizeof(opt1)))) {
+    caps_.subgroup_ops = (opt1.WaveOps == TRUE);
+  }
+  D3D12_FEATURE_DATA_D3D12_OPTIONS7 opt7{};
+  if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &opt7, sizeof(opt7)))) {
+    caps_.mesh_shaders = (opt7.MeshShaderTier >= D3D12_MESH_SHADER_TIER_1);
+  }
+
   // Enhanced Barriers probe (ID3D12Device10 + Options12).
 #ifdef __ID3D12Device10_INTERFACE_DEFINED__
   D3D12_FEATURE_DATA_D3D12_OPTIONS12 opt12{};
@@ -947,6 +1053,9 @@ bool D3D12DeviceImpl::probe_capabilities(const DeviceDesc& desc, std::string& er
 
   caps_.dynamic_rendering = true;
   caps_.synchronization2 = enhanced_barriers_enabled_;
+  caps_.timeline_semaphores = true;
+  caps_.dedicated_async_compute = (compute_queue_ != nullptr);
+  caps_.dedicated_transfer_queue = (copy_queue_ != nullptr);
   caps_.indirect_count = true;
   caps_.multi_draw_indirect = true;
   caps_.depth_resolve_sample_zero = true;
@@ -955,6 +1064,27 @@ bool D3D12DeviceImpl::probe_capabilities(const DeviceDesc& desc, std::string& er
 
   // Runtime probe for dxcompiler.dll (DXIL shader compiler).
   dxcompiler_module_ = LoadLibraryW(L"dxcompiler.dll");
+  if (!dxcompiler_module_) {
+    // Also probe standard Windows 10/11 SDK x64 bin directories so sibling dxil.dll loads too.
+    const std::filesystem::path kits_bin(L"C:\\Program Files (x86)\\Windows Kits\\10\\bin");
+    std::error_code ec;
+    if (std::filesystem::is_directory(kits_bin, ec)) {
+      std::vector<std::filesystem::path> versions;
+      for (const auto& entry : std::filesystem::directory_iterator(kits_bin, ec)) {
+        if (!entry.is_directory()) continue;
+        const auto dll_path = entry.path() / L"x64" / L"dxcompiler.dll";
+        if (std::filesystem::is_regular_file(dll_path, ec)) {
+          versions.push_back(dll_path);
+        }
+      }
+      std::sort(versions.begin(), versions.end());
+      if (!versions.empty()) {
+        dxcompiler_module_ = LoadLibraryExW(
+            versions.back().c_str(), nullptr,
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+      }
+    }
+  }
   dxcompiler_available_ = (dxcompiler_module_ != nullptr);
 
   cache_key_.backend = BackendKind::D3D12;
@@ -1015,7 +1145,7 @@ bool D3D12DeviceImpl::init(const DeviceDesc& desc, std::string& error) {
       set_d3d12_debug_name(copy_queue_.Get(), "shift_rhi_copy_queue");
     }
   }
-  {
+  if (desc.enable_async_compute) {
     D3D12_COMMAND_QUEUE_DESC cmpqd{};
     cmpqd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
     if (SUCCEEDED(device_->CreateCommandQueue(&cmpqd, IID_PPV_ARGS(&compute_queue_)))) {
@@ -1143,8 +1273,28 @@ bool D3D12DeviceImpl::save_pipeline_cache(std::string& error) {
   return true;
 }
 
+ID3D12CommandQueue* D3D12DeviceImpl::queue_for(QueueKind kind) const noexcept {
+  switch (kind) {
+    case QueueKind::AsyncCompute:
+      return compute_queue_ ? compute_queue_.Get() : direct_queue_.Get();
+    case QueueKind::Transfer:
+      return copy_queue_ ? copy_queue_.Get() : direct_queue_.Get();
+    case QueueKind::Graphics:
+    default:
+      return direct_queue_.Get();
+  }
+}
+
+std::mutex& D3D12DeviceImpl::queue_mutex_for(QueueKind kind) noexcept {
+  ID3D12CommandQueue* q = queue_for(kind);
+  if (q == direct_queue_.Get()) return direct_queue_mutex_;
+  if (q == compute_queue_.Get()) return compute_queue_mutex_;
+  return copy_queue_mutex_;
+}
+
 void D3D12DeviceImpl::signal_and_wait_queue(ID3D12CommandQueue* queue) {
   if (!queue || !idle_fence_ || !idle_fence_event_) return;
+  std::lock_guard<std::mutex> fence_lock(idle_fence_mutex_);
   const uint64_t val = ++idle_fence_value_;
   if (SUCCEEDED(queue->Signal(idle_fence_.Get(), val))) {
     if (idle_fence_->GetCompletedValue() < val) {
@@ -1156,10 +1306,93 @@ void D3D12DeviceImpl::signal_and_wait_queue(ID3D12CommandQueue* queue) {
 }
 
 void D3D12DeviceImpl::wait_idle() {
-  std::lock_guard<std::mutex> lock(queue_mutex_);
+  std::scoped_lock lock(direct_queue_mutex_, compute_queue_mutex_, copy_queue_mutex_);
   if (direct_queue_) signal_and_wait_queue(direct_queue_.Get());
   if (copy_queue_) signal_and_wait_queue(copy_queue_.Get());
   if (compute_queue_) signal_and_wait_queue(compute_queue_.Get());
+}
+
+// -----------------------------------------------------------------------------
+// Timeline Semaphores (native ID3D12Fence)
+// -----------------------------------------------------------------------------
+TimelineSemaphoreHandle D3D12DeviceImpl::create_timeline_semaphore(uint64_t initial_value,
+                                                                   std::string& error) {
+  TimelineSemaphoreEntry entry{};
+  HRESULT hr = device_->CreateFence(initial_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&entry.fence));
+  if (FAILED(hr)) {
+    error = hr_err("CreateFence(timeline)", hr);
+    return {};
+  }
+  entry.event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!entry.event) {
+    error = "CreateEventW(timeline_semaphore) failed";
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(resource_mutex_);
+  return timeline_semaphores_.allocate(std::move(entry));
+}
+
+void D3D12DeviceImpl::destroy_timeline_semaphore(TimelineSemaphoreHandle handle) {
+  TimelineSemaphoreEntry entry{};
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    if (!timeline_semaphores_.remove(handle, &entry)) return;
+  }
+  if (entry.event) {
+    CloseHandle(entry.event);
+    entry.event = nullptr;
+  }
+  entry.fence.Reset();
+}
+
+uint64_t D3D12DeviceImpl::timeline_semaphore_value(TimelineSemaphoreHandle handle) const {
+  ComPtr<ID3D12Fence> fence;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->fence) return 0ull;
+    fence = e->fence;
+  }
+  return fence->GetCompletedValue();
+}
+
+bool D3D12DeviceImpl::wait_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value,
+                                              uint64_t timeout_ns) {
+  ComPtr<ID3D12Fence> fence;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->fence) return false;
+    fence = e->fence;
+  }
+  if (fence->GetCompletedValue() >= value) return true;
+  // Allocate a dedicated auto-reset event per wait so concurrent waiters, timeouts,
+  // and semaphore destruction cannot race on a shared Win32 HANDLE.
+  HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!ev) return false;
+  bool ok = false;
+  if (SUCCEEDED(fence->SetEventOnCompletion(value, ev))) {
+    const DWORD wait_ms =
+        (timeout_ns == UINT64_MAX)
+            ? INFINITE
+            : static_cast<DWORD>(std::min<uint64_t>((timeout_ns + 999999ull) / 1000000ull,
+                                                    static_cast<uint64_t>(INFINITE - 1u)));
+    ok = (WaitForSingleObject(ev, wait_ms) == WAIT_OBJECT_0) ||
+         (fence->GetCompletedValue() >= value);
+  }
+  CloseHandle(ev);
+  return ok;
+}
+
+bool D3D12DeviceImpl::signal_timeline_semaphore(TimelineSemaphoreHandle handle, uint64_t value) {
+  ComPtr<ID3D12Fence> fence;
+  {
+    std::lock_guard<std::mutex> lock(resource_mutex_);
+    const TimelineSemaphoreEntry* e = timeline_semaphores_.get(handle);
+    if (!e || !e->fence) return false;
+    fence = e->fence;
+  }
+  return SUCCEEDED(fence->Signal(value));
 }
 
 // -----------------------------------------------------------------------------
@@ -1286,8 +1519,25 @@ BufferHandle D3D12DeviceImpl::create_buffer(const BufferDesc& desc, std::string&
   rd.Flags = res_flags;
 
   BufferEntry entry{};
-  const HRESULT hr = device_->CreateCommittedResource(
-      &hp, D3D12_HEAP_FLAG_NONE, &rd, init_state, nullptr, IID_PPV_ARGS(&entry.resource));
+  HRESULT hr = E_FAIL;
+  if (desc.memory == MemoryHint::Transient && heap_type == D3D12_HEAP_TYPE_DEFAULT) {
+    const D3D12_RESOURCE_ALLOCATION_INFO ai = device_->GetResourceAllocationInfo(0, 1, &rd);
+    auto pa = transient_heap_pool_.allocate(device_.Get(), D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS,
+                                            ai.SizeInBytes, ai.Alignment);
+    if (pa.valid()) {
+      hr = device_->CreatePlacedResource(pa.heap, pa.offset, &rd, init_state, nullptr,
+                                         IID_PPV_ARGS(&entry.resource));
+      if (SUCCEEDED(hr)) {
+        entry.placed_alloc = pa;
+      } else {
+        transient_heap_pool_.free(pa);
+      }
+    }
+  }
+  if (FAILED(hr)) {
+    hr = device_->CreateCommittedResource(
+        &hp, D3D12_HEAP_FLAG_NONE, &rd, init_state, nullptr, IID_PPV_ARGS(&entry.resource));
+  }
   if (FAILED(hr)) {
     error = hr_err("CreateCommittedResource(buffer)", hr);
     return {};
@@ -1336,6 +1586,9 @@ void D3D12DeviceImpl::destroy_buffer(BufferHandle handle) {
     --live_alloc_count_;
     live_alloc_bytes_ -= entry.allocated_size;
     entry.resource.Reset();
+  }
+  if (entry.placed_alloc.valid()) {
+    transient_heap_pool_.free(entry.placed_alloc);
   }
 }
 
@@ -1423,8 +1676,67 @@ TextureHandle D3D12DeviceImpl::create_texture(const TextureDesc& desc, std::stri
   TextureEntry entry{};
   HRESULT hr = E_FAIL;
 
+  // Sub-allocate MemoryHint::Transient single-sample textures from placed ID3D12Heaps.
+  if (desc.memory == MemoryHint::Transient && sample_count == 1u) {
+    const bool is_rt_ds = has_flag(desc.usage, TextureUsage::ColorAttachment) ||
+                          has_flag(desc.usage, TextureUsage::DepthAttachment);
+    const D3D12_HEAP_FLAGS heap_flags =
+        is_rt_ds ? D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES
+                 : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+    D3D12_RESOURCE_DESC query_rd{};
+    query_rd.Dimension = dim;
+    query_rd.Width = std::max(desc.width, 1u);
+    query_rd.Height = std::max(desc.height, 1u);
+    query_rd.DepthOrArraySize = depth_or_array;
+    query_rd.MipLevels = static_cast<UINT16>(std::max(desc.mip_levels, 1u));
+    query_rd.Format = res_fmt;
+    query_rd.SampleDesc.Count = sample_count;
+    query_rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    query_rd.Flags = flags;
+    const D3D12_RESOURCE_ALLOCATION_INFO ai = device_->GetResourceAllocationInfo(0, 1, &query_rd);
+    if (ai.SizeInBytes > 0 && ai.SizeInBytes != UINT64_MAX) {
+      auto pa = transient_heap_pool_.allocate(device_.Get(), heap_flags, ai.SizeInBytes, ai.Alignment);
+      if (pa.valid()) {
 #ifdef __ID3D12Device10_INTERFACE_DEFINED__
-  if (enhanced_barriers_enabled_ && device10_) {
+        if (enhanced_barriers_enabled_ && device10_) {
+          D3D12_RESOURCE_DESC1 rd1{};
+          rd1.Dimension = dim;
+          rd1.Width = std::max(desc.width, 1u);
+          rd1.Height = std::max(desc.height, 1u);
+          rd1.DepthOrArraySize = depth_or_array;
+          rd1.MipLevels = static_cast<UINT16>(std::max(desc.mip_levels, 1u));
+          rd1.Format = res_fmt;
+          rd1.SampleDesc.Count = sample_count;
+          rd1.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+          rd1.Flags = flags;
+          hr = device10_->CreatePlacedResource2(
+              pa.heap, pa.offset, &rd1, D3D12_BARRIER_LAYOUT_COMMON, p_clear,
+              0, nullptr, IID_PPV_ARGS(&entry.resource));
+          if (SUCCEEDED(hr)) {
+            entry.placed_alloc = pa;
+            entry.enhanced_barrier_compatible = true;
+            entry.current_layout = D3D12_BARRIER_LAYOUT_COMMON;
+          }
+        }
+#endif
+        if (FAILED(hr)) {
+          hr = device_->CreatePlacedResource(pa.heap, pa.offset, &query_rd,
+                                             D3D12_RESOURCE_STATE_COMMON, p_clear,
+                                             IID_PPV_ARGS(&entry.resource));
+          if (SUCCEEDED(hr)) {
+            entry.placed_alloc = pa;
+            entry.enhanced_barrier_compatible = false;
+          }
+        }
+        if (FAILED(hr)) {
+          transient_heap_pool_.free(pa);
+        }
+      }
+    }
+  }
+
+#ifdef __ID3D12Device10_INTERFACE_DEFINED__
+  if (FAILED(hr) && enhanced_barriers_enabled_ && device10_) {
     D3D12_RESOURCE_DESC1 rd1{};
     rd1.Dimension = dim;
     rd1.Alignment = 0;
@@ -1510,6 +1822,9 @@ void D3D12DeviceImpl::destroy_texture(TextureHandle handle) {
     live_alloc_bytes_ -= entry.allocated_size;
   }
   entry.resource.Reset();
+  if (entry.placed_alloc.valid()) {
+    transient_heap_pool_.free(entry.placed_alloc);
+  }
 }
 
 TextureViewHandle D3D12DeviceImpl::create_texture_view(const TextureViewDesc& desc, std::string& error) {
@@ -2374,13 +2689,24 @@ bool D3D12DeviceImpl::extract_or_compile_shader(const ShaderModuleDesc& mod,
                                                 std::vector<uint8_t>& out_bytecode,
                                                 std::string& error) const {
   out_bytecode.clear();
-  if (mod.spirv.empty()) return true;
-
-  const auto* bytes = reinterpret_cast<const uint8_t*>(mod.spirv.data());
-  const size_t byte_len = mod.spirv.size_bytes();
+  const uint8_t* bytes = nullptr;
+  size_t byte_len = 0;
+  if (!mod.dxil.empty()) {
+    bytes = mod.dxil.data();
+    byte_len = mod.dxil.size();
+  } else if (!mod.spirv.empty()) {
+    bytes = reinterpret_cast<const uint8_t*>(mod.spirv.data());
+    byte_len = mod.spirv.size_bytes();
+  } else {
+    return true;
+  }
 
   // Direct DXIL / DXBC container ('DXBC' magic 0x43425844).
-  if (byte_len >= 32 && mod.spirv[0] == 0x43425844u) {
+  uint32_t magic = 0;
+  if (byte_len >= 32) {
+    std::memcpy(&magic, bytes, sizeof(uint32_t));
+  }
+  if (byte_len >= 32 && magic == 0x43425844u) {
     uint32_t container_size = 0;
     std::memcpy(&container_size, bytes + 24, sizeof(uint32_t));
     const size_t actual = (container_size >= 32 && container_size <= byte_len)
@@ -2390,25 +2716,91 @@ bool D3D12DeviceImpl::extract_or_compile_shader(const ShaderModuleDesc& mod,
     return true;
   }
 
+  size_t text_len = byte_len;
+  while (text_len > 0 && bytes[text_len - 1] == 0) --text_len;
+  const char* entry_utf8 = (mod.entry_point && *mod.entry_point) ? mod.entry_point : "main";
+
+  // Primary HLSL path: DXC (dxcompiler.dll) targeting SM 6.6 (or SM 6.0) DXIL.
+  std::string dxc_error;
+  if (dxcompiler_module_) {
+    auto create_fn = reinterpret_cast<DxcCreateInstanceProc>(
+        GetProcAddress(dxcompiler_module_, "DxcCreateInstance"));
+    if (create_fn) {
+      ComPtr<IDxcUtils> utils;
+      ComPtr<IDxcCompiler3> compiler;
+      if (SUCCEEDED(create_fn(CLSID_DxcUtils, IID_PPV_ARGS(&utils))) &&
+          SUCCEEDED(create_fn(CLSID_DxcCompiler, IID_PPV_ARGS(&compiler)))) {
+        std::wstring entry_w;
+        entry_w.reserve(std::strlen(entry_utf8));
+        for (const char* p = entry_utf8; *p; ++p) {
+          entry_w.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+        }
+
+        const wchar_t* target_w = sm66_dynamic_resources_ ? L"vs_6_6" : L"vs_6_0";
+        if (mod.stage == ShaderStage::Fragment) {
+          target_w = sm66_dynamic_resources_ ? L"ps_6_6" : L"ps_6_0";
+        } else if (mod.stage == ShaderStage::Compute) {
+          target_w = sm66_dynamic_resources_ ? L"cs_6_6" : L"cs_6_0";
+        }
+
+        const wchar_t* args[] = {
+            L"rhi_d3d12_inline.hlsl",
+            L"-E", entry_w.c_str(),
+            L"-T", target_w,
+            L"-O3",
+        };
+        DxcBuffer src_buf{};
+        src_buf.Ptr = bytes;
+        src_buf.Size = text_len;
+        src_buf.Encoding = DXC_CP_UTF8;
+
+        ComPtr<IDxcResult> result;
+        const HRESULT chr = compiler->Compile(
+            &src_buf, args, static_cast<UINT32>(std::size(args)), nullptr, IID_PPV_ARGS(&result));
+        if (SUCCEEDED(chr) && result) {
+          HRESULT status = E_FAIL;
+          result->GetStatus(&status);
+          if (SUCCEEDED(status)) {
+            ComPtr<IDxcBlob> obj;
+            if (SUCCEEDED(result->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&obj), nullptr)) &&
+                obj && obj->GetBufferSize() >= 32) {
+              const auto* p = static_cast<const uint8_t*>(obj->GetBufferPointer());
+              out_bytecode.assign(p, p + obj->GetBufferSize());
+              return true;
+            }
+          } else {
+            ComPtr<IDxcBlobUtf8> err_blob;
+            if (SUCCEEDED(result->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&err_blob), nullptr)) &&
+                err_blob && err_blob->GetStringLength() > 0) {
+              dxc_error.assign(err_blob->GetStringPointer(), err_blob->GetStringLength());
+            } else {
+              dxc_error = hr_err("IDxcCompiler3::Compile", status);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Fallback: compile HLSL source text using D3DCompile (SM 5.1 supports register spaces).
   const char* profile = "vs_5_1";
   if (mod.stage == ShaderStage::Fragment) profile = "ps_5_1";
   else if (mod.stage == ShaderStage::Compute) profile = "cs_5_1";
 
-  size_t text_len = byte_len;
-  while (text_len > 0 && bytes[text_len - 1] == 0) --text_len;
-
   ComPtr<ID3DBlob> code;
   ComPtr<ID3DBlob> errs;
   const HRESULT hr = D3DCompile(
       bytes, text_len, "rhi_d3d12_inline.hlsl", nullptr, nullptr,
-      mod.entry_point ? mod.entry_point : "main", profile,
-      D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errs);
+      entry_utf8, profile, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errs);
   if (FAILED(hr)) {
-    error = hr_err("D3DCompile", hr);
-    if (errs) {
-      error += ": ";
-      error.append(static_cast<const char*>(errs->GetBufferPointer()), errs->GetBufferSize());
+    if (!dxc_error.empty()) {
+      error = "DXC failed: " + dxc_error;
+    } else {
+      error = hr_err("D3DCompile", hr);
+      if (errs) {
+        error += ": ";
+        error.append(static_cast<const char*>(errs->GetBufferPointer()), errs->GetBufferSize());
+      }
     }
     return false;
   }
@@ -2420,6 +2812,7 @@ bool D3D12DeviceImpl::extract_or_compile_shader(const ShaderModuleDesc& mod,
 PipelineHandle D3D12DeviceImpl::create_graphics_pipeline(
     const GraphicsPipelineDesc& desc, std::string& error) {
   ID3D12RootSignature* root_sig = nullptr;
+  uint64_t layout_hash = 14695981039346656037ull;
   {
     std::lock_guard<std::mutex> lock(resource_mutex_);
     const PipelineLayoutEntry* pl = pipeline_layouts_.get(desc.layout);
@@ -2428,6 +2821,12 @@ PipelineHandle D3D12DeviceImpl::create_graphics_pipeline(
       return {};
     }
     root_sig = pl->root_signature.Get();
+    layout_hash = fnv1a_hash(&pl->push_const_dwords, sizeof(pl->push_const_dwords), layout_hash);
+    layout_hash = fnv1a_hash(&pl->push_const_root_param, sizeof(pl->push_const_root_param), layout_hash);
+    if (!pl->set_mappings.empty()) {
+      layout_hash = fnv1a_hash(pl->set_mappings.data(),
+                               pl->set_mappings.size() * sizeof(PipelineLayoutSetMapping), layout_hash);
+    }
   }
 
   PipelineEntry entry{};
@@ -2442,7 +2841,7 @@ PipelineHandle D3D12DeviceImpl::create_graphics_pipeline(
     if (error.empty()) error = "create_graphics_pipeline: empty vertex shader bytecode";
     return {};
   }
-  if (!desc.fragment_shader.spirv.empty()) {
+  if (desc.fragment_shader.has_payload()) {
     if (!extract_or_compile_shader(desc.fragment_shader, entry.ps_bytecode, error)) {
       return {};
     }
@@ -2535,6 +2934,16 @@ PipelineHandle D3D12DeviceImpl::create_graphics_pipeline(
   if (!entry.ps_bytecode.empty()) {
     hash = fnv1a_hash(entry.ps_bytecode.data(), entry.ps_bytecode.size(), hash);
   }
+  hash = fnv1a_hash(&layout_hash, sizeof(layout_hash), hash);
+  hash = fnv1a_hash(&pd.PrimitiveTopologyType, sizeof(pd.PrimitiveTopologyType), hash);
+  for (const D3D12_INPUT_ELEMENT_DESC& el : entry.input_elements) {
+    hash = fnv1a_hash(&el.SemanticIndex, sizeof(el.SemanticIndex), hash);
+    hash = fnv1a_hash(&el.Format, sizeof(el.Format), hash);
+    hash = fnv1a_hash(&el.InputSlot, sizeof(el.InputSlot), hash);
+    hash = fnv1a_hash(&el.AlignedByteOffset, sizeof(el.AlignedByteOffset), hash);
+    hash = fnv1a_hash(&el.InputSlotClass, sizeof(el.InputSlotClass), hash);
+    hash = fnv1a_hash(&el.InstanceDataStepRate, sizeof(el.InstanceDataStepRate), hash);
+  }
   hash = fnv1a_hash(&pd.BlendState, sizeof(pd.BlendState), hash);
   hash = fnv1a_hash(&pd.RasterizerState, sizeof(pd.RasterizerState), hash);
   hash = fnv1a_hash(&pd.DepthStencilState, sizeof(pd.DepthStencilState), hash);
@@ -2573,6 +2982,7 @@ PipelineHandle D3D12DeviceImpl::create_graphics_pipeline(
 PipelineHandle D3D12DeviceImpl::create_compute_pipeline(
     const ComputePipelineDesc& desc, std::string& error) {
   ID3D12RootSignature* root_sig = nullptr;
+  uint64_t layout_hash = 14695981039346656037ull;
   {
     std::lock_guard<std::mutex> lock(resource_mutex_);
     const PipelineLayoutEntry* pl = pipeline_layouts_.get(desc.layout);
@@ -2581,6 +2991,12 @@ PipelineHandle D3D12DeviceImpl::create_compute_pipeline(
       return {};
     }
     root_sig = pl->root_signature.Get();
+    layout_hash = fnv1a_hash(&pl->push_const_dwords, sizeof(pl->push_const_dwords), layout_hash);
+    layout_hash = fnv1a_hash(&pl->push_const_root_param, sizeof(pl->push_const_root_param), layout_hash);
+    if (!pl->set_mappings.empty()) {
+      layout_hash = fnv1a_hash(pl->set_mappings.data(),
+                               pl->set_mappings.size() * sizeof(PipelineLayoutSetMapping), layout_hash);
+    }
   }
 
   std::vector<uint8_t> cs_bytecode;
@@ -2593,7 +3009,8 @@ PipelineHandle D3D12DeviceImpl::create_compute_pipeline(
   pd.pRootSignature = root_sig;
   pd.CS = {cs_bytecode.data(), cs_bytecode.size()};
 
-  const uint64_t hash = fnv1a_hash(cs_bytecode.data(), cs_bytecode.size());
+  uint64_t hash = fnv1a_hash(cs_bytecode.data(), cs_bytecode.size());
+  hash = fnv1a_hash(&layout_hash, sizeof(layout_hash), hash);
   const std::wstring cache_name = pso_cache_name(L'C', hash);
 
   PipelineEntry entry{};
@@ -2635,10 +3052,12 @@ ID3D12PipelineState* D3D12DeviceImpl::get_or_create_bias_pso(
   if (!pe.dynamic_depth_bias || pe.is_compute) return pe.pso.Get();
   const int32_t c_q = static_cast<int32_t>(std::lround(constant_factor));
   const int32_t s_q = static_cast<int32_t>(std::lround(slope_factor * 100.0f));
-  if (c_q == 0 && s_q == 0) return pe.pso.Get();
+  const int32_t cl_q = static_cast<int32_t>(std::lround(clamp * 1000.0f));
+  if (c_q == 0 && s_q == 0 && cl_q == 0) return pe.pso.Get();
 
-  const uint64_t key = (static_cast<uint64_t>(static_cast<uint32_t>(c_q)) << 32) |
-                       static_cast<uint64_t>(static_cast<uint32_t>(s_q));
+  const uint32_t parts[3] = {static_cast<uint32_t>(c_q), static_cast<uint32_t>(s_q),
+                             static_cast<uint32_t>(cl_q)};
+  const uint64_t key = fnv1a_hash(parts, sizeof(parts));
   auto it = pe.bias_variants.find(key);
   if (it != pe.bias_variants.end()) return it->second.Get();
 
@@ -2683,6 +3102,29 @@ ID3D12CommandSignature* D3D12DeviceImpl::get_or_create_indirect_signature(
   }
   ID3D12CommandSignature* raw = sig.Get();
   indirect_sigs_.emplace(key, std::move(sig));
+  return raw;
+}
+
+ID3D12CommandSignature* D3D12DeviceImpl::get_or_create_dispatch_indirect_signature() {
+  constexpr uint64_t kDispatchKey = (2ull << 32) | 12ull;
+  std::lock_guard<std::mutex> lock(sig_mutex_);
+  auto it = indirect_sigs_.find(kDispatchKey);
+  if (it != indirect_sigs_.end()) return it->second.Get();
+
+  D3D12_INDIRECT_ARGUMENT_DESC arg{};
+  arg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+  D3D12_COMMAND_SIGNATURE_DESC csd{};
+  csd.ByteStride = 12u;
+  csd.NumArgumentDescs = 1;
+  csd.pArgumentDescs = &arg;
+
+  ComPtr<ID3D12CommandSignature> sig;
+  if (FAILED(device_->CreateCommandSignature(&csd, nullptr, IID_PPV_ARGS(&sig)))) {
+    return nullptr;
+  }
+  ID3D12CommandSignature* raw = sig.Get();
+  indirect_sigs_.emplace(kDispatchKey, std::move(sig));
   return raw;
 }
 

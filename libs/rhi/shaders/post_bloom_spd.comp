@@ -1,0 +1,63 @@
+#version 460
+#extension GL_EXT_samplerless_texture_functions : require
+// Async Compute Karis-Weighted Bloom Downsample + 3x3 Tent Upsample.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform BloomParams {
+  uint dst_width;
+  uint dst_height;
+  uint src_width;
+  uint src_height;
+  uint mode;           // 0 = downsample + threshold, 1 = additive tent upsample
+  float threshold;     // luminance knee threshold (mode 0)
+  float intensity;     // upsample blend factor (mode 1)
+  float pad;
+} pc;
+
+layout(set = 0, binding = 0) uniform texture2D src_tex;
+layout(set = 0, binding = 1, rgba16f) uniform image2D dst_img;
+
+vec3 fetch_clamped(ivec2 p) {
+  ivec2 c = clamp(p, ivec2(0), ivec2(int(pc.src_width) - 1, int(pc.src_height) - 1));
+  return texelFetch(src_tex, c, 0).rgb;
+}
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+vec3 karis_avg(vec3 a, vec3 b, vec3 c, vec3 d) {
+  float wa = 1.0 / (1.0 + luma(a));
+  float wb = 1.0 / (1.0 + luma(b));
+  float wc = 1.0 / (1.0 + luma(c));
+  float wd = 1.0 / (1.0 + luma(d));
+  return (a * wa + b * wb + c * wc + d * wd) / max(wa + wb + wc + wd, 1e-4);
+}
+
+void main() {
+  ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+  if (px.x >= int(pc.dst_width) || px.y >= int(pc.dst_height)) return;
+
+  if (pc.mode == 0u) {
+    ivec2 s = px * 2;
+    vec3 c00 = fetch_clamped(s + ivec2(0, 0));
+    vec3 c10 = fetch_clamped(s + ivec2(1, 0));
+    vec3 c01 = fetch_clamped(s + ivec2(0, 1));
+    vec3 c11 = fetch_clamped(s + ivec2(1, 1));
+    vec3 avg = karis_avg(c00, c10, c01, c11);
+    if (pc.threshold > 0.0) {
+      float lum = luma(avg);
+      float soft = max(lum - pc.threshold, 0.0) / max(lum, 1e-4);
+      avg *= soft;
+    }
+    imageStore(dst_img, px, vec4(avg, 1.0));
+  } else {
+    // 3x3 tent filter upsampling from half-res src_tex into dst_img.
+    ivec2 s = px / 2;
+    vec3 sum =
+        fetch_clamped(s + ivec2(-1, -1)) * 1.0 + fetch_clamped(s + ivec2(0, -1)) * 2.0 + fetch_clamped(s + ivec2(1, -1)) * 1.0 +
+        fetch_clamped(s + ivec2(-1,  0)) * 2.0 + fetch_clamped(s + ivec2(0,  0)) * 4.0 + fetch_clamped(s + ivec2(1,  0)) * 2.0 +
+        fetch_clamped(s + ivec2(-1,  1)) * 1.0 + fetch_clamped(s + ivec2(0,  1)) * 2.0 + fetch_clamped(s + ivec2(1,  1)) * 1.0;
+    vec3 up = sum * (1.0 / 16.0);
+    vec3 base = imageLoad(dst_img, px).rgb;
+    imageStore(dst_img, px, vec4(base + up * pc.intensity, 1.0));
+  }
+}
