@@ -820,19 +820,12 @@ bool DriveSession::step(const drive::Input& user_in) {
         if (app.race && host.ground && vehicle.time() <= 1e-6 && !app.race->session().started()) {
           const drive::Vec3 vp = vehicle.position();
           if (std::isfinite(vp.x) && std::isfinite(vp.y) && std::isfinite(vp.z)) {
-            drive::Hit ghit{};
             double road_y = vp.y;
-            bool hit_ok = false;
-            if (host.ground->raycast({vp.x, vp.y + 5.0, vp.z}, {0.0, -1.0, 0.0}, 50.0, ghit)) {
-              road_y = (vp.y + 5.0) - ghit.distance;
-              hit_ok = true;
-            } else if (host.ground->raycast({vp.x, vp.y + 60.0, vp.z}, {0.0, -1.0, 0.0}, 120.0, ghit)) {
-              road_y = (vp.y + 60.0) - ghit.distance;
-              hit_ok = true;
-            }
-            if (hit_ok && std::fabs(vp.y - (road_y + 0.05)) > 0.35) {
+            if (world::road_ground_height(*host.ground, vp.x, vp.z, vp.y, road_y) &&
+                std::fabs(vp.y - road_y) > 0.12) {
               const drive::Vec3 f = drive::rotate(vehicle.orientation(), {0, 0, 1});
-              vehicle.reset({vp.x, road_y + 0.05, vp.z}, std::atan2(f.x, f.z));
+              vehicle.reset({vp.x, road_y, vp.z}, std::atan2(f.x, f.z));
+              vehicle.settle_on_ground(*host.ground);
               drawn_before = vehicle.pose();
             }
           }

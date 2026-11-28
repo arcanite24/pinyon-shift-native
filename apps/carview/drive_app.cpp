@@ -1083,7 +1083,17 @@ bool DriveApp::init(int& exit_code) {
       std::fprintf(stderr, "carview: no audio (%s); driving without sound\n", SDL_GetError());
     SDL_WindowFlags win_flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN;
-    window = SDL_CreateWindow(("carview drive - " + car).c_str(), int(width), int(height), win_flags);
+    int create_w = int(width), create_h = int(height);
+    if (!fullscreen) {
+      const SDL_DisplayID disp = SDL_GetPrimaryDisplay();
+      const float dscale = disp ? SDL_GetDisplayContentScale(disp) : 1.0f;
+      if (size_given && std::isfinite(dscale) && dscale > 1.01f) {
+        const auto win_pt = carview::modern::logical_window_size_for_resolution(width, height, dscale);
+        create_w = int(win_pt.w);
+        create_h = int(win_pt.h);
+      }
+    }
+    window = SDL_CreateWindow(("carview drive - " + car).c_str(), create_w, create_h, win_flags);
     if (!window) {
       std::fprintf(stderr, "carview: SDL_CreateWindow: %s\n", SDL_GetError());
       SDL_Quit();

@@ -890,8 +890,10 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     const auto& s = slots_[size_t(c.slot)];
     double y = s.y;
     double gy = y;
-    if (world::ground_height(ground, s.x, s.z, y + 5, gy)) y = gy;
-    c.body->reset({s.x, y + 0.05, s.z}, std::atan2(s.fx, s.fz));
+    if (world::road_ground_height(ground, s.x, s.z, y, gy)) y = gy;
+    c.body->reset({s.x, y, s.z}, std::atan2(s.fx, s.fz));
+    c.body->settle_on_ground(ground);
+    c.before = c.body->pose();
     c.px = s.x, c.pz = s.z;
     // Initialize persistent AI lamps on the grid so headlamps match tod_sec immediately.
     drive::LampInputs lin;

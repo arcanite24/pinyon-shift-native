@@ -484,7 +484,36 @@ void test_smash_hide_tracker() {
   }
   CHECK(persistent_left == 1);
 
-  // 6. Pruning non-resident draw keys drops evicted keys cleanly.
+  // 6. Co-located compact sign part (e.g., .pgeo post + .pvsz sign face offset by 0.7 m) MUST both
+  //    hide even when the primary prop matches origin, while a wide neighboring fence 3.5 m away stays intact.
+  {
+    SmashHideTracker t2;
+    constexpr uint64_t kSignDraw = 701;
+    std::unordered_map<uint64_t, uint32_t> a2 = {{kSignDraw, 5000}};
+    auto is_res2 = [&](uint64_t k) { return a2.count(k) != 0; };
+    auto lookup2 = [&](uint64_t k, uint32_t& base) {
+      auto it = a2.find(k);
+      if (it == a2.end()) return false;
+      base = it->second;
+      return true;
+    };
+    std::vector<std::pair<uint32_t, uint32_t>> z2;
+    auto qz2 = [&](uint32_t first, uint32_t count) { z2.emplace_back(first, count); };
+    std::vector<std::pair<uint64_t, std::vector<PropSpan>>> ps2;
+    ps2.push_back({kSignDraw,
+                   {make_span(20.0f, 0.0f, 20.0f, 0.5f, 2.2f, 0.2f, 0, 18),      // primary sign
+                    make_span(20.8f, 0.0f, 20.0f, 0.9f, 2.2f, 0.3f, 18, 12),     // co-located compact twin/post
+                    make_span(23.5f, 0.0f, 20.0f, 3.0f, 2.0f, 0.2f, 30, 24)}});  // wide neighbor fence
+    std::unordered_set<uint64_t> up2 = {kSignDraw};
+    t2.install_spans(ps2, up2, is_res2, lookup2, qz2);
+    const size_t nh = t2.hide_near({20.0f, 0.0f, 20.0f}, 1.5f, false, {kSignDraw}, lookup2, qz2);
+    CHECK(nh == 2);
+    CHECK(t2.by_draw_key[kSignDraw][0].hidden);
+    CHECK(t2.by_draw_key[kSignDraw][1].hidden);
+    CHECK(!t2.by_draw_key[kSignDraw][2].hidden);
+  }
+
+  // 7. Pruning non-resident draw keys drops evicted keys cleanly.
   arena.erase(kDrawDecal);
   tracker.prune_non_resident(is_res);
   CHECK(tracker.by_draw_key.count(kDrawDecal) == 0);

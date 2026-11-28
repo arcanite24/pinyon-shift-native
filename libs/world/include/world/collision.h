@@ -162,4 +162,10 @@ double spawn_heading();
 bool ground_height(const drive::Ground& ground, double x, double z, double from_y, double& y,
                    drive::Hit* hit = nullptr);
 
+// Road-surface ground probe anchored near `hint_y`: probes below overhead start/finish
+// gantries (+2 m) first, then scans all walkable surfaces near `hint_y` and picks the one
+// closest to `hint_y` so cars on a race grid never snap onto overhead arches or bridges.
+bool road_ground_height(const drive::Ground& ground, double x, double z, double hint_y, double& y,
+                        drive::Hit* hit = nullptr);
+
 }  // namespace world

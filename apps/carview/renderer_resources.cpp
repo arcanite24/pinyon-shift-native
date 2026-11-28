@@ -395,9 +395,11 @@ bool Renderer::create_pipeline(VkFormat color_format, std::string& error) {
 
 bool Renderer::create_targets(uint32_t width, uint32_t height, std::string& error) {
   destroy_targets();
-  const modern::Extent re = options_.post.enabled
-                                ? modern::scene_extent({width, height}, graphics_.scale, graphics_.base_540p)
-                                : modern::Extent{width, height};
+  const modern::Extent re =
+      options_.post.enabled
+          ? modern::scene_extent({width, height}, graphics_.scale, graphics_.base_540p, pixel_density_,
+                                 graphics_.render_height)
+          : modern::Extent{width, height};
   const uint32_t base_rw = re.w ? re.w : width;
   const uint32_t base_rh = re.h ? re.h : height;
   const uint32_t rw = (drs_scale_ < 0.995f)

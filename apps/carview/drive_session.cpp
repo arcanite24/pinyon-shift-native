@@ -292,8 +292,15 @@ void DriveSession::init_session() {
       }
       for (const auto& n : physics_notes) std::fprintf(stderr, "carview: physics: %s\n", n.c_str());
       if (!app.world_dir.empty()) {
-        if (app.have_spawn) vehicle.reset({app.spawn[0], app.spawn[1], app.spawn[2]}, app.spawn[3]);
-        else vehicle.reset(host.start, host.start_heading);
+        drive::Vec3 sp_pos = app.have_spawn ? drive::Vec3{app.spawn[0], app.spawn[1], app.spawn[2]} : host.start;
+        const double sp_head = app.have_spawn ? app.spawn[3] : host.start_heading;
+        if (host.ground) {
+          double gy = sp_pos.y;
+          if (world::road_ground_height(*host.ground, sp_pos.x, sp_pos.z, sp_pos.y, gy)) sp_pos.y = gy;
+        }
+        vehicle.reset(sp_pos, sp_head);
+        if (host.ground) vehicle.settle_on_ground(*host.ground);
+        drawn_before = vehicle.pose();
       }
       if (app.sound && (!app.headless || !app.audio_out.empty() || app.bench_audio || app.bench_full_fx)) {
         const auto aud_t0 = std::chrono::steady_clock::now();

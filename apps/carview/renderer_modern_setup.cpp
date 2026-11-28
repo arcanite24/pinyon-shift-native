@@ -39,6 +39,7 @@ void Renderer::set_graphics_settings(const modern::GraphicsSettings& g) {
   const modern::GraphicsSettings clamped = modern::clamp_graphics(g);
   const bool need_targets =
       clamped.scale != graphics_.scale || clamped.base_540p != graphics_.base_540p ||
+      clamped.render_height != graphics_.render_height ||
       clamped.ssao != graphics_.ssao || clamped.contact_shadows != graphics_.contact_shadows ||
       clamped.ssr != graphics_.ssr || clamped.volumetric_fog != graphics_.volumetric_fog ||
       clamped.velocity_blur != graphics_.velocity_blur || clamped.hdr != graphics_.hdr ||

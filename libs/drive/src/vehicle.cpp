@@ -698,6 +698,127 @@ void Vehicle::reset(const Vec3& position, double heading) {
   hand_of_god_ = false;
 }
 
+void Vehicle::settle_on_ground(const Ground& ground) {
+  const Vec3 base_pos = position();
+  const Vec3 fwd = rotate(rot_, {0, 0, 1});
+  const double heading = std::atan2(fwd.x, fwd.z);
+  const Quat yaw_q{0, std::sin(heading * 0.5), 0, std::cos(heading * 0.5)};
+
+  // Probe the road height under each of the 4 wheel XZ footprints from 1.8 m above
+  // (safely beneath start/finish gantries and overhead arches) to align height, pitch, and roll.
+  double wy[kWheels] = {};
+  bool hit_ok[kWheels] = {};
+  int hits = 0;
+  for (int i = 0; i < kWheels; ++i) {
+    const Vec3 w_world = base_pos + rotate(yaw_q, p_.wheel_centres[i]);
+    Hit h{};
+    double probe_top = base_pos.y + 1.8;
+    if (ground.raycast({w_world.x, probe_top, w_world.z}, {0, -1, 0}, 8.0, h) && h.normal.y >= 0.45) {
+      wy[i] = probe_top - h.distance;
+      hit_ok[i] = true;
+      ++hits;
+    } else {
+      probe_top = base_pos.y + 6.0;
+      if (ground.raycast({w_world.x, probe_top, w_world.z}, {0, -1, 0}, 20.0, h) && h.normal.y >= 0.45) {
+        wy[i] = probe_top - h.distance;
+        hit_ok[i] = true;
+        ++hits;
+      }
+    }
+  }
+
+  if (hits >= 3) {
+    double sum_y = 0.0;
+    for (int i = 0; i < kWheels; ++i)
+      if (hit_ok[i]) sum_y += wy[i];
+    const double avg_y = sum_y / double(hits);
+    for (int i = 0; i < kWheels; ++i)
+      if (!hit_ok[i]) wy[i] = avg_y;
+
+    // Fit gentle road pitch & roll from the 4 wheel ground heights.
+    const double front_y = 0.5 * (wy[0] + wy[1]);
+    const double rear_y = 0.5 * (wy[2] + wy[3]);
+    const double left_y = 0.5 * (wy[0] + wy[2]);
+    const double right_y = 0.5 * (wy[1] + wy[3]);
+    const double wb = std::max(1.2, std::fabs(p_.wheel_centres[0].z - p_.wheel_centres[2].z));
+    const double tr = std::max(1.0, std::fabs(p_.wheel_centres[1].x - p_.wheel_centres[0].x));
+    const double pitch = std::clamp(-std::atan2(front_y - rear_y, wb), -0.35, 0.35);
+    const double roll = std::clamp(std::atan2(right_y - left_y, tr), -0.35, 0.35);
+
+    const Quat q_pitch{std::sin(pitch * 0.5), 0, 0, std::cos(pitch * 0.5)};
+    const Quat q_roll{0, 0, std::sin(roll * 0.5), std::cos(roll * 0.5)};
+    auto qmul = [](const Quat& a, const Quat& b) -> Quat {
+      return {
+          a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+          a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+          a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+          a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+      };
+    };
+    rot_ = qmul(yaw_q, qmul(q_pitch, q_roll));
+    const double qn = std::sqrt(rot_.x * rot_.x + rot_.y * rot_.y + rot_.z * rot_.z + rot_.w * rot_.w);
+    if (qn > 1e-9) rot_ = {rot_.x / qn, rot_.y / qn, rot_.z / qn, rot_.w / qn};
+    pos_ = Vec3{base_pos.x, avg_y, base_pos.z} + rotate(rot_, com_local_);
+  } else {
+    // Fallback: single-point center probe.
+    Hit h{};
+    double probe_top = base_pos.y + 1.8;
+    if (ground.raycast({base_pos.x, probe_top, base_pos.z}, {0, -1, 0}, 8.0, h) && h.normal.y >= 0.45) {
+      pos_ = Vec3{base_pos.x, probe_top - h.distance, base_pos.z} + rotate(rot_, com_local_);
+    }
+  }
+
+  // Run brief silent damped static steps with brakes held so suspension springs settle to
+  // exact static equilibrium on the tarmac, while pinning XZ to the grid slot.
+  const double slot_x = base_pos.x;
+  const double slot_z = base_pos.z;
+  const Input hold{0.0, 0.0, 1.0, true};
+  for (int i = 0; i < 36; ++i) {
+    step(hold, ground);
+    const Vec3 cur_b = position();
+    const Vec3 com_off = rotate(rot_, com_local_);
+    pos_.x = slot_x + com_off.x;
+    pos_.z = slot_z + com_off.z;
+    vel_.x = 0.0;
+    vel_.z = 0.0;
+    vel_.y *= 0.80;
+    ang_ = ang_ * 0.75;
+    if (i >= 12 && std::fabs(vel_.y) < 0.005 && std::fabs(ang_.x) < 0.005 && std::fabs(ang_.z) < 0.005) break;
+  }
+
+  // Restore clean grid-start state while preserving settled ground height, road pitch/roll, and wheel contact.
+  vel_ = ang_ = {};
+  time_ = 0;
+  rest_hold_ = true;
+  rest_time_ = 0;
+  gear_ = target_gear_ = gear_before_ = 1;
+  state_ = GearState::kOpen;
+  state_time_ = 0;
+  clutch_ = 0;
+  locked_ = rev_matching_ = false;
+  engine_omega_ = p_.idle_rpm / kRpm + 0.1;
+  prev_rpm_ = engine_omega_ * kRpm;
+  spool_ = engine_throttle_ = driver_throttle_ = applied_throttle_ = 0;
+  turbo_power_ = 0;
+  boost_psi_ = p_.boost_min_psi;
+  sc_psi_ = p_.boost_min_psi;
+  steer_angle_ = steer_ang_vel_ = 0;
+  body_free_time_ = 1.0;
+  body_force_ = 0;
+  strongest_ = {};
+  impact_ = {};
+  lateral_g_ = 0;
+  hand_of_god_ = false;
+  raw_ = shaped_ = {};
+  for (int i = 0; i < kWheels; ++i) {
+    w_[i].omega = 0;
+    w_[i].spin = 0;
+    w_[i].slip_ratio = 0;
+    w_[i].slip_angle = 0;
+    w_[i].steer = 0;
+  }
+}
+
 Vec3 Vehicle::position() const { return pos_ - rotate(rot_, com_local_); }
 
 Vehicle::Pose Vehicle::blend(const Pose& a, const Pose& b, double t) {

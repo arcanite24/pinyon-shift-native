@@ -77,10 +77,12 @@ bool DriveSession::handle_settings_and_media_event(const SDL_Event& e) {
                   if (!ls.fullscreen && !ls.window_size.empty()) {
                     unsigned rw = 0, rh = 0;
                     if (std::sscanf(ls.window_size.c_str(), "%ux%u", &rw, &rh) == 2 && rw >= 320 && rh >= 240) {
+                      const float pd = SDL_GetWindowPixelDensity(app.window);
+                      const auto win_pt = carview::modern::logical_window_size_for_resolution(rw, rh, pd);
                       int cw = 0, ch = 0;
                       SDL_GetWindowSize(app.window, &cw, &ch);
-                      if (unsigned(cw) != rw || unsigned(ch) != rh) {
-                        SDL_SetWindowSize(app.window, int(rw), int(rh));
+                      if (unsigned(cw) != win_pt.w || unsigned(ch) != win_pt.h) {
+                        SDL_SetWindowSize(app.window, int(win_pt.w), int(win_pt.h));
                         app.width = rw;
                         app.height = rh;
                       }

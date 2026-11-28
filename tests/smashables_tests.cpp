@@ -491,6 +491,35 @@ void test_solid_festival_barriers_and_ground_height() {
     CHECK(std::fabs(gy - 10.0) < 0.05);
     CHECK(h.normal.y > 0.9);
   }
+
+  // Race start grid grounding: road_ground_height ignores an overhead 4.5 m start/finish gantry
+  // directly above the grid slot, and Vehicle::settle_on_ground plants the car flush on a sloped
+  // road with all 4 wheels in contact and zero air gap or residual drop velocity.
+  {
+    std::vector<std::array<float, 3>> grid_tris = {
+        // Overhead start/finish gantry deck at y = 14.5 m (normal +Y)
+        {-6.0f, 14.5f, -3.0f}, {-6.0f, 14.5f, 3.0f}, {6.0f, 14.5f, -3.0f},
+        {6.0f, 14.5f, -3.0f}, {-6.0f, 14.5f, 3.0f}, {6.0f, 14.5f, 3.0f},
+        // Sloped tarmac road climbing from y = 9.0 at z = -10 to y = 11.0 at z = +10 (10% grade)
+        {-10.0f, 9.0f, -10.0f}, {-10.0f, 11.0f, 10.0f}, {10.0f, 9.0f, -10.0f},
+        {10.0f, 9.0f, -10.0f}, {-10.0f, 11.0f, 10.0f}, {10.0f, 11.0f, 10.0f},
+    };
+    drive::MeshGround mg(grid_tris);
+    double ry = 0.0;
+    CHECK(world::road_ground_height(mg, 0.0, 0.0, 10.2, ry));
+    CHECK(std::fabs(ry - 10.0) < 0.05);  // must NOT hit the y = 14.5 gantry!
+
+    drive::Vehicle grid_car(cp);
+    grid_car.reset({0.0, ry + 0.40, 0.0}, 0.0);
+    grid_car.settle_on_ground(mg);
+    CHECK(grid_car.time() == 0.0);
+    CHECK(std::fabs(grid_car.velocity().y) < 1e-6);
+    CHECK(std::fabs(grid_car.position().y - 10.0) < 0.12);
+    int grounded_w = 0;
+    for (const auto& w : grid_car.wheels())
+      if (w.contact) ++grounded_w;
+    CHECK(grounded_w == 4);
+  }
 }
 
 void test_road_sign_debris_and_barn_door_no_launch() {

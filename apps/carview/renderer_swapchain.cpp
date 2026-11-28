@@ -347,6 +347,14 @@ bool Renderer::create_swapchain(std::string& error) {
   }
   swapchain_dirty_ = false;
   ++swapchain_recreate_count_;
+  if (options_.window) {
+    const float raw_pd = SDL_GetWindowPixelDensity(options_.window);
+    const float next_pd = (std::isfinite(raw_pd) && raw_pd > 1.0f) ? std::clamp(raw_pd, 1.0f, 4.0f) : 1.0f;
+    if (std::fabs(next_pd - pixel_density_) > 0.01f) {
+      pixel_density_ = next_pd;
+      targets_dirty_ = true;
+    }
+  }
   // Skip rebuilding offscreen render targets and post descriptors when swapchain
   // pixel dimensions and color format are unchanged (fast alt-tab / focus recovery).
   const bool has_targets = depth_.image != VK_NULL_HANDLE && (!options_.post.enabled || hdr_.image != VK_NULL_HANDLE);
@@ -419,6 +427,14 @@ bool Renderer::draw_frame(const FrameConstants& constants, std::string& error) {
   int w = 0, h = 0;
   SDL_GetWindowSizeInPixels(options_.window, &w, &h);
   if (w <= 0 || h <= 0) return true;  // minimised
+  {
+    const float raw_pd = SDL_GetWindowPixelDensity(options_.window);
+    const float next_pd = (std::isfinite(raw_pd) && raw_pd > 1.0f) ? std::clamp(raw_pd, 1.0f, 4.0f) : 1.0f;
+    if (std::fabs(next_pd - pixel_density_) > 0.01f) {
+      pixel_density_ = next_pd;
+      targets_dirty_ = true;
+    }
+  }
   if (needs_swapchain_recreate(swapchain_dirty_, swapchain_ != VK_NULL_HANDLE, uint32_t(w), uint32_t(h),
                                swapchain_extent_.width, swapchain_extent_.height)) {
     wait_idle();

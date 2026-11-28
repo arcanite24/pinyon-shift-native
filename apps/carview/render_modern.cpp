@@ -9,18 +9,53 @@
 
 namespace carview::modern {
 
-// ---- Render scale ---------------------------------------------------------------
+// ---- Render resolution & Retina HiDPI scaling ----------------------------------
 int clamp_scale(int scale) { return std::clamp(scale, kMinScale, kMaxScale); }
 
-Extent scene_extent(Extent window, int scale, bool base_540p) {
+uint32_t parse_resolution_height(std::string_view size_str) {
+  if (size_str.empty()) return 0u;
+  const size_t x = size_str.find_first_of("xX");
+  if (x == std::string_view::npos || x == 0 || x + 1 >= size_str.size()) return 0u;
+  unsigned w = 0, h = 0;
+  std::string tmp(size_str);
+  if (std::sscanf(tmp.c_str(), "%u%*1[xX]%u", &w, &h) != 2) return 0u;
+  if (w < 320u || h < 240u || w > 16384u || h > 8192u) return 0u;
+  return h;
+}
+
+Extent logical_window_size_for_resolution(uint32_t target_w, uint32_t target_h, float pixel_density) {
+  if (target_w == 0 || target_h == 0) return {0, 0};
+  const float pd = (std::isfinite(pixel_density) && pixel_density > 1.0f) ? std::clamp(pixel_density, 1.0f, 4.0f) : 1.0f;
+  const uint32_t lw = std::max<uint32_t>(320u, uint32_t(std::lround(double(target_w) / double(pd))));
+  const uint32_t lh = std::max<uint32_t>(240u, uint32_t(std::lround(double(target_h) / double(pd))));
+  return {lw, lh};
+}
+
+Extent scene_extent(Extent window, int scale, bool base_540p, float pixel_density, uint32_t target_height) {
   scale = clamp_scale(scale);
   if (window.w == 0 || window.h == 0) return {0, 0};
-  if (scale == 0) return window;
-  const uint32_t base_h = base_540p ? 540u : 720u;
   const double aspect = double(window.w) / double(window.h);
+  if (target_height > 0u) {
+    uint32_t h = std::clamp(target_height, 240u, 4320u);
+    uint32_t w = uint32_t(std::lround(double(h) * aspect));
+    w = (w + 1u) & ~1u;
+    w = std::clamp(w, 64u, 16384u);
+    return {w, h};
+  }
+  if (scale == 0) {
+    const float pd =
+        (std::isfinite(pixel_density) && pixel_density > 1.0f) ? std::clamp(pixel_density, 1.0f, 4.0f) : 1.0f;
+    if (pd <= 1.001f) return window;
+    uint32_t lw = uint32_t(std::lround(double(window.w) / double(pd)));
+    uint32_t lh = uint32_t(std::lround(double(window.h) / double(pd)));
+    lw = std::clamp((lw + 1u) & ~1u, 64u, 16384u);
+    lh = std::clamp((lh + 1u) & ~1u, 64u, 8192u);
+    return {lw, lh};
+  }
+  const uint32_t base_h = base_540p ? 540u : 720u;
   uint32_t h = std::min(base_h * uint32_t(scale), 8192u);
   uint32_t w = uint32_t(std::lround(double(h) * aspect));
-  w = (w + 1) & ~1u;  // even, so 2x2 resolves and chroma-style passes line up
+  w = (w + 1u) & ~1u;  // even, so 2x2 resolves and chroma-style passes line up
   w = std::clamp(w, 64u, 16384u);
   h = std::max(h, 64u);
   return {w, h};
@@ -825,6 +860,7 @@ bool apply_graphics_option(GraphicsSettings& s, const std::vector<std::string>& 
 
 GraphicsSettings clamp_graphics(GraphicsSettings s) {
   s.scale = clamp_scale(s.scale);
+  if (s.render_height > 0u) s.render_height = std::clamp(s.render_height, 240u, 4320u);
   s.lut_strength = std::clamp(s.lut_strength, 0.0f, 100.0f);
   s.sharpening = std::clamp(s.sharpening, 0.0f, 100.0f);
   s.paper_white = clamp_paper_white(s.paper_white);

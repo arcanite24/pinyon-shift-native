@@ -1740,6 +1740,36 @@ void SmashableWorld::link_pvsz(std::span<const PvszPlacement> pvsz_list) {
     pp.global_index = int32_t(ps.global_index);
     pp.intact_member = ps.intact_member;
     pp.routes = ps.routes;
+    // Claim any sibling LOD .pvsz records at the exact same placement spot so Pass 3 never
+    // spawns a duplicate breakable prop on top of this one.
+    const int32_t cx0 = int32_t(std::floor(ps.pos[0]));
+    const int32_t cy0 = int32_t(std::floor(ps.pos[1] * 0.5f));
+    const int32_t cz0 = int32_t(std::floor(ps.pos[2]));
+    for (int32_t dz = -1; dz <= 1; ++dz) {
+      for (int32_t dy = -1; dy <= 1; ++dy) {
+        for (int32_t dx = -1; dx <= 1; ++dx) {
+          const int64_t key = (int64_t(cx0 + dx) * 73856093ll) ^ (int64_t(cy0 + dy) * 19349663ll) ^
+                              (int64_t(cz0 + dz) * 83492791ll);
+          auto git = pvsz_grid.find(key);
+          if (git == pvsz_grid.end()) continue;
+          for (size_t osi : git->second) {
+            if (pvsz_claimed[osi]) continue;
+            const auto& ops = pvsz_list[osi];
+            const float ddx = ops.pos[0] - ps.pos[0];
+            const float ddy = ops.pos[1] - ps.pos[1];
+            const float ddz = ops.pos[2] - ps.pos[2];
+            const float d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if ((ops.global_index == ps.global_index && d2 <= 0.25f * 0.25f) || d2 <= 0.08f * 0.08f) {
+              pvsz_claimed[osi] = 1;
+              // Prefer lowest member index (LOD00) when multiple LOD objects share a spot.
+              if (ops.intact_member >= 0 && (pp.intact_member < 0 || ops.intact_member < pp.intact_member)) {
+                pp.intact_member = ops.intact_member;
+              }
+            }
+          }
+        }
+      }
+    }
     if (ps.global_index < defs_.global_to_list.size()) {
       const uint16_t list_idx = defs_.global_to_list[ps.global_index];
       if (list_idx < defs_.definitions.size()) {
@@ -1827,7 +1857,35 @@ void SmashableWorld::link_pvsz(std::span<const PvszPlacement> pvsz_list) {
 
   // Pass 3: include unclaimed breakable .pvsz smashables not in CollObjs.xml, and register
   // unclaimed unbreakable solid barriers (excluding Flyer signs, BF_* barn doors, and RaceActivation arches).
+  // Seed extra_seen with Pass 1 props and check exact spatial proximity so multi-LOD .pvsz records
+  // never duplicate an already-registered breakable prop at the same spot.
   std::unordered_set<int64_t> extra_seen;
+  extra_seen.reserve(props_.size() * 2 + 64);
+  for (const auto& existing : props_) {
+    const int64_t ek = (int64_t(std::lround(existing.place.pos[0] * 4.0f)) * 73856093ll) ^
+                       (int64_t(std::lround(existing.place.pos[1] * 4.0f)) * 19349663ll) ^
+                       (int64_t(std::lround(existing.place.pos[2] * 4.0f)) * 83492791ll);
+    extra_seen.insert(ek);
+  }
+  auto has_co_located_prop = [&](const std::array<float, 3>& p) -> bool {
+    const int32_t cx_c = int32_t(std::floor(p[0] / 25.0f));
+    const int32_t cz_c = int32_t(std::floor(p[2] / 25.0f));
+    for (int32_t dz = -1; dz <= 1; ++dz) {
+      for (int32_t dx = -1; dx <= 1; ++dx) {
+        const int64_t key = (int64_t(cx_c + dx) << 32) ^ uint32_t(cz_c + dz);
+        auto it = grid_.find(key);
+        if (it == grid_.end()) continue;
+        for (uint32_t idx : it->second) {
+          const auto& ep = props_[idx].place.pos;
+          const float ddx = ep[0] - p[0];
+          const float ddy = ep[1] - p[1];
+          const float ddz = ep[2] - p[2];
+          if (ddx * ddx + ddy * ddy + ddz * ddz <= 0.25f * 0.25f) return true;
+        }
+      }
+    }
+    return false;
+  };
   std::unordered_set<int64_t> barrier_seen;
   for (size_t si = 0; si < pvsz_list.size(); ++si) {
     if (pvsz_claimed[si]) continue;
@@ -1896,7 +1954,7 @@ void SmashableWorld::link_pvsz(std::span<const PvszPlacement> pvsz_list) {
       }
       continue;
     }
-    if (!extra_seen.insert(pos_key).second) continue;
+    if (!extra_seen.insert(pos_key).second || has_co_located_prop(ps.pos)) continue;
 
     PlacedProp pp;
     pp.place.pos = ps.pos;

@@ -665,6 +665,24 @@ bool DriveConfig::parse(int argc, char** argv, int& exit_code) {
     }
 #endif
   }
+  // Unified resolution & Retina HiDPI default:
+  // - An explicit --size WxH without --render-scale sets the 3D render height directly.
+  // - Otherwise desktop windowed/fullscreen launches default to auto (scale = 0), which
+  //   renders 3D at 1x logical display resolution (avoiding 4x Retina overshading on macOS).
+  if (!cli_scale_explicit) {
+    if (size_given) {
+      cli_graphics.render_height = height;
+      cli_graphics.scale = 0;
+      cli_graphics.base_540p = false;
+    }
+#ifndef __ANDROID__
+    else if (!headless && !bench) {
+      cli_graphics.render_height = 0u;
+      cli_graphics.scale = 0;
+      cli_graphics.base_540p = false;
+    }
+#endif
+  }
   // Apply deterministic defaults for named benchmark scenarios (--bench-scenario).
   if (bench_scenario_set) {
     using S = carview::bench::Scenario;

@@ -932,6 +932,14 @@ class Showroom {
   bool set_custom_livery(const uint8_t* rgba, uint32_t width, uint32_t height, std::string& error);
   // Applies cosmetic impact deformation, scratches, cracked glass, and body/tyre dirt.
   void set_damage_state(const drive::CarDamageState& dmg);
+  // Returns the real baked car-model-space centroid and half-extents for a detachable part
+  // (0=front bumper, 1=rear bumper, 2=left mirror, 3=right mirror, 4=rear wing).
+  bool detached_part_bounds(int part_kind, std::array<float, 3>& out_center,
+                            std::array<float, 3>& out_half_extents) const;
+  // Applies a world-simulated car-model-space rigid transform to a detached part's actual
+  // baked 3D mesh while it tumbles away after impact; once inactive, the part hides cleanly.
+  void set_detached_part_transform(int part_kind, bool active, const float xform[16]);
+  void clear_detached_part_transforms();
   // A prop's reach from its origin (m): the box test of LOD00 cells allows
   // an instance whose origin is inside the band but whose corners are not.
   static constexpr float kPropReach = 40;
@@ -1929,6 +1937,8 @@ class Showroom {
   bool dmg_left_mirror_detached_ = false;
   bool dmg_right_mirror_detached_ = false;
   bool dmg_wing_detached_ = false;
+  bool detached_part_flying_[5] = {false, false, false, false, false};
+  float detached_part_xform_[5][16]{};
   float dmg_hood_ajar_ = 0.0f;
   bool custom_livery_active_ = false;
   GpuTexture custom_livery_img_;

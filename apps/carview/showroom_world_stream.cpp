@@ -710,8 +710,11 @@ bool Showroom::stage_world(WorldGeometry geometry, StagedWorld& out, std::string
     // accidentally hidden. Placed prop decals (sign faces, painted panels) carry fade flags
     // (128 | 256 | 512) whereas world-space road decals have fade == 0, so include prop decals too.
     {
-      constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 32u | 16384u | 32768u | 1048576u;
-      constexpr uint32_t kMaxSmashableSpanIndices = 1500u * 3u;
+      // Placed props exclusively carry fade flags (128 | 256 | 512); never exclude multi-layer
+      // prop materials (4 vertex-blend, 8 splat, 16384 layer-C) because weathered signs, poles,
+      // and barriers use them and would otherwise stay intact after shattering.
+      constexpr uint32_t kNonPropMask = 2u | 32u | 32768u | 1048576u;
+      constexpr uint32_t kMaxSmashableSpanIndices = 3000u * 3u;
       constexpr float kMaxSmashableSpanExtentXZ = 14.0f;
       constexpr float kMaxSmashableSpanExtentY = 24.0f;
       const auto* verts = geometry.textured_vertices.data();

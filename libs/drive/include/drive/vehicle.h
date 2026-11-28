@@ -631,6 +631,10 @@ class Vehicle {
 
   // Places the body frame's origin at `position` (world), level, at rest.
   void reset(const Vec3& position, double heading = 0);
+  // Plants the vehicle flush on `ground` at its current XZ and heading, aligning
+  // pitch/roll to the 4-wheel road plane and settling static suspension compression
+  // silently so grid/spawn cars start resting on the tarmac without floating or dropping.
+  void settle_on_ground(const Ground& ground);
   // As reset, but the clock runs on (a recovery during a run).
   void place(const Vec3& position, double heading = 0);
   // As place, already moving: the body at `speed` along its heading

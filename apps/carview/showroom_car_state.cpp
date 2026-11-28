@@ -616,6 +616,63 @@ void Showroom::sync_paint_shader_uniforms() {
   }
 }
 
+namespace {
+int detached_kind_for_anim_part(int8_t anim_part) {
+  switch (anim_part) {
+    case 3: return 0;  // front bumper
+    case 4: return 1;  // rear bumper
+    case 5: return 2;  // left mirror
+    case 6: return 3;  // right mirror
+    case 1:
+    case 8:
+    case 12: return 4;  // active or fixed rear wing
+    default: return -1;
+  }
+}
+}  // namespace
+
+bool Showroom::detached_part_bounds(int part_kind, std::array<float, 3>& out_center,
+                                    std::array<float, 3>& out_half_extents) const {
+  if (part_kind < 0 || part_kind >= 5) return false;
+  float bmin[3] = {1e30f, 1e30f, 1e30f};
+  float bmax[3] = {-1e30f, -1e30f, -1e30f};
+  bool any = false;
+  for (const Draw& d : draws_) {
+    if (d.wheel >= 0 || d.cockpit_role >= 0) continue;
+    if (detached_kind_for_anim_part(d.anim_part) != part_kind) continue;
+    for (int k = 0; k < 3; ++k) {
+      bmin[k] = std::min(bmin[k], d.part_min[k]);
+      bmax[k] = std::max(bmax[k], d.part_max[k]);
+    }
+    any = true;
+  }
+  if (!any) return false;
+  for (int k = 0; k < 3; ++k) {
+    out_center[size_t(k)] = 0.5f * (bmin[k] + bmax[k]);
+    out_half_extents[size_t(k)] = std::max(0.03f, 0.5f * (bmax[k] - bmin[k]));
+  }
+  return true;
+}
+
+void Showroom::set_detached_part_transform(int part_kind, bool active, const float xform[16]) {
+  if (part_kind < 0 || part_kind >= 5) return;
+  detached_part_flying_[part_kind] = active;
+  if (active && xform) {
+    std::memcpy(detached_part_xform_[part_kind], xform, sizeof(detached_part_xform_[part_kind]));
+  } else {
+    identity(detached_part_xform_[part_kind]);
+  }
+  apply_damage_part_transforms(0.0f);
+}
+
+void Showroom::clear_detached_part_transforms() {
+  for (int k = 0; k < 5; ++k) {
+    detached_part_flying_[k] = false;
+    identity(detached_part_xform_[k]);
+  }
+  apply_damage_part_transforms(0.0f);
+}
+
 void Showroom::apply_damage_part_transforms(float time_sec) {
   auto make_rot_x = [](const std::array<float, 3>& pivot, float angle, float dy, float out[16]) {
     const float c = std::cos(angle), s = std::sin(angle);
@@ -635,6 +692,13 @@ void Showroom::apply_damage_part_transforms(float time_sec) {
                      (d.anim_part == 5 && dmg_left_mirror_detached_) ||
                      (d.anim_part == 6 && dmg_right_mirror_detached_) ||
                      ((d.anim_part == 1 || d.anim_part == 8 || d.anim_part == 12) && dmg_wing_detached_);
+    const int pk = detached_kind_for_anim_part(d.anim_part);
+    if (det && pk >= 0 && detached_part_flying_[pk]) {
+      // Render the car's actual baked 3D part tumbling in world space.
+      d.detached = false;
+      multiply(detached_part_xform_[pk], d.rest_model, d.push.model);
+      continue;
+    }
     d.detached = det;
     if (det) {
       std::memset(d.push.model, 0, sizeof d.push.model);
@@ -1183,6 +1247,10 @@ void Showroom::set_damage_state(const drive::CarDamageState& dmg) {
     dmg_left_mirror_detached_ = false;
     dmg_right_mirror_detached_ = false;
     dmg_wing_detached_ = false;
+    for (int k = 0; k < 5; ++k) {
+      detached_part_flying_[k] = false;
+      identity(detached_part_xform_[k]);
+    }
     dmg_hood_ajar_ = 0.0f;
   } else {
     damage_dirt_[2] = std::clamp(std::max(dmg.glass_crack, dmg.zone_roof), 0.0f, 1.0f);
@@ -1200,6 +1268,11 @@ void Showroom::set_damage_state(const drive::CarDamageState& dmg) {
     dmg_left_mirror_detached_ = dmg.left_mirror_detached;
     dmg_right_mirror_detached_ = dmg.right_mirror_detached;
     dmg_wing_detached_ = dmg.wing_detached;
+    if (!dmg_front_bumper_detached_) detached_part_flying_[0] = false;
+    if (!dmg_rear_bumper_detached_) detached_part_flying_[1] = false;
+    if (!dmg_left_mirror_detached_) detached_part_flying_[2] = false;
+    if (!dmg_right_mirror_detached_) detached_part_flying_[3] = false;
+    if (!dmg_wing_detached_) detached_part_flying_[4] = false;
     dmg_hood_ajar_ = std::clamp(dmg.hood_ajar, 0.0f, 1.0f);
   }
   for (int i = 0; i < 4; ++i) {

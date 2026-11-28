@@ -175,7 +175,7 @@ int main() {
   CHECK(fair_page.value("ai opponents") == "no rubber-banding");
   CHECK(fair_page.live_settings().ai_mode == 1 && !fair_page.live_settings().rubberband);
 
-  // Slice 11: Modern Display settings (render scale, SSAO, FXAA, .cube LUT, VRS, texture cap, VSync, HDR, HUD).
+  // Slice 11: Modern Display settings (unified resolution, SSAO, FXAA, .cube LUT, VRS, texture cap, VSync, HDR, HUD).
   carview::SettingsPage gfx_page;
   gfx_page.set_available_luts({"warm_desert.cube"});
   gfx_page.load({"--render-scale", "2", "--output", "fsr1", "--sharpening", "75", "--aa", "fxaa",
@@ -183,7 +183,9 @@ int main() {
                  "--texture-cap", "512", "--vsync", "mailbox", "--fps-cap", "120", "--hdr",
                  "--hdr-paper-white", "250", "--hdr-highlights", "75", "--hdr-peak", "800",
                  "--hdr-compare", "--no-hud-16-9", "--hud-scale", "90", "--safe-zone", "5"});
-  CHECK(gfx_page.value("render scale") == "2x (1440p)");
+  // Legacy --render-scale 2 migrates cleanly into the single unified resolution row (no duplicate render scale row).
+  CHECK(gfx_page.value("resolution") == "2560x1440");
+  CHECK(gfx_page.value("render scale").empty());
   CHECK(gfx_page.value("output scaling") == "fsr 1");
   CHECK(gfx_page.value("anti-aliasing") == "fxaa");
   CHECK(gfx_page.value("ambient occlusion") == "high");
@@ -197,13 +199,25 @@ int main() {
   CHECK(gfx_page.value("hdr compare") == "on");
   CHECK(gfx_page.value("hud 16:9 lock") == "off");
   const auto gls = gfx_page.live_settings();
-  CHECK(gls.graphics.scale == 2 && gls.graphics.upscaler == carview::modern::Upscaler::kFsr1);
+  CHECK(gls.graphics.render_height == 1440u && gls.graphics.scale == 0 &&
+        gls.graphics.upscaler == carview::modern::Upscaler::kFsr1);
   CHECK(gls.graphics.ssao == carview::modern::SsaoQuality::kHigh && gls.graphics.vrs);
   CHECK(gls.graphics.lut == "warm_desert.cube" && gls.graphics.lut_strength == 50.0f);
   CHECK(gls.graphics.hdr && gls.graphics.hdr_compare && !gls.graphics.hud_lock_16_9);
   const auto gt = gfx_page.tokens();
-  CHECK(has(gt, {"--render-scale", "2"}) && has(gt, {"--output", "fsr1"}) && has(gt, {"--ssao", "high"}));
+  CHECK(has(gt, {"--size", "2560x1440"}) && has(gt, {"--output", "fsr1"}) && has(gt, {"--ssao", "high"}));
   CHECK(has(gt, {"--lut", "warm_desert.cube"}) && has(gt, {"--vrs"}) && has(gt, {"--hdr-compare"}));
+  // Explicit 1080p and auto resolution round-trips.
+  {
+    carview::SettingsPage rp;
+    rp.load({"--size", "1920x1080"});
+    CHECK(rp.value("resolution") == "1920x1080");
+    CHECK(rp.live_settings().graphics.render_height == 1080u);
+    carview::SettingsPage ap;
+    ap.load({});
+    CHECK(ap.value("resolution") == "auto");
+    CHECK(ap.live_settings().graphics.render_height == 0u && ap.live_settings().graphics.scale == 0);
+  }
 
   // Phase A SOTA Display settings (XeGTAO Ultra, SSCS, AgX/GT/PBR Neutral tonemappers, Hex-Tiling, Velocity Blur).
   carview::SettingsPage sota_page;

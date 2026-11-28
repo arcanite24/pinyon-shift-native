@@ -17,12 +17,13 @@ namespace carview {
 
 const traffic::ScriptedCars* ftc_scripted_cars(const DriveSession& s);
 void set_driver_wristband_color(uint32_t rgba);
-void spawn_detached_car_part(const void* owner_key, int part_kind, const std::array<float, 3>& world_pos,
+void spawn_detached_car_part(const void* owner_key, int part_kind, const float car_model_to_world[16],
+                             const std::array<float, 3>& part_center_model,
+                             const std::array<float, 3>& part_half_extents,
                              const std::array<float, 3>& car_vel, const std::array<float, 3>& car_fwd,
-                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up,
-                             const std::array<uint8_t, 4>& paint_rgba);
-void step_and_append_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
-                                        std::vector<world::DebrisVertex>& out_tris);
+                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up);
+void step_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
+                             const float car_model_to_world_now[16], Showroom& showroom);
 void clear_detached_car_parts(const void* owner_key);
 
 namespace {
@@ -1119,7 +1120,8 @@ void DriveSession::place_world() {
           }
           host.showroom.set_showcase_mesh(showcase_tris);
           const drive::Vec3 vpos = vehicle.position();
-          // Spawn tumbling rigid-body debris whenever a bumper, side mirror, or rear wing detaches on impact.
+          // Simulate real baked 3D car meshes (bumper, side mirror, rear wing) tumbling in world
+          // space when detached on heavy impact instead of spawning synthetic placeholder boxes.
           {
             struct DetachedTracker {
               std::string car_name;
@@ -1136,11 +1138,14 @@ void DriveSession::place_world() {
                           (car_damage.right_mirror_detached ? (1u << 3) : 0u) |
                           (car_damage.wing_detached ? (1u << 4) : 0u))
                 : 0u;
+            float car_m[16];
+            drive::model_to_world(info, vehicle, car_m);
             if (!trk.initialized || trk.car_name != app.car) {
               trk.car_name = app.car;
               trk.prev_mask = cur_mask;
               trk.initialized = true;
               clear_detached_car_parts(this);
+              host.showroom.clear_detached_part_transforms();
             } else {
               const uint8_t newly_detached = uint8_t(cur_mask & ~trk.prev_mask);
               if (newly_detached != 0u && !rewind_buf.active() && !replay_viewer.active()) {
@@ -1149,32 +1154,16 @@ void DriveSession::place_world() {
                 const drive::Vec3 vfwd = drive::rotate(vrot, {0, 0, 1});
                 const drive::Vec3 vright = drive::rotate(vrot, {1, 0, 0});
                 const drive::Vec3 vup = drive::rotate(vrot, {0, 1, 0});
-                const float half_w = float(std::clamp(vehicle.params().size.x * 0.5, 0.72, 1.15));
-                const float half_l = float(std::clamp(vehicle.params().size.z * 0.5, 1.65, 2.70));
-
-                std::array<uint8_t, 4> paint_rgba{185, 44, 44, 255};
-                const auto& cols = host.showroom.colours();
-                const size_t cidx = host.showroom.colour_index();
-                if (!cols.empty() && cidx < cols.size()) {
-                  const uint32_t rgb = cols[cidx].rgb;
-                  paint_rgba = {uint8_t((rgb >> 16) & 0xFFu), uint8_t((rgb >> 8) & 0xFFu), uint8_t(rgb & 0xFFu), 255u};
-                }
-
                 const std::array<float, 3> cf{float(vfwd.x), float(vfwd.y), float(vfwd.z)};
                 const std::array<float, 3> cr{float(vright.x), float(vright.y), float(vright.z)};
                 const std::array<float, 3> cu{float(vup.x), float(vup.y), float(vup.z)};
                 const std::array<float, 3> cv{float(vvel.x), float(vvel.y), float(vvel.z)};
-                const std::array<drive::Vec3, 5> local_offsets = {
-                    drive::Vec3{0.0, 0.28, double(half_l)},
-                    drive::Vec3{0.0, 0.30, -double(half_l)},
-                    drive::Vec3{-double(half_w) - 0.08, 0.86, 0.36},
-                    drive::Vec3{double(half_w) + 0.08, 0.86, 0.36},
-                    drive::Vec3{0.0, 0.96, -double(half_l) + 0.18},
-                };
                 for (int pk = 0; pk < 5; ++pk) {
                   if ((newly_detached & (1u << pk)) == 0u) continue;
-                  const drive::Vec3 wp = vpos + drive::rotate(vrot, local_offsets[size_t(pk)]);
-                  spawn_detached_car_part(this, pk, {float(wp.x), float(wp.y), float(wp.z)}, cv, cf, cr, cu, paint_rgba);
+                  std::array<float, 3> pc{}, phe{};
+                  if (host.showroom.detached_part_bounds(pk, pc, phe)) {
+                    spawn_detached_car_part(this, pk, car_m, pc, phe, cv, cf, cr, cu);
+                  }
                 }
               }
               trk.prev_mask = cur_mask;
@@ -1182,7 +1171,7 @@ void DriveSession::place_world() {
             const float debris_dt = (rewind_buf.active() || tod_frame_dt <= 0.0)
                                         ? 0.0f
                                         : float(std::clamp(tod_frame_dt, 0.0, 0.05));
-            step_and_append_detached_car_parts(this, debris_dt, host.ground, debris_tris);
+            step_detached_car_parts(this, debris_dt, host.ground, car_m, host.showroom);
           }
           app.world_anim.build_mesh(vpos.x, vpos.y + 1.5, vpos.z, float(vehicle.time()), host.ground, debris_tris, !app.low_preset);
           host.showroom.set_debris_mesh(debris_tris);
@@ -1563,9 +1552,11 @@ void DriveSession::restore_world_rewind(uint64_t snap_id, bool is_resume) {
           vehicle.set_damage_mods(vdm);
           host.showroom.set_damage_state(car_damage);
           clear_detached_car_parts(this);
+          host.showroom.clear_detached_part_transforms();
         } else {
           app.smashables.clear_debris();
           clear_detached_car_parts(this);
+          host.showroom.clear_detached_part_transforms();
         }
         prune_world_rewind();
 }

@@ -460,6 +460,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
       {"window mode", {{"windowed", {}}, {"fullscreen", {"--fullscreen"}}}},
       {"resolution",
        {{"auto", {}},
+        {"960x540", {"--size", "960x540"}},
         {"1280x720", {"--size", "1280x720"}},
         {"1920x1080", {"--size", "1920x1080"}},
         {"2560x1440", {"--size", "2560x1440"}},
@@ -651,14 +652,7 @@ std::vector<SettingsPage::Row> SettingsPage::build() {
         {"japanese", {"--language", "JP"}},
         {"korean", {"--language", "KO"}},
         {"chinese (trad)", {"--language", "CHT"}}}},
-      // Slice 11: Render scale, output scaling, AA, SSAO, LUT, VRS, texture cap, VSync, FPS cap, HDR, HUD layout.
-      {"render scale",
-       {{"1x (720p)", {}},
-        {"native", {"--render-scale", "0"}},
-        {"540p 1x", {"--render-scale", "1", "--scene-540p"}},
-        {"2x (1440p)", {"--render-scale", "2"}},
-        {"3x (2160p)", {"--render-scale", "3"}},
-        {"4x (2880p)", {"--render-scale", "4"}}}},
+      // Slice 11: Output scaling, AA, SSAO, LUT, VRS, texture cap, VSync, FPS cap, HDR, HUD layout.
       {"output scaling",
        {{"bilinear", {}},
         {"cas", {"--output", "cas"}},
@@ -944,6 +938,30 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
   tab_ = Tab::kDisplay;
   row_ = 0;
   bool seen_540p = false;
+  bool seen_size = false;
+  int legacy_render_scale = -1;
+  auto pick_resolution_size = [&](const std::string& sz) {
+    for (Row& r : rows_) {
+      if (std::string(r.name) != "resolution") continue;
+      if (sz.empty() || sz == "auto") {
+        r.pick = 0;
+      } else {
+        bool matched = false;
+        for (size_t c = 0; c < r.choices.size(); ++c) {
+          if (r.choices[c].tokens.size() == 2 && r.choices[c].tokens[1] == sz) {
+            r.pick = c;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          r.choices.push_back({sz, {"--size", sz}});
+          r.pick = r.choices.size() - 1;
+        }
+      }
+      break;
+    }
+  };
   auto reset_row = [&](const char* name) {
     for (Row& r : rows_) {
       if (std::string(r.name) == name) {
@@ -1012,41 +1030,22 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
     }
     if (t == "--scene-540p") {
       seen_540p = true;
-      for (Row& r : rows_) {
-        if (std::string(r.name) == "render scale") r.pick = 2;  // 540p 1x
-      }
       continue;
     }
     if (t == "--no-scene-540p") {
       seen_540p = false;
-      for (Row& r : rows_) {
-        if (std::string(r.name) == "render scale" && r.pick == 2) r.pick = 0;
-      }
+      continue;
+    }
+    if (t == "--render-scale" && has_value) {
+      legacy_render_scale = modern::clamp_scale(std::atoi(tokens[i + 1].c_str()));
+      ++i;
       continue;
     }
     if (t == "--size" && has_value) {
       std::string sz = tokens[i + 1];
       for (char& ch : sz) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-      for (Row& r : rows_) {
-        if (std::string(r.name) != "resolution") continue;
-        if (sz.empty() || sz == "auto") {
-          r.pick = 0;
-        } else {
-          bool matched = false;
-          for (size_t c = 0; c < r.choices.size(); ++c) {
-            if (r.choices[c].tokens.size() == 2 && r.choices[c].tokens[1] == sz) {
-              r.pick = c;
-              matched = true;
-              break;
-            }
-          }
-          if (!matched) {
-            r.choices.push_back({sz, {"--size", sz}});
-            r.pick = r.choices.size() - 1;
-          }
-        }
-        break;
-      }
+      seen_size = true;
+      pick_resolution_size(sz);
       ++i;
       continue;
     }
@@ -1162,6 +1161,23 @@ void SettingsPage::load(const std::vector<std::string>& tokens) {
     }
     if (takes_value) ++i;
   }
+  if (!seen_size && (legacy_render_scale >= 0 || seen_540p)) {
+    if (seen_540p && (legacy_render_scale < 0 || legacy_render_scale == 1)) {
+      pick_resolution_size("960x540");
+    } else if (seen_540p && legacy_render_scale == 2) {
+      pick_resolution_size("1920x1080");
+    } else if (legacy_render_scale == 0) {
+      pick_resolution_size("auto");
+    } else if (legacy_render_scale == 1) {
+      pick_resolution_size("1280x720");
+    } else if (legacy_render_scale == 2) {
+      pick_resolution_size("2560x1440");
+    } else if (legacy_render_scale == 3) {
+      pick_resolution_size("3840x2160");
+    } else if (legacy_render_scale >= 4) {
+      pick_resolution_size("5120x2880");
+    }
+  }
   sync_difficulty_preset();
 }
 
@@ -1172,7 +1188,7 @@ SettingsPage::Tab classify_setting_row(const std::string& name) {
       name == "camera" || name == "camera effects" ||
       name == "motion blur" || name == "depth of field" || name == "day length" || name == "time of day" ||
       name == "camera editor" || name.rfind("chase ", 0) == 0 || name == "immersive camera" ||
-      name == "render scale" || name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
+      name == "output scaling" || name == "sharpening" || name == "anti-aliasing" ||
       name == "ambient occlusion" || name == "contact shadows" || name == "tonemapper" ||
       name == "terrain hex-tiling" || name == "velocity motion blur" ||
       name == "shadow softness (pcss)" || name == "screen-space reflections" ||
@@ -1672,6 +1688,21 @@ LiveSettings SettingsPage::live_settings() const {
       if (!vol_explicit) ls.graphics.volumetric_fog = pdef.volumetric_fog;
       if (!detail_explicit) ls.graphics.car_detail = pdef.car_detail;
     }
+    // Unified Resolution setting drives internal 3D render resolution directly:
+    // "auto" uses Retina-aware 1x logical display pixels (scale = 0, render_height = 0);
+    // an explicit WxH renders 3D at that exact vertical height without HiDPI inflation.
+    if (!ls.window_size.empty()) {
+      const uint32_t rh = modern::parse_resolution_height(ls.window_size);
+      if (rh > 0u) {
+        ls.graphics.render_height = rh;
+        ls.graphics.scale = 0;
+        ls.graphics.base_540p = false;
+      }
+    } else {
+      ls.graphics.render_height = 0u;
+      ls.graphics.scale = 0;
+      ls.graphics.base_540p = false;
+    }
     ls.graphics = modern::clamp_graphics(ls.graphics);
   }
   return ls;
@@ -1893,9 +1924,23 @@ void SettingsPage::sync_from_live(const LiveSettings& live) {
 
   // Modern graphics settings.
   const auto& g = live.graphics;
-  if (g.base_540p && g.scale == 1) set_by_label("render scale", "540p 1x");
-  else if (g.scale == 1) set_by_label("render scale", "1x (720p)");
-  else set_by_val("render scale", std::to_string(g.scale));
+  if (live.window_size.empty()) {
+    if (g.render_height > 0u) {
+      std::string sz;
+      if (g.render_height == 540u) sz = "960x540";
+      else if (g.render_height == 720u) sz = "1280x720";
+      else if (g.render_height == 1080u) sz = "1920x1080";
+      else if (g.render_height == 1440u) sz = "2560x1440";
+      else if (g.render_height == 2160u) sz = "3840x2160";
+      if (!sz.empty()) set_by_val("resolution", sz);
+    } else if (g.scale > 0) {
+      if (g.base_540p && g.scale == 1) set_by_val("resolution", "960x540");
+      else if (g.base_540p && g.scale == 2) set_by_val("resolution", "1920x1080");
+      else if (g.scale == 1) set_by_val("resolution", "1280x720");
+      else if (g.scale == 2) set_by_val("resolution", "2560x1440");
+      else if (g.scale == 3) set_by_val("resolution", "3840x2160");
+    }
+  }
 
   {
     const char* up = "";

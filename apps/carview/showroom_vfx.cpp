@@ -1394,159 +1394,121 @@ namespace {
 
 struct DetachedCarPartBody {
   int part_kind = 0;  // 0=front bumper, 1=rear bumper, 2=left mirror, 3=right mirror, 4=rear wing
-  std::array<float, 3> pos{};
+  std::array<float, 16> car_m0{};   // car model-to-world matrix at exact detachment instant
+  std::array<float, 3> pivot_w0{};  // part centroid in world space at detachment instant
+  std::array<float, 3> pos{};       // current centroid position in world space
   std::array<float, 3> vel{};
-  drive::Quat rot{0.0, 0.0, 0.0, 1.0};
+  drive::Quat delta_rot{0.0, 0.0, 0.0, 1.0};  // world-space tumble rotation since detachment
   std::array<float, 3> omega{};
-  std::array<float, 3> half_extents{0.5f, 0.15f, 0.15f};
-  std::array<uint8_t, 4> paint_rgba{185, 42, 42, 255};
+  float ground_radius = 0.12f;
   float age = 0.0f;
 };
 
 std::mutex g_detached_parts_mutex;
 std::unordered_map<const void*, std::vector<DetachedCarPartBody>> g_detached_parts_by_owner;
 
-drive::Quat quat_from_basis(const std::array<float, 3>& r, const std::array<float, 3>& u,
-                            const std::array<float, 3>& f) {
-  const double m00 = r[0], m01 = u[0], m02 = f[0];
-  const double m10 = r[1], m11 = u[1], m12 = f[1];
-  const double m20 = r[2], m21 = u[2], m22 = f[2];
-  const double tr = m00 + m11 + m22;
-  drive::Quat q{0.0, 0.0, 0.0, 1.0};
-  if (tr > 0.0) {
-    const double s = std::sqrt(tr + 1.0) * 2.0;
-    q.w = 0.25 * s;
-    q.x = (m21 - m12) / s;
-    q.y = (m02 - m20) / s;
-    q.z = (m10 - m01) / s;
-  } else if (m00 > m11 && m00 > m22) {
-    const double s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
-    q.w = (m21 - m12) / s;
-    q.x = 0.25 * s;
-    q.y = (m01 + m10) / s;
-    q.z = (m02 + m20) / s;
-  } else if (m11 > m22) {
-    const double s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
-    q.w = (m02 - m20) / s;
-    q.x = (m01 + m10) / s;
-    q.y = 0.25 * s;
-    q.z = (m12 + m21) / s;
-  } else {
-    const double s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
-    q.w = (m10 - m01) / s;
-    q.x = (m02 + m20) / s;
-    q.y = (m12 + m21) / s;
-    q.z = 0.25 * s;
+void mul4x4_col(const float a[16], const float b[16], float out[16]) {
+  float r[16];
+  for (int c = 0; c < 4; ++c) {
+    for (int row = 0; row < 4; ++row) {
+      r[c * 4 + row] = a[0 * 4 + row] * b[c * 4 + 0] + a[1 * 4 + row] * b[c * 4 + 1] +
+                       a[2 * 4 + row] * b[c * 4 + 2] + a[3 * 4 + row] * b[c * 4 + 3];
+    }
   }
-  const double n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
-  if (n > 1e-8) {
-    q.x /= n;
-    q.y /= n;
-    q.z /= n;
-    q.w /= n;
-  }
-  return q;
+  std::memcpy(out, r, sizeof(r));
 }
 
-void append_local_box(const DetachedCarPartBody& b, const std::array<float, 3>& loc_c,
-                      const std::array<float, 3>& loc_he, const std::array<uint8_t, 4>& col, float scale,
-                      std::vector<world::DebrisVertex>& out_tris) {
-  static constexpr int kFaces[6][4] = {
-      {0, 1, 2, 3}, {5, 4, 7, 6}, {4, 0, 3, 7}, {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0},
+bool invert_rigid_or_affine(const float m[16], float out[16]) {
+  const double a = m[0], b = m[4], c = m[8];
+  const double d = m[1], e = m[5], f = m[9];
+  const double g = m[2], h = m[6], k = m[10];
+  const double det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+  if (std::fabs(det) < 1e-12) return false;
+  const double id = 1.0 / det;
+  const double inv[9] = {
+      (e * k - f * h) * id, (c * h - b * k) * id, (b * f - c * e) * id,
+      (f * g - d * k) * id, (a * k - c * g) * id, (c * d - a * f) * id,
+      (d * h - e * g) * id, (b * g - a * h) * id, (a * e - b * d) * id,
   };
-  static constexpr float kNormals[6][3] = {
-      {0, 0, 1}, {0, 0, -1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0},
-  };
-  static constexpr float kCorners[8][3] = {
-      {-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}, {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
-  };
-  static constexpr float kFaceShade[6] = {0.96f, 0.84f, 0.88f, 0.92f, 1.00f, 0.68f};
+  std::memset(out, 0, sizeof(float) * 16);
+  for (int row = 0; row < 3; ++row)
+    for (int col = 0; col < 3; ++col) out[col * 4 + row] = float(inv[row * 3 + col]);
+  for (int row = 0; row < 3; ++row) {
+    out[12 + row] = float(-(inv[row * 3 + 0] * m[12] + inv[row * 3 + 1] * m[13] + inv[row * 3 + 2] * m[14]));
+  }
+  out[15] = 1.0f;
+  return true;
+}
 
-  std::array<std::array<float, 3>, 8> wv{};
-  for (int i = 0; i < 8; ++i) {
-    const drive::Vec3 local{
-        double((loc_c[0] + kCorners[i][0] * loc_he[0]) * scale),
-        double((loc_c[1] + kCorners[i][1] * loc_he[1]) * scale),
-        double((loc_c[2] + kCorners[i][2] * loc_he[2]) * scale),
-    };
-    const drive::Vec3 r = drive::rotate(b.rot, local);
-    wv[size_t(i)] = {b.pos[0] + float(r.x), b.pos[1] + float(r.y), b.pos[2] + float(r.z)};
-  }
-  for (int f = 0; f < 6; ++f) {
-    const drive::Vec3 wn = drive::rotate(b.rot, {kNormals[f][0], kNormals[f][1], kNormals[f][2]});
-    const std::array<float, 3> n = {float(wn.x), float(wn.y), float(wn.z)};
-    const float fs = kFaceShade[f];
-    const std::array<uint8_t, 4> fcol = {
-        uint8_t(std::clamp(int(float(col[0]) * fs), 0, 255)),
-        uint8_t(std::clamp(int(float(col[1]) * fs), 0, 255)),
-        uint8_t(std::clamp(int(float(col[2]) * fs), 0, 255)),
-        col[3],
-    };
-    const auto& p0 = wv[size_t(kFaces[f][0])];
-    const auto& p1 = wv[size_t(kFaces[f][1])];
-    const auto& p2 = wv[size_t(kFaces[f][2])];
-    const auto& p3 = wv[size_t(kFaces[f][3])];
-    out_tris.push_back({p0, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-    out_tris.push_back({p1, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-    out_tris.push_back({p2, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-    out_tris.push_back({p0, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-    out_tris.push_back({p2, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-    out_tris.push_back({p3, n, fcol, {0.0f, 0.0f}, world::kNoTexture, 0});
-  }
+void build_part_world_delta(const DetachedCarPartBody& b, float scale, float out[16]) {
+  const drive::Vec3 rx = drive::rotate(b.delta_rot, {double(scale), 0.0, 0.0});
+  const drive::Vec3 ry = drive::rotate(b.delta_rot, {0.0, double(scale), 0.0});
+  const drive::Vec3 rz = drive::rotate(b.delta_rot, {0.0, 0.0, double(scale)});
+  // D(v) = pos + R(delta_rot) * scale * (v - pivot_w0)
+  out[0] = float(rx.x); out[1] = float(rx.y); out[2] = float(rx.z); out[3] = 0.0f;
+  out[4] = float(ry.x); out[5] = float(ry.y); out[6] = float(ry.z); out[7] = 0.0f;
+  out[8] = float(rz.x); out[9] = float(rz.y); out[10] = float(rz.z); out[11] = 0.0f;
+  const double px = b.pivot_w0[0], py = b.pivot_w0[1], pz = b.pivot_w0[2];
+  out[12] = float(double(b.pos[0]) - (rx.x * px + ry.x * py + rz.x * pz));
+  out[13] = float(double(b.pos[1]) - (rx.y * px + ry.y * py + rz.y * pz));
+  out[14] = float(double(b.pos[2]) - (rx.z * px + ry.z * py + rz.z * pz));
+  out[15] = 1.0f;
 }
 
 }  // namespace
 
-void spawn_detached_car_part(const void* owner_key, int part_kind, const std::array<float, 3>& world_pos,
+void spawn_detached_car_part(const void* owner_key, int part_kind, const float car_model_to_world[16],
+                             const std::array<float, 3>& part_center_model,
+                             const std::array<float, 3>& part_half_extents,
                              const std::array<float, 3>& car_vel, const std::array<float, 3>& car_fwd,
-                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up,
-                             const std::array<uint8_t, 4>& paint_rgba) {
-  if (!owner_key) return;
+                             const std::array<float, 3>& car_right, const std::array<float, 3>& car_up) {
+  if (!owner_key || !car_model_to_world || part_kind < 0 || part_kind >= 5) return;
   DetachedCarPartBody b{};
   b.part_kind = part_kind;
-  b.pos = world_pos;
-  b.rot = quat_from_basis(car_right, car_up, car_fwd);
-  b.paint_rgba = paint_rgba;
-  b.paint_rgba[3] = 255;
+  std::memcpy(b.car_m0.data(), car_model_to_world, sizeof(float) * 16);
+  const float cx = part_center_model[0], cy = part_center_model[1], cz = part_center_model[2];
+  b.pivot_w0 = {
+      car_model_to_world[0] * cx + car_model_to_world[4] * cy + car_model_to_world[8] * cz + car_model_to_world[12],
+      car_model_to_world[1] * cx + car_model_to_world[5] * cy + car_model_to_world[9] * cz + car_model_to_world[13],
+      car_model_to_world[2] * cx + car_model_to_world[6] * cy + car_model_to_world[10] * cz + car_model_to_world[14],
+  };
+  b.pos = b.pivot_w0;
+  b.delta_rot = {0.0, 0.0, 0.0, 1.0};
+  b.ground_radius = std::clamp(std::min({part_half_extents[0], part_half_extents[1], part_half_extents[2]}), 0.06f, 0.28f);
 
-  // Deterministic tumble impulse tuned per detached component so bumpers skid/flip forward
-  // or off to the side, mirrors catapult outward, and rear wings cartwheel cleanly.
-  float fwd_kick = 0.0f, right_kick = 0.0f, up_kick = 2.6f;
+  // Deterministic tumble impulse tuned per detached component so the car's actual baked
+  // bumper/mirror/wing detaches cleanly from its exact mounting pose and tumbles down the road.
+  float fwd_kick = 0.0f, right_kick = 0.0f, up_kick = 2.4f;
   switch (part_kind) {
     case 0:  // front bumper
-      b.half_extents = {0.82f, 0.17f, 0.14f};
-      fwd_kick = 3.2f;
-      right_kick = 1.6f;
-      up_kick = 2.4f;
-      b.omega = {4.2f, 2.8f, -1.9f};
+      fwd_kick = 3.0f;
+      right_kick = 1.5f;
+      up_kick = 2.2f;
+      b.omega = {4.0f, 2.6f, -1.8f};
       break;
     case 1:  // rear bumper
-      b.half_extents = {0.82f, 0.19f, 0.15f};
-      fwd_kick = -3.8f;
+      fwd_kick = -3.6f;
       right_kick = -1.4f;
-      up_kick = 2.2f;
-      b.omega = {-4.6f, 2.3f, 2.1f};
+      up_kick = 2.1f;
+      b.omega = {-4.4f, 2.2f, 2.0f};
       break;
     case 2:  // left mirror
-      b.half_extents = {0.11f, 0.08f, 0.12f};
       fwd_kick = -1.2f;
-      right_kick = -4.2f;
-      up_kick = 3.6f;
-      b.omega = {8.5f, -6.2f, 9.0f};
+      right_kick = -4.0f;
+      up_kick = 3.4f;
+      b.omega = {8.0f, -6.0f, 8.5f};
       break;
     case 3:  // right mirror
-      b.half_extents = {0.11f, 0.08f, 0.12f};
       fwd_kick = -1.2f;
-      right_kick = 4.2f;
-      up_kick = 3.6f;
-      b.omega = {-8.2f, 6.5f, -9.2f};
+      right_kick = 4.0f;
+      up_kick = 3.4f;
+      b.omega = {-8.0f, 6.2f, -8.5f};
       break;
     default:  // rear wing (4)
-      b.half_extents = {0.74f, 0.06f, 0.18f};
-      fwd_kick = -4.4f;
+      fwd_kick = -4.2f;
       right_kick = 0.9f;
-      up_kick = 4.4f;
-      b.omega = {-6.8f, 1.9f, 3.4f};
+      up_kick = 4.2f;
+      b.omega = {-6.5f, 1.8f, 3.2f};
       break;
   }
 
@@ -1557,7 +1519,9 @@ void spawn_detached_car_part(const void* owner_key, int part_kind, const std::ar
 
   std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
   auto& pool = g_detached_parts_by_owner[owner_key];
-  if (pool.size() >= 16u) pool.erase(pool.begin());
+  pool.erase(std::remove_if(pool.begin(), pool.end(),
+                            [&](const DetachedCarPartBody& existing) { return existing.part_kind == part_kind; }),
+             pool.end());
   pool.push_back(b);
 }
 
@@ -1570,116 +1534,107 @@ void clear_detached_car_parts(const void* owner_key) {
   }
 }
 
-void step_and_append_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
-                                        std::vector<world::DebrisVertex>& out_tris) {
-  if (!owner_key) return;
+void step_detached_car_parts(const void* owner_key, float dt, const drive::Ground* ground,
+                             const float car_model_to_world_now[16], Showroom& showroom) {
+  if (!owner_key || !car_model_to_world_now) return;
   constexpr float kMaxAge = 12.0f;
   const float step_dt = std::clamp(dt, 0.0f, 0.05f);
 
-  std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
-  auto it = g_detached_parts_by_owner.find(owner_key);
-  if (it == g_detached_parts_by_owner.end() || it->second.empty()) return;
+  float world_to_car_now[16];
+  if (!invert_rigid_or_affine(car_model_to_world_now, world_to_car_now)) return;
 
-  auto& pool = it->second;
-  size_t write = 0;
-  for (size_t i = 0; i < pool.size(); ++i) {
-    DetachedCarPartBody& b = pool[i];
-    b.age += step_dt;
-    if (b.age >= kMaxAge) continue;
+  bool active_mask[5] = {false, false, false, false, false};
+  float xforms[5][16]{};
 
-    if (step_dt > 0.0f) {
-      b.vel[1] -= 9.81f * step_dt;
-      const float air_drag = std::exp(-0.42f * step_dt);
-      b.vel[0] *= air_drag;
-      b.vel[2] *= air_drag;
-      b.pos[0] += b.vel[0] * step_dt;
-      b.pos[1] += b.vel[1] * step_dt;
-      b.pos[2] += b.vel[2] * step_dt;
+  {
+    std::lock_guard<std::mutex> lock(g_detached_parts_mutex);
+    auto it = g_detached_parts_by_owner.find(owner_key);
+    if (it != g_detached_parts_by_owner.end() && !it->second.empty()) {
+      auto& pool = it->second;
+      size_t write = 0;
+      for (size_t i = 0; i < pool.size(); ++i) {
+        DetachedCarPartBody& b = pool[i];
+        b.age += step_dt;
+        if (b.age >= kMaxAge) continue;
 
-      // Integrate angular tumble into unit quaternion.
-      const double wx = b.omega[0], wy = b.omega[1], wz = b.omega[2];
-      const double half_dt = 0.5 * double(step_dt);
-      const drive::Quat q = b.rot;
-      drive::Quat nq{
-          q.x + half_dt * (wx * q.w + wy * q.z - wz * q.y),
-          q.y + half_dt * (wy * q.w + wz * q.x - wx * q.z),
-          q.z + half_dt * (wz * q.w + wx * q.y - wy * q.x),
-          q.w + half_dt * (-wx * q.x - wy * q.y - wz * q.z),
-      };
-      const double qn = std::sqrt(nq.x * nq.x + nq.y * nq.y + nq.z * nq.z + nq.w * nq.w);
-      if (qn > 1e-8) {
-        nq.x /= qn;
-        nq.y /= qn;
-        nq.z /= qn;
-        nq.w /= qn;
-        b.rot = nq;
-      }
+        if (step_dt > 0.0f) {
+          b.vel[1] -= 9.81f * step_dt;
+          const float air_drag = std::exp(-0.42f * step_dt);
+          b.vel[0] *= air_drag;
+          b.vel[2] *= air_drag;
+          b.pos[0] += b.vel[0] * step_dt;
+          b.pos[1] += b.vel[1] * step_dt;
+          b.pos[2] += b.vel[2] * step_dt;
 
-      // Ground bounce & road-sliding friction.
-      if (ground) {
-        drive::Hit hit{};
-        const double probe_y = double(b.pos[1]) + 1.5;
-        if (ground->raycast({double(b.pos[0]), probe_y, double(b.pos[2])}, {0.0, -1.0, 0.0}, 10.0, hit)) {
-          const float gnd_y = float(probe_y - hit.distance);
-          const float r_gnd = std::max(b.half_extents[1], 0.075f);
-          if (b.pos[1] - r_gnd < gnd_y) {
-            b.pos[1] = gnd_y + r_gnd;
-            if (b.vel[1] < -0.65f) {
-              b.vel[1] = -b.vel[1] * 0.36f;
-              b.vel[0] *= 0.74f;
-              b.vel[2] *= 0.74f;
-              b.omega[0] *= 0.78f;
-              b.omega[1] *= 0.78f;
-              b.omega[2] *= 0.78f;
-            } else {
-              b.vel[1] = 0.0f;
-              const float fric = std::exp(-4.2f * step_dt);
-              b.vel[0] *= fric;
-              b.vel[2] *= fric;
-              const float ang_damp = std::exp(-5.0f * step_dt);
-              b.omega[0] *= ang_damp;
-              b.omega[1] *= ang_damp;
-              b.omega[2] *= ang_damp;
+          const double wx = b.omega[0], wy = b.omega[1], wz = b.omega[2];
+          const double half_dt = 0.5 * double(step_dt);
+          const drive::Quat q = b.delta_rot;
+          drive::Quat nq{
+              q.x + half_dt * (wx * q.w + wy * q.z - wz * q.y),
+              q.y + half_dt * (wy * q.w + wz * q.x - wx * q.z),
+              q.z + half_dt * (wz * q.w + wx * q.y - wy * q.x),
+              q.w + half_dt * (-wx * q.x - wy * q.y - wz * q.z),
+          };
+          const double qn = std::sqrt(nq.x * nq.x + nq.y * nq.y + nq.z * nq.z + nq.w * nq.w);
+          if (qn > 1e-8) {
+            nq.x /= qn;
+            nq.y /= qn;
+            nq.z /= qn;
+            nq.w /= qn;
+            b.delta_rot = nq;
+          }
+
+          if (ground) {
+            drive::Hit hit{};
+            const double probe_y = double(b.pos[1]) + 1.5;
+            if (ground->raycast({double(b.pos[0]), probe_y, double(b.pos[2])}, {0.0, -1.0, 0.0}, 10.0, hit)) {
+              const float gnd_y = float(probe_y - hit.distance);
+              const float r_gnd = std::max(b.ground_radius, 0.075f);
+              if (b.pos[1] - r_gnd < gnd_y) {
+                b.pos[1] = gnd_y + r_gnd;
+                if (b.vel[1] < -0.65f) {
+                  b.vel[1] = -b.vel[1] * 0.36f;
+                  b.vel[0] *= 0.74f;
+                  b.vel[2] *= 0.74f;
+                  b.omega[0] *= 0.78f;
+                  b.omega[1] *= 0.78f;
+                  b.omega[2] *= 0.78f;
+                } else {
+                  b.vel[1] = 0.0f;
+                  const float fric = std::exp(-4.2f * step_dt);
+                  b.vel[0] *= fric;
+                  b.vel[2] *= fric;
+                  const float ang_damp = std::exp(-5.0f * step_dt);
+                  b.omega[0] *= ang_damp;
+                  b.omega[1] *= ang_damp;
+                  b.omega[2] *= ang_damp;
+                }
+              }
             }
           }
         }
+
+        const float fade = (b.age > kMaxAge - 1.2f) ? std::clamp((kMaxAge - b.age) / 1.2f, 0.0f, 1.0f) : 1.0f;
+        if (fade > 0.02f && b.part_kind >= 0 && b.part_kind < 5) {
+          float delta_w[16], part_w[16], part_in_car[16];
+          build_part_world_delta(b, fade, delta_w);
+          mul4x4_col(delta_w, b.car_m0.data(), part_w);
+          mul4x4_col(world_to_car_now, part_w, part_in_car);
+          active_mask[b.part_kind] = true;
+          std::memcpy(xforms[b.part_kind], part_in_car, sizeof(part_in_car));
+        }
+
+        if (write != i) pool[write] = b;
+        ++write;
       }
+      pool.resize(write);
+      if (pool.empty()) g_detached_parts_by_owner.erase(it);
     }
-
-    const float fade = (b.age > kMaxAge - 1.5f) ? std::clamp((kMaxAge - b.age) / 1.5f, 0.0f, 1.0f) : 1.0f;
-    if (fade > 0.02f) {
-      const float scale = (fade < 1.0f) ? (0.25f + 0.75f * fade) : 1.0f;
-      std::array<uint8_t, 4> body_col = b.paint_rgba;
-      body_col[3] = uint8_t(float(body_col[3]) * fade);
-      const std::array<uint8_t, 4> trim_col = {34, 36, 40, body_col[3]};
-
-      if (b.part_kind == 0 || b.part_kind == 1) {
-        // Front/rear bumper: painted main fascia + dark lower grille/diffuser + wrap-around side returns.
-        append_local_box(b, {0.0f, 0.02f, 0.0f}, {0.82f, 0.15f, 0.12f}, body_col, scale, out_tris);
-        append_local_box(b, {0.0f, -0.11f, 0.01f}, {0.72f, 0.055f, 0.10f}, trim_col, scale, out_tris);
-        const float wrap_z = (b.part_kind == 0) ? -0.18f : 0.18f;
-        append_local_box(b, {-0.78f, 0.0f, wrap_z}, {0.07f, 0.14f, 0.18f}, body_col, scale, out_tris);
-        append_local_box(b, {0.78f, 0.0f, wrap_z}, {0.07f, 0.14f, 0.18f}, body_col, scale, out_tris);
-      } else if (b.part_kind == 2 || b.part_kind == 3) {
-        // Side mirror: painted cap + matte black mount stalk.
-        const float sx = (b.part_kind == 2) ? 0.07f : -0.07f;
-        append_local_box(b, {0.0f, 0.02f, 0.0f}, {0.10f, 0.065f, 0.10f}, body_col, scale, out_tris);
-        append_local_box(b, {sx, -0.03f, 0.02f}, {0.055f, 0.035f, 0.045f}, trim_col, scale, out_tris);
-      } else {
-        // Rear wing: wide airfoil blade + dual endplates + twin pedestal struts.
-        append_local_box(b, {0.0f, 0.04f, 0.0f}, {0.74f, 0.032f, 0.16f}, body_col, scale, out_tris);
-        append_local_box(b, {-0.75f, 0.02f, 0.0f}, {0.02f, 0.10f, 0.18f}, body_col, scale, out_tris);
-        append_local_box(b, {0.75f, 0.02f, 0.0f}, {0.02f, 0.10f, 0.18f}, body_col, scale, out_tris);
-        append_local_box(b, {-0.34f, -0.06f, 0.0f}, {0.025f, 0.09f, 0.08f}, trim_col, scale, out_tris);
-        append_local_box(b, {0.34f, -0.06f, 0.0f}, {0.025f, 0.09f, 0.08f}, trim_col, scale, out_tris);
-      }
-    }
-
-    if (write != i) pool[write] = b;
-    ++write;
   }
-  pool.resize(write);
-  if (pool.empty()) g_detached_parts_by_owner.erase(it);
+
+  for (int pk = 0; pk < 5; ++pk) {
+    showroom.set_detached_part_transform(pk, active_mask[pk], active_mask[pk] ? xforms[pk] : nullptr);
+  }
 }
 
 

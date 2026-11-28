@@ -820,12 +820,15 @@ void Showroom::install_world_prop_spans(StagedWorld& st) {
 // The table the culling pass reads: one row per resident opaque or cut-out draw,
 // plus template rows for hardware-instanced tree sprites.
 bool Showroom::is_smashable_prop_draw(uint32_t flags, uint8_t decal, float ex, float ey, float ez) {
-  // Never hide sky dome (2), terrain layers (4 vertex-blend, 8 splat, 16384 layer-C),
-  // roads (1048576), or projected world-space road decals (fade == 0).
-  constexpr uint32_t kNonPropMask = 2u | 4u | 8u | 16384u | 1048576u;
+  // Never hide sky dome (2), tree sprites (32), water (32768), roads (1048576),
+  // non-prop terrain layers (4, 8, 16384 when fade == 0), or world-space road decals (fade == 0).
+  constexpr uint32_t kAlwaysNonPropMask = 2u | 32u | 32768u | 1048576u;
+  constexpr uint32_t kTerrainLayerMask = 4u | 8u | 16384u;
   constexpr uint32_t kPropFadeMask = 128u | 256u | 512u;
-  if ((flags & kNonPropMask) != 0u) return false;
-  if (decal != 0u && (flags & kPropFadeMask) == 0u) return false;
+  if ((flags & kAlwaysNonPropMask) != 0u) return false;
+  const bool has_prop_fade = (flags & kPropFadeMask) != 0u;
+  if (!has_prop_fade && (flags & kTerrainLayerMask) != 0u) return false;
+  if (decal != 0u && !has_prop_fade) return false;
   // Compact individual props (signs, bollards, mailboxes, bushes, small fence posts, tall slender poles).
   if (ex <= 12.0f && ez <= 12.0f && ey <= 24.0f) return true;
   // Merged roadside wooden/wire fence & barrier batches: low vertical profile
@@ -863,9 +866,10 @@ size_t Showroom::hide_world_props_near(const std::array<float, 3>& game_pos, flo
 
   if (world_draws_.empty()) return hidden_spans;
 
-  // 2. Fallback draw-level hiding for non-arena / CPU draws (or if no arena span matched).
+  // 2. Fallback draw-level hiding for non-arena / CPU draws or untracked compact draws
+  //    (already skips every resident draw that has tracked per-instance spans in by_draw_key).
   size_t hidden_draws = 0;
-  if (!arena_on() || hidden_spans == 0) {
+  {
     const float sx = float(double(game_pos[0]) - world_origin_[0]);
     const float sy = game_pos[1];
     const float sz = float(double(game_pos[2]) - world_origin_[1]);

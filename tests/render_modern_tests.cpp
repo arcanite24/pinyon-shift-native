@@ -52,6 +52,16 @@ void test_scene_extent() {
   CHECK(scale_label(2, false, {1920, 1080}) == "2X (2560x1440)");
   CHECK(scale_label(1, true, {1920, 1080}) == "540P 1X (960x540)");
   CHECK(scale_label(0, false, {1920, 1080}) == "NATIVE");
+  // Retina / HiDPI awareness: 2x macOS Retina displays render 3D at 1x logical pixels in auto mode,
+  // and explicit target heights never multiply by 2x Retina pixel density.
+  CHECK(scene_extent({3024, 1964}, 0, false, 2.0f, 0u) == (Extent{1512, 982}));
+  CHECK(scene_extent({5120, 2880}, 0, false, 2.0f, 0u) == (Extent{2560, 1440}));
+  CHECK(scene_extent({3840, 2160}, 0, false, 2.0f, 1080u) == (Extent{1920, 1080}));
+  CHECK(scene_extent({3456, 2234}, 0, false, 2.0f, 1080u) == (Extent{1672, 1080}));
+  CHECK(parse_resolution_height("1920x1080") == 1080u);
+  CHECK(parse_resolution_height("auto") == 0u);
+  CHECK(logical_window_size_for_resolution(2560, 1440, 2.0f) == (Extent{1280, 720}));
+  CHECK(logical_window_size_for_resolution(1920, 1080, 1.0f) == (Extent{1920, 1080}));
 }
 
 void test_fov_and_hud() {

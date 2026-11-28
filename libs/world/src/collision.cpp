@@ -620,4 +620,57 @@ bool ground_height(const drive::Ground& ground, double x, double z, double from_
   return false;
 }
 
+bool road_ground_height(const drive::Ground& ground, double x, double z, double hint_y, double& y, drive::Hit* hit) {
+  constexpr double kMinWalkableNormalY = 0.5;
+  constexpr double kStepPastEps = 0.03;
+
+  // 1. Probe from 2.0 m above hint_y (cleanly below 4-6 m start/finish gantries and arches).
+  double near_y = 0.0;
+  drive::Hit near_hit{};
+  if (ground_height(ground, x, z, hint_y + 2.0, near_y, &near_hit) &&
+      near_hit.normal.y >= kMinWalkableNormalY && std::fabs(near_y - hint_y) <= 6.0) {
+    y = near_y;
+    if (hit) *hit = near_hit;
+    return true;
+  }
+
+  // 2. Multi-hit column scan from +12 m down to -24 m, picking the walkable surface closest to hint_y.
+  double cur_y = hint_y + 12.0;
+  double rem = 36.0;
+  bool found = false;
+  double best_y = hint_y;
+  double best_err = 1e30;
+  drive::Hit best_hit{};
+  for (int step = 0; step < 16 && rem > 0.0; ++step) {
+    drive::Hit h{};
+    if (!ground.raycast({x, cur_y, z}, {0.0, -1.0, 0.0}, rem, h)) break;
+    const double hy = cur_y - h.distance;
+    if (h.normal.y >= kMinWalkableNormalY) {
+      const double err = std::fabs(hy - hint_y);
+      if (!found || err < best_err) {
+        found = true;
+        best_err = err;
+        best_y = hy;
+        best_hit = h;
+      }
+    }
+    const double adv = h.distance + kStepPastEps;
+    cur_y -= adv;
+    rem -= adv;
+  }
+  if (found) {
+    y = best_y;
+    if (hit) *hit = best_hit;
+    return true;
+  }
+
+  // 3. Wide fallback if hint_y was far from the road surface.
+  if (ground_height(ground, x, z, hint_y + 60.0, near_y, &near_hit)) {
+    y = near_y;
+    if (hit) *hit = near_hit;
+    return true;
+  }
+  return false;
+}
+
 }  // namespace world

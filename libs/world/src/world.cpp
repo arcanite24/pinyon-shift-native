@@ -1748,7 +1748,7 @@ bool World::gather(double x, double z, const GatherOptions& options, Mesh& out, 
           // their gather match radius tightly to avoid hiding adjacent intact props when
           // hs.radius is large; persistent discount signs keep a wider trigger tolerance.
           const float hr = hs.persistent ? std::min(hs.radius, 3.5f)
-                                         : std::min(hs.radius, std::clamp(hs.radius * 0.40f, 0.55f, 1.15f));
+                                         : std::min(hs.radius, std::clamp(hs.radius * 0.65f, 0.95f, 1.85f));
           const float hdx = gx - hs.pos[0], hdy = gy - hs.pos[1], hdz = gz - hs.pos[2];
           if (hdx * hdx + hdz * hdz <= hr * hr && std::fabs(hdy) <= hr + 1.5f) {
             smashed = true;

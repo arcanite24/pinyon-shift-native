@@ -23,14 +23,23 @@ struct Extent {
   bool operator!=(const Extent& o) const { return !(*this == o); }
 };
 
-// ---- Internal render scale --------------------------------------------------
-// The scene is drawn at 1x = 1280 x 720 (the console's size; 960 x 540 with
-// the 540p base) times a whole multiple 1..4, at the window's aspect, and
-// scaled to the window by the output upscaler. Scale 0 draws at the window's
-// own size ("native").
+// ---- Internal render resolution & Retina scaling ----------------------------
+// When `target_height > 0`, the 3D scene renders at that exact vertical height
+// (aspect-matched to the window, never inflated by HiDPI/Retina pixel density).
+// Otherwise `scale == 0` ("auto" / native) renders at 1x logical display
+// resolution (`window / pixel_density`), keeping 2D UI and swapchain at full
+// physical Retina pixels while avoiding 4x overshading on macOS Retina screens.
+// Legacy `scale` 1..4 draws at 1x = 1280 x 720 (or 960 x 540 with `base_540p`)
+// times `scale`.
 constexpr int kMinScale = 0, kMaxScale = 4;
 int clamp_scale(int scale);
-Extent scene_extent(Extent window, int scale, bool base_540p);
+Extent scene_extent(Extent window, int scale, bool base_540p, float pixel_density = 1.0f,
+                    uint32_t target_height = 0);
+// Parses the height in pixels from a "WxH" resolution string (0 if "auto" or invalid).
+uint32_t parse_resolution_height(std::string_view size_str);
+// Converts an explicit pixel resolution (e.g. 2560x1440) into logical window points
+// for HiDPI/Retina displays so windowed mode fits cleanly on screen.
+Extent logical_window_size_for_resolution(uint32_t target_w, uint32_t target_h, float pixel_density);
 // "1x (1280x720)" for the settings page and the F3 panel.
 std::string scale_label(int scale, bool base_540p, Extent window);
 
@@ -204,8 +213,9 @@ std::array<float, 3> sample_cube(const CubeLut& lut, const std::array<float, 3>&
 
 // ---- The settings as one value ---------------------------------------------------------------
 struct GraphicsSettings {
-  int scale = 1;               // 0 native, 1..4
+  int scale = 1;               // 0 auto/native (Retina-aware 1x logical), 1..4 legacy multiplier
   bool base_540p = false;
+  uint32_t render_height = 0;  // 0 = use scale/auto; >0 = explicit 3D scene height in pixels (e.g. 1080, 1440)
   AaMode aa = AaMode::kOff;
   SsaoQuality ssao = SsaoQuality::kOff;
   ContactShadows contact_shadows = ContactShadows::kOff;

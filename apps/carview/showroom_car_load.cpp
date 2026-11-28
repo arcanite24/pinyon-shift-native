@@ -826,6 +826,10 @@ bool Showroom::load(const std::filesystem::path& bake_dir, const std::string& ca
   dmg_left_mirror_detached_ = false;
   dmg_right_mirror_detached_ = false;
   dmg_wing_detached_ = false;
+  for (int k = 0; k < 5; ++k) {
+    detached_part_flying_[k] = false;
+    identity(detached_part_xform_[k]);
+  }
   dmg_hood_ajar_ = 0.0f;
   stock_ = nullptr;
   pending_wheel_ = -1;

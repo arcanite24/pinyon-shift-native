@@ -858,9 +858,12 @@ class Renderer {
   uint32_t target_height() const { return target_height_; }
   uint32_t render_width() const { return render_width_ ? render_width_ : target_width_; }
   uint32_t render_height() const { return render_height_ ? render_height_ : target_height_; }
+  float pixel_density() const { return pixel_density_; }
   modern::Extent expected_render_extent(uint32_t out_w, uint32_t out_h) const {
-    return options_.post.enabled ? modern::scene_extent({out_w, out_h}, graphics_.scale, graphics_.base_540p)
-                                 : modern::Extent{out_w, out_h};
+    return options_.post.enabled
+               ? modern::scene_extent({out_w, out_h}, graphics_.scale, graphics_.base_540p, pixel_density_,
+                                      graphics_.render_height)
+               : modern::Extent{out_w, out_h};
   }
   VkImageView depth_resolved_view() const { return depth_resolved_.view ? depth_resolved_.view : depth_.view; }
   bool depth_resolve_supported() const { return depth_resolve_supported_; }
@@ -1167,6 +1170,7 @@ class Renderer {
   uint32_t slot_ = 0;
   uint32_t frames_in_flight_ = 2;  // options.frames_in_flight, SHIFT_FRAMES_IN_FLIGHT (1: the old one-frame lock step)
   float drs_scale_ = 1.0f;
+  float pixel_density_ = 1.0f;
   bool gpu_driven_ = false;
   modern::VSync vsync_ = modern::VSync::kFifo, vsync_active_ = modern::VSync::kFifo;
   FrameSlot& slot() { return slots_[slot_]; }

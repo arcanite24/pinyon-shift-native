@@ -270,6 +270,19 @@ bool prop_span_matches_same_instance(const PropSpan& sp, const std::array<float,
   return (dx * dx + dz * dz <= 0.35f * 0.35f) && (std::fabs(dy) <= 0.35f);
 }
 
+bool prop_span_matches_colocated_compact(const PropSpan& sp, const std::array<float, 3>& game_pos) {
+  const float ex = sp.bmax[0] - sp.bmin[0];
+  const float ey = sp.bmax[1] - sp.bmin[1];
+  const float ez = sp.bmax[2] - sp.bmin[2];
+  // Restrict to sign/post-sized compact props so wide adjacent fence panels are never touched.
+  if (std::max(ex, ez) > 4.5f || ey > 10.0f) return false;
+  const float odx = sp.gx - game_pos[0];
+  const float ody = sp.gy - game_pos[1];
+  const float odz = sp.gz - game_pos[2];
+  if (odx * odx + odz * odz > 2.0f * 2.0f || std::fabs(ody) > 2.5f) return false;
+  return prop_span_matches_aabb_fallback(sp, game_pos, 0.25f);
+}
+
 void SmashHideTracker::prune_non_resident(const std::function<bool(uint64_t)>& is_resident) {
   if (!is_resident) return;
   for (auto it = by_draw_key.begin(); it != by_draw_key.end();) {
@@ -335,12 +348,18 @@ void SmashHideTracker::install_spans(std::vector<std::pair<uint64_t, std::vector
         if (!lookup_index_base(key, idx_base)) continue;
         for (auto& sp : it->second) {
           if (sp.hidden) continue;
-          for (const auto& mo : matched_origins) {
-            if (prop_span_matches_same_instance(sp, mo)) {
-              sp.hidden = true;
-              queue_zero(idx_base + sp.rel_index_offset, sp.index_count);
-              break;
+          bool match = prop_span_matches_colocated_compact(sp, hs.pos);
+          if (!match) {
+            for (const auto& mo : matched_origins) {
+              if (prop_span_matches_same_instance(sp, mo)) {
+                match = true;
+                break;
+              }
             }
+          }
+          if (match) {
+            sp.hidden = true;
+            queue_zero(idx_base + sp.rel_index_offset, sp.index_count);
           }
         }
       }
@@ -426,13 +445,19 @@ size_t SmashHideTracker::hide_near(const std::array<float, 3>& game_pos, float r
       if (!lookup_index_base(key, idx_base)) continue;
       for (auto& sp : it->second) {
         if (sp.hidden) continue;
-        for (const auto& mo : matched_origins) {
-          if (prop_span_matches_same_instance(sp, mo)) {
-            sp.hidden = true;
-            queue_zero(idx_base + sp.rel_index_offset, sp.index_count);
-            ++hidden_spans;
-            break;
+        bool match = prop_span_matches_colocated_compact(sp, game_pos);
+        if (!match) {
+          for (const auto& mo : matched_origins) {
+            if (prop_span_matches_same_instance(sp, mo)) {
+              match = true;
+              break;
+            }
           }
+        }
+        if (match) {
+          sp.hidden = true;
+          queue_zero(idx_base + sp.rel_index_offset, sp.index_count);
+          ++hidden_spans;
         }
       }
     }
