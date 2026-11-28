@@ -1093,7 +1093,10 @@ void DriveSession::run_window_loop() {
           double frame_object_impact = 0.0;
           step_object_impact_accum = 0.0;
           step_car_impact_accum = 0.0;
-          while (!sim_paused && accumulator >= drive::Vehicle::kStep) {
+          constexpr int kMaxSubstepsPerFrame = 6;  // Cap at 50 ms sim catch-up to prevent hitch spiral-of-death.
+          int sim_substeps = 0;
+          while (!sim_paused && accumulator >= drive::Vehicle::kStep && sim_substeps < kMaxSubstepsPerFrame) {
+            ++sim_substeps;
             drawn_before = vehicle.pose();
             drive::Input step_in = app.cruise ? host.follower.input(vehicle) : in;
             if (!app.cruise) {
@@ -1580,6 +1583,9 @@ void DriveSession::run_window_loop() {
               host.showroom.set_damage_state(car_damage);
             }
             accumulator -= drive::Vehicle::kStep;
+          }
+          if (!sim_paused && sim_substeps >= kMaxSubstepsPerFrame && accumulator >= drive::Vehicle::kStep) {
+            accumulator = std::fmod(accumulator, drive::Vehicle::kStep);
           }
           double rumble_low_f = 0.0, rumble_high_f = 0.0;
           if (!pads.empty() && gamepad_rumble.config().loaded) {

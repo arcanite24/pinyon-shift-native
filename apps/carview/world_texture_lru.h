@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <list>
 #include <unordered_map>
 #include <unordered_set>
@@ -72,7 +73,13 @@ class WorldTextureLru {
       total_bytes_ -= eit->second.bytes;
       entries_.erase(eit);
       it = order_.erase(it);
-      ever_evicted_.insert(rec);
+      if (ever_evicted_.insert(rec).second) {
+        ever_evicted_order_.push_back(rec);
+        while (ever_evicted_order_.size() > kMaxTrackedEvictions) {
+          ever_evicted_.erase(ever_evicted_order_.front());
+          ever_evicted_order_.pop_front();
+        }
+      }
       ++evictions_;
       evicted_out.push_back(rec);
     }
@@ -93,9 +100,11 @@ class WorldTextureLru {
     std::list<uint32_t>::iterator lru_it;
   };
 
+  static constexpr size_t kMaxTrackedEvictions = 16384;
   std::list<uint32_t> order_;  // MRU at front(), LRU at back()
   std::unordered_map<uint32_t, Entry> entries_;
   std::unordered_set<uint32_t> ever_evicted_;
+  std::deque<uint32_t> ever_evicted_order_;
   uint64_t total_bytes_ = 0;
   uint64_t max_bytes_ = 0;
   size_t max_count_ = 0;

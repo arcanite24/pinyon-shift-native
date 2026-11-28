@@ -132,7 +132,7 @@ class TrafficView {
   double guests_at_ = -1;  // the population time guests were last refreshed from step()
   double lamps_at_ = -1;   // population time when lamps were last updated
   double blend_ = 1.0;
-  std::map<uint32_t, TrafficPose> before_;
+  std::vector<std::pair<uint32_t, TrafficPose>> before_;
   std::map<uint32_t, drive::CarLampState> lamps_;
   std::map<uint32_t, float> wheel_spin_;
   struct TunnelProbeCache {

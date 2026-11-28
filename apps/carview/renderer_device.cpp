@@ -26,6 +26,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
+#include "fh1data/worker_pool.h"
 #include "platform_support.h"
 #include "rhi/rhi.h"
 
@@ -1063,46 +1064,38 @@ bool Renderer::compile_pipelines_parallel(const std::vector<std::function<VkResu
     return true;
   }
 
-  const uint32_t hw_threads = std::max(2u, std::thread::hardware_concurrency());
-  const size_t num_threads = std::min<size_t>(tasks.size(), size_t(hw_threads));
+  const size_t cache_slots = fh1::job_worker_count(fh1::JobLane::kBackground) + 1u;
   const bool use_private_caches = !pipeline_cache_loaded_ && device_ != VK_NULL_HANDLE &&
                                   pipeline_cache_ != VK_NULL_HANDLE;
 
   std::vector<VkPipelineCache> worker_caches;
   if (use_private_caches) {
-    worker_caches.assign(num_threads, VK_NULL_HANDLE);
+    worker_caches.assign(cache_slots, VK_NULL_HANDLE);
     VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    for (size_t t = 0; t < num_threads; ++t) {
+    for (size_t t = 0; t < cache_slots; ++t) {
       if (vkCreatePipelineCache(device_, &pci, nullptr, &worker_caches[t]) != VK_SUCCESS) {
         worker_caches[t] = VK_NULL_HANDLE;
       }
     }
   }
 
-  std::atomic<size_t> next_task{0};
   std::atomic<int> first_error{int(VK_SUCCESS)};
 
-  auto worker_fn = [&](size_t tid) {
-    const VkPipelineCache cache =
-        (use_private_caches && worker_caches[tid] != VK_NULL_HANDLE) ? worker_caches[tid] : pipeline_cache_;
-    while (true) {
-      const size_t idx = next_task.fetch_add(1, std::memory_order_relaxed);
-      if (idx >= tasks.size()) break;
-      const VkResult r = tasks[idx](cache);
-      if (r != VK_SUCCESS) {
-        int expected = int(VK_SUCCESS);
-        first_error.compare_exchange_strong(expected, int(r), std::memory_order_relaxed);
-      }
-    }
-  };
-
-  std::vector<std::thread> threads;
-  threads.reserve(num_threads - 1);
-  for (size_t t = 1; t < num_threads; ++t) {
-    threads.emplace_back(worker_fn, t);
-  }
-  worker_fn(0);
-  for (std::thread& th : threads) th.join();
+  fh1::parallel_for_ex(
+      tasks.size(),
+      [&](size_t idx) {
+        const size_t tid = fh1::current_worker_index();
+        const VkPipelineCache cache =
+            (use_private_caches && tid < worker_caches.size() && worker_caches[tid] != VK_NULL_HANDLE)
+                ? worker_caches[tid]
+                : pipeline_cache_;
+        const VkResult r = tasks[idx](cache);
+        if (r != VK_SUCCESS) {
+          int expected = int(VK_SUCCESS);
+          first_error.compare_exchange_strong(expected, int(r), std::memory_order_relaxed);
+        }
+      },
+      fh1::JobLane::kBackground, 1, 2);
 
   if (use_private_caches) {
     std::vector<VkPipelineCache> valid_caches;

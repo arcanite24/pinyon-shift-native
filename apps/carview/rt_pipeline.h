@@ -41,6 +41,11 @@ class RtPipeline {
   }
   uint32_t photo_accum_samples() const { return photo_accum_count_; }
 
+  // When true, assumes rt_gbuf_norm/albedo are pre-populated by Visibility Buffer
+  // shading so rt_reflections.comp skips its redundant primary ray query.
+  void set_external_thin_gbuf(bool enabled) noexcept { external_thin_gbuf_ = enabled; }
+  bool external_thin_gbuf() const noexcept { return external_thin_gbuf_; }
+
   // Records Hybrid RT, Real-Time Path Tracing, or Photo Mode PT into `cmd`.
   // `hdr_img` must be in VK_IMAGE_LAYOUT_GENERAL; `depth_view` in DEPTH_STENCIL_READ_ONLY_OPTIMAL;
   // `motion_view` in SHADER_READ_ONLY_OPTIMAL.
@@ -88,6 +93,7 @@ class RtPipeline {
   uint32_t frame_index_ = 0;
   uint32_t hist_idx_ = 0;
   bool history_valid_ = false;
+  bool external_thin_gbuf_ = false;
   uint32_t photo_accum_count_ = 0;
   float last_vp_[16] = {};
   bool have_last_vp_ = false;

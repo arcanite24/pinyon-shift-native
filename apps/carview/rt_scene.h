@@ -145,8 +145,10 @@ class RtScene {
     VkDeviceAddress address = 0;
     uint64_t uncompacted_bytes = 0;
     uint64_t bytes = 0;
+    uint32_t total_prims = 0;
     bool compacted = false;
     bool compaction_pending = false;
+    bool allow_update = false;
     std::vector<RtGeomInfoGpu> geoms;
     std::vector<WorldGeomTexRecords> tex_refs;
     VkBuffer vb_buf = VK_NULL_HANDLE;
@@ -225,7 +227,13 @@ class RtScene {
   bool build_blas_from_geoms(VkCommandBuffer cmd, const std::vector<VkAccelerationStructureGeometryKHR>& vk_geoms,
                              const std::vector<uint32_t>& prim_counts,
                              const std::vector<VkAccelerationStructureBuildRangeInfoKHR>& ranges,
-                             bool allow_compaction, BlasHandle& out, uint32_t* out_query_index);
+                             bool allow_compaction, BlasHandle& out, uint32_t* out_query_index,
+                             bool allow_update = false);
+  // In-place BLAS refit (VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR) for dynamic/animated actors.
+  bool refit_blas_from_geoms(VkCommandBuffer cmd, const std::vector<VkAccelerationStructureGeometryKHR>& vk_geoms,
+                             const std::vector<uint32_t>& prim_counts,
+                             const std::vector<VkAccelerationStructureBuildRangeInfoKHR>& ranges,
+                             BlasHandle& target);
   bool ensure_car_blas(VkCommandBuffer cmd, const Showroom& car, CarBlasSet& out);
   void update_world_blases(VkCommandBuffer cmd, const Showroom& host);
   void update_tree_blas(VkCommandBuffer cmd, const Showroom& host);
@@ -281,10 +289,14 @@ class RtScene {
   VkDeviceAddress seq_ib_bda_ = 0;
   VkImageView registered_spectator_view_ = VK_NULL_HANDLE;
   VkImageView registered_showcase_view_ = VK_NULL_HANDLE;
-  // Throttled spectator crowd BLAS (rebuilt every 6 frames or on world origin/eye shift > 4 m).
-  Renderer::Buffer spec_vb_;
-  void* spec_vb_mapped_ = nullptr;
-  uint32_t spec_vb_cap_ = 0;
+  // Ring-buffered spectator crowd VB (kFramesInFlight + 1 slots so in-flight GPU TLASes
+  // never race with CPU vertex writes during consecutive-frame origin/eye shifts).
+  static constexpr uint32_t kSpecVbRing = Renderer::kFramesInFlight + 1;
+  Renderer::Buffer spec_vb_[kSpecVbRing];
+  void* spec_vb_mapped_[kSpecVbRing] = {};
+  uint32_t spec_vb_cap_[kSpecVbRing] = {};
+  uint64_t spec_vb_last_submit_[kSpecVbRing] = {};
+  uint32_t spec_vb_active_ = 0;
   BlasHandle spectator_blas_;
   uint64_t spectator_last_frame_ = 0;
   double spectator_last_origin_x_ = 0.0, spectator_last_origin_z_ = 0.0;

@@ -92,6 +92,15 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   const bool msaa = samples_ != VK_SAMPLE_COUNT_1_BIT;
   if (scene_.before) scene_.before(cmd);
   const bool post = options_.post.enabled && hdr_.view;
+  // In full Path Tracing / Photo Mode PT, keep the fast depth-only Z-prepass (when available)
+  // so motion_vectors.frag, ReSTIR DI temporal reuse, and SVGF retain accurate world/car depth,
+  // while skipping redundant heavy forward color shading, Hi-Z build, and raster particles.
+  // Clear HDR to black when raster color is skipped so rt_pathtrace.comp always evaluates eval_tod_sky.
+  const rt::RtMode active_rt = active_rt_mode();
+  const bool rt_full_pt =
+      post && bool(scene_.record_rt) && bool(scene_.draw_z_prepass) &&
+      (active_rt == rt::RtMode::kPathTraced || active_rt == rt::RtMode::kPhotoModePt ||
+       (photo_pt_accumulate() && active_rt != rt::RtMode::kOff));
   // Defer final_image (swapchain) COLOR_ATTACHMENT_OUTPUT barrier when rendering to
   // offscreen HDR first: lets shadows, 3D scene, Hi-Z, and post passes overlap with
   // swapchain presentation instead of stalling on image_ready before scene draw.
@@ -123,9 +132,9 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
   const VkImageView depth_res_view = depth_resolved_view();
-  const bool two_pass = bool(scene_.draw_particles) && depth_res_view != VK_NULL_HANDLE &&
+  const bool two_pass = !rt_full_pt && bool(scene_.draw_particles) && depth_res_view != VK_NULL_HANDLE &&
                         (!scene_.has_particles || scene_.has_particles());
-  const bool need_hiz = bool(scene_.build_hiz) && depth_res_view != VK_NULL_HANDLE;
+  const bool need_hiz = !rt_full_pt && bool(scene_.build_hiz) && depth_res_view != VK_NULL_HANDLE;
   const bool can_msaa_depth_resolve = msaa && depth_resolve_supported_ && depth_resolved_.view != VK_NULL_HANDLE;
   const bool gmem_msaa_resolve = can_msaa_depth_resolve;
   if (msaa && (two_pass || post || need_hiz) && depth_resolved_.image) {
@@ -146,7 +155,7 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
     vkCmdSetFragmentShadingRateKHR(cmd, &sz, ops);
   };
 
-  const bool run_z_prepass = options_.z_prepass && bool(scene_.draw_z_prepass);
+  const bool run_z_prepass = (options_.z_prepass || rt_full_pt) && bool(scene_.draw_z_prepass);
   if (run_z_prepass) {
     VkRenderingAttachmentInfo z_depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     z_depth.imageView = depth_.view;
@@ -181,13 +190,21 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   color.storeOp = resolve_pass1 ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
   color.clearValue.color = {{scene_.clear[0], scene_.clear[1], scene_.clear[2], scene_.clear[3]}};
   if (post) {
-    for (int k = 0; k < 3; ++k) {
-      // The clear colour is display (sRGB) encoded: linear for the HDR scene.
-      const float c = scene_.clear[k];
-      color.clearValue.color.float32[k] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    if (rt_full_pt) {
+      // Clear HDR to exact 0 so rt_pathtrace.comp always falls through to analytical eval_tod_sky.
+      color.clearValue.color.float32[0] = 0.0f;
+      color.clearValue.color.float32[1] = 0.0f;
+      color.clearValue.color.float32[2] = 0.0f;
+      color.clearValue.color.float32[3] = 0.0f;
+    } else {
+      for (int k = 0; k < 3; ++k) {
+        // The clear colour is display (sRGB) encoded: linear for the HDR scene.
+        const float c = scene_.clear[k];
+        color.clearValue.color.float32[k] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+      }
+      // Clear HDR alpha (surface gloss channel for Hi-Z SSR) to 0.0 so sky/matte areas stay reflection-free.
+      color.clearValue.color.float32[3] = 0.0f;
     }
-    // Clear HDR alpha (surface gloss channel for Hi-Z SSR) to 0.0 so sky/matte areas stay reflection-free.
-    color.clearValue.color.float32[3] = 0.0f;
   }
   if (resolve_pass1) {
     color.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
@@ -220,20 +237,22 @@ void Renderer::record_scene(VkCommandBuffer cmd, VkImage final_image, VkImageVie
   vkCmdSetViewport(cmd, 0, 1, &viewport);
   vkCmdSetScissor(cmd, 0, 1, &scissor);
   set_vrs(graphics_.vrs ? 2u : 1u, graphics_.vrs ? 2u : 1u);
-  if (scene_.draw) {
-    scene_.draw(cmd);
-  } else if (index_count_ > 0 && vertex_buffer_.buffer != VK_NULL_HANDLE &&
-             index_buffer_.buffer != VK_NULL_HANDLE) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
-                            &descriptor_set_, 0, nullptr);
-    vkCmdPushConstants(cmd, pipeline_layout_,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       sizeof(FrameConstants), &constants);
-    VkDeviceSize zero = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
-    vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
+  if (!rt_full_pt) {
+    if (scene_.draw) {
+      scene_.draw(cmd);
+    } else if (index_count_ > 0 && vertex_buffer_.buffer != VK_NULL_HANDLE &&
+               index_buffer_.buffer != VK_NULL_HANDLE) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_);
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
+                              &descriptor_set_, 0, nullptr);
+      vkCmdPushConstants(cmd, pipeline_layout_,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(FrameConstants), &constants);
+      VkDeviceSize zero = 0;
+      vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_buffer_.buffer, &zero);
+      vkCmdBindIndexBuffer(cmd, index_buffer_.buffer, 0, VK_INDEX_TYPE_UINT32);
+      vkCmdDrawIndexed(cmd, index_count_, 1, 0, 0, 0);
+    }
   }
   in_render_pass_ = false;
   vkCmdEndRendering(cmd);

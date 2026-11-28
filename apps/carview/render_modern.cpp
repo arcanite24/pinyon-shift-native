@@ -999,12 +999,16 @@ WorldMemoryBudget choose_world_memory_budget(uint64_t device_local_bytes, bool l
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 8, 128ULL << 20, 256ULL << 20);
     b.texture_lru_count = (device_local_bytes >= (4ULL << 30)) ? 1536u : 1024u;
   } else {
-    // 256-512 MiB vertex (scales with VRAM, e.g. 256 MiB on 2 GB, 512 MiB on 6+ GB):
-    // generous headroom for dense Horizon Festival gathers and 240 km/h streaming without resets.
-    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 256ULL << 20, 512ULL << 20);
-    // Keep desktop LRU budget generous (up to 512 MiB on >= 8 GB GPUs and 3584 textures,
-    // staying comfortably within WorldGpu::kMaxTextures = 4096) so highway drives never thrash.
-    const uint64_t max_tex_bytes = (device_local_bytes >= (8ULL << 30)) ? (512ULL << 20) : (320ULL << 20);
+    // Scale desktop vertex arena and texture LRU budgets with modern 8-24+ GB GPUs
+    // (256-512 MiB on 2-10 GB GPUs, up to 1024 MiB vertex / 1536 MiB textures on 16+ GB GPUs)
+    // so long high-speed drives keep scenery and textures resident without avoidable eviction churn.
+    const uint64_t max_vert_bytes = (device_local_bytes >= (12ULL << 30)) ? (1024ULL << 20) : (512ULL << 20);
+    b.vertex_arena_bytes = std::clamp<uint64_t>(device_local_bytes / 10, 256ULL << 20, max_vert_bytes);
+    const uint64_t max_tex_bytes = (device_local_bytes >= (16ULL << 30))
+                                       ? (1536ULL << 20)
+                                       : ((device_local_bytes >= (12ULL << 30))
+                                              ? (1024ULL << 20)
+                                              : ((device_local_bytes >= (8ULL << 30)) ? (512ULL << 20) : (320ULL << 20)));
     b.texture_lru_bytes = std::clamp<uint64_t>(device_local_bytes / 6, 192ULL << 20, max_tex_bytes);
     b.texture_lru_count = 3584;
   }

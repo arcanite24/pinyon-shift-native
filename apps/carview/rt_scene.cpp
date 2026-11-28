@@ -351,10 +351,14 @@ void RtScene::shutdown() {
   r_.destroy_buffer(tree_vb_);
   r_.destroy_buffer(tree_ib_);
   destroy_blas(spectator_blas_, false);
-  if (spec_vb_mapped_) vmaUnmapMemory(r_.allocator_, spec_vb_.allocation);
-  spec_vb_mapped_ = nullptr;
-  spec_vb_cap_ = 0;
-  r_.destroy_buffer(spec_vb_);
+  for (uint32_t i = 0; i < kSpecVbRing; ++i) {
+    if (spec_vb_mapped_[i]) vmaUnmapMemory(r_.allocator_, spec_vb_[i].allocation);
+    spec_vb_mapped_[i] = nullptr;
+    spec_vb_cap_[i] = 0;
+    spec_vb_last_submit_[i] = 0;
+    r_.destroy_buffer(spec_vb_[i]);
+  }
+  spec_vb_active_ = 0;
   r_.destroy_buffer(seq_ib_);
   seq_ib_bda_ = 0;
   registered_spectator_view_ = VK_NULL_HANDLE;
@@ -412,8 +416,10 @@ void RtScene::destroy_blas(BlasHandle& b, bool defer) {
   b.address = 0;
   b.bytes = 0;
   b.uncompacted_bytes = 0;
+  b.total_prims = 0;
   b.compacted = false;
   b.compaction_pending = false;
+  b.allow_update = false;
   b.geoms.clear();
   b.tex_refs.clear();
   b.any_tex_pending = false;
@@ -425,6 +431,7 @@ void RtScene::destroy_blas(BlasHandle& b, bool defer) {
       rp->destroy_buffer(buf);
     });
   } else {
+    if (defer) r_.wait_idle();
     if (handle) vkDestroyAccelerationStructureKHR(r_.device_, handle, nullptr);
     r_.destroy_buffer(buf);
   }
@@ -478,15 +485,18 @@ bool RtScene::build_blas_from_geoms(VkCommandBuffer cmd,
                                     const std::vector<VkAccelerationStructureGeometryKHR>& vk_geoms,
                                     const std::vector<uint32_t>& prim_counts,
                                     const std::vector<VkAccelerationStructureBuildRangeInfoKHR>& ranges,
-                                    bool allow_compaction, BlasHandle& out, uint32_t* out_query_index) {
+                                    bool allow_compaction, BlasHandle& out, uint32_t* out_query_index,
+                                    bool allow_update) {
   if (vk_geoms.empty()) return false;
   VkDevice d = r_.device_;
 
   VkAccelerationStructureBuildGeometryInfoKHR build_info{
       VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
   build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-  build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
-                     (allow_compaction ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0u);
+  build_info.flags = (allow_update ? VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+                                   : VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR) |
+                     (allow_compaction ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR : 0u) |
+                     (allow_update ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0u);
   build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
   build_info.geometryCount = uint32_t(vk_geoms.size());
   build_info.pGeometries = vk_geoms.data();
@@ -526,7 +536,10 @@ bool RtScene::build_blas_from_geoms(VkCommandBuffer cmd,
   out.address = vkGetAccelerationStructureDeviceAddressKHR(d, &addr_info);
   out.uncompacted_bytes = size_info.accelerationStructureSize;
   out.bytes = size_info.accelerationStructureSize;
+  out.total_prims = 0;
+  for (uint32_t pc : prim_counts) out.total_prims += pc;
   out.compacted = false;
+  out.allow_update = allow_update;
 
   if (allow_compaction && out_query_index && compact_pool_ &&
       pending_compactions_.size() + 16u < kMaxCompactionQueries) {
@@ -543,6 +556,40 @@ bool RtScene::build_blas_from_geoms(VkCommandBuffer cmd,
     out.compaction_pending = true;
     *out_query_index = qidx;
   }
+  return true;
+}
+
+bool RtScene::refit_blas_from_geoms(VkCommandBuffer cmd,
+                                    const std::vector<VkAccelerationStructureGeometryKHR>& vk_geoms,
+                                    const std::vector<uint32_t>& prim_counts,
+                                    const std::vector<VkAccelerationStructureBuildRangeInfoKHR>& ranges,
+                                    BlasHandle& target) {
+  if (vk_geoms.empty() || !target.handle) return false;
+  VkDevice d = r_.device_;
+
+  VkAccelerationStructureBuildGeometryInfoKHR build_info{
+      VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+  build_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+  build_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                     VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+  build_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+  build_info.srcAccelerationStructure = target.handle;
+  build_info.dstAccelerationStructure = target.handle;
+  build_info.geometryCount = uint32_t(vk_geoms.size());
+  build_info.pGeometries = vk_geoms.data();
+
+  VkAccelerationStructureBuildSizesInfoKHR size_info{
+      VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+  vkGetAccelerationStructureBuildSizesKHR(d, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build_info,
+                                          prim_counts.data(), &size_info);
+
+  VkDeviceAddress scratch_bda = 0;
+  if (!ensure_scratch(cmd, std::max(size_info.updateScratchSize, VkDeviceSize(256)), scratch_bda)) {
+    return false;
+  }
+  build_info.scratchData.deviceAddress = scratch_bda;
+  const VkAccelerationStructureBuildRangeInfoKHR* p_ranges = ranges.data();
+  vkCmdBuildAccelerationStructuresKHR(cmd, 1, &build_info, &p_ranges);
   return true;
 }
 
@@ -1148,17 +1195,19 @@ void RtScene::update_tree_blas(VkCommandBuffer cmd, const Showroom& host) {
 }
 
 void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& host, FrameSlot& slot) {
-  // Destroy this frame-slot's previous dynamic actor BLASes (safe: frame fence already signaled).
-  destroy_blas(slot.driver_blas, false);
   destroy_blas(slot.spectator_blas, false);
-  destroy_blas(slot.showcase_blas, false);
-  if (!seq_ib_bda_) return;
+  if (!seq_ib_bda_) {
+    destroy_blas(slot.driver_blas, false);
+    destroy_blas(slot.showcase_blas, false);
+    return;
+  }
 
   // 1. Collect seated driver vertices (car model space).
   const uint32_t drv_n =
       (host.vfx_ready_ && host.driver_buf_.ready() && host.driver_count_ >= 3u)
           ? (std::min(host.driver_count_, kMaxDynActorVerts) / 3u) * 3u
           : 0u;
+  if (drv_n < 3u) destroy_blas(slot.driver_blas, false);
 
   // 2. Throttled Spectators.zip festival crowd BLAS (rebuilt every 6 frames or when world origin/eye shifts > 4 m).
   if (host.vfx_ready_ && host.spectator_anim_.catalog().has_3d_spectators()) {
@@ -1197,19 +1246,34 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
             spec_tex_slot = host.gpu_world_->texture_slot(kSpectatorTexRecord);
           }
         }
-        if (!spec_vb_.buffer || spec_vb_cap_ < sn) {
-          const uint32_t alloc_n = std::max(sn, std::max(spec_vb_cap_ * 2u, 8192u));
-          if (spec_vb_mapped_) {
-            vmaUnmapMemory(r_.allocator_, spec_vb_.allocation);
-            spec_vb_mapped_ = nullptr;
+        // Pick a ring slot whose GPU frames have completed so CPU writes never race with in-flight TLAS reads.
+        const uint64_t done = r_.frames_done();
+        uint32_t chosen = (spec_vb_active_ + 1u) % kSpecVbRing;
+        for (uint32_t step = 1; step <= kSpecVbRing; ++step) {
+          const uint32_t cand = (spec_vb_active_ + step) % kSpecVbRing;
+          if (spec_vb_last_submit_[cand] <= done) {
+            chosen = cand;
+            break;
           }
-          if (spec_vb_.buffer) {
-            Renderer::Buffer old_vb = spec_vb_;
-            spec_vb_ = {};
+        }
+        auto& svb = spec_vb_[chosen];
+        auto& smapped = spec_vb_mapped_[chosen];
+        auto& scap = spec_vb_cap_[chosen];
+        const bool slot_still_busy = spec_vb_last_submit_[chosen] > done;
+        if (!svb.buffer || scap < sn || slot_still_busy) {
+          const uint32_t alloc_n = std::max(sn, std::max(scap * 2u, 8192u));
+          if (smapped) {
+            vmaUnmapMemory(r_.allocator_, svb.allocation);
+            smapped = nullptr;
+          }
+          if (svb.buffer) {
+            Renderer::Buffer old_vb = svb;
+            svb = {};
             if (retire_fn_) {
               Renderer* rp = &r_;
               retire_fn_([rp, old_vb]() mutable { rp->destroy_buffer(old_vb); });
             } else {
+              r_.wait_idle();
               r_.destroy_buffer(old_vb);
             }
           }
@@ -1218,22 +1282,22 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
           if (r_.create_buffer(VkDeviceSize(alloc_n) * sizeof(WorldVertex), usage,
-                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, spec_vb_) &&
-              vmaMapMemory(r_.allocator_, spec_vb_.allocation, &spec_vb_mapped_) == VK_SUCCESS) {
-            spec_vb_cap_ = alloc_n;
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, svb) &&
+              vmaMapMemory(r_.allocator_, svb.allocation, &smapped) == VK_SUCCESS) {
+            scap = alloc_n;
           } else {
-            r_.destroy_buffer(spec_vb_);
-            spec_vb_cap_ = 0;
-            spec_vb_mapped_ = nullptr;
+            r_.destroy_buffer(svb);
+            scap = 0;
+            smapped = nullptr;
           }
         }
-        if (spec_vb_.buffer && spec_vb_mapped_) {
+        if (svb.buffer && smapped) {
           const auto& cat = host.spectator_anim_.catalog();
           const uint32_t asz = world::SpectatorCatalog::kAtlasSize;
           auto snorm8 = [](float x) -> int8_t {
             return int8_t(std::clamp(int(x * 127.0f + (x >= 0.0f ? 0.5f : -0.5f)), -127, 127));
           };
-          auto* sdst = static_cast<WorldVertex*>(spec_vb_mapped_);
+          auto* sdst = static_cast<WorldVertex*>(smapped);
           const bool has_atlas = cat.atlas_rgba.size() >= size_t(asz) * asz * 4u;
           for (uint32_t i = 0; i < sn; ++i) {
             const auto& v = cpu_spec[i];
@@ -1266,7 +1330,7 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
           auto& tri = ag.geometry.triangles;
           tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
           tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-          tri.vertexData.deviceAddress = r_.buffer_device_address(spec_vb_.buffer);
+          tri.vertexData.deviceAddress = r_.buffer_device_address(svb.buffer);
           tri.vertexStride = sizeof(WorldVertex);
           tri.maxVertex = sn - 1u;
           tri.indexType = VK_INDEX_TYPE_UINT32;
@@ -1282,8 +1346,9 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
             gm.tint[3] = 0.78f;
             gm.uv0_xform[0] = gm.uv0_xform[1] = gm.uv0_xform[2] = gm.uv0_xform[3] = 1.0f;
             spectator_blas_.geoms = {gm};
-            spectator_blas_.vb_buf = spec_vb_.buffer;
+            spectator_blas_.vb_buf = svb.buffer;
             spectator_blas_.ib_buf = seq_ib_.buffer;
+            spec_vb_active_ = chosen;
           }
         }
       }
@@ -1297,6 +1362,7 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
       (host.vfx_ready_ && host.showcase_buf_.ready() && host.showcase_count_ >= 3u)
           ? (std::min(host.showcase_count_, kMaxDynActorVerts) / 3u) * 3u
           : 0u;
+  if (show_n < 3u) destroy_blas(slot.showcase_blas, false);
   uint32_t show_tex_slot = 0u;
   if (show_n >= 3u && host.gpu_world_ && host.showcase_tex_.view) {
     constexpr uint32_t kShowcaseTexRecord = 0xFFFFFFF1u;
@@ -1312,6 +1378,7 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
   if (total_v == 0u) return;
 
   // Ensure persistent per-frame-slot host-visible vertex buffer capacity.
+  bool dyn_vb_reallocated = false;
   if (!slot.dyn_vb.buffer || slot.dyn_vb_cap < total_v) {
     const uint32_t alloc_n = std::max(total_v, std::max(slot.dyn_vb_cap * 2u, 8192u));
     if (slot.dyn_vb_mapped) {
@@ -1334,14 +1401,15 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
       return;
     }
     slot.dyn_vb_cap = alloc_n;
+    dyn_vb_reallocated = true;
   }
 
   auto* dst = static_cast<WorldVertex*>(slot.dyn_vb_mapped);
   const VkDeviceAddress base_bda = r_.buffer_device_address(slot.dyn_vb.buffer);
   uint32_t cursor = 0;
 
-  auto build_dyn = [&](const WorldVertex* src_verts, uint32_t count, uint32_t mat_class, uint32_t tex_slot,
-                       float rough, BlasHandle& out_blas) {
+  auto build_or_refit_dyn = [&](const WorldVertex* src_verts, uint32_t count, uint32_t mat_class, uint32_t tex_slot,
+                                float rough, BlasHandle& out_blas) {
     if (count < 3u) return;
     const uint32_t v_off = cursor;
     std::memcpy(dst + cursor, src_verts, size_t(count) * sizeof(WorldVertex));
@@ -1361,7 +1429,15 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
     tri.indexType = VK_INDEX_TYPE_UINT32;
     tri.indexData.deviceAddress = seq_ib_bda_;
 
-    if (build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, out_blas, nullptr)) {
+    bool ok = false;
+    if (!dyn_vb_reallocated && out_blas.handle && out_blas.allow_update && out_blas.total_prims == prim_count) {
+      ok = refit_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, out_blas);
+    }
+    if (!ok) {
+      destroy_blas(out_blas, false);
+      ok = build_blas_from_geoms(cmd, {ag}, {prim_count}, {{prim_count, 0, 0, 0}}, false, out_blas, nullptr, true);
+    }
+    if (ok) {
       RtGeomInfoGpu gm{};
       gm.vb_off = v_off;
       gm.ib_off = 0u;
@@ -1378,12 +1454,12 @@ void RtScene::update_dynamic_actor_blases(VkCommandBuffer cmd, const Showroom& h
   };
 
   if (drv_n >= 3u) {
-    build_dyn(reinterpret_cast<const WorldVertex*>(host.driver_buf_.cpu.data()), drv_n, 4u, 0u, 0.65f,
-              slot.driver_blas);
+    build_or_refit_dyn(reinterpret_cast<const WorldVertex*>(host.driver_buf_.cpu.data()), drv_n, 4u, 0u, 0.65f,
+                       slot.driver_blas);
   }
   if (show_n >= 3u) {
-    build_dyn(reinterpret_cast<const WorldVertex*>(host.showcase_buf_.cpu.data()), show_n, 100u, show_tex_slot, 0.32f,
-              slot.showcase_blas);
+    build_or_refit_dyn(reinterpret_cast<const WorldVertex*>(host.showcase_buf_.cpu.data()), show_n, 100u,
+                       show_tex_slot, 0.32f, slot.showcase_blas);
   }
 }
 
@@ -1578,6 +1654,7 @@ void RtScene::record_update(VkCommandBuffer cmd, const Showroom& host) {
   // 4b-2. Dynamic actors: Spectators.zip festival crowds & Airborne Showcase aircraft.
   const FrameSlot& cur_slot = slots_[active_slot_];
   if (spectator_blas_.handle) {
+    spec_vb_last_submit_[spec_vb_active_] = r_.frames_submitted() + 1ull;
     push_instance(spectator_blas_, wt, rt::kMaskWorldOpaque, rt::InstanceKind::kWorld, 0u, true);
   }
   if (cur_slot.showcase_blas.handle) {

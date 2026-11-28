@@ -32,6 +32,7 @@
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include "rhi_backend_bridge.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -400,6 +401,36 @@ static int carview_main(int argc, char** argv) {
     if (std::strcmp(argv[i], "--list-backends") == 0) {
       carview::print_rhi_backends();
       return 0;
+    }
+    if (std::strcmp(argv[i], "--modern-rhi-probe") == 0) {
+      shift::rhi::BackendKind bk = shift::rhi::BackendKind::Auto;
+      for (int j = 1; j + 1 < argc; ++j) {
+        if (std::strcmp(argv[j], "--backend") == 0) {
+          bk = shift::rhi::parse_backend_kind(argv[j + 1]);
+        }
+      }
+      carview::ModernRuntimeConfig cfg{};
+      cfg.backend = bk;
+      cfg.max_width = 256;
+      cfg.max_height = 256;
+      cfg.enable_validation = true;
+      carview::ModernRhiRuntime rt;
+      std::string err;
+      if (!rt.init(cfg, err)) {
+        std::fprintf(stderr, "carview: --modern-rhi-probe init failed: %s\n", err.c_str());
+        return 1;
+      }
+      const auto tel = rt.telemetry();
+      const char* bname = (tel.active_backend == shift::rhi::BackendKind::Vulkan)  ? "vulkan"
+                          : (tel.active_backend == shift::rhi::BackendKind::D3D12) ? "dx12"
+                          : (tel.active_backend == shift::rhi::BackendKind::Metal) ? "metal"
+                                                                                   : "auto";
+      std::printf("carview modern RHI probe: backend=%s adapter='%s' threaded=%d validation_msgs=%llu\n",
+                  bname, tel.adapter_name.c_str(),
+                  int(tel.render_thread.threaded_active),
+                  static_cast<unsigned long long>(tel.validation_messages));
+      rt.shutdown();
+      return tel.validation_messages == 0 ? 0 : 1;
     }
     if (std::strcmp(argv[i], "--precompile-shaders") == 0) {
       return carview::run_precompile_shaders(argc, argv);

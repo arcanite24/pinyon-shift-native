@@ -671,11 +671,16 @@ void test_lazy_targets_and_reflection_schedule() {
   CHECK(m1.mirror_band_count == 1 && m2.mirror_band_count == 1 && m3.mirror_band_count == 1);
   CHECK(m1.mirror_band_begin == 0 && m2.mirror_band_begin == 1 && m3.mirror_band_begin == 2);
 
-  // World memory budgets per preset.
+  // World memory budgets per preset (scales cleanly up to modern 12-24+ GB GPUs).
   const auto mb_low = choose_world_memory_budget(16ULL << 30, true, 0.25f);
   const auto mb_high = choose_world_memory_budget(16ULL << 30, false, 1.0f);
+  const auto mb_8g = choose_world_memory_budget(8ULL << 30, false, 1.0f);
   CHECK(mb_low.vertex_arena_bytes >= (192ULL << 20));
   CHECK(mb_low.vertex_arena_bytes < mb_high.vertex_arena_bytes);
+  CHECK(mb_8g.vertex_arena_bytes == (512ULL << 20));
+  CHECK(mb_8g.texture_lru_bytes == (512ULL << 20));
+  CHECK(mb_high.vertex_arena_bytes == (1024ULL << 20));
+  CHECK(mb_high.texture_lru_bytes == (1536ULL << 20));
   CHECK(mb_low.dyn_env_size == 128 && mb_low.dyn_env_mips == 8);
   CHECK(mb_high.dyn_env_size == 256 && mb_high.dyn_env_mips == 9);
 }

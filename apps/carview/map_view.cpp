@@ -9,6 +9,7 @@
 
 #include "audio/xml.h"
 #include "fh1data/archive.h"
+#include "fh1data/worker_pool.h"
 #include "fh1data/xds.h"
 #include "traffic/nav.h"
 #include "traffic/roads.h"
@@ -1019,24 +1020,10 @@ void MapView::ensure_high_tiles(int c0, int c1, int r0, int r1) const {
       high_tile_state_[idx] = 2;
     }
   };
-  if (missing.size() == 1) {
-    decode_tile(missing[0].first, missing[0].second);
-    return;
-  }
-  const size_t n_workers = std::min<size_t>(missing.size(), std::max<size_t>(1, std::min<unsigned>(4u, std::thread::hardware_concurrency())));
-  if (n_workers <= 1) {
-    for (const auto& [c, r] : missing) decode_tile(c, r);
-    return;
-  }
-  std::vector<std::thread> workers;
-  workers.reserve(n_workers - 1);
-  for (size_t wi = 0; wi + 1 < n_workers; ++wi) {
-    workers.emplace_back([&, wi, n_workers]() {
-      for (size_t i = wi; i < missing.size(); i += n_workers) decode_tile(missing[i].first, missing[i].second);
-    });
-  }
-  for (size_t i = n_workers - 1; i < missing.size(); i += n_workers) decode_tile(missing[i].first, missing[i].second);
-  for (auto& th : workers) th.join();
+  fh1::parallel_for_ex(
+      missing.size(),
+      [&](size_t i) { decode_tile(missing[i].first, missing[i].second); },
+      fh1::JobLane::kBackground, 1, 2);
 }
 
 bool MapView::sample_high_pixel(int px, int py, uint8_t out_rgb[3]) const {
@@ -1650,23 +1637,15 @@ void MapView::render_pause_base(std::vector<uint8_t>& rgba, int width, int heigh
       }
     };
 
-    const unsigned n_threads = (size_t(width) * size_t(height) >= 250000u)
-                                   ? std::min(8u, std::max(1u, std::thread::hardware_concurrency()))
-                                   : 1u;
-    if (n_threads <= 1u) {
+    if (size_t(width) * size_t(height) < 250000u) {
       render_rows(0, height);
     } else {
-      std::vector<std::thread> workers;
-      workers.reserve(n_threads - 1u);
-      const int stripe = (height + int(n_threads) - 1) / int(n_threads);
-      for (unsigned t = 0; t + 1u < n_threads; ++t) {
-        const int yb = int(t) * stripe;
-        const int ye = std::min(height, yb + stripe);
-        if (yb < ye) workers.emplace_back(render_rows, yb, ye);
-      }
-      const int last_yb = int(n_threads - 1u) * stripe;
-      if (last_yb < height) render_rows(last_yb, height);
-      for (auto& th : workers) th.join();
+      constexpr int kStripe = 32;
+      const size_t stripes = size_t((height + kStripe - 1) / kStripe);
+      fh1::parallel_for_frame(stripes, [&](size_t s) {
+        const int yb = int(s) * kStripe;
+        render_rows(yb, std::min(height, yb + kStripe));
+      });
     }
   } else {
     for (int y = 0; y < height; ++y) cv.fill_rect_row(y, 0, width, 12, 12, 14);
@@ -1782,23 +1761,15 @@ void MapView::upscale_pause_rgba(const std::vector<uint8_t>& src, int sw, int sh
     }
   };
 
-  const unsigned n_threads = (size_t(dw) * size_t(dh) >= 400000u)
-                                 ? std::min(8u, std::max(1u, std::thread::hardware_concurrency()))
-                                 : 1u;
-  if (n_threads <= 1u) {
+  if (size_t(dw) * size_t(dh) < 400000u) {
     upscale_rows(0, dh);
   } else {
-    std::vector<std::thread> workers;
-    workers.reserve(n_threads - 1u);
-    const int stripe = (dh + int(n_threads) - 1) / int(n_threads);
-    for (unsigned t = 0; t + 1u < n_threads; ++t) {
-      const int yb = int(t) * stripe;
-      const int ye = std::min(dh, yb + stripe);
-      if (yb < ye) workers.emplace_back(upscale_rows, yb, ye);
-    }
-    const int last_yb = int(n_threads - 1u) * stripe;
-    if (last_yb < dh) upscale_rows(last_yb, dh);
-    for (auto& th : workers) th.join();
+    constexpr int kStripe = 64;
+    const size_t stripes = size_t((dh + kStripe - 1) / kStripe);
+    fh1::parallel_for_frame(stripes, [&](size_t s) {
+      const int yb = int(s) * kStripe;
+      upscale_rows(yb, std::min(dh, yb + kStripe));
+    });
   }
 }
 

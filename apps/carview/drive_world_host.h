@@ -16,12 +16,14 @@
 #include "drive/vehicle.h"
 #include "drive_app.h"
 #include "drive_helpers_runtime.h"
+#include "fh1data/native_cache.h"
 #include "frame_inspector.h"
 #include "freeroam/collectibles.h"
 #include "hub_room.h"
 #include "render_modern.h"
 #include "renderer.h"
 #include "showroom.h"
+#include "world/cell_streamer.h"
 #include "world/collision.h"
 #include "world/road_follow.h"
 #include "world/stream.h"
@@ -72,6 +74,8 @@ struct DriveWorldHost {
   world::Collision collision;
   world::GatherOptions world_gather_options;
   int loaded_world_route = 0;
+  std::unique_ptr<fh1::NativeCache> native_cache;
+  world::CarAssetPool car_asset_pool;
   std::unique_ptr<world::Streamer> streamer;
   std::unique_ptr<freeroam::FreeRoam> free_roam;
   std::shared_ptr<const std::set<std::string>> hidden_sent;

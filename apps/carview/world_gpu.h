@@ -78,8 +78,8 @@ class WorldGpu {
   // ---- the table of draws and hardware-instanced tree sprites ----
   bool set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string& error,
                  const std::vector<gpuworld::TreeInstanceGpu>& trees = {});
-  uint32_t table_rows() const { return generation_.rows; }
-  uint32_t tree_count() const { return generation_.trees_count; }
+  uint32_t table_rows() const { return active_gen_ >= 0 ? table_gens_[size_t(active_gen_)].rows : 0u; }
+  uint32_t tree_count() const { return active_gen_ >= 0 ? table_gens_[size_t(active_gen_)].trees_count : 0u; }
 
   // ---- per frame ----
   void record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view);
@@ -121,12 +121,19 @@ class WorldGpu {
     Renderer::Buffer trees;
     Renderer::Buffer table_staging;
     Renderer::Buffer trees_staging;
+    void* table_staging_mapped = nullptr;
+    void* trees_staging_mapped = nullptr;
+    VkDeviceSize table_cap = 0;
+    VkDeviceSize trees_cap = 0;
     VkDeviceSize table_bytes = 0;
     VkDeviceSize trees_bytes = 0;
     VkDescriptorSet set = VK_NULL_HANDLE;
+    VkBuffer bound_table = VK_NULL_HANDLE;
+    VkBuffer bound_trees = VK_NULL_HANDLE;
     uint32_t rows = 0;
     uint32_t trees_count = 0;
     bool pending_upload = false;
+    uint64_t retired_after_frame = 0;
   };
   void destroy_generation(Generation& g);
   struct SlotBuffers {
@@ -171,7 +178,8 @@ class WorldGpu {
   std::array<VkImageView, kHizMips> hiz_mip_views_{};
   VkSampler hiz_sampler_ = VK_NULL_HANDLE;
   bool hiz_valid_ = false;
-  Generation generation_;
+  std::vector<Generation> table_gens_;
+  int active_gen_ = -1;
   SlotBuffers slots_[Renderer::kFramesInFlight];
   uint32_t last_tested_ = 0, last_drawn_ = 0, last_hiz_culled_ = 0, last_trees_drawn_ = 0;
   uint32_t recorded_slot_ = 0;

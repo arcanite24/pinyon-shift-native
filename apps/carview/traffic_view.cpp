@@ -217,15 +217,18 @@ void TrafficView::step(drive::Vehicle& player, std::span<const traffic::External
     publish_camera_obbs(player.position());
     return;
   }
-  std::map<uint32_t, TrafficPose> snap;
+  before_.clear();
+  before_.reserve(population_->cars().size());
   for (const auto& c : population_->cars()) {
     const drive::Vehicle* body = bodies_ ? bodies_->body(c.id) : nullptr;
-    snap[c.id] = {
-        body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
-        body ? body->orientation() : lane_orientation(c.heading, c.pitch),
-    };
+    before_.push_back({c.id,
+                       {
+                           body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
+                           body ? body->orientation() : lane_orientation(c.heading, c.pitch),
+                       }});
   }
-  before_ = std::move(snap);
+  std::sort(before_.begin(), before_.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
   const drive::Vec3 p = player.position(), v = player.velocity();
   const drive::Vec3 fwd = drive::rotate(player.orientation(), {0, 0, 1});
   const double heading = std::atan2(fwd.x, fwd.z);
@@ -449,8 +452,10 @@ void TrafficView::place(const cars::bake::CarInfo& player_info, const drive::Veh
         body ? body->position() : drive::Vec3{c.position.x, c.position.y, c.position.z},
         body ? body->orientation() : lane_orientation(c.heading, c.pitch),
     };
-    if (blend_ < 1.0) {
-      if (const auto bit = before_.find(c.id); bit != before_.end()) {
+    if (blend_ < 1.0 && !before_.empty()) {
+      const auto bit = std::lower_bound(before_.begin(), before_.end(), c.id,
+                                        [](const auto& e, uint32_t id) { return e.first < id; });
+      if (bit != before_.end() && bit->first == c.id) {
         pose = blend_traffic_pose(bit->second, pose, blend_);
       }
     }
@@ -652,7 +657,8 @@ TrafficView::RewindSnapshot TrafficView::capture_rewind() const {
   RewindSnapshot snap;
   if (population_) snap.population = population_->snapshot();
   if (bodies_) snap.bodies = bodies_->snapshot();
-  snap.before = before_;
+  snap.before.clear();
+  for (const auto& [id, pose] : before_) snap.before.emplace(id, pose);
   snap.locked_model = locked_model_;
   return snap;
 }
@@ -660,7 +666,9 @@ TrafficView::RewindSnapshot TrafficView::capture_rewind() const {
 void TrafficView::restore_rewind(const RewindSnapshot& s) {
   if (population_) population_->restore(s.population);
   if (bodies_) bodies_->restore(s.bodies);
-  before_ = s.before;
+  before_.clear();
+  before_.reserve(s.before.size());
+  for (const auto& [id, pose] : s.before) before_.emplace_back(id, pose);
   locked_model_ = s.locked_model;
   lamps_at_ = population_ ? population_->time() : -1.0;
 }

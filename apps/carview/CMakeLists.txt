@@ -101,6 +101,8 @@ add_library(carview_render STATIC
   perf_overlay.cpp
   world_gpu_logic.cpp
   world_gpu.cpp
+  render_thread.cpp
+  rhi_backend_bridge.cpp
   ${shader_headers})
 set_target_properties(carview_render PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(carview_render PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${generated}")

@@ -23,6 +23,7 @@
 #include "race/street_line.h"
 #include "race/rally_championship.h"
 #include "fh1data/archive.h"
+#include "fh1data/worker_pool.h"
 #include "traffic/nav.h"
 #include "traffic_view.h"
 #include "world/collision.h"
@@ -121,96 +122,6 @@ bool flagged_participant(const std::string& event, int64_t car) {
 }
 
 }  // namespace
-
-#if defined(_M_X64) || defined(__x86_64__)
-#include <xmmintrin.h>
-#include <pmmintrin.h>
-#endif
-
-struct RaceView::PhysicsStepPool {
-  std::vector<std::thread> workers;
-  std::mutex mu;
-  std::condition_variable cv_work;
-  std::condition_variable cv_done;
-  void (*fn)(void*, size_t) = nullptr;
-  void* ctx = nullptr;
-  size_t count = 0;
-  std::atomic<size_t> next{0};
-  size_t active = 0;
-  uint64_t generation = 0;
-  bool stop = false;
-
-  explicit PhysicsStepPool(size_t num_workers) {
-    workers.reserve(num_workers);
-    for (size_t i = 0; i < num_workers; ++i) {
-      workers.emplace_back([this]() {
-#if defined(_M_X64) || defined(__x86_64__)
-        _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
-        _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
-#endif
-        uint64_t seen = 0;
-        for (;;) {
-          {
-            std::unique_lock<std::mutex> lock(mu);
-            cv_work.wait(lock, [&]() { return stop || generation != seen; });
-            if (stop) return;
-            seen = generation;
-          }
-          auto* local_fn = fn;
-          void* local_ctx = ctx;
-          for (;;) {
-            const size_t k = next.fetch_add(1, std::memory_order_relaxed);
-            if (k >= count) break;
-            local_fn(local_ctx, k);
-          }
-          {
-            std::lock_guard<std::mutex> lock(mu);
-            if (--active == 0) cv_done.notify_one();
-          }
-        }
-      });
-    }
-  }
-
-  ~PhysicsStepPool() {
-    {
-      std::lock_guard<std::mutex> lock(mu);
-      stop = true;
-    }
-    cv_work.notify_all();
-    for (auto& w : workers)
-      if (w.joinable()) w.join();
-  }
-
-  template <typename Fn>
-  void run(size_t n, Fn&& task) {
-    if (n <= 1 || workers.empty()) {
-      for (size_t k = 0; k < n; ++k) task(k);
-      return;
-    }
-    auto trampoline = [](void* p, size_t idx) { (*static_cast<std::remove_reference_t<Fn>*>(p))(idx); };
-    {
-      std::lock_guard<std::mutex> lock(mu);
-      fn = trampoline;
-      ctx = &task;
-      count = n;
-      next.store(0, std::memory_order_relaxed);
-      active = workers.size();
-      ++generation;
-    }
-    cv_work.notify_all();
-    // Main thread participates too so zero thread sits idle while waiting.
-    for (;;) {
-      const size_t k = next.fetch_add(1, std::memory_order_relaxed);
-      if (k >= count) break;
-      task(k);
-    }
-    std::unique_lock<std::mutex> lock(mu);
-    cv_done.wait(lock, [&]() { return active == 0; });
-    fn = nullptr;
-    ctx = nullptr;
-  }
-};
 
 RaceView::RaceView(std::filesystem::path bake_dir) : bake_dir_(std::move(bake_dir)) {}
 RaceView::~RaceView() = default;
@@ -771,7 +682,6 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       std::string err;
     };
     std::vector<LoadedSpec> loaded(specs.size());
-    const size_t threads = std::min<size_t>(specs.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
     auto load_one = [&](size_t i) {
       auto m = std::make_unique<Showroom>(renderer);
       m->set_guest();
@@ -788,23 +698,7 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
       m->load_car_lamps(game_root_, specs[i].media);
       loaded[i].m = std::move(m);
     };
-    if (threads > 1 && specs.size() >= 2) {
-      std::atomic<size_t> next{0};
-      std::vector<std::thread> workers;
-      workers.reserve(threads);
-      for (size_t t = 0; t < threads; ++t) {
-        workers.emplace_back([&]() {
-          for (;;) {
-            const size_t i = next.fetch_add(1, std::memory_order_relaxed);
-            if (i >= specs.size()) break;
-            load_one(i);
-          }
-        });
-      }
-      for (auto& w : workers) w.join();
-    } else {
-      for (size_t i = 0; i < specs.size(); ++i) load_one(i);
-    }
+    fh1::parallel_for_ex(specs.size(), load_one, fh1::JobLane::kBackground, 1, 2);
     for (size_t i = 0; i < specs.size(); ++i) {
       if (!loaded[i].err.empty() || !loaded[i].m) {
         error = loaded[i].err;
@@ -906,25 +800,7 @@ bool RaceView::load_cars(Renderer& renderer, const drive::Ground& ground, std::s
     c.lamps.update(lin);
     c.lamps_initialized = true;
   };
-  const size_t setup_threads =
-      std::min<size_t>(cars_.size(), std::max<size_t>(1, std::thread::hardware_concurrency()));
-  if (setup_threads > 1 && cars_.size() >= 2) {
-    std::atomic<size_t> next_car{0};
-    std::vector<std::thread> workers;
-    workers.reserve(setup_threads);
-    for (size_t t = 0; t < setup_threads; ++t) {
-      workers.emplace_back([&]() {
-        for (;;) {
-          const size_t idx = next_car.fetch_add(1, std::memory_order_relaxed);
-          if (idx >= cars_.size()) break;
-          setup_one_car(idx);
-        }
-      });
-    }
-    for (auto& w : workers) w.join();
-  } else {
-    for (size_t idx = 0; idx < cars_.size(); ++idx) setup_one_car(idx);
-  }
+  fh1::parallel_for_ex(cars_.size(), setup_one_car, fh1::JobLane::kBackground, 1, 2);
   for (const auto& line_log : bisect_logs) {
     if (!line_log.empty()) std::fputs(line_log.c_str(), stdout);
   }
@@ -1362,11 +1238,6 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
     player.set_draft(drive::DraftState{});
     for (size_t k = 0; k < n; ++k) cars_[k].body->set_draft(drive::DraftState{});
   }
-  if (n >= 2 && !step_pool_) {
-    const size_t hw = std::max<size_t>(1, std::thread::hardware_concurrency());
-    const size_t workers = std::min<size_t>(n - 1, hw > 1 ? hw - 1 : 0);
-    if (workers > 0) step_pool_ = std::make_unique<PhysicsStepPool>(workers);
-  }
   step_ribbon_scratch_.assign(n, 0);
   step_hole_scratch_.assign(n, 0);
   step_bad_scratch_.assign(n, 0);
@@ -1417,11 +1288,7 @@ void RaceView::after_step(drive::Vehicle& player, const drive::Ground& near, dou
       step_bad[k] = 1;
     }
   };
-  if (step_pool_ && n >= 2) {
-    step_pool_->run(n, step_ai_car);
-  } else {
-    for (size_t k = 0; k < n; ++k) step_ai_car(k);
-  }
+  fh1::parallel_for_frame(n, step_ai_car);
   for (size_t k = 0; k < n; ++k) {
     hole_steps_ += step_hole[k];
     far_steps_ += step_ribbon[k];

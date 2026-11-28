@@ -848,6 +848,13 @@ bool DriveWorldHost::open_world_and_car() {
           world_gather_options = gather_options;
           streamer = std::make_unique<world::Streamer>(colorado, gather_options, kRegather,
                                                        app.render_ground ? nullptr : &collision);
+          if (!app.state_root.empty() && !std::getenv("SHIFT_NO_NATIVE_CACHE")) {
+            if (!native_cache) {
+              native_cache = std::make_unique<fh1::NativeCache>(app.state_root / "native-cache");
+              native_cache->trim_to_budget(2ull * 1024ull * 1024ull * 1024ull);
+            }
+            streamer->set_native_cache(native_cache.get());
+          }
           streamer->set_async(streamer_async);
           streamer->set_lead(true);  // keeps a fast car central in the collision
           if (app.world_reference_path.empty() && app.contacts_log_path.empty() && !app.texture_census &&

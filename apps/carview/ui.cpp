@@ -7,8 +7,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
-#include <utility>
 #include <tuple>
+#include <unordered_map>
+#include <utility>
 
 #include "fh1data/archive.h"
 #include "fh1data/cjk_font.h"
@@ -376,6 +377,16 @@ constexpr uint64_t kAtlasInFlightGuard = 4;
 
 using GlyphKey = std::tuple<int, uint32_t, int>;  // (font, code point, px)
 
+struct GlyphKeyHash {
+  size_t operator()(const GlyphKey& k) const noexcept {
+    uint64_t h = uint64_t(uint32_t(std::get<0>(k))) * 0x9E3779B97F4A7C15ull;
+    h ^= uint64_t(std::get<1>(k)) * 0xBF58476D1CE4E5B9ull;
+    h ^= uint64_t(uint32_t(std::get<2>(k))) * 0x94D049BB133111EBull;
+    h ^= h >> 30;
+    return size_t(h);
+  }
+};
+
 struct GlyphShelf {
   uint32_t y = 0;
   uint32_t h = 0;
@@ -416,8 +427,8 @@ struct VectorFonts {
   uint64_t lru_tick = 1;
   uint64_t transient_evictions = 0;
   std::vector<TransientShelf> trans_shelves;
-  std::map<std::string, int> trans_key_shelf;  // key -> index into trans_shelves
-  std::map<std::string, std::array<float, 4>> images;
+  std::unordered_map<std::string, int> trans_key_shelf;  // key -> index into trans_shelves
+  std::unordered_map<std::string, std::array<float, 4>> images;
   struct Entry {
     float u0, v0, u1, v1;  // atlas texels
     float left, top;       // the bitmap's top-left from the pen, px at the cached size (y down from the baseline)
@@ -427,7 +438,7 @@ struct VectorFonts {
     bool empty = false;
   };
   // font index: 0..10 VFont, 16 CjkFont.
-  std::map<GlyphKey, Entry> cache;
+  std::unordered_map<GlyphKey, Entry, GlyphKeyHash> cache;
 
   void ensure_cpu_atlas() {
     const size_t want = size_t(atlas_size) * atlas_size * 4;
@@ -1072,12 +1083,12 @@ bool glyph_alloc_shelf(VectorFonts& v, uint32_t w, uint32_t h, const GlyphKey& k
 const VectorFonts::Entry* find_fallback_glyph(VectorFonts& v, int font, uint32_t cp, int target_px) {
   const VectorFonts::Entry* best = nullptr;
   int best_diff = INT32_MAX;
-  auto it = v.cache.lower_bound(std::make_tuple(font, cp, 0));
-  for (; it != v.cache.end() && std::get<0>(it->first) == font && std::get<1>(it->first) == cp; ++it) {
-    const int diff = std::abs(std::get<2>(it->first) - target_px);
+  for (const auto& [k, e] : v.cache) {
+    if (std::get<0>(k) != font || std::get<1>(k) != cp) continue;
+    const int diff = std::abs(std::get<2>(k) - target_px);
     if (diff < best_diff) {
       best_diff = diff;
-      best = &it->second;
+      best = &e;
     }
   }
   if (best && best->shelf >= 0 && size_t(best->shelf) < v.glyph_shelves.size()) {

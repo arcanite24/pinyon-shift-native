@@ -748,13 +748,16 @@ void RtPipeline::record(VkCommandBuffer cmd, const Showroom& host, const RtScene
     const int32_t pc[4] = {p0, p1, 0, 0};
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
     vkCmdPushConstants(cmd, pipe_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
-    vkCmdDispatch(cmd, gx, gy, 1);
+    vkCmdDispatch(cmd, std::max(gx, 1u), std::max(gy, 1u), 1);
   };
 
   if (mode == rt::RtMode::kHybrid) {
     // Tier 1: Inline VK_KHR_ray_query RT Reflections + Soft Sun/Headlight Shadows + RTAO.
-    // rt_refl writes refl_img_ while rt_shad writes shad_ao_img_, so they overlap freely.
-    dispatch(refl_pipe_, 0);
+    // rt_refl populates rt_gbuf_norm/rt_gbuf_albedo (or reads external thin G-buf).
+    // rt_ao reads shad_ao_img_.r written by rt_shad and re-writes (.r, .g), so a barrier
+    // between rt_shad and rt_ao is required to prevent RAW/WAW hazards.
+    dispatch(refl_pipe_, 0, external_thin_gbuf_ ? 1 : 0);
+    compute_barrier(cmd);
     r_.mark(cmd, "rt_refl");
 
     dispatch(shad_pipe_, 0);

@@ -131,36 +131,48 @@ vec3 eval_restir_di(RtSurface s, vec3 V, ivec2 px, ivec2 sz, uint pixel_idx, ino
     }
   }
 
-  // Temporal reservoir reuse in real-time PT mode (disabled in unbiased Photo Mode PT).
+  // Spatiotemporal reservoir reuse (temporal + 2 spatial neighbors from prev frame)
+  // in real-time PT mode (disabled in unbiased Photo Mode PT).
   if (!photo_mode && ubo.eye_frame.w > 1.5 && light_cnt > 1u) {
     vec2 uv = (vec2(px) + 0.5) / vec2(sz);
     vec4 mv = textureLod(motion_tex, uv, 0.0);
     vec2 prev_uv = uv - mv.xy;
     if (all(greaterThanEqual(prev_uv, vec2(0.0))) && all(lessThan(prev_uv, vec2(1.0))) && mv.b < 0.45) {
-      ivec2 prev_px = clamp(ivec2(prev_uv * vec2(sz)), ivec2(0), sz - ivec2(1));
-      uint prev_idx = uint(prev_px.y * sz.x + prev_px.x);
-      RtReservoir prev_r = res_prev[prev_idx];
-      if (prev_r.M > 0u && prev_r.W > 0.0 && prev_r.light_idx < light_cnt) {
-        uint prev_M = min(prev_r.M, 16u);
-        vec3 p_ld;
-        float p_dist;
-        vec3 p_f = eval_light_contrib(s, V, prev_r.light_idx, p_ld, p_dist);
-        float p_hat = luma(p_f);
-        float w_prev = p_hat * prev_r.W * float(prev_M);
-        float w_curr = win_p * r.W * float(r.M);
-        float w_tot = w_curr + w_prev;
-        uint M_tot = r.M + prev_M;
-        if (w_tot > 1e-6) {
-          if (rand01(rng) * w_tot < w_prev) {
-            r.light_idx = prev_r.light_idx;
-            win_f = p_f;
-            win_p = p_hat;
-            win_ld = p_ld;
-            win_dist = p_dist;
+      ivec2 center_prev_px = clamp(ivec2(prev_uv * vec2(sz)), ivec2(0), sz - ivec2(1));
+      for (int tap = 0; tap < 3; ++tap) {
+        ivec2 tap_px = center_prev_px;
+        uint cap_m = 16u;
+        if (tap > 0) {
+          // 2 spatial neighbors within a 10-pixel jittered disk for rapid headlight/streetlamp convergence.
+          float ang = 2.0 * kPi * rand01(rng);
+          float rad = 2.0 + 8.0 * sqrt(rand01(rng));
+          tap_px = clamp(center_prev_px + ivec2(round(vec2(cos(ang), sin(ang)) * rad)), ivec2(0), sz - ivec2(1));
+          cap_m = 6u;
+        }
+        uint prev_idx = uint(tap_px.y * sz.x + tap_px.x);
+        RtReservoir prev_r = res_prev[prev_idx];
+        if (prev_r.M > 0u && prev_r.W > 0.0 && prev_r.light_idx < light_cnt) {
+          uint prev_M = min(prev_r.M, cap_m);
+          vec3 p_ld;
+          float p_dist;
+          vec3 p_f = eval_light_contrib(s, V, prev_r.light_idx, p_ld, p_dist);
+          float p_hat = luma(p_f);
+          float w_prev = p_hat * prev_r.W * float(prev_M);
+          float w_curr = win_p * r.W * float(r.M);
+          float w_tot = w_curr + w_prev;
+          uint M_tot = r.M + prev_M;
+          if (w_tot > 1e-6) {
+            if (rand01(rng) * w_tot < w_prev) {
+              r.light_idx = prev_r.light_idx;
+              win_f = p_f;
+              win_p = p_hat;
+              win_ld = p_ld;
+              win_dist = p_dist;
+            }
+            r.M = M_tot;
+            r.weight_sum = w_tot;
+            r.W = win_p > 1e-5 ? (w_tot / (win_p * float(M_tot))) : 0.0;
           }
-          r.M = M_tot;
-          r.weight_sum = w_tot;
-          r.W = win_p > 1e-5 ? (w_tot / (win_p * float(M_tot))) : 0.0;
         }
       }
     }

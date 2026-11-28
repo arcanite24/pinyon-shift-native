@@ -101,7 +101,9 @@ WorldGpu::~WorldGpu() {
   VkDevice d = r_.device_;
   if (!d) return;
   std::lock_guard<std::mutex> lock(mutex_);
-  destroy_generation(generation_);
+  for (Generation& g : table_gens_) destroy_generation(g);
+  table_gens_.clear();
+  active_gen_ = -1;
   for (SlotBuffers& s : slots_) {
     if (s.stats_mapped) vmaUnmapMemory(r_.allocator_, s.stats.allocation);
     if (s.tree_stats_mapped) vmaUnmapMemory(r_.allocator_, s.tree_stats.allocation);
@@ -245,10 +247,10 @@ bool WorldGpu::init(const Setup& setup, std::string& error) {
     li.pBindings = hb;
     WG_TRY(vkCreateDescriptorSetLayout(d, &li, nullptr, &hiz_set_layout_), "hiz layout");
 
-    const VkDescriptorPoolSize tsize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16};
+    const VkDescriptorPoolSize tsize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 32};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pi.maxSets = 8;
+    pi.maxSets = 16;
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &tsize;
     WG_TRY(vkCreateDescriptorPool(d, &pi, nullptr, &table_pool_), "table pool");
@@ -609,13 +611,25 @@ bool WorldGpu::create_buffers(std::string& error) {
 void WorldGpu::destroy_generation(Generation& g) {
   if (g.set) vkFreeDescriptorSets(r_.device_, table_pool_, 1, &g.set);
   g.set = VK_NULL_HANDLE;
+  g.bound_table = VK_NULL_HANDLE;
+  g.bound_trees = VK_NULL_HANDLE;
+  if (g.table_staging_mapped) {
+    vmaUnmapMemory(r_.allocator_, g.table_staging.allocation);
+    g.table_staging_mapped = nullptr;
+  }
+  if (g.trees_staging_mapped) {
+    vmaUnmapMemory(r_.allocator_, g.trees_staging.allocation);
+    g.trees_staging_mapped = nullptr;
+  }
   r_.destroy_buffer(g.table);
   r_.destroy_buffer(g.trees);
   r_.destroy_buffer(g.table_staging);
   r_.destroy_buffer(g.trees_staging);
+  g.table_cap = g.trees_cap = 0;
   g.table_bytes = g.trees_bytes = 0;
   g.rows = g.trees_count = 0;
   g.pending_upload = false;
+  g.retired_after_frame = 0;
 }
 
 void WorldGpu::record_copies(VkCommandBuffer cmd, VkBuffer staged_vertices, const std::vector<Copy>& vertex_copies,
@@ -735,32 +749,43 @@ void WorldGpu::remove_texture(uint32_t record) {
 
 bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string& error,
                          const std::vector<gpuworld::TreeInstanceGpu>& trees) {
-  // Non-blocking table swap: stage rows/trees into host-visible buffers on CPU (<0.1 ms)
-  // and record the GPU-side transfer into the next frame's record_cull() command buffer
-  // before compute culling runs (zero submit_once / vkWaitForFences stall on streaming swap).
-  auto stage_device_buffer = [&](const void* data, VkDeviceSize bytes, Renderer::Buffer& device_buf,
-                                 Renderer::Buffer& staging_buf) -> bool {
-    if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device_buf)) {
-      return false;
-    }
-    if (!r_.create_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging_buf)) {
-      r_.destroy_buffer(device_buf);
-      return false;
-    }
-    void* mapped = nullptr;
-    if (vmaMapMemory(r_.allocator_, staging_buf.allocation, &mapped) != VK_SUCCESS) {
+  // Non-blocking table swap backed by a recycled pool of persistent, grow-only
+  // device-local + persistently mapped staging buffers (eliminates VMA buffer and
+  // descriptor set allocation/retirement churn during streaming and texture trickles).
+  auto ensure_pair = [&](const void* data, VkDeviceSize bytes, Renderer::Buffer& device_buf,
+                         Renderer::Buffer& staging_buf, void*& staging_mapped, VkDeviceSize& cap) -> bool {
+    if (bytes > cap) {
+      constexpr VkDeviceSize kGranularity = 65536;
+      const VkDeviceSize grown = std::max(bytes, cap ? cap * 2 : kGranularity);
+      const VkDeviceSize new_cap = (grown + kGranularity - 1) & ~(kGranularity - 1);
+      if (staging_mapped) {
+        vmaUnmapMemory(r_.allocator_, staging_buf.allocation);
+        staging_mapped = nullptr;
+      }
       r_.destroy_buffer(staging_buf);
       r_.destroy_buffer(device_buf);
-      return false;
+      cap = 0;
+      if (!r_.create_buffer(new_cap, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, device_buf)) {
+        return false;
+      }
+      if (!r_.create_buffer(new_cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging_buf)) {
+        r_.destroy_buffer(device_buf);
+        return false;
+      }
+      if (vmaMapMemory(r_.allocator_, staging_buf.allocation, &staging_mapped) != VK_SUCCESS) {
+        staging_mapped = nullptr;
+        r_.destroy_buffer(staging_buf);
+        r_.destroy_buffer(device_buf);
+        return false;
+      }
+      cap = new_cap;
     }
-    std::memcpy(mapped, data, size_t(bytes));
-    vmaUnmapMemory(r_.allocator_, staging_buf.allocation);
+    std::memcpy(staging_mapped, data, size_t(bytes));
     return true;
   };
 
-  Generation next;
   const uint32_t n = uint32_t(std::min<size_t>(rows.size(), size_t(kMaxTableRows)));
   std::vector<gpuworld::TreeInstanceGpu> valid_trees;
   const gpuworld::TreeInstanceGpu* tree_data = trees.data();
@@ -782,51 +807,81 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
       tn = uint32_t(valid_trees.size());
     }
   }
+
+  int chosen = -1;
   if (n > 0) {
-    next.table_bytes = VkDeviceSize(n) * sizeof(gpuworld::DrawGpu);
-    if (!stage_device_buffer(rows.data(), next.table_bytes, next.table, next.table_staging)) {
+    const VkDeviceSize need_table = VkDeviceSize(n) * sizeof(gpuworld::DrawGpu);
+    const VkDeviceSize need_trees = VkDeviceSize(tn) * sizeof(gpuworld::TreeInstanceGpu);
+    const uint64_t done = r_.frames_done();
+    for (int i = 0; i < int(table_gens_.size()); ++i) {
+      if (i == active_gen_) continue;
+      if (table_gens_[size_t(i)].retired_after_frame > done) continue;
+      if (chosen < 0 ||
+          (table_gens_[size_t(i)].table_cap >= need_table && table_gens_[size_t(i)].trees_cap >= need_trees &&
+           (table_gens_[size_t(chosen)].table_cap < need_table ||
+            table_gens_[size_t(chosen)].trees_cap < need_trees))) {
+        chosen = i;
+      }
+    }
+    if (chosen < 0) {
+      chosen = int(table_gens_.size());
+      table_gens_.emplace_back();
+    }
+    Generation& next = table_gens_[size_t(chosen)];
+    if (!ensure_pair(rows.data(), need_table, next.table, next.table_staging, next.table_staging_mapped,
+                     next.table_cap)) {
       error = "world draw table";
       return false;
     }
+    next.table_bytes = need_table;
     if (tn > 0) {
-      next.trees_bytes = VkDeviceSize(tn) * sizeof(gpuworld::TreeInstanceGpu);
-      if (!stage_device_buffer(tree_data, next.trees_bytes, next.trees, next.trees_staging)) {
-        destroy_generation(next);
+      if (!ensure_pair(tree_data, need_trees, next.trees, next.trees_staging, next.trees_staging_mapped,
+                       next.trees_cap)) {
         error = "world tree instances";
         return false;
       }
+      next.trees_bytes = need_trees;
+    } else {
+      next.trees_bytes = 0;
     }
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = table_pool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &table_layout_;
-    VkResult res;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      res = vkAllocateDescriptorSets(r_.device_, &ai, &next.set);
+    if (!next.set) {
+      VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      ai.descriptorPool = table_pool_;
+      ai.descriptorSetCount = 1;
+      ai.pSetLayouts = &table_layout_;
+      VkResult res;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        res = vkAllocateDescriptorSets(r_.device_, &ai, &next.set);
+      }
+      if (res != VK_SUCCESS) {
+        error = "world table set";
+        return false;
+      }
     }
-    if (res != VK_SUCCESS) {
-      destroy_generation(next);
-      error = "world table set";
-      return false;
+    const VkBuffer want_trees = (tn > 0) ? next.trees.buffer : empty_ssbo_.buffer;
+    if (next.bound_table != next.table.buffer || next.bound_trees != want_trees) {
+      const VkDescriptorBufferInfo bis[2] = {
+          {next.table.buffer, 0, VK_WHOLE_SIZE},
+          {want_trees, 0, VK_WHOLE_SIZE}};
+      VkWriteDescriptorSet ws[2]{};
+      for (uint32_t k = 0; k < 2; ++k) {
+        ws[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        ws[k].dstSet = next.set;
+        ws[k].dstBinding = k;
+        ws[k].descriptorCount = 1;
+        ws[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ws[k].pBufferInfo = &bis[k];
+      }
+      vkUpdateDescriptorSets(r_.device_, 2, ws, 0, nullptr);
+      next.bound_table = next.table.buffer;
+      next.bound_trees = want_trees;
     }
-    const VkDescriptorBufferInfo bis[2] = {
-        {next.table.buffer, 0, VK_WHOLE_SIZE},
-        {tn > 0 ? next.trees.buffer : empty_ssbo_.buffer, 0, VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet ws[2]{};
-    for (uint32_t k = 0; k < 2; ++k) {
-      ws[k] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      ws[k].dstSet = next.set;
-      ws[k].dstBinding = k;
-      ws[k].descriptorCount = 1;
-      ws[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      ws[k].pBufferInfo = &bis[k];
-    }
-    vkUpdateDescriptorSets(r_.device_, 2, ws, 0, nullptr);
     next.rows = n;
     next.trees_count = tn;
     next.pending_upload = true;
   }
+
   std::unordered_set<uint32_t> next_active;
   auto record_slot = [&](uint32_t s) {
     if (s >= 3u) next_active.insert(s);
@@ -840,8 +895,11 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
   for (uint32_t i = 0; i < tn; ++i) {
     record_slot(tree_data[i].col_tex[1]);
   }
-  Generation old = generation_;
-  generation_ = next;
+  if (active_gen_ >= 0) {
+    // +1 guards the currently recording frame before its vkQueueSubmit increments frames_submitted().
+    table_gens_[size_t(active_gen_)].retired_after_frame = r_.frames_submitted() + 1;
+  }
+  active_gen_ = chosen;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     active_table_slots_.swap(next_active);
@@ -858,12 +916,6 @@ bool WorldGpu::set_table(const std::vector<gpuworld::DrawGpu>& rows, std::string
       held_evicted_slots_.resize(keep);
     }
     reclaim_retired_slots_locked();
-  }
-  if (old.table.buffer || old.trees.buffer || old.table_staging.buffer || old.trees_staging.buffer || old.set) {
-    setup_.retire([this, old]() mutable {
-      std::lock_guard<std::mutex> lock(mutex_);
-      destroy_generation(old);
-    });
   }
   return true;
 }
@@ -929,53 +981,45 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
     }
   }
 
-  if (generation_.rows == 0) return;
+  if (active_gen_ < 0) return;
+  Generation& gen = table_gens_[size_t(active_gen_)];
+  if (gen.rows == 0) return;
 
-  if (generation_.pending_upload) {
-    generation_.pending_upload = false;
-    if (generation_.table_staging.buffer && generation_.table.buffer && generation_.table_bytes > 0) {
-      const VkBufferCopy copy{0, 0, generation_.table_bytes};
-      vkCmdCopyBuffer(cmd, generation_.table_staging.buffer, generation_.table.buffer, 1, &copy);
-      buffer_barrier(cmd, generation_.table.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+  if (gen.pending_upload) {
+    gen.pending_upload = false;
+    if (gen.table_staging.buffer && gen.table.buffer && gen.table_bytes > 0) {
+      const VkBufferCopy copy{0, 0, gen.table_bytes};
+      vkCmdCopyBuffer(cmd, gen.table_staging.buffer, gen.table.buffer, 1, &copy);
+      buffer_barrier(cmd, gen.table.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
                          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     }
-    if (generation_.trees_staging.buffer && generation_.trees.buffer && generation_.trees_bytes > 0) {
-      const VkBufferCopy copy{0, 0, generation_.trees_bytes};
-      vkCmdCopyBuffer(cmd, generation_.trees_staging.buffer, generation_.trees.buffer, 1, &copy);
-      buffer_barrier(cmd, generation_.trees.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+    if (gen.trees_staging.buffer && gen.trees.buffer && gen.trees_bytes > 0) {
+      const VkBufferCopy copy{0, 0, gen.trees_bytes};
+      vkCmdCopyBuffer(cmd, gen.trees_staging.buffer, gen.trees.buffer, 1, &copy);
+      buffer_barrier(cmd, gen.trees.buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
                      VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
     }
-    Renderer::Buffer st_table = generation_.table_staging;
-    Renderer::Buffer st_trees = generation_.trees_staging;
-    generation_.table_staging = {};
-    generation_.trees_staging = {};
-    if (st_table.buffer || st_trees.buffer) {
-      setup_.retire([this, st_table, st_trees]() mutable {
-        r_.destroy_buffer(st_table);
-        r_.destroy_buffer(st_trees);
-      });
-    }
   }
 
-  const bool have_trees = (generation_.trees_count > 0 && generation_.trees.buffer != VK_NULL_HANDLE);
+  const bool have_trees = (gen.trees_count > 0 && gen.trees.buffer != VK_NULL_HANDLE);
   // Update binding 0 on persistent per-slot cull descriptor sets only when generation buffers swap.
   VkDescriptorBufferInfo tbl_bi{}, tree_bi{};
   VkWriteDescriptorSet desc_writes[2]{};
   uint32_t desc_write_count = 0;
-  if (s.bound_table_buf != generation_.table.buffer) {
-    tbl_bi = {generation_.table.buffer, 0, VK_WHOLE_SIZE};
+  if (s.bound_table_buf != gen.table.buffer) {
+    tbl_bi = {gen.table.buffer, 0, VK_WHOLE_SIZE};
     desc_writes[desc_write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.cull_draw_set, 0, 0, 1,
                                        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tbl_bi, nullptr};
-    s.bound_table_buf = generation_.table.buffer;
+    s.bound_table_buf = gen.table.buffer;
   }
-  if (have_trees && s.bound_trees_buf != generation_.trees.buffer) {
-    tree_bi = {generation_.trees.buffer, 0, VK_WHOLE_SIZE};
+  if (have_trees && s.bound_trees_buf != gen.trees.buffer) {
+    tree_bi = {gen.trees.buffer, 0, VK_WHOLE_SIZE};
     desc_writes[desc_write_count++] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s.cull_tree_set, 0, 0, 1,
                                        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &tree_bi, nullptr};
-    s.bound_trees_buf = generation_.trees.buffer;
+    s.bound_trees_buf = gen.trees.buffer;
   }
   if (desc_write_count > 0) {
     vkUpdateDescriptorSets(r_.device_, desc_write_count, desc_writes, 0, nullptr);
@@ -988,7 +1032,7 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   std::memcpy(u.planes, view.planes, sizeof u.planes);
   u.eye_reach[0] = view.eye[0], u.eye_reach[1] = view.eye[1], u.eye_reach[2] = view.eye[2];
   u.eye_reach[3] = view.lod_reach;
-  u.info[0] = generation_.rows;
+  u.info[0] = gen.rows;
   u.info[1] = kMaxPerBatch;
   u.info[2] = view.frustum ? 1u : 0u;
   std::memcpy(u.prev_vp, view.prev_vp, sizeof u.prev_vp);
@@ -1021,7 +1065,7 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
 
   if (have_trees) {
     CullUniformsGpu tu = u;
-    tu.info[0] = generation_.trees_count;
+    tu.info[0] = gen.trees_count;
     tu.info[1] = kMaxTrees;
     vkCmdUpdateBuffer(cmd, s.tree_cull_ubo.buffer, 0, sizeof tu, &tu);
     const uint32_t init_cmd[4] = {6u, 0u, 0u, 0u};
@@ -1044,13 +1088,13 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &s.cull_draw_set, 0,
                           nullptr);
-  vkCmdDispatch(cmd, (generation_.rows + 63) / 64, 1, 1);
+  vkCmdDispatch(cmd, (gen.rows + 63) / 64, 1, 1);
 
   if (have_trees) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tree_cull_);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cull_pipeline_layout_, 0, 1, &s.cull_tree_set, 0,
                             nullptr);
-    vkCmdDispatch(cmd, (generation_.trees_count + 63) / 64, 1, 1);
+    vkCmdDispatch(cmd, (gen.trees_count + 63) / 64, 1, 1);
   }
 
   VkBufferMemoryBarrier2 post_barriers[4]{};
@@ -1096,9 +1140,11 @@ void WorldGpu::record_cull(VkCommandBuffer cmd, const gpuworld::CullView& view) 
 }
 
 void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
-  if (generation_.rows == 0 || !slots_[recorded_slot_].used || !z_prepass_ || p.swap < 1.5f) return;
+  if (active_gen_ < 0 || !slots_[recorded_slot_].used || !z_prepass_ || p.swap < 1.5f) return;
+  const Generation& gen = table_gens_[size_t(active_gen_)];
+  if (gen.rows == 0) return;
   SlotBuffers& s = slots_[recorded_slot_];
-  const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, generation_.set, s.vis_set};
+  const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, gen.set, s.vis_set};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 4, sets, 0, nullptr);
   struct Push {
     float model[16];
@@ -1133,9 +1179,11 @@ void WorldGpu::record_z_prepass(VkCommandBuffer cmd, const DrawParams& p) {
 }
 
 void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
-  if (generation_.rows == 0 || !slots_[recorded_slot_].used) return;
+  if (active_gen_ < 0 || !slots_[recorded_slot_].used) return;
+  const Generation& gen = table_gens_[size_t(active_gen_)];
+  if (gen.rows == 0) return;
   SlotBuffers& s = slots_[recorded_slot_];
-  const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, generation_.set, s.vis_set};
+  const VkDescriptorSet sets[4] = {p.frame_set, bindless_set_, gen.set, s.vis_set};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 4, sets, 0, nullptr);
   struct Push {
     float model[16];
@@ -1161,7 +1209,7 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
                                     ? opaque_dither_
                                     : ((p.depth_prepass && opaque_after_z_) ? opaque_after_z_ : opaque_);
   const VkPipeline dither_pipe = opaque_dither_ ? opaque_dither_ : opaque_;
-  const uint32_t max_draw = std::min<uint32_t>(generation_.rows, kMaxPerBatch);
+  const uint32_t max_draw = std::min<uint32_t>(gen.rows, kMaxPerBatch);
   // Draw order: discard-free solid opaque first (Early-Z + Hi-Z occluders), then dithered LOD opaque,
   // then alpha-cutout foliage/fences, then instanced trees.
   constexpr uint32_t kOrder[gpuworld::kBatchCount] = {
@@ -1187,7 +1235,7 @@ void WorldGpu::record_draw(VkCommandBuffer cmd, const DrawParams& p) {
                                   s.counts.buffer, VkDeviceSize(b) * sizeof(uint32_t), max_draw,
                                   sizeof(gpuworld::IndirectCommand));
   }
-  if (generation_.trees_count > 0 && tree_coverage_) {
+  if (gen.trees_count > 0 && tree_coverage_) {
     vkCmdSetDepthBias(cmd, 0.0f, 0.0f, 0.0f);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tree_coverage_);
     r_.apply_vrs(cmd);
